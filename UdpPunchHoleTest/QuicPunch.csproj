@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>$(MSBuildProjectName)</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Shared\bin\**" />
+    <Compile Remove="Shared\obj\**" />
+    <EmbeddedResource Remove="Shared\bin\**" />
+    <EmbeddedResource Remove="Shared\obj\**" />
+    <None Remove="Shared\bin\**" />
+    <None Remove="Shared\obj\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Shared\Crc32CAlgorithm.cs" />
+    <Compile Remove="Shared\HttpHelper_Doh_CT.cs" />
+    <Compile Remove="Shared\NetworkTimeProvider.cs" />
+    <Compile Remove="Shared\Program.cs" />
+    <Compile Remove="Shared\SSLPinning.cs" />
+    <Compile Remove="Shared\WebViewConfigurer.cs" />
+    <Compile Remove="Shared\Xor.cs" />
+  </ItemGroup>
+
+</Project>
