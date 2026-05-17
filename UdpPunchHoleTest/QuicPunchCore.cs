@@ -1,6 +1,7 @@
 ﻿
 using QuicPunch;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Quic;
@@ -11,7 +12,7 @@ using System.Text;
 
 namespace UdpPunchHoleTest
 {
-    internal class QuicPunchCore
+    public class QuicPunchCore
     {
         public static int LocalPort = 3000;//Random.Shared.Next(1, 1024);
 
@@ -44,26 +45,59 @@ namespace UdpPunchHoleTest
 
         private static IPAddress _IPv4Address;
 
-        private const int PunchIntervalMiliseconds = 2500;
+        public const int PunchIntervalMiliseconds = 2500;
 
-        private static byte[] MagicHeader = Encoding.UTF8.GetBytes("PuNcH");
-
-        private enum MessageType : byte
-        {
-            Hello = (byte)('H'),
-            ACK = (byte)('K'),
-            Handshake = (byte)('S')
-        }
+        public static byte[] MagicHeader = Encoding.UTF8.GetBytes("PuNch");
 
         public static Dictionary<IPEndPoint, PeerInfo> AvilablePeers = new Dictionary<IPEndPoint, PeerInfo>();
 
-        public static event Action<PeerInfo>? OnPeerAvilable;
-        public static async Task<(QuicConnection, Stream)> InitPeerConection(PeerInfo peer, CancellationTokenSource mainCts)
-        {
-            using var udp = new UdpClient(LocalPort);
+        public static HandshakeManager Manager = new HandshakeManager();
 
-            throw new NotImplementedException();
+        public enum MessageType : byte
+        {
+            Hello = (byte)('H'),
+            ACK = (byte)('K'),
+            Handshake = (byte)('S'),
+            FinalHandshake = (byte)('F')
         }
+        public enum HandShakeType : byte
+        {
+            Request = (byte)('R'),
+            Accept = (byte)('A'),
+            Decline = (byte)('D')
+        }
+    
+        public static event Action<PeerInfo>? OnPeerAvilable;
+        public static async Task<(QuicConnection, Stream)> InitPeerConection(UdpClient udp, Guid connectionType, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        {
+            byte[] payload;
+
+            var guid = Guid.NewGuid();
+
+            using (MemoryStream ms = new MemoryStream())
+            using (BinaryWriter w = new BinaryWriter(ms))
+            {
+                w.Write(MagicHeader);
+                w.Write((byte)MessageType.Handshake);
+                w.Write((byte)HandShakeType.Request);
+                w.Write(localPort);
+                w.Write(connectionType.ToByteArray());
+                w.Write(guid.ToByteArray());
+                payload = ms.ToArray();
+            }
+
+            await udp.SendAsync(payload, payload.Length, peer.EndPoint);
+
+            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, peer.EndPoint), TimeSpan.FromSeconds(30), false, mainCts.Token);
+
+            if (!decision.Accepted)
+                throw new Exception("Handshake declined by peer.");
+
+            Console.WriteLine("Peer acepted :D");
+
+            return await QuicConectionCore.InitConnectionCore(localPort, peer.EndPoint, mainCts);
+        }
+
 
         public static async Task ListenLoop(UdpClient udp, CancellationTokenSource mainCts)
         {
@@ -76,9 +110,6 @@ namespace UdpPunchHoleTest
             var punchSuccessful = new TaskCompletionSource<bool>();
             using var udpCts = CancellationTokenSource.CreateLinkedTokenSource(mainCts.Token);
 
-            if (OperatingSystem.IsWindows())
-                udp.Client.IOControl(-1744830452, [ 0 ], null);
-
             Console.WriteLine($"Starting interogation for {endpoint}...");
 
             var sendTask = SendLoopAsync(udp, endpoint, udpCts.Token);
@@ -87,83 +118,10 @@ namespace UdpPunchHoleTest
             
             udpCts.Cancel();
             udp.Dispose();
-
-            /*await Task.Delay(100);
-
-            Console.WriteLine("\n[--- UDP HOLE PUNCH COMPLETE ---]");
-            Console.WriteLine("Transitioning to QUIC...\n");
-
-            if (IPv4Address == null)
-                await GetPublicIP();
-
-            bool isServer = !AmIServer(IPv4Address, LocalPort, endpoint.Address, endpoint.Port);
-
-            QuicConnection connection = null;
-            QuicStream stream = null;
-
-            for (int attempt = 1; attempt <= 2; attempt++)
-            {
-                Console.WriteLine($"\n--- ATTEMPT {attempt}/2: Acting as {(isServer ? "SERVER" : "CLIENT")} ---");
-
-                using var attemptCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCts.Token, attemptCts.Token);
-
-                try
-                {
-                    if (isServer)
-                    {
-                        (connection, stream) = await TryRunServer(LocalPort, linkedCts.Token);
-                    }
-                    else
-                    {
-                        (connection, stream) = await TryRunClient(endpoint, LocalPort, linkedCts.Token);
-                    }
-
-                    if (connection != null && stream != null)
-                    {
-                        Con+sole.WriteLine("\n[SUCCESS] QUIC Connection Established!");
-                        break;
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    Console.WriteLine($"[QUIC] {(isServer ? "Listening" : "Connecting")} timed out.");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[QUIC] Failure: {ex.Message}");
-                }
-
-                // Sync up both sides: wait until the 8-second window is entirely over before starting Attempt 2
-                if (connection == null)
-                {
-                    Console.WriteLine("[!] Role failed. Waiting to swap roles...");
-                    try
-                    {
-                        await Task.Delay(-1, attemptCts.Token);
-                    }
-                    catch { }
-
-                    isServer = !isServer; // SWAP!
-                }
-            }
-
-            if (connection == null || stream == null)
-            {
-                Console.WriteLine("\n[FAILED] Both roles failed to connect. A strict firewall is blocking both ends.");
-
-                await connection!.DisposeAsync();
-                await stream!.DisposeAsync();
-
-                ConnectToPeer(endpoint, mainCts);
-            }
-
-            return (connection, new BrotliTransparentStream(stream));*/
         }
         private static async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
         {
-            var ACKPacket = Helpers.Combine(MagicHeader, [(byte)MessageType.ACK ]);
+            var ACKPacket = Helpers.Combine(MagicHeader, [ (byte)MessageType.ACK ]);
 
             while (!token.IsCancellationRequested)
             {
@@ -198,8 +156,8 @@ namespace UdpPunchHoleTest
                         switch(messageType)
                         {
                             case (byte)MessageType.Hello:
-                                var certHash = r.ReadBytes(Program.CurrentPeer.CertHash.Length);
-                                var curvePuiblicKey = r.ReadBytes(Program.CurrentPeer.CurvePublicKey.Length);
+                                var certHash = r.ReadBytes(Helpers.CurrentPeer.CertHash.Length);
+                                var curvePuiblicKey = r.ReadBytes(Helpers.CurrentPeer.CurvePublicKey.Length);
                                 var name = r.ReadString();
 
                                 var peerInfo = new PeerInfo
@@ -218,13 +176,69 @@ namespace UdpPunchHoleTest
                                 }
 
                                 await udp.SendAsync(ACKPacket, ACKPacket.Length, result.RemoteEndPoint);
-                                break;
+                                continue;
+
                             case (byte)MessageType.ACK:
-                                Console.WriteLine($"Received ACK from {result.RemoteEndPoint}");
-                                continue; // Don't add ACK senders to peer list
+                                //Console.WriteLine($"Received ACK from {result.RemoteEndPoint}");
+                                continue;
+
+                            case (byte)MessageType.Handshake:
+                                var handShakeType = (HandShakeType)r.ReadByte();
+                                var port = r.ReadUInt16();
+
+                                var connectionType = new Guid(r.ReadBytes(16));
+                                var guid = new Guid(r.ReadBytes(16));
+
+                                switch (handShakeType)
+                                {
+                                    case HandShakeType.Request:
+                                        Console.WriteLine($"Received handshake request from {result.RemoteEndPoint}");
+
+                                        Task.Factory.StartNew(async () =>
+                                        {
+                                            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, result.RemoteEndPoint), TimeSpan.FromSeconds(30), true, CancellationToken.None);
+
+                                            byte[] payload;
+                                            ushort connectionPort = (ushort)Random.Shared.Next(1024, 65536);
+
+
+                                            using (MemoryStream ms = new MemoryStream())
+                                            using (BinaryWriter w = new BinaryWriter(ms))
+                                            {
+                                                w.Write(MagicHeader);
+                                                w.Write((byte)MessageType.Handshake);
+                                                w.Write((byte)(decision.Accepted ? HandShakeType.Accept : HandShakeType.Decline));
+                                                w.Write(connectionPort);
+                                                w.Write(connectionType.ToByteArray());
+                                                w.Write(guid.ToByteArray());
+                                                payload = ms.ToArray();
+                                            }
+
+                                            await udp.SendAsync(payload, payload.Length, result.RemoteEndPoint);
+
+
+                                            if (decision.Accepted)
+                                            {
+                                                //TODO: DO FINAL CONECTION
+                                            }
+                                        });
+                                        break;
+
+                                    case HandShakeType.Accept:
+                                        Console.WriteLine($"Received handshake ACCEPT from {result.RemoteEndPoint}");
+                                        Manager.Approve(guid, port);
+                                        break;
+
+                                    case HandShakeType Decline:
+                                        Console.WriteLine($"Received handshake DECLINE from {result.RemoteEndPoint}");
+                                        Manager.Reject(guid);
+                                        break;
+                                }
+                                continue;
+
                             default:
                                 Console.WriteLine($"Received unknown message type {(char)messageType} from {result.RemoteEndPoint}");
-                                continue; // Ignore unknown message types
+                                continue;
                         }
                     }
                 }
@@ -245,9 +259,9 @@ namespace UdpPunchHoleTest
             {
                 w.Write(MagicHeader);
                 w.Write((byte)MessageType.Hello);
-                w.Write(Program.CurrentPeer.CertHash);
-                w.Write(Program.CurrentPeer.CurvePublicKey);
-                w.Write(Program.CurrentPeer.Name);
+                w.Write(Helpers.CurrentPeer.CertHash);
+                w.Write(Helpers.CurrentPeer.CurvePublicKey);
+                w.Write(Helpers.CurrentPeer.Name);
 
                 payload = ms.ToArray();
             }
@@ -287,7 +301,7 @@ namespace UdpPunchHoleTest
                     //}
                 }
 
-                Console.WriteLine($"Send hello packet to {peer} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(intervalTicks).Seconds}");
+                //Console.WriteLine($"Send hello packet to {peer} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(intervalTicks).Seconds}");
 
                 for (int i = 0; i < (peerResponded ? 1 : 2); i++)
                 {
@@ -302,91 +316,7 @@ namespace UdpPunchHoleTest
             }
         }
 
-        private static async Task<(QuicConnection, QuicStream)> TryRunServer(int localPort, CancellationToken token)
-        {
-            var options = new QuicListenerOptions
-            {
-                ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
-                ApplicationProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-p2p") },
-                ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(new QuicServerConnectionOptions
-                {
-                    DefaultStreamErrorCode = 0,
-                    DefaultCloseErrorCode = 0,
-                    ServerAuthenticationOptions = new SslServerAuthenticationOptions
-                    {
-                        ApplicationProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-p2p") },
-                        ServerCertificate = CertManager.PeerCertificate
-                    },
-
-                    IdleTimeout = TimeSpan.FromMinutes(10),
-                    KeepAliveInterval = TimeSpan.FromSeconds(15)
-                }),
-            };
-
-            await using var listener = await QuicListener.ListenAsync(options, token);
-            Console.WriteLine("[SERVER] Bound to port. Waiting for peer...");
-
-            var connection = await listener.AcceptConnectionAsync(token);
-            var stream = await connection.AcceptInboundStreamAsync(token);
-
-            return (connection, stream);
-        }
-
-        private static async Task<(QuicConnection, QuicStream)> TryRunClient(IPEndPoint targetPeer, int localPort, CancellationToken token)
-        {
-            var options = new QuicClientConnectionOptions
-            {
-                RemoteEndPoint = targetPeer,
-                LocalEndPoint = new IPEndPoint(IPAddress.Any, localPort), // CRITICAL: Bind to the punched port
-                DefaultStreamErrorCode = 0,
-                DefaultCloseErrorCode = 0,
-                ClientAuthenticationOptions = new SslClientAuthenticationOptions
-                {
-                    ApplicationProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-p2p") },
-                    RemoteCertificateValidationCallback = delegate { return true; } // Accept self-signed
-                },
-
-                IdleTimeout = TimeSpan.FromMinutes(10),
-                KeepAliveInterval = TimeSpan.FromSeconds(15)
-            };
-
-            QuicConnection connection = null;
-
-            // Keep trying to punch outbound until the 8 second token cancels
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    connection = await QuicConnection.ConnectAsync(options, token);
-                    Console.WriteLine("[CLIENT] Connected successfully!");
-                    break;
-                }
-                catch
-                {
-                    await Task.Delay(500, token); // Small backoff, then try again
-                }
-            }
-
-            if (connection == null)
-                return (null, null);
-
-            var stream = await connection.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, token);
-
-            //await stream.WriteAsync(new byte[] { 0x00 }, token); // Trigger server's AcceptInboundStreamAsync
-
-            return (connection, stream);
-        }
-      
-        private static bool AmIServer(IPAddress myPublicIp, int myPort, IPAddress peerPublicIp, int peerPort)
-        {
-            byte[] m = myPublicIp.GetAddressBytes(), p = peerPublicIp.GetAddressBytes();
-            for (int i = 0; i < m.Length; i++)
-            { 
-                if (m[i] > p[i]) return true;
-                if (m[i] < p[i]) return false;
-            }
-            return myPort > peerPort;
-        }
+     
 
         public static async Task<IPAddress?> GetPublicIP()
         {

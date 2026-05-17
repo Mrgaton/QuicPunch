@@ -5,7 +5,7 @@ using System.Text;
 
 namespace QuicPunch
 {
-    internal class PeerInfo
+    public class PeerInfo
     {
         public byte[] CertHash;
         public byte[] CurvePublicKey;

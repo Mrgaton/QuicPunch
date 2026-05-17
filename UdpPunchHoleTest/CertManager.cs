@@ -1,4 +1,5 @@
-﻿using System;
+﻿using QuicPunch;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Security.Cryptography;
@@ -10,8 +11,8 @@ namespace UdpPunchHoleTest
 {
     internal class CertManager
     {
-        public static string CertPath = Path.Combine(Program.AppDataPath, "peerCert.pfx");
-        public static string DilithiumPath = Path.Combine(Program.AppDataPath, "dilithium.key");
+        public static string CertPath = Path.Combine(Helpers.AppDataPath, "peerCert.pfx");
+        public static string DilithiumPath = Path.Combine(Helpers.AppDataPath, "dilithium.key");
         public static X509Certificate2? PeerCertificate { 
             get
             {
@@ -30,9 +31,9 @@ namespace UdpPunchHoleTest
                 {
                     var cert = GenerateIdentityCertificate(Environment.MachineName);
 
-                    if (!Directory.Exists(Program.AppDataPath))
+                    if (!Directory.Exists(Helpers.AppDataPath))
                     {
-                        Directory.CreateDirectory(Program.AppDataPath);
+                        Directory.CreateDirectory(Helpers.AppDataPath);
                     }
 
                     File.WriteAllBytes(CertPath, cert.Export(X509ContentType.Pfx));

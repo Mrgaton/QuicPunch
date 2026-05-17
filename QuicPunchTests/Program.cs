@@ -12,26 +12,9 @@ using UdpPunchHoleTest;
 
 internal static class Program
 {
-    public static Process CurrentProcess = Process.GetCurrentProcess();
-    public static string FileName = CurrentProcess.MainModule.FileName;
-
-    public static string AppDataPath = Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-    "QuicPunchV3");
-
-    public static PeerInfo CurrentPeer = new PeerInfo()
-    {
-        Name = Environment.UserName,
-        EndPoint = new IPEndPoint(QuicPunchCore.IPv4Address, QuicPunchCore.LocalPort),
-        CertHash = CertManager.PeerCertPublicHash,
-        CurvePublicKey = CertManager.Curve.ExportSubjectPublicKeyInfo()
-    };
 
     private static void Main(string[] args)
     {
-        if (!Directory.Exists(AppDataPath))
-            Directory.CreateDirectory(AppDataPath);
-
         //args = ["vgjnSQG7"];
 
         Console.OutputEncoding = Encoding.UTF8;

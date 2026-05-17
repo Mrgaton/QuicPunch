@@ -1,3 +1,4 @@
 <Solution>
+  <Project Path="QuicPunchTests/QuicPunchTests.csproj" Id="21fbd60d-464c-444d-b3f0-0cf48a6dd8b7" />
   <Project Path="UdpPunchHoleTest/QuicPunch.csproj" />
 </Solution>

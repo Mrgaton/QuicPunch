@@ -1,20 +1,21 @@
 ﻿using QuicPunch;
 using System;
 using System.Collections.Generic;
+using System.Net.Sockets;
 using System.Text;
 
 namespace UdpPunchHoleTest
 {
     internal class ConectionHandler
     {
-        public static async Task HandleConnection(PeerInfo pinfo)
+       /* public static async Task HandleConnection(PeerInfo pinfo)
         {
             using var mainCts = new CancellationTokenSource();
             Console.CancelKeyPress += (_, e) => { e.Cancel = true; mainCts.Cancel(); };
 
             var res = await QuicPunchCore.InitPeerConection(pinfo, mainCts);
             await RunChat(res.Item2, mainCts.Token);
-        }
+        }*/
 
         private static async Task RunChat(Stream stream, CancellationToken token)
         {
