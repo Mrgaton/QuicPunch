@@ -66,9 +66,11 @@ namespace UdpPunchHoleTest
 
             TrackerScanner = new TrackerScanner(PoolId, LocalPort);
             TrackerScanner.Start();
-        }
 
-        private byte[] _poolId = [];
+            StartInterogationListener();
+        }
+        
+private byte[] _poolId = [];
         public byte[] PoolId
         {
             get => _poolId;
@@ -91,9 +93,14 @@ namespace UdpPunchHoleTest
         public TrackerScanner TrackerScanner { get; private set; }
         public CancellationTokenSource CancelationSource { get; private set; }
 
-        public void StartInterogation()
+        public void StartInterogationListener()
         {
-            InterogationsListenerTask = ListenLoop(udp, CancelationSource);
+            CancelationSource = new CancellationTokenSource();
+            InterogationsListenerTask = ReceiveLoopAsync(udp, CancelationSource.Token);
+        }
+        public void StopInterogationListener()
+        {
+            CancelationSource.Cancel();
         }
         public Task InterogationsListenerTask { get; private set; }
 
@@ -169,13 +176,6 @@ namespace UdpPunchHoleTest
             await handler.HandleAsync(conection.Item1, conection.Item2, peer, mainCts.Token);
         }
 
-
-        public async Task ListenLoop(UdpClient udp, CancellationTokenSource mainCts)
-        {
-           await ReceiveLoopAsync(udp, mainCts.Token);
-
-            Console.WriteLine("Shutting down listener...");
-        }
         public async Task PeerInterogation(IPEndPoint endpoint, CancellationTokenSource mainCts)
         {
             var punchSuccessful = new TaskCompletionSource<bool>();

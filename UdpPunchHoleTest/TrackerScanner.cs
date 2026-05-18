@@ -19,7 +19,6 @@ namespace UdpPunchHoleTest
         private CancellationTokenSource? _cts;
 
         public event Action<IPEndPoint>? OnPeerFound;
-
         public IEnumerable<IPEndPoint> ActivePeers => _peers.Keys;
 
         public TrackerScanner(byte[] infoHash, int localPort)

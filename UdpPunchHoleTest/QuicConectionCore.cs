@@ -88,12 +88,6 @@ namespace QuicPunch
                 Console.WriteLine("\n[FAILED] Both roles failed to connect. A strict firewall is blocking both ends.");
             }
 
-            if (connection != null)
-                await connection.DisposeAsync();
-
-            if (stream != null)
-                await stream.DisposeAsync();
-
             return (connection, new BrotliTransparentStream(stream));
         }
         public static async Task ReceiveHoleLoopAsync(UdpClient udp, ushort port, TaskCompletionSource<bool> tcs, CancellationToken token)
