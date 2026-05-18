@@ -7,6 +7,7 @@ using System.Net.Http.Headers;
 using System.Net.Quic;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -23,29 +24,29 @@ namespace UdpPunchHoleTest
             _IPv4Address = null;
         }
 
-        public static string IPv4  {
-            get 
-            { 
-                if (_IPv4 != null) 
-                    return _IPv4; 
+        public static string IPv4 {
+            get
+            {
+                if (_IPv4 != null)
+                    return _IPv4;
 
-                return _IPv4 = IPv4Address.ToString(); 
+                return _IPv4 = IPv4Address.ToString();
             }
         }
         private static string _IPv4;
 
         public static IPAddress IPv4Address {
-            get 
+            get
             {
                 if (_IPv4Address != null)
                     return _IPv4Address;
 
-                return _IPv4Address = Helpers.GetPublicIP().Result; 
+                return _IPv4Address = Helpers.GetPublicIP().Result;
             }
         }
         private static IPAddress _IPv4Address;
 
-        public QuicPunchCore (CancellationTokenSource cts, byte[] poolId)
+        public QuicPunchCore(CancellationTokenSource cts, byte[] poolId)
         {
             if (!QuicListener.IsSupported || !QuicConnection.IsSupported)
             {
@@ -123,11 +124,12 @@ namespace UdpPunchHoleTest
         }
         public bool RemoveProtocol(IProtocolHandler handler) => ProtocolHandlers.TryRemove(handler.ProtocolId, out _);
         public void RegisterProtocol(IProtocolHandler handler) => ProtocolHandlers[handler.ProtocolId] = handler;
-        
+
         public enum MessageType : byte
         {
             Hello = (byte)('H'),
-            ACK = (byte)('K'),
+            Interogation = (byte)('?'),
+            Ack = (byte)('K'),
             Handshake = (byte)('S'),
             FinalHandshake = (byte)('F')
         }
@@ -138,13 +140,13 @@ namespace UdpPunchHoleTest
             Decline = (byte)('D'),
             Unsuported = (byte)('U') //Peer doesnt support the requested protocol
         }
-    
+
         public event Action<PeerInfo>? OnPeerAvilable;
         public async Task InitPeerConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
             if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
             {
-                throw  new KeyNotFoundException("Handler not found for protocol: " + nameof(protocolHandler));
+                throw new KeyNotFoundException("Handler not found for protocol: " + nameof(protocolHandler));
             }
 
             byte[] payload;
@@ -187,13 +189,13 @@ namespace UdpPunchHoleTest
             var sendTask = SendLoopAsync(udp, endpoint, udpCts.Token);
 
             await punchSuccessful.Task.WaitAsync(mainCts.Token);
-            
+
             udpCts.Cancel();
             udp.Dispose();
         }
         private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
         {
-            var ACKPacket = Helpers.Combine(MagicHeader, [ (byte)MessageType.ACK ]);
+            var ACKPacket = Helpers.Combine(MagicHeader, [(byte)MessageType.Ack]);
 
             while (!token.IsCancellationRequested)
             {
@@ -225,9 +227,15 @@ namespace UdpPunchHoleTest
 
                         byte messageType = r.ReadByte();
 
-                        switch(messageType)
+                        switch (messageType)
                         {
+                            case (byte)MessageType.Interogation:
                             case (byte)MessageType.Hello:
+                                if (messageType == (byte)MessageType.Interogation)
+                                {
+                                    udp.SendAsync(HelloPayload, HelloPayload.Length, result.RemoteEndPoint);
+                                }
+
                                 var certHash = r.ReadBytes(Helpers.CurrentPeer.CertHash.Length);
                                 var curvePuiblicKey = r.ReadBytes(Helpers.CurrentPeer.CurvePublicKey.Length);
                                 var name = r.ReadString();
@@ -250,7 +258,7 @@ namespace UdpPunchHoleTest
                                 await udp.SendAsync(ACKPacket, ACKPacket.Length, result.RemoteEndPoint);
                                 continue;
 
-                            case (byte)MessageType.ACK:
+                            case (byte)MessageType.Ack:
                                 //Console.WriteLine($"Received ACK from {result.RemoteEndPoint}");
                                 continue;
 
@@ -303,24 +311,25 @@ namespace UdpPunchHoleTest
 
                                             if (decidedResponse == HandShakeType.Accept)
                                             {
-                                                var connection = await QuicConectionCore.InitConnectionCore(decidedPort, new IPEndPoint(result.RemoteEndPoint.Address, remotePort),IPv4Address, ct);
+                                                var connection = await QuicConectionCore.InitConnectionCore(decidedPort, new IPEndPoint(result.RemoteEndPoint.Address, remotePort), IPv4Address, ct);
 
                                                 handler.HandleAsync(connection.Item1, connection.Item2, AvilablePeers[result.RemoteEndPoint], ct);
                                             }
                                         });
-                                        break;
+                                        continue;
 
                                     case HandShakeType.Accept:
                                         Console.WriteLine($"Received handshake ACCEPT from {result.RemoteEndPoint}");
                                         Manager.Approve(guid, remotePort, null);
-                                        break;
+                                        continue;
 
                                     case HandShakeType.Decline or HandShakeType.Unsuported:
                                         Console.WriteLine($"Handshake canceled from {result.RemoteEndPoint}");
                                         Manager.Reject(guid);
-                                        break;
+                                        continue;
                                 }
                                 continue;
+
 
                             default:
                                 Console.WriteLine($"Received unknown message type {(char)messageType} from {result.RemoteEndPoint}");
@@ -336,7 +345,10 @@ namespace UdpPunchHoleTest
             }
         }
 
-        private async Task SendLoopAsync(UdpClient udp, IPEndPoint peer, CancellationToken token)
+
+        private byte[] HelloPayload = GenerateHelloPayload();
+
+        private static byte[] GenerateHelloPayload()
         {
             byte[] payload;
 
@@ -352,6 +364,12 @@ namespace UdpPunchHoleTest
                 payload = ms.ToArray();
             }
 
+            return payload;
+        }
+
+        private async Task SendLoopAsync(UdpClient udp, IPEndPoint peer, CancellationToken token)
+        {
+       
             double maxIntervalTicks = TimeSpan.FromSeconds(20).Ticks;
             long intervalTicks = TimeSpan.FromMilliseconds(PunchIntervalMiliseconds).Ticks;
             int tries = 0;
@@ -394,7 +412,7 @@ namespace UdpPunchHoleTest
                     if (token.IsCancellationRequested)
                         break;
 
-                    await udp.SendAsync(payload, payload.Length, peer);
+                    await udp.SendAsync(HelloPayload, HelloPayload.Length, peer);
                     await Task.Delay(250, token);
                 }
 
