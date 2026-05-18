@@ -29,6 +29,7 @@ namespace QuicPunch
             await ReceiveHoleLoopAsync(nudp, localPort, punchSuccessful, udpCts.Token);
             await punchSuccessful.Task.WaitAsync(mainCts.Token);
 
+            udpCts.Dispose();
             nudp.Dispose();
 
             bool isServer = !AmIServer(QuicPunchCore.IPv4Address, localPort, remoteEndpoint.Address, remoteEndpoint.Port);
@@ -87,10 +88,13 @@ namespace QuicPunch
             if (connection == null || stream == null)
             {
                 Console.WriteLine("\n[FAILED] Both roles failed to connect. A strict firewall is blocking both ends.");
-
-                await connection!.DisposeAsync();
-                await stream!.DisposeAsync();
             }
+
+            if (connection != null)
+                await connection.DisposeAsync();
+
+            if (stream != null)
+                await stream.DisposeAsync();
 
             return (connection, new BrotliTransparentStream(stream));
         }
@@ -107,12 +111,12 @@ namespace QuicPunch
 
                     var result = await udp.ReceiveAsync(token);
 
-                    //Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));
+                    Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));
 
                     //if (!result.RemoteEndPoint.Address.Equals(targetPeer.Address))
                     //    continue;
 
-                    if (result.Buffer.Length > 512)
+                    if (result.Buffer.Length > 512 || result.Buffer.Length < QuicPunchCore.MagicHeader.Length)
                         goto skipPacket;
 
                     for (int i = 0; i < QuicPunchCore.MagicHeader.Length; i++)
@@ -128,14 +132,15 @@ namespace QuicPunch
 
                         var messageType = (QuicPunchCore.MessageType)r.ReadByte();
 
-                        if (messageType == QuicPunchCore.MessageType.ACK)
-                        {
-                            await Task.Delay(250);
-                            tcs.SetResult(true);
-                        }
-                        else
+                        if (messageType == QuicPunchCore.MessageType.FinalHandshake)
                         {
                             udp.SendAsync(ACKPacket, ACKPacket.Length, result.RemoteEndPoint);
+                        }
+                        else if (messageType == QuicPunchCore.MessageType.ACK)
+                        {
+                            await Task.Delay(250);
+                            udp.SendAsync(ACKPacket, ACKPacket.Length, result.RemoteEndPoint);
+                            tcs.SetResult(true);
                         }
                     }
                 }
@@ -176,7 +181,7 @@ namespace QuicPunch
                     await Task.Delay((int)delay.TotalMilliseconds, token);
                 }
 
-                //Console.WriteLine($"Send hello packet to {peer} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(intervalTicks).Seconds}");
+                Console.WriteLine($"Send hello packet to {peer} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(intervalTicks).Seconds}");
 
                 for (int i = 0; i < 2; i++)
                 {

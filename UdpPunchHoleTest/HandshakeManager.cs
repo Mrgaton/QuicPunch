@@ -13,7 +13,8 @@ namespace QuicPunch
 
     public sealed record HandshakeDecision(
         bool Accepted,
-        ushort? Port = null);
+        ushort? Port,
+        CancellationTokenSource cts);
 
     public sealed class HandshakeManager
     {
@@ -49,7 +50,7 @@ namespace QuicPunch
                 var handler = HandshakeRequested;
                 if (handler is null)
                 {
-                    Complete(request.Id, new HandshakeDecision(false, null));
+                    Complete(request.Id, new HandshakeDecision(false, null, null));
                     return;
                 }
 
@@ -58,7 +59,7 @@ namespace QuicPunch
             }
             catch (OperationCanceledException)
             {
-                Complete(request.Id, new HandshakeDecision(false, null));
+                Complete(request.Id, new HandshakeDecision(false, null, null));
             }
             catch (Exception ex)
             {
@@ -67,11 +68,14 @@ namespace QuicPunch
             }
         }
 
-        public bool Approve(Guid id, ushort port) => Complete(id, new HandshakeDecision(true, port));
-        public bool Reject(Guid id) => Complete(id, new HandshakeDecision(false, 0));
+        public bool Approve(Guid id, ushort port, CancellationTokenSource cts) => Complete(id, new HandshakeDecision(true, port, cts));
+        public bool Reject(Guid id) => Complete(id, new HandshakeDecision(false, 0, null));
 
         private bool Complete(Guid id, HandshakeDecision decision)
         {
+            if (decision.Port == 0 || decision.Port == null)
+                throw new InvalidOperationException("Invalid port in handshake decision.");
+
             if (!_pending.TryRemove(id, out var tcs))
                 return false;
 

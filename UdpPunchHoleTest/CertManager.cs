@@ -25,7 +25,7 @@ namespace UdpPunchHoleTest
                         CertPath,
                         (string?)null,
                         X509KeyStorageFlags.Exportable |
-                        X509KeyStorageFlags.EphemeralKeySet);
+                        X509KeyStorageFlags.PersistKeySet);
                 }
                 else
                 {
@@ -150,7 +150,7 @@ namespace UdpPunchHoleTest
                 cert.Export(X509ContentType.Pfx),
                 (string?)null,
                 X509KeyStorageFlags.Exportable |
-                X509KeyStorageFlags.EphemeralKeySet);
+                X509KeyStorageFlags.PersistKeySet);
         }
     }
 }

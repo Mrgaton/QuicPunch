@@ -95,7 +95,7 @@ namespace UdpPunchHoleTest
 
             Console.WriteLine("Peer acepted :D");
 
-            return await QuicConectionCore.InitConnectionCore(localPort, peer.EndPoint, mainCts);
+            return await QuicConectionCore.InitConnectionCore(localPort, new IPEndPoint(peer.EndPoint.Address, (ushort)decision.Port), mainCts);
         }
 
 
@@ -198,9 +198,10 @@ namespace UdpPunchHoleTest
                                         {
                                             var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, result.RemoteEndPoint), TimeSpan.FromSeconds(30), true, CancellationToken.None);
 
-                                            byte[] payload;
-                                            ushort connectionPort = (ushort)Random.Shared.Next(1024, 65536);
+                                            if (decision.Port == null || decision.Port == 0) 
+                                                throw new Exception("Invalid port in handshake decision.");
 
+                                            byte[] payload;
 
                                             using (MemoryStream ms = new MemoryStream())
                                             using (BinaryWriter w = new BinaryWriter(ms))
@@ -208,7 +209,7 @@ namespace UdpPunchHoleTest
                                                 w.Write(MagicHeader);
                                                 w.Write((byte)MessageType.Handshake);
                                                 w.Write((byte)(decision.Accepted ? HandShakeType.Accept : HandShakeType.Decline));
-                                                w.Write(connectionPort);
+                                                w.Write((ushort)decision.Port);
                                                 w.Write(connectionType.ToByteArray());
                                                 w.Write(guid.ToByteArray());
                                                 payload = ms.ToArray();
@@ -220,13 +221,15 @@ namespace UdpPunchHoleTest
                                             if (decision.Accepted)
                                             {
                                                 //TODO: DO FINAL CONECTION
+
+                                                QuicConectionCore.InitConnectionCore((ushort)decision.Port, new IPEndPoint(result.RemoteEndPoint.Address, port), decision.cts);
                                             }
                                         });
                                         break;
 
                                     case HandShakeType.Accept:
                                         Console.WriteLine($"Received handshake ACCEPT from {result.RemoteEndPoint}");
-                                        Manager.Approve(guid, port);
+                                        Manager.Approve(guid, port, null);
                                         break;
 
                                     case HandShakeType Decline:

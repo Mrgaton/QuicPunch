@@ -90,9 +90,9 @@ public static class QuicPunchMain
             bool accepted = res == DialogResult.Yes;
 
             if (!accepted)
-                return new HandshakeDecision(false);
+                return new HandshakeDecision(false, null, null);
 
-            return new HandshakeDecision(true);
+            return new HandshakeDecision(true, (ushort)Random.Shared.Next(1024, 65535), cts);
         };
 
         Console.WriteLine("Press enter to conect to someone:");
