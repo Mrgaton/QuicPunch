@@ -9,9 +9,9 @@ using UdpPunchHoleTest;
 
 namespace QuicPunch
 {
-    public class QuicConectionCore
+    internal class QuicConectionCore
     {
-        public static async Task<(QuicConnection,Stream)> InitConnectionCore(ushort localPort,IPEndPoint remoteEndpoint, CancellationTokenSource mainCts)
+        public static async Task<(QuicConnection,Stream)> InitConnectionCore(ushort localPort,IPEndPoint remoteEndpoint,IPAddress ownPublicEndpoint,CancellationToken mainCt)
         {
             var nudp = new UdpClient();
 
@@ -22,17 +22,15 @@ namespace QuicPunch
             nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
 
             var punchSuccessful = new TaskCompletionSource<bool>();
-            using var udpCts = CancellationTokenSource.CreateLinkedTokenSource(mainCts.Token);
 
-            _ = SendLoopAsync(nudp, remoteEndpoint, udpCts.Token);
+            _ = SendLoopAsync(nudp, remoteEndpoint, mainCt);
 
-            await ReceiveHoleLoopAsync(nudp, localPort, punchSuccessful, udpCts.Token);
-            await punchSuccessful.Task.WaitAsync(mainCts.Token);
-
-            udpCts.Dispose();
+            await ReceiveHoleLoopAsync(nudp, localPort, punchSuccessful, mainCt);
+            await punchSuccessful.Task.WaitAsync(mainCt);
+            
             nudp.Dispose();
 
-            bool isServer = !AmIServer(QuicPunchCore.IPv4Address, localPort, remoteEndpoint.Address, remoteEndpoint.Port);
+            bool isServer = !AmIServer(ownPublicEndpoint, localPort, remoteEndpoint.Address, remoteEndpoint.Port);
 
             QuicConnection connection = null;
             QuicStream stream = null;
@@ -43,7 +41,7 @@ namespace QuicPunch
 
                 using var attemptCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCts.Token, attemptCts.Token);
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt, attemptCts.Token);
 
                 try
                 {

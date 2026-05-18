@@ -14,7 +14,7 @@ namespace QuicPunch
     public sealed record HandshakeDecision(
         bool Accepted,
         ushort? Port,
-        CancellationTokenSource cts);
+        CancellationToken? Ct);
 
     public sealed class HandshakeManager
     {
@@ -68,7 +68,7 @@ namespace QuicPunch
             }
         }
 
-        public bool Approve(Guid id, ushort port, CancellationTokenSource cts) => Complete(id, new HandshakeDecision(true, port, cts));
+        public bool Approve(Guid id, ushort port, CancellationTokenSource cts) => Complete(id, new HandshakeDecision(true, port, cts?.Token));
         public bool Reject(Guid id) => Complete(id, new HandshakeDecision(false, 0, null));
 
         private bool Complete(Guid id, HandshakeDecision decision)

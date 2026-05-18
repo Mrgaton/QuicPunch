@@ -8,7 +8,7 @@ using System.Text;
 
 namespace UdpPunchHoleTest
 {
-    internal class TrackerScanner
+    public class TrackerScanner
     {
         private readonly byte[] _infoHash;
         private readonly byte[] _peerId = Guid.NewGuid().ToByteArray().Concat(Guid.NewGuid().ToByteArray()).Take(20).ToArray();
@@ -24,7 +24,7 @@ namespace UdpPunchHoleTest
 
         public TrackerScanner(byte[] infoHash, int localPort)
         {
-            if (infoHash.Length != 20) throw new ArgumentException("Hash must be 20 bytes (SHA1)");
+            if (infoHash.Length != 20) throw new ArgumentException("Hash must be 20 bytes");
             _infoHash = infoHash;
 
             if (localPort < 0 || localPort > 65535) throw new ArgumentOutOfRangeException(nameof(localPort), "Port must be an ushort");
@@ -59,7 +59,7 @@ namespace UdpPunchHoleTest
                     await Task.WhenAll(tasks);
 
                     Cleanup();
-                } while (await timer.WaitForNextTickAsync(_cts.Token));
+                } while (await timer.WaitForNextTickAsync(_cts.Token) && !_cts.IsCancellationRequested);
             });
         }
 
@@ -121,6 +121,9 @@ namespace UdpPunchHoleTest
                 var ip = new IPAddress(p.Slice(0, 4).ToArray());
                 
                 var endpoint = new IPEndPoint(ip, BinaryPrimitives.ReadUInt16BigEndian(p.Slice(4)));
+
+                if (endpoint.Address.Equals(QuicPunchCore.IPv4Address) && endpoint.Port == _localPort) 
+                    continue;
 
                 if (_peers.TryAdd(endpoint, DateTime.UtcNow))
                     OnPeerFound?.Invoke(endpoint);

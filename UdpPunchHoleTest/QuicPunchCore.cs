@@ -14,7 +14,8 @@ namespace UdpPunchHoleTest
 {
     public class QuicPunchCore
     {
-        public static int LocalPort = 3000;//Random.Shared.Next(1, 1024);
+        public UdpClient? udp = null;
+        public const int LocalPort = 3000;//Random.Shared.Next(1, 1024);
 
         public static void ClearIPv4Cache()
         {
@@ -39,20 +40,82 @@ namespace UdpPunchHoleTest
                 if (_IPv4Address != null)
                     return _IPv4Address;
 
-                return _IPv4Address = GetPublicIP().Result; 
+                return _IPv4Address = Helpers.GetPublicIP().Result; 
             }
         }
-
         private static IPAddress _IPv4Address;
+
+        public QuicPunchCore (CancellationTokenSource cts, byte[] poolId)
+        {
+            if (!QuicListener.IsSupported || !QuicConnection.IsSupported)
+            {
+                throw new NotSupportedException("QUIC is not supported on this machine.");
+            }
+
+            udp = new UdpClient();
+
+            if (OperatingSystem.IsWindows())
+                udp.Client.IOControl(-1744830452, [0], null);
+
+            udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            udp.Client.Bind(new IPEndPoint(IPAddress.Any, LocalPort));
+
+            CancelationSource = cts;
+
+            PoolId = poolId.Length == 20 ? poolId : SHA1.HashData(poolId);
+
+            TrackerScanner = new TrackerScanner(PoolId, LocalPort);
+            TrackerScanner.Start();
+        }
+
+        private byte[] _poolId = [];
+        public byte[] PoolId
+        {
+            get => _poolId;
+            set 
+            {
+                if (value.Length != 20 ) throw new ArgumentException("InfoHash must be 20 bytes long.");
+
+                _poolId = value;
+
+                if (TrackerScanner != null)
+                {
+                    TrackerScanner.Stop();
+                    TrackerScanner = new TrackerScanner(value, LocalPort);
+                    TrackerScanner.Start();
+                }
+            } 
+        }
+
+
+        public TrackerScanner TrackerScanner { get; private set; }
+        public CancellationTokenSource CancelationSource { get; private set; }
+
+        public void StartInterogation()
+        {
+            InterogationsListenerTask = ListenLoop(udp, CancelationSource);
+        }
+        public Task InterogationsListenerTask { get; private set; }
+
+
 
         public const int PunchIntervalMiliseconds = 2500;
 
         public static byte[] MagicHeader = Encoding.UTF8.GetBytes("PuNch");
 
-        public static Dictionary<IPEndPoint, PeerInfo> AvilablePeers = new Dictionary<IPEndPoint, PeerInfo>();
+        public Dictionary<IPEndPoint, PeerInfo> AvilablePeers = new Dictionary<IPEndPoint, PeerInfo>();
 
-        public static HandshakeManager Manager = new HandshakeManager();
+        public HandshakeManager Manager = new HandshakeManager();
 
+        public readonly ConcurrentDictionary<Guid, IProtocolHandler> ProtocolHandlers = new();
+        public interface IProtocolHandler
+        {
+            public Guid ProtocolId { get; }
+            Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct);
+        }
+        public bool RemoveProtocol(IProtocolHandler handler) => ProtocolHandlers.TryRemove(handler.ProtocolId, out _);
+        public void RegisterProtocol(IProtocolHandler handler) => ProtocolHandlers[handler.ProtocolId] = handler;
+        
         public enum MessageType : byte
         {
             Hello = (byte)('H'),
@@ -64,15 +127,21 @@ namespace UdpPunchHoleTest
         {
             Request = (byte)('R'),
             Accept = (byte)('A'),
-            Decline = (byte)('D')
+            Decline = (byte)('D'),
+            Unsuported = (byte)('U') //Peer doesnt support the requested protocol
         }
     
-        public static event Action<PeerInfo>? OnPeerAvilable;
-        public static async Task<(QuicConnection, Stream)> InitPeerConection(UdpClient udp, Guid connectionType, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        public event Action<PeerInfo>? OnPeerAvilable;
+        public async Task InitPeerConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
+            if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
+            {
+                throw  new KeyNotFoundException("Handler not found for protocol: " + nameof(protocolHandler));
+            }
+
             byte[] payload;
 
-            var guid = Guid.NewGuid();
+            var conectionGuid = Guid.NewGuid();
 
             using (MemoryStream ms = new MemoryStream())
             using (BinaryWriter w = new BinaryWriter(ms))
@@ -81,31 +150,33 @@ namespace UdpPunchHoleTest
                 w.Write((byte)MessageType.Handshake);
                 w.Write((byte)HandShakeType.Request);
                 w.Write(localPort);
-                w.Write(connectionType.ToByteArray());
-                w.Write(guid.ToByteArray());
+                w.Write(protocolHandler.ToByteArray());
+                w.Write(conectionGuid.ToByteArray());
                 payload = ms.ToArray();
             }
 
             await udp.SendAsync(payload, payload.Length, peer.EndPoint);
 
-            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, peer.EndPoint), TimeSpan.FromSeconds(30), false, mainCts.Token);
+            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(conectionGuid, protocolHandler, peer.EndPoint), TimeSpan.FromSeconds(30), false, mainCts.Token);
 
             if (!decision.Accepted)
                 throw new Exception("Handshake declined by peer.");
 
             Console.WriteLine("Peer acepted :D");
 
-            return await QuicConectionCore.InitConnectionCore(localPort, new IPEndPoint(peer.EndPoint.Address, (ushort)decision.Port), mainCts);
+            var conection = await QuicConectionCore.InitConnectionCore(localPort, new IPEndPoint(peer.EndPoint.Address, (ushort)decision.Port), IPv4Address, mainCts.Token);
+
+            await handler.HandleAsync(conection.Item1, conection.Item2, peer, mainCts.Token);
         }
 
 
-        public static async Task ListenLoop(UdpClient udp, CancellationTokenSource mainCts)
+        public async Task ListenLoop(UdpClient udp, CancellationTokenSource mainCts)
         {
            await ReceiveLoopAsync(udp, mainCts.Token);
 
             Console.WriteLine("Shutting down listener...");
         }
-        public static async Task PeerInterogation(IPEndPoint endpoint, UdpClient udp, CancellationTokenSource mainCts)
+        public async Task PeerInterogation(IPEndPoint endpoint, CancellationTokenSource mainCts)
         {
             var punchSuccessful = new TaskCompletionSource<bool>();
             using var udpCts = CancellationTokenSource.CreateLinkedTokenSource(mainCts.Token);
@@ -119,7 +190,7 @@ namespace UdpPunchHoleTest
             udpCts.Cancel();
             udp.Dispose();
         }
-        private static async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
+        private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
         {
             var ACKPacket = Helpers.Combine(MagicHeader, [ (byte)MessageType.ACK ]);
 
@@ -184,7 +255,7 @@ namespace UdpPunchHoleTest
 
                             case (byte)MessageType.Handshake:
                                 var handShakeType = (HandShakeType)r.ReadByte();
-                                var port = r.ReadUInt16();
+                                var remotePort = r.ReadUInt16();
 
                                 var connectionType = new Guid(r.ReadBytes(16));
                                 var guid = new Guid(r.ReadBytes(16));
@@ -196,10 +267,21 @@ namespace UdpPunchHoleTest
 
                                         Task.Factory.StartNew(async () =>
                                         {
-                                            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, result.RemoteEndPoint), TimeSpan.FromSeconds(30), true, CancellationToken.None);
+                                            HandShakeType decidedResponse = HandShakeType.Unsuported;
+                                            ushort decidedPort = 0;
+                                            CancellationToken ct = CancellationToken.None;
 
-                                            if (decision.Port == null || decision.Port == 0) 
-                                                throw new Exception("Invalid port in handshake decision.");
+                                            if (ProtocolHandlers.TryGetValue(connectionType, out var handler))
+                                            {
+                                                var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, result.RemoteEndPoint), TimeSpan.FromSeconds(30), true, CancellationToken.None);
+
+                                                if (decision.Port == null || decision.Port == 0)
+                                                    throw new Exception("Invalid port in handshake decision.");
+
+                                                decidedResponse = decision.Accepted ? HandShakeType.Accept : HandShakeType.Decline;
+                                                decidedPort = (ushort)decision.Port;
+                                                ct = decision.Ct ?? CancellationToken.None;
+                                            }
 
                                             byte[] payload;
 
@@ -208,8 +290,8 @@ namespace UdpPunchHoleTest
                                             {
                                                 w.Write(MagicHeader);
                                                 w.Write((byte)MessageType.Handshake);
-                                                w.Write((byte)(decision.Accepted ? HandShakeType.Accept : HandShakeType.Decline));
-                                                w.Write((ushort)decision.Port);
+                                                w.Write((byte)(decidedResponse));
+                                                w.Write(decidedPort);
                                                 w.Write(connectionType.ToByteArray());
                                                 w.Write(guid.ToByteArray());
                                                 payload = ms.ToArray();
@@ -218,22 +300,22 @@ namespace UdpPunchHoleTest
                                             await udp.SendAsync(payload, payload.Length, result.RemoteEndPoint);
 
 
-                                            if (decision.Accepted)
+                                            if (decidedResponse == HandShakeType.Accept)
                                             {
-                                                //TODO: DO FINAL CONECTION
+                                                var connection = await QuicConectionCore.InitConnectionCore(decidedPort, new IPEndPoint(result.RemoteEndPoint.Address, remotePort),IPv4Address, ct);
 
-                                                QuicConectionCore.InitConnectionCore((ushort)decision.Port, new IPEndPoint(result.RemoteEndPoint.Address, port), decision.cts);
+                                                handler.HandleAsync(connection.Item1, connection.Item2, AvilablePeers[result.RemoteEndPoint], ct);
                                             }
                                         });
                                         break;
 
                                     case HandShakeType.Accept:
                                         Console.WriteLine($"Received handshake ACCEPT from {result.RemoteEndPoint}");
-                                        Manager.Approve(guid, port, null);
+                                        Manager.Approve(guid, remotePort, null);
                                         break;
 
-                                    case HandShakeType Decline:
-                                        Console.WriteLine($"Received handshake DECLINE from {result.RemoteEndPoint}");
+                                    case HandShakeType.Decline or HandShakeType.Unsuported:
+                                        Console.WriteLine($"Handshake canceled from {result.RemoteEndPoint}");
                                         Manager.Reject(guid);
                                         break;
                                 }
@@ -253,7 +335,7 @@ namespace UdpPunchHoleTest
             }
         }
 
-        private static async Task SendLoopAsync(UdpClient udp, IPEndPoint peer, CancellationToken token)
+        private async Task SendLoopAsync(UdpClient udp, IPEndPoint peer, CancellationToken token)
         {
             byte[] payload;
 
@@ -319,69 +401,18 @@ namespace UdpPunchHoleTest
             }
         }
 
-     
-
-        public static async Task<IPAddress?> GetPublicIP()
-        {
-            (string Host, int Port)[] servers =
-            [
-                ("stun.l.google.com",   19302),
-                ("stun1.l.google.com",  19302),
-                ("stun.cloudflare.com", 3478),
-            ];
-
-            foreach (var (host, port) in servers)
-            {
-                try
-                {
-                    using var udp = new UdpClient();
-
-                    byte[] request = new byte[20];
-                    BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(0), 0x0001);
-                    Random.Shared.NextBytes(request.AsSpan(4, 16));
-
-                    await udp.SendAsync(request.AsMemory(), host, port);
-                    var result = await udp.ReceiveAsync().WaitAsync(TimeSpan.FromSeconds(2));
-                    var buffer = result.Buffer;
-
-                    for (int i = 20; i < buffer.Length - 8; i++)
-                    {
-                        if (buffer[i] == 0x00 && buffer[i + 1] == 0x01)
-
-                        {
-                            var address = new IPAddress(buffer.AsSpan(i + 8, 4)); ;
-
-                            return address; 
-                        }
-                    }
-                }
-                catch { }
-            }
-
-            return null;
-        }
-
-        public static async Task<string> GetToken()
+        public async Task<string> GetToken()
         {
             if (!string.IsNullOrEmpty(IPv4))
-                return EncodeEndpointToken(IPAddress.Parse(IPv4), LocalPort);
+                return Helpers.EncodeEndpointToken(IPAddress.Parse(IPv4), LocalPort);
 
-            await GetPublicIP();
+            await Helpers.GetPublicIP();
 
             if (string.IsNullOrEmpty(IPv4))
                 throw new Exception("Failed to obtain public IP address.");
 
             return await GetToken();
         }
-        public static string EncodeEndpointToken(IPAddress ip, int port) => EncodeEndpointToken(new IPEndPoint(ip, port));
-        public static string EncodeEndpointToken(IPEndPoint ep)
-        {
-            byte[] r = new byte[6];
-            Buffer.BlockCopy(ep.Address.GetAddressBytes(), 0, r, 0, 4);
-            r[4] = (byte)(ep.Port >> 8);
-            r[5] = (byte)ep.Port; return Convert.ToBase64String(r);
-        }
-        public static IPEndPoint DecodeEndpointToken(string t) { byte[] r = Convert.FromBase64String(t); return new IPEndPoint(new IPAddress(r.Take(4).ToArray()), (r[4] << 8) | r[5]); }
-
+      
     }
 }

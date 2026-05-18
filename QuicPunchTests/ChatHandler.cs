@@ -1,23 +1,22 @@
 ﻿using QuicPunch;
 using System;
 using System.Collections.Generic;
+using System.Net.Quic;
 using System.Net.Sockets;
 using System.Text;
+using static UdpPunchHoleTest.QuicPunchCore;
 
 namespace UdpPunchHoleTest
 {
-    internal class ConectionHandler
+    internal class ChatHandler : QuicPunchCore.IProtocolHandler
     {
-       /* public static async Task HandleConnection(PeerInfo pinfo)
-        {
-            using var mainCts = new CancellationTokenSource();
-            Console.CancelKeyPress += (_, e) => { e.Cancel = true; mainCts.Cancel(); };
+        public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
-            var res = await QuicPunchCore.InitPeerConection(pinfo, mainCts);
-            await RunChat(res.Item2, mainCts.Token);
-        }*/
-
-        private static async Task RunChat(Stream stream, CancellationToken token)
+        public async Task HandleAsync(
+            QuicConnection connection,
+            Stream stream,
+            PeerInfo peer,
+            CancellationToken ct)
         {
             Console.WriteLine("\n--- QUIC SECURE P2P CHAT STARTED (Type a message and press Enter) ---");
             var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
@@ -27,7 +26,7 @@ namespace UdpPunchHoleTest
             {
                 try
                 {
-                    while (!token.IsCancellationRequested)
+                    while (!ct.IsCancellationRequested)
                     {
                         var line = await reader.ReadLineAsync();
 
@@ -50,7 +49,7 @@ namespace UdpPunchHoleTest
                 Console.WriteLine("\n[QUIC] Peer disconnected. Press Enter to exit."); Environment.Exit(0);
             });
 
-            while (!token.IsCancellationRequested)
+            while (!ct.IsCancellationRequested)
             {
                 var input = Console.ReadLine();
                 if (string.IsNullOrWhiteSpace(input)) continue;
