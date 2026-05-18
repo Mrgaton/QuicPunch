@@ -8,7 +8,7 @@ namespace QuicPunch
 {
     public sealed record HandshakeRequest(
        Guid Id,
-       Guid ConnectionType,
+       Guid ProtocolId,
        IPEndPoint RemoteEndPoint);
 
     public sealed record HandshakeDecision(

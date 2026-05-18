@@ -119,13 +119,15 @@ internal static class Program
         {
             Console.WriteLine("Incoming connection request");
 
+            var protocol = qcc.ProtocolHandlers[request.ProtocolId];
+
             Console.WriteLine($"Id: {request.Id}");
-            Console.WriteLine($"Type: {request.ConnectionType}");
+            Console.WriteLine($"ProtocolId: {request.ProtocolId}");
             Console.WriteLine($"Remote: {request.RemoteEndPoint}");
 
-            Console.Write($"New conection request from {request.RemoteEndPoint} for type {request.ConnectionType} . Accept? (y/n): ");
+            Console.Write($"New conection request from {request.RemoteEndPoint} for type {request.ProtocolId}.");
 
-            var res = MessageBox.Show("New connection request", $"Id: {request.Id}\nType: {request.ConnectionType}\nRemote: {request.RemoteEndPoint}\n\nAccept?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            var res = MessageBox.Show("New connection request", $"Id: {request.Id}\nType: {request.ProtocolId}\nName: {protocol.ProtocolName}\nRemote: {request.RemoteEndPoint}\n\nAccept?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 
 
             bool accepted = res == DialogResult.Yes;

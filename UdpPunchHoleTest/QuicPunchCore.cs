@@ -69,14 +69,14 @@ namespace UdpPunchHoleTest
 
             StartInterogationListener();
         }
-        
-private byte[] _poolId = [];
+
+        private byte[] _poolId = [];
         public byte[] PoolId
         {
             get => _poolId;
-            set 
+            set
             {
-                if (value.Length != 20 ) throw new ArgumentException("InfoHash must be 20 bytes long.");
+                if (value.Length != 20) throw new ArgumentException("InfoHash must be 20 bytes long.");
 
                 _poolId = value;
 
@@ -86,7 +86,7 @@ private byte[] _poolId = [];
                     TrackerScanner = new TrackerScanner(value, LocalPort);
                     TrackerScanner.Start();
                 }
-            } 
+            }
         }
 
 
@@ -118,6 +118,7 @@ private byte[] _poolId = [];
         public interface IProtocolHandler
         {
             public Guid ProtocolId { get; }
+            public string ProtocolName { get; }
             Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct);
         }
         public bool RemoveProtocol(IProtocolHandler handler) => ProtocolHandlers.TryRemove(handler.ProtocolId, out _);
@@ -208,7 +209,7 @@ private byte[] _poolId = [];
                     //if (!result.RemoteEndPoint.Address.Equals(targetPeer.Address))
                     //    continue;
 
-                    if (result.Buffer.Length > 512)
+                    if (result.Buffer.Length > 512 || result.Buffer.Length < MagicHeader.Length)
                         goto skipPacket;
 
                     for (int i = 0; i < MagicHeader.Length; i++)
@@ -265,7 +266,7 @@ private byte[] _poolId = [];
                                     case HandShakeType.Request:
                                         Console.WriteLine($"Received handshake request from {result.RemoteEndPoint}");
 
-                                        Task.Factory.StartNew(async () =>
+                                        _ = Task.Run(async () =>
                                         {
                                             HandShakeType decidedResponse = HandShakeType.Unsuported;
                                             ushort decidedPort = 0;
@@ -275,7 +276,7 @@ private byte[] _poolId = [];
                                             {
                                                 var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, result.RemoteEndPoint), TimeSpan.FromSeconds(30), true, CancellationToken.None);
 
-                                                if (decision.Port == null || decision.Port == 0)
+                                                if (decision.Accepted && (decision.Port == null || decision.Port == 0))
                                                     throw new Exception("Invalid port in handshake decision.");
 
                                                 decidedResponse = decision.Accepted ? HandShakeType.Accept : HandShakeType.Decline;

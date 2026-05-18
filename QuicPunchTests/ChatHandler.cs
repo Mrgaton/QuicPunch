@@ -12,6 +12,8 @@ namespace UdpPunchHoleTest
     {
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
+        public string ProtocolName => "Chat";
+
         public async Task HandleAsync(
             QuicConnection connection,
             Stream stream,
