@@ -16,7 +16,7 @@ internal static class Program
 
     public static Process CurrentProcess = Process.GetCurrentProcess();
     public static string FileName = CurrentProcess.MainModule.FileName;
-    private static readonly byte[] PoolId = File.ReadAllBytes(FileName);
+    private static readonly byte[] PoolId = Encoding.UTF8.GetBytes("PredifinedPool");//File.ReadAllBytes(FileName);
     private static async Task Main(string[] args)
     {
         //args = ["vgjnSQG7"];

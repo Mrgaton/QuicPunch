@@ -5,7 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>$(MSBuildProjectName)e</AssemblyName>
+    <AssemblyName>$(MSBuildProjectName)</AssemblyName>
     <AssemblyTitle></AssemblyTitle>
   </PropertyGroup>
 

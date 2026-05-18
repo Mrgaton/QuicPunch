@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\UdpPunchHoleTest\QuicPunch.csproj" />
+    <ProjectReference Include="..\QuicPunch\QuicPunch.csproj" />
   </ItemGroup>
 
 </Project>
