@@ -107,7 +107,7 @@ namespace UdpPunchHoleTest
 
 
 
-        public const int PunchIntervalMiliseconds = 2500;
+        public const int PunchIntervalMiliseconds = 2500 / 2;
 
         public static byte[] MagicHeader = Encoding.UTF8.GetBytes("PuNch");
 
@@ -346,9 +346,10 @@ namespace UdpPunchHoleTest
         }
 
 
-        private byte[] HelloPayload = GenerateHelloPayload();
+        private byte[] HelloPayload = GenerateHelloPayload(MessageType.Hello);
+        private byte[] InterogationPayload = GenerateHelloPayload(MessageType.Interogation);
 
-        private static byte[] GenerateHelloPayload()
+        private static byte[] GenerateHelloPayload(MessageType type)
         {
             byte[] payload;
 
@@ -356,7 +357,7 @@ namespace UdpPunchHoleTest
             using (BinaryWriter w = new BinaryWriter(ms))
             {
                 w.Write(MagicHeader);
-                w.Write((byte)MessageType.Hello);
+                w.Write((byte)type);
                 w.Write(Helpers.CurrentPeer.CertHash);
                 w.Write(Helpers.CurrentPeer.CurvePublicKey);
                 w.Write(Helpers.CurrentPeer.Name);
@@ -412,8 +413,15 @@ namespace UdpPunchHoleTest
                     if (token.IsCancellationRequested)
                         break;
 
-                    await udp.SendAsync(HelloPayload, HelloPayload.Length, peer);
-                    await Task.Delay(250, token);
+                    if (peerResponded)
+                    {
+                        await udp.SendAsync(HelloPayload, HelloPayload.Length, peer);
+                    }
+                    else
+                    {
+                        await udp.SendAsync(InterogationPayload, InterogationPayload.Length, peer);
+                        await Task.Delay(250, token);
+                    }
                 }
 
                 tries ++;

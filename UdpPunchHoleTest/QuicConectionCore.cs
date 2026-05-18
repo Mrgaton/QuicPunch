@@ -92,7 +92,7 @@ namespace QuicPunch
         }
         public static async Task ReceiveHoleLoopAsync(UdpClient udp, ushort port, TaskCompletionSource<bool> tcs, CancellationToken token)
         {
-            var ACKPacket = Helpers.Combine(QuicPunchCore.MagicHeader, [(byte)QuicPunchCore.MessageType.ACK]);
+            var ACKPacket = Helpers.Combine(QuicPunchCore.MagicHeader, [(byte)QuicPunchCore.MessageType.Ack]);
 
             while (!token.IsCancellationRequested && !tcs.Task.IsCompleted)
             {
@@ -128,7 +128,7 @@ namespace QuicPunch
                         {
                             udp.SendAsync(ACKPacket, ACKPacket.Length, result.RemoteEndPoint);
                         }
-                        else if (messageType == QuicPunchCore.MessageType.ACK)
+                        else if (messageType == QuicPunchCore.MessageType.Ack)
                         {
                             await Task.Delay(250);
                             udp.SendAsync(ACKPacket, ACKPacket.Length, result.RemoteEndPoint);
