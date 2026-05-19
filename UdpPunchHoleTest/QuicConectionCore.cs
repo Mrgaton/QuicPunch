@@ -197,6 +197,7 @@ namespace QuicPunch
                 {
                     DefaultStreamErrorCode = 0,
                     DefaultCloseErrorCode = 0,
+                    MaxInboundBidirectionalStreams = 100,
                     ServerAuthenticationOptions = new SslServerAuthenticationOptions
                     {
                         ApplicationProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-p2p") },
@@ -225,6 +226,7 @@ namespace QuicPunch
                 LocalEndPoint = new IPEndPoint(IPAddress.Any, localPort), // CRITICAL: Bind to the punched port
                 DefaultStreamErrorCode = 0,
                 DefaultCloseErrorCode = 0,
+                MaxInboundBidirectionalStreams = 100,
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {
                     ApplicationProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-p2p") },
