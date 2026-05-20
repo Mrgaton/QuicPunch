@@ -1,4 +1,4 @@
-﻿using QuicPunch;
+using QuicPunch;
 using System;
 using System.Collections.Generic;
 using System.Net.Quic;
@@ -36,7 +36,7 @@ namespace UdpPunchHoleTest
                         if (line == null)
                         {
                             Console.WriteLine("Line null detected.");
-                            //break;
+                            break;
                         }
 
                         if (line == "\0") continue;

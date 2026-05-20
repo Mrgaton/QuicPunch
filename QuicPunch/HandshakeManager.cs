@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
@@ -35,7 +35,26 @@ namespace QuicPunch
                 throw new InvalidOperationException("Duplicate handshake request.");
 
             if (localRaise)
+            {
                 _ = RaiseAsync(request, timeout, ct);
+            }
+            else
+            {
+                var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(timeout);
+
+                CancellationTokenRegistration registration = default;
+                registration = timeoutCts.Token.Register(() =>
+                {
+                    Complete(request.Id, new HandshakeDecision(false, null, null));
+                });
+
+                tcs.Task.ContinueWith(_ =>
+                {
+                    registration.Dispose();
+                    timeoutCts.Dispose();
+                }, TaskContinuationOptions.ExecuteSynchronously);
+            }
             
             return tcs.Task;
         }

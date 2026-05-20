@@ -1,4 +1,4 @@
-﻿using QuicPunch;
+using QuicPunch;
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -11,9 +11,19 @@ namespace UdpPunchHoleTest
 {
     internal class CertManager
     {
-        public static string CertPath = Path.Combine(Helpers.AppDataPath, "peerCert.pfx");
-        public static string DilithiumPath = Path.Combine(Helpers.AppDataPath, "dilithium.key");
-        public static X509Certificate2? PeerCertificate { 
+        internal CertManager(string configPath) 
+        {
+            CertPath = Path.Combine(configPath, "peerCert.pfx");
+            IdentityEcdsaPath = Path.Combine(configPath, "identity_ecdsa.key");
+
+            if (!Directory.Exists(configPath))
+            {
+                Directory.CreateDirectory(configPath);
+            }
+        }
+        public string CertPath {  get; private set; }
+        public string IdentityEcdsaPath {  get; private set; }
+        public X509Certificate2? PeerCertificate { 
             get
             {
                 if (_peerCertificate != null)
@@ -31,11 +41,6 @@ namespace UdpPunchHoleTest
                 {
                     var cert = GenerateIdentityCertificate(Environment.MachineName);
 
-                    if (!Directory.Exists(Helpers.AppDataPath))
-                    {
-                        Directory.CreateDirectory(Helpers.AppDataPath);
-                    }
-
                     File.WriteAllBytes(CertPath, cert.Export(X509ContentType.Pfx));
 
                     return _peerCertificate = cert;
@@ -43,45 +48,50 @@ namespace UdpPunchHoleTest
             } 
         }
 
-        private static X509Certificate2 _peerCertificate;
-
-
-        public static byte[] PeerCertPublicHash
+        private X509Certificate2 _peerCertificate;
+        public byte[] CertPublicHash
         {
             get
             {
                 if (_peerCertPublicHash != null)
                     return _peerCertPublicHash;
 
-                return _peerCertPublicHash = SHA3_512.HashData(PeerCertificate.GetPublicKey());
+                return _peerCertPublicHash = SHA3_384.HashData(PeerCertificate.GetPublicKey());
             }
         }
-        public static byte[] _peerCertPublicHash;
+        public byte[] _peerCertPublicHash;
 
-        public static ECDsa Curve { 
+        public ECDsa Curve { 
             get
             {
                 if (_curve != null)
                     return _curve;
 
-                if (File.Exists(DilithiumPath))
+                if (File.Exists(IdentityEcdsaPath))
                 {
                     var ecdsa = ECDsa.Create();
-                    ecdsa.ImportECPrivateKey(File.ReadAllBytes(DilithiumPath), out _);
+                    ecdsa.ImportECPrivateKey(File.ReadAllBytes(IdentityEcdsaPath), out _);
                     return _curve = ecdsa;
                 }
 
-                ECDsa curve = ECDsa.Create(ECCurve.NamedCurves.nistP521);
-                File.WriteAllBytes(DilithiumPath, curve.ExportECPrivateKey());
+                ECDsa curve = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+                File.WriteAllBytes(IdentityEcdsaPath, curve.ExportECPrivateKey());
                 return _curve = curve;
             } 
         }
-        public static ECDsa _curve;
+        public ECDsa _curve;
+        public byte[] CurveHash
+        {
+            get
+            {
+                if (_curveHash != null)
+                    return _curveHash;
 
-        public static X509Certificate2 GenerateIdentityCertificate(
-            string peerId,
-            IEnumerable<string>? dnsNames = null,
-            IEnumerable<IPAddress>? ipAddresses = null)
+                return _curveHash = SHA3_256.HashData(Curve.ExportSubjectPublicKeyInfo());
+            }
+        }
+        public byte[] _curveHash;
+        public X509Certificate2 GenerateIdentityCertificate(string peerId)
         {
             using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
 
@@ -116,21 +126,8 @@ namespace UdpPunchHoleTest
 
             var san = new SubjectAlternativeNameBuilder();
 
-            if (dnsNames != null)
-            {
-                foreach (var dns in dnsNames)
-                {
-                    san.AddDnsName(dns);
-                }
-            }
 
-            if (ipAddresses != null)
-            {
-                foreach (var ip in ipAddresses)
-                {
-                    san.AddIpAddress(ip);
-                }
-            }
+            san.AddUserPrincipalName(peerId);
 
             request.CertificateExtensions.Add(san.Build());
 

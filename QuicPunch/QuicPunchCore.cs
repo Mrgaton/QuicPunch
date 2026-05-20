@@ -1,4 +1,4 @@
-﻿
+
 using QuicPunch;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
@@ -11,11 +11,15 @@ using static UdpPunchHoleTest.QuicPunchCore;
 
 namespace UdpPunchHoleTest
 {
-    public class QuicPunchCore
+    public class QuicPunchCore : IDisposable
     {
         public UdpClient? udp = null;
-        public const int LocalPort = 3000;//Random.Shared.Next(1, 1024);
 
+        public int DiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
+
+        public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"QuicPunchV0");
+
+        public PeerInfo CurrentPeer {  get; private set; }
         public static void ClearIPv4Cache()
         {
             _IPv4 = null;
@@ -44,12 +48,19 @@ namespace UdpPunchHoleTest
         }
         private static IPAddress _IPv4Address;
 
-        public QuicPunchCore(CancellationTokenSource cts, byte[] poolId)
+        private CertManager CertManager { get; } = new CertManager(AppDataPath);
+
+
+        private byte[] HelloPayload;
+        private byte[] InterogationPayload;
+        public QuicPunchCore(CancellationTokenSource cts, byte[] poolId, ushort discoveryPort = 443)
         {
             if (!QuicListener.IsSupported || !QuicConnection.IsSupported)
             {
                 throw new NotSupportedException("QUIC is not supported on this machine.");
             }
+
+            DiscoveryPort = discoveryPort;
 
             udp = new UdpClient();
 
@@ -57,14 +68,31 @@ namespace UdpPunchHoleTest
                 udp.Client.IOControl(-1744830452, [0], null);
 
             udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            udp.Client.Bind(new IPEndPoint(IPAddress.Any, LocalPort));
+            udp.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
+            udp.Client.DontFragment = true;
+
+            if (DiscoveryPort == 0)
+            {
+                DiscoveryPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
+            }
 
             CancelationSource = cts;
 
             PoolId = poolId.Length == 20 ? poolId : SHA1.HashData(poolId);
 
-            TrackerScanner = new TrackerScanner(PoolId, LocalPort);
+            TrackerScanner = new TrackerScanner(PoolId, DiscoveryPort);
             TrackerScanner.Start();
+
+            CurrentPeer = new PeerInfo()
+            {
+                Name = Environment.UserName,
+                EndPoint = new IPEndPoint(Helpers.GetPublicIP().Result!, DiscoveryPort),
+                CertHash = CertManager.CertPublicHash,
+                CurvePublicKey = CertManager.Curve.ExportSubjectPublicKeyInfo()
+            };
+
+            HelloPayload = GenerateHelloPayload(MessageType.Hello);
+            InterogationPayload = GenerateHelloPayload(MessageType.Interogation);
 
             StartInterogationListener();
         }
@@ -82,7 +110,7 @@ namespace UdpPunchHoleTest
                 if (TrackerScanner != null)
                 {
                     TrackerScanner.Stop();
-                    TrackerScanner = new TrackerScanner(value, LocalPort);
+                    TrackerScanner = new TrackerScanner(value, DiscoveryPort);
                     TrackerScanner.Start();
                 }
             }
@@ -109,9 +137,11 @@ namespace UdpPunchHoleTest
 
         public static byte[] MagicHeader = Encoding.UTF8.GetBytes("PuNch");
 
-        public Dictionary<IPEndPoint, PeerInfo> AvilablePeers = new Dictionary<IPEndPoint, PeerInfo>();
+        public ConcurrentDictionary<IPEndPoint, PeerInfo> AvilablePeers = new ConcurrentDictionary<IPEndPoint, PeerInfo>();
 
         public HandshakeManager Manager = new HandshakeManager();
+
+        private readonly IpRateLimiter _rateLimiter = new IpRateLimiter(5);
 
         public readonly ConcurrentDictionary<Guid, IProtocolHandler> ProtocolHandlers = new();
         public interface IProtocolHandler
@@ -191,24 +221,29 @@ namespace UdpPunchHoleTest
             }
 
             var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
-            var conection = await QuicConectionCore.InitQuicConnectionCore(IPv4Address, localPort, peer, (ushort)decision.Port, mainCts.Token);
+            var conection = await QuicConectionCore.InitQuicConnectionCore(IPv4Address, localPort, peer, (ushort)decision.Port, CertManager.PeerCertificate!, mainCts.Token);
 
             await handler.HandleAsync(conection.Item1, conection.Item2, peer, mainCts.Token);
         }
 
         public async Task PeerInterogation(IPEndPoint endpoint, CancellationTokenSource mainCts)
         {
-            var punchSuccessful = new TaskCompletionSource<bool>();
             using var udpCts = CancellationTokenSource.CreateLinkedTokenSource(mainCts.Token);
 
             Console.WriteLine($"Starting interogation for {endpoint}...");
 
-            var sendTask = SendLoopAsync(udp, endpoint, udpCts.Token);
+            var sendTask = SendLoopAsync(udp!, endpoint, udpCts.Token);
 
-            await punchSuccessful.Task.WaitAsync(mainCts.Token);
+            try
+            {
+                while (!mainCts.Token.IsCancellationRequested && !AvilablePeers.ContainsKey(endpoint))
+                {
+                    await Task.Delay(250, mainCts.Token);
+                }
+            }
+            catch (OperationCanceledException) { }
 
             udpCts.Cancel();
-            udp.Dispose();
         }
         private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
         {
@@ -222,6 +257,9 @@ namespace UdpPunchHoleTest
                 skipPacket:
 
                     var result = await udp.ReceiveAsync(token);
+
+                    if (!_rateLimiter.IsAllowed(result.RemoteEndPoint.Address))
+                        goto skipPacket;
 
                     //Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));
 
@@ -253,8 +291,8 @@ namespace UdpPunchHoleTest
                                     udp.SendAsync(HelloPayload, result.RemoteEndPoint);
                                 }
 
-                                var certHash = r.ReadBytes(Helpers.CurrentPeer.CertHash.Length);
-                                var curvePuiblicKey = r.ReadBytes(Helpers.CurrentPeer.CurvePublicKey.Length);
+                                var certHash = r.ReadBytes(CurrentPeer.CertHash.Length);
+                                var curvePuiblicKey = r.ReadBytes(CurrentPeer.CurvePublicKey.Length);
                                 var name = r.ReadString();
 
                                 var peerInfo = new PeerInfo
@@ -334,7 +372,7 @@ namespace UdpPunchHoleTest
 
                                             if (decidedResponse == HandShakeType.Accept)
                                             {
-                                                var connection = await QuicConectionCore.InitQuicConnectionCore(IPv4Address, decidedPort, AvilablePeers[result.RemoteEndPoint], remotePort, ct);
+                                                var connection = await QuicConectionCore.InitQuicConnectionCore(IPv4Address, decidedPort, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, ct);
 
                                                 handler.HandleAsync(connection.Item1, connection.Item2, AvilablePeers[result.RemoteEndPoint], ct);
                                             }
@@ -369,7 +407,7 @@ namespace UdpPunchHoleTest
                                 }
                                 else
                                 {
-                                    udp.SendAsync(BuildNtpPacket(MessageType.Ping, t1, PreciseTime.GetCorrectTime().Ticks), result.RemoteEndPoint);
+                                    udp.SendAsync(BuildPingPacket(t1, PreciseTime.GetCorrectTime().Ticks), result.RemoteEndPoint);
                                 }
                                 continue;
 
@@ -379,19 +417,26 @@ namespace UdpPunchHoleTest
                         }
                     }
                 }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (SocketException ex) when (ex.SocketErrorCode is SocketError.OperationAborted or SocketError.Interrupted)
+                {
+                    break;
+                }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
-                    Thread.Sleep(3000);
+                    if (token.IsCancellationRequested)
+                        break;
+                    try { await Task.Delay(3000, token); } catch { break; }
                 }
             }
         }
 
 
-        private byte[] HelloPayload = GenerateHelloPayload(MessageType.Hello);
-        private byte[] InterogationPayload = GenerateHelloPayload(MessageType.Interogation);
-
-        private static byte[] GenerateHelloPayload(MessageType type)
+        private byte[] GenerateHelloPayload(MessageType type)
         {
             byte[] payload;
 
@@ -400,9 +445,9 @@ namespace UdpPunchHoleTest
             {
                 w.Write(MagicHeader);
                 w.Write((byte)type);
-                w.Write(Helpers.CurrentPeer.CertHash);
-                w.Write(Helpers.CurrentPeer.CurvePublicKey);
-                w.Write(Helpers.CurrentPeer.Name);
+                w.Write(CurrentPeer.CertHash);
+                w.Write(CurrentPeer.CurvePublicKey);
+                w.Write(CurrentPeer.Name);
 
                 payload = ms.ToArray();
             }
@@ -410,7 +455,7 @@ namespace UdpPunchHoleTest
             return payload;
         }
 
-        public byte[] BuildNtpPacket(MessageType messageType, long t1, long? t2 = null)
+        public byte[] BuildPingPacket(long t1, long? t2 = null)
         {
             int size = MagicHeader.Length + 2 + 8 + (t2.HasValue ? 8 : 0);
 
@@ -418,7 +463,7 @@ namespace UdpPunchHoleTest
 
             Buffer.BlockCopy(MagicHeader, 0, packet, 0, MagicHeader.Length);
 
-            packet[MagicHeader.Length] = (byte)messageType;
+            packet[MagicHeader.Length] = (byte)MessageType.Ping;
             packet[MagicHeader.Length+1] = (byte)(t2.HasValue ? 1 : 0);
 
             BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(MagicHeader.Length + 2, 8), t1);
@@ -437,7 +482,7 @@ namespace UdpPunchHoleTest
             long intervalTicks = TimeSpan.FromMilliseconds(PunchIntervalMiliseconds).Ticks;
             int tries = 0;
 
-            while (true)
+            while (!token.IsCancellationRequested)
             {
                 bool peerResponded = AvilablePeers.ContainsKey(peer);
 
@@ -486,7 +531,10 @@ namespace UdpPunchHoleTest
                     }
                 }
 
-                BuildNtpPacket(MessageType.Ping, PreciseTime.GetCorrectTime().Ticks);
+                if (tries % 2 == 0)
+                {
+                    await udp.SendAsync(BuildPingPacket(PreciseTime.GetCorrectTime().Ticks));
+                }
                 tries ++;
             }
         }
@@ -494,7 +542,7 @@ namespace UdpPunchHoleTest
         public async Task<string> GetToken()
         {
             if (!string.IsNullOrEmpty(IPv4))
-                return Helpers.EncodeEndpointToken(IPAddress.Parse(IPv4), LocalPort);
+                return Helpers.EncodeEndpointToken(CurrentPeer);
 
             await Helpers.GetPublicIP();
 
@@ -503,6 +551,13 @@ namespace UdpPunchHoleTest
 
             return await GetToken();
         }
-      
+
+        public void Dispose()
+        {
+            CancelationSource?.Cancel();
+            try { CancelationSource?.Dispose(); } catch { }
+            try { TrackerScanner?.Dispose(); } catch { }
+            try { udp?.Dispose(); } catch { }
+        }
     }
 }

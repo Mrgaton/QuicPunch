@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -11,17 +11,6 @@ namespace QuicPunch
 {
     internal class Helpers
     {
-        public static string AppDataPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "QuicPunchV3");
-
-        public static PeerInfo CurrentPeer = new PeerInfo()
-        {
-            Name = Environment.UserName,
-            EndPoint = new IPEndPoint(GetPublicIP().Result, QuicPunchCore.LocalPort),
-            CertHash = CertManager.PeerCertPublicHash,
-            CurvePublicKey = CertManager.Curve.ExportSubjectPublicKeyInfo()
-        };
         public static byte[] Combine(params byte[][] arrays)
         {
             int len = 0;
@@ -76,18 +65,35 @@ namespace QuicPunch
 
             return null;
         }
-        public static string EncodeEndpointToken(IPAddress ip, int port) => EncodeEndpointToken(new IPEndPoint(ip, port));
-        public static string EncodeEndpointToken(IPEndPoint ep)
+        public static string EncodeEndpointToken(PeerInfo p)
         {
-            byte[] r = new byte[6];
-            Buffer.BlockCopy(ep.Address.GetAddressBytes(), 0, r, 0, 4);
-            r[4] = (byte)(ep.Port >> 8);
-            r[5] = (byte)ep.Port; return Convert.ToBase64String(r);
+            using (var ms = new MemoryStream())
+            using (var w = new BinaryWriter(ms))
+            {
+                w.Write(p.EndPoint.Address.GetAddressBytes());
+                w.Write((ushort)p.EndPoint.Port);
+                w.Write(p.CertHash);
+                w.Write(p.CurvePublicKey);
+                return Convert.ToBase64String(ms.ToArray());
+            }
         }
-        public static IPEndPoint DecodeEndpointToken(string t)
+        public static PeerInfo DecodeEndpointToken(string t)
         {
-            byte[] r = Convert.FromBase64String(t); 
-            return new IPEndPoint(new IPAddress(r.Take(4).ToArray()), (r[4] << 8) | r[5]); 
+            using (var ms = new MemoryStream(Convert.FromBase64String(t)))
+            using (var r = new BinaryReader(ms))
+            {
+                var addressBytes = r.ReadBytes(4);
+                var port = r.ReadUInt16();
+                var certHash = r.ReadBytes(512 / 8);
+                var curvePublicKey = r.ReadBytes(32);
+
+                return new PeerInfo
+                {
+                    EndPoint = new IPEndPoint(new IPAddress(addressBytes), port),
+                    CertHash = certHash,
+                    CurvePublicKey = curvePublicKey
+                };
+            }
         }
 
     }

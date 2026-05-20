@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Quic;
@@ -47,7 +47,7 @@ namespace QuicPunch
                 return false;
             }
         }
-        public static async Task<(QuicConnection,Stream)> InitQuicConnectionCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
+        public static async Task<(QuicConnection,Stream)> InitQuicConnectionCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, CancellationToken mainCt)
         {
             if (!(await OpenPortCore(ownPublicEndpoint, localPort, remotePeer, peerPort, mainCt).WaitAsync(mainCt)))
             {
@@ -73,11 +73,11 @@ namespace QuicPunch
                 {
                     if (isServer)
                     {
-                        (connection, stream) = await TryRunServer(localPort, remotePeer.CertHash ,linkedCts.Token);
+                        (connection, stream) = await TryRunServer(localPort, ownCertificate, remotePeer.CertHash ,linkedCts.Token);
                     }
                     else
                     {
-                        (connection, stream) = await TryRunClient(remotePeerNewPort, remotePeer.CertHash, localPort, linkedCts.Token);
+                        (connection, stream) = await TryRunClient(remotePeerNewPort, ownCertificate, remotePeer.CertHash, localPort, linkedCts.Token);
                     }
 
                     if (connection != null && stream != null)
@@ -163,9 +163,20 @@ namespace QuicPunch
                         }
                     }
                 }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (SocketException ex) when (ex.SocketErrorCode is SocketError.OperationAborted or SocketError.Interrupted)
+                {
+                    break;
+                }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
+                    if (token.IsCancellationRequested || tcs.Task.IsCompleted)
+                        break;
+                    try { await Task.Delay(1000, token); } catch { break; }
                 }
             }
         }
@@ -215,7 +226,7 @@ namespace QuicPunch
         }
 
         public static readonly List<SslApplicationProtocol> SupportedProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-punch") };
-        public static async Task<(QuicConnection, QuicStream)> TryRunServer(int localPort, byte[] peerCertificate, CancellationToken token)
+        public static async Task<(QuicConnection, QuicStream)> TryRunServer(int localPort, X509Certificate2 ownCertificate, byte[] peerCertificate, CancellationToken token)
         {
             var options = new QuicListenerOptions
             {
@@ -228,7 +239,7 @@ namespace QuicPunch
                     ServerAuthenticationOptions = new SslServerAuthenticationOptions
                     {
                         ApplicationProtocols = SupportedProtocols,
-                        ServerCertificate = CertManager.PeerCertificate,
+                        ServerCertificate = ownCertificate,
                         ClientCertificateRequired = true,
 
                           RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
@@ -237,7 +248,7 @@ namespace QuicPunch
                                   return false;
 
                               byte[] clientPublicKey = certificate.GetPublicKey();
-                              byte[] clientHash = SHA3_512.HashData(clientPublicKey);
+                              byte[] clientHash = SHA3_384.HashData(clientPublicKey);
 
                               return CryptographicOperations.FixedTimeEquals(clientHash, peerCertificate);
                           }
@@ -259,7 +270,7 @@ namespace QuicPunch
             return (connection, stream);
         }
 
-        public static async Task<(QuicConnection, QuicStream)> TryRunClient(IPEndPoint targetPeer, byte[] peerCertificate, int localPort, CancellationToken token)
+        public static async Task<(QuicConnection, QuicStream)> TryRunClient(IPEndPoint targetPeer, X509Certificate2 ownCertificate, byte[] peerCertificate, int localPort, CancellationToken token)
         {
             var options = new QuicClientConnectionOptions
             {
@@ -270,7 +281,7 @@ namespace QuicPunch
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {
                     ApplicationProtocols = SupportedProtocols,
-                    ClientCertificates = new X509Certificate2Collection(CertManager.PeerCertificate),
+                    ClientCertificates = new X509Certificate2Collection(ownCertificate),
 
                     RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
                     {
@@ -278,7 +289,7 @@ namespace QuicPunch
                             return false;
 
                         byte[] serverPublicKey = certificate.GetPublicKey();
-                        byte[] serverHash = SHA3_512.HashData(serverPublicKey);
+                        byte[] serverHash = SHA3_384.HashData(serverPublicKey);
 
                         return CryptographicOperations.FixedTimeEquals(serverHash, peerCertificate);
                     }

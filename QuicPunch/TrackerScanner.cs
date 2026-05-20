@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -8,7 +8,7 @@ using System.Text;
 
 namespace UdpPunchHoleTest
 {
-    public class TrackerScanner
+    public class TrackerScanner : IDisposable
     {
         private readonly byte[] _infoHash;
         private readonly byte[] _peerId = Guid.NewGuid().ToByteArray().Concat(Guid.NewGuid().ToByteArray()).Take(20).ToArray();
@@ -35,38 +35,45 @@ namespace UdpPunchHoleTest
         {
             _cts = new CancellationTokenSource();
 
-            var list = customTrackers ?? await GetPublicTrackers();
-
             _ = Task.Run(async () =>
             {
-                var parallelOptions = new ParallelOptions
+                try
                 {
-                    MaxDegreeOfParallelism = 4
-                };
+                    var list = customTrackers ?? await GetPublicTrackers();
 
-                await Parallel.ForEachAsync(list, parallelOptions, async (url, ct) =>
-                {
-                    try
+                    var parallelOptions = new ParallelOptions
                     {
-                        var uri = url.StartsWith("udp://") ? new Uri(url) : new Uri($"udp://{url}");
+                        MaxDegreeOfParallelism = 4
+                    };
 
-                        // Resolve DNS asynchronously
-                        var addresses = await Dns.GetHostAddressesAsync(uri.Host, ct);
-
-                        // Ensure thread safety when writing to the shared collection
-                        lock (_trackers)
+                    await Parallel.ForEachAsync(list, parallelOptions, async (url, ct) =>
+                    {
+                        try
                         {
-                            foreach (var ip in addresses)
+                            var uri = url.StartsWith("udp://") ? new Uri(url) : new Uri($"udp://{url}");
+
+                            // Resolve DNS asynchronously
+                            var addresses = await Dns.GetHostAddressesAsync(uri.Host, ct);
+
+                            // Ensure thread safety when writing to the shared collection
+                            lock (_trackers)
                             {
-                                _trackers.Add(new IPEndPoint(ip, uri.Port));
+                                foreach (var ip in addresses)
+                                {
+                                    _trackers.Add(new IPEndPoint(ip, uri.Port));
+                                }
                             }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Failed to resolve tracker {url}: {ex.Message}");
-                    }
-                });
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Failed to resolve tracker {url}: {ex.Message}");
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to load public trackers: {ex.Message}");
+                }
             });
 
             _ = Task.Run(async () =>
@@ -77,7 +84,7 @@ namespace UdpPunchHoleTest
                     if (_trackers.Count == 0) 
                         continue;
 
-                    var tasks = _trackers.OrderBy(e => Random.Shared.Next()).Take(_trackers.Count / 4).Select(ParasiteTracker);
+                    var tasks = _trackers.OrderBy(e => Random.Shared.Next()).Take(Math.Max(1, _trackers.Count / 4)).Select(ParasiteTracker);
 
                     await Task.WhenAll(tasks);
 
@@ -171,6 +178,13 @@ namespace UdpPunchHoleTest
                 return data.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             }
             catch { return Array.Empty<string>(); }
+        }
+
+        public void Dispose()
+        {
+            _cts?.Cancel();
+            try { _cts?.Dispose(); } catch { }
+            _cts = null;
         }
     }
 }

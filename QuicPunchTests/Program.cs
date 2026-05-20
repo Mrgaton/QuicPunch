@@ -1,4 +1,4 @@
-﻿using Microsoft.Win32;
+using Microsoft.Win32;
 using QuicPunch;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -103,14 +103,14 @@ internal static class Program
         DiyClipper.SetText(quickUri);
 
 
-        qcc.TrackerScanner.OnPeerFound += async (peer) =>
+        qcc.TrackerScanner.OnPeerFound += (peer) =>
         {
             Console.WriteLine($"Peer found: {peer} starting interogation...");
 
-            qcc.PeerInterogation(peer, new CancellationTokenSource());
+            _ = qcc.PeerInterogation(peer, new CancellationTokenSource());
         };
 
-        qcc.OnPeerAvilable += async (peer) =>
+        qcc.OnPeerAvilable += (peer) =>
         {
             Console.WriteLine($"New Peer Avillablle:  {peer.Name}");
         };
