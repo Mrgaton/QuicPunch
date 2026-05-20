@@ -73,8 +73,9 @@ namespace QuicPunch
 
         private bool Complete(Guid id, HandshakeDecision decision)
         {
-            if (decision.Port == 0 || decision.Port == null)
+            if (decision.Accepted && (decision.Port == 0 || decision.Port == null))
                 throw new InvalidOperationException("Invalid port in handshake decision.");
+
 
             if (!_pending.TryRemove(id, out var tcs))
                 return false;

@@ -12,6 +12,9 @@ namespace QuicPunch
         public string Name;
         public IPEndPoint EndPoint;
         public DateTime LastSeen;
+        public long? UpTicks { get; set; }
+        public long? DownTicks { get; set; }
+        public TimeSpan? Ping { get; set; }
         public PeerInfo() { }
     }
 }

@@ -37,22 +37,46 @@ namespace UdpPunchHoleTest
 
             var list = customTrackers ?? await GetPublicTrackers();
 
-            foreach (var url in list)
+            _ = Task.Run(async () =>
             {
-                try
+                var parallelOptions = new ParallelOptions
                 {
-                    var uri = url.StartsWith("udp://") ? new Uri(url) : new Uri($"udp://{url}");
-                    var addresses = await Dns.GetHostAddressesAsync(uri.Host);
-                    foreach (var ip in addresses) _trackers.Add(new IPEndPoint(ip, uri.Port));
-                }
-                catch {  }
-            }
+                    MaxDegreeOfParallelism = 4
+                };
+
+                await Parallel.ForEachAsync(list, parallelOptions, async (url, ct) =>
+                {
+                    try
+                    {
+                        var uri = url.StartsWith("udp://") ? new Uri(url) : new Uri($"udp://{url}");
+
+                        // Resolve DNS asynchronously
+                        var addresses = await Dns.GetHostAddressesAsync(uri.Host, ct);
+
+                        // Ensure thread safety when writing to the shared collection
+                        lock (_trackers)
+                        {
+                            foreach (var ip in addresses)
+                            {
+                                _trackers.Add(new IPEndPoint(ip, uri.Port));
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to resolve tracker {url}: {ex.Message}");
+                    }
+                });
+            });
 
             _ = Task.Run(async () =>
             {
                 using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
                 do
                 {
+                    if (_trackers.Count == 0) 
+                        continue;
+
                     var tasks = _trackers.OrderBy(e => Random.Shared.Next()).Take(_trackers.Count / 4).Select(ParasiteTracker);
 
                     await Task.WhenAll(tasks);

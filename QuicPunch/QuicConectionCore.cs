@@ -4,6 +4,8 @@ using System.Net;
 using System.Net.Quic;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using UdpPunchHoleTest;
 
@@ -11,26 +13,50 @@ namespace QuicPunch
 {
     internal class QuicConectionCore
     {
-        public static async Task<(QuicConnection,Stream)> InitConnectionCore(ushort localPort,IPEndPoint remoteEndpoint,IPAddress ownPublicEndpoint,CancellationToken mainCt)
+        public static async Task<bool> OpenPortCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
         {
-            var nudp = new UdpClient();
+            try
+            {
+                var nudp = new UdpClient();
 
-            if (OperatingSystem.IsWindows())
-                nudp.Client.IOControl(-1744830452, [0], null);
+                IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
 
-            nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
+                if (OperatingSystem.IsWindows())
+                    nudp.Client.IOControl(-1744830452, [0], null);
 
-            var punchSuccessful = new TaskCompletionSource<bool>();
+                nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
 
-            _ = SendLoopAsync(nudp, remoteEndpoint, mainCt);
+                var punchSuccessful = new TaskCompletionSource<bool>();
 
-            await ReceiveHoleLoopAsync(nudp, localPort, punchSuccessful, mainCt);
-            await punchSuccessful.Task.WaitAsync(mainCt);
-            
-            nudp.Dispose();
+                _ = SendLoopAsync(nudp, remotePeerNewPort, mainCt);
 
-            bool isServer = !AmIServer(ownPublicEndpoint, localPort, remoteEndpoint.Address, remoteEndpoint.Port);
+                await ReceiveHoleLoopAsync(nudp, localPort, punchSuccessful, mainCt);
+                await punchSuccessful.Task.WaitAsync(mainCt);
+
+                nudp.Dispose();
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in OpenPortCore: {ex.Message}");
+                return false;
+            }
+        }
+        public static async Task<(QuicConnection,Stream)> InitQuicConnectionCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
+        {
+            if (!(await OpenPortCore(ownPublicEndpoint, localPort, remotePeer, peerPort, mainCt).WaitAsync(mainCt)))
+            {
+                return (null, null);
+            }
+
+            IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
+
+            bool isServer = !AmIServer(ownPublicEndpoint, localPort, remotePeerNewPort.Address, remotePeerNewPort.Port);
 
             QuicConnection connection = null;
             QuicStream stream = null;
@@ -47,11 +73,11 @@ namespace QuicPunch
                 {
                     if (isServer)
                     {
-                        (connection, stream) = await TryRunServer(localPort, linkedCts.Token);
+                        (connection, stream) = await TryRunServer(localPort, remotePeer.CertHash ,linkedCts.Token);
                     }
                     else
                     {
-                        (connection, stream) = await TryRunClient(remoteEndpoint, localPort, linkedCts.Token);
+                        (connection, stream) = await TryRunClient(remotePeerNewPort, remotePeer.CertHash, localPort, linkedCts.Token);
                     }
 
                     if (connection != null && stream != null)
@@ -69,7 +95,6 @@ namespace QuicPunch
                     Console.WriteLine($"[QUIC] Failure: {ex.Message}");
                 }
 
-                // Sync up both sides: wait until the 8-second window is entirely over before starting Attempt 2
                 if (connection == null)
                 {
                     Console.WriteLine("[!] Role failed. Waiting to swap roles...");
@@ -79,17 +104,19 @@ namespace QuicPunch
                     }
                     catch { }
 
-                    isServer = !isServer; // SWAP!
+                    isServer = !isServer;
                 }
             }
 
             if (connection == null || stream == null)
             {
-                Console.WriteLine("\n[FAILED] Both roles failed to connect. A strict firewall is blocking both ends.");
+                Console.WriteLine("\n[FAILED] Both roles failed to connect.");
+                return (null, null);
             }
 
             return (connection, new BrotliTransparentStream(stream));
         }
+
         public static async Task ReceiveHoleLoopAsync(UdpClient udp, ushort port, TaskCompletionSource<bool> tcs, CancellationToken token)
         {
             var ACKPacket = Helpers.Combine(QuicPunchCore.MagicHeader, [(byte)QuicPunchCore.MessageType.Ack]);
@@ -126,12 +153,12 @@ namespace QuicPunch
 
                         if (messageType == QuicPunchCore.MessageType.FinalHandshake)
                         {
-                            udp.SendAsync(ACKPacket, ACKPacket.Length, result.RemoteEndPoint);
+                            udp.Send(ACKPacket, result.RemoteEndPoint);
                         }
                         else if (messageType == QuicPunchCore.MessageType.Ack)
                         {
                             await Task.Delay(250);
-                            udp.SendAsync(ACKPacket, ACKPacket.Length, result.RemoteEndPoint);
+                            udp.Send(ACKPacket, result.RemoteEndPoint);
                             tcs.SetResult(true);
                         }
                     }
@@ -139,7 +166,6 @@ namespace QuicPunch
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
-                    Thread.Sleep(3000);
                 }
             }
         }
@@ -187,24 +213,40 @@ namespace QuicPunch
                 tries++;
             }
         }
-        public static async Task<(QuicConnection, QuicStream)> TryRunServer(int localPort, CancellationToken token)
+
+        public static readonly List<SslApplicationProtocol> SupportedProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-punch") };
+        public static async Task<(QuicConnection, QuicStream)> TryRunServer(int localPort, byte[] peerCertificate, CancellationToken token)
         {
             var options = new QuicListenerOptions
             {
                 ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
-                ApplicationProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-p2p") },
+                ApplicationProtocols = SupportedProtocols,
                 ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(new QuicServerConnectionOptions
                 {
                     DefaultStreamErrorCode = 0,
                     DefaultCloseErrorCode = 0,
                     ServerAuthenticationOptions = new SslServerAuthenticationOptions
                     {
-                        ApplicationProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-p2p") },
-                        ServerCertificate = CertManager.PeerCertificate
+                        ApplicationProtocols = SupportedProtocols,
+                        ServerCertificate = CertManager.PeerCertificate,
+                        ClientCertificateRequired = true,
+
+                          RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
+                          {
+                              if (certificate == null)
+                                  return false;
+
+                              byte[] clientPublicKey = certificate.GetPublicKey();
+                              byte[] clientHash = SHA3_512.HashData(clientPublicKey);
+
+                              return CryptographicOperations.FixedTimeEquals(clientHash, peerCertificate);
+                          }
                     },
 
+                    MaxInboundBidirectionalStreams = 512,
+                    MaxInboundUnidirectionalStreams = 512,
                     IdleTimeout = TimeSpan.FromMinutes(10),
-                    KeepAliveInterval = TimeSpan.FromSeconds(15)
+                    KeepAliveInterval = TimeSpan.FromSeconds(19)
                 }),
             };
 
@@ -217,7 +259,7 @@ namespace QuicPunch
             return (connection, stream);
         }
 
-        public static async Task<(QuicConnection, QuicStream)> TryRunClient(IPEndPoint targetPeer, int localPort, CancellationToken token)
+        public static async Task<(QuicConnection, QuicStream)> TryRunClient(IPEndPoint targetPeer, byte[] peerCertificate, int localPort, CancellationToken token)
         {
             var options = new QuicClientConnectionOptions
             {
@@ -227,12 +269,25 @@ namespace QuicPunch
                 DefaultCloseErrorCode = 0,
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {
-                    ApplicationProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-p2p") },
-                    RemoteCertificateValidationCallback = delegate { return true; } // Accept self-signed
+                    ApplicationProtocols = SupportedProtocols,
+                    ClientCertificates = new X509Certificate2Collection(CertManager.PeerCertificate),
+
+                    RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
+                    {
+                        if (certificate == null)
+                            return false;
+
+                        byte[] serverPublicKey = certificate.GetPublicKey();
+                        byte[] serverHash = SHA3_512.HashData(serverPublicKey);
+
+                        return CryptographicOperations.FixedTimeEquals(serverHash, peerCertificate);
+                    }
                 },
 
+                MaxInboundBidirectionalStreams = 512,
+                MaxInboundUnidirectionalStreams = 512,
                 IdleTimeout = TimeSpan.FromMinutes(10),
-                KeepAliveInterval = TimeSpan.FromSeconds(15)
+                KeepAliveInterval = TimeSpan.FromSeconds(19)
             };
 
             QuicConnection connection = null;

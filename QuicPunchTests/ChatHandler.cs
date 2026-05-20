@@ -11,7 +11,7 @@ namespace UdpPunchHoleTest
     internal class ChatHandler : QuicPunchCore.IProtocolHandler
     {
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000001");
-
+        public ushort PreferredPort => 0; 
         public string ProtocolName => "Chat";
 
         public async Task HandleAsync(
