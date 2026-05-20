@@ -477,65 +477,73 @@ namespace UdpPunchHoleTest
         }
         private async Task SendLoopAsync(UdpClient udp, IPEndPoint peer, CancellationToken token)
         {
-       
             double maxIntervalTicks = TimeSpan.FromSeconds(20).Ticks;
             long intervalTicks = TimeSpan.FromMilliseconds(PunchIntervalMiliseconds).Ticks;
             int tries = 0;
 
             while (!token.IsCancellationRequested)
             {
-                bool peerResponded = AvilablePeers.ContainsKey(peer);
-
-                if (tries > 0)
+                try
                 {
-                    bool isPowerOfTwo = (tries & (tries - 1)) == 0;
+                    bool peerResponded = AvilablePeers.ContainsKey(peer);
 
-                    if (isPowerOfTwo || peerResponded)
+                    if (tries > 0)
                     {
-                        intervalTicks = (long)Math.Min(intervalTicks * 2, maxIntervalTicks);
+                        bool isPowerOfTwo = (tries & (tries - 1)) == 0;
+
+                        if (isPowerOfTwo || peerResponded)
+                        {
+                            intervalTicks = (long)Math.Min(intervalTicks * 2, maxIntervalTicks);
+                        }
                     }
-                }
 
-                tries++;
+                    DateTime now = PreciseTime.GetCorrectTime();
+                    long nextTicks = now.Ticks - (now.Ticks % intervalTicks) + intervalTicks;
+                    DateTime nextBoundary = new DateTime(nextTicks, DateTimeKind.Utc);
+                    TimeSpan delay = nextBoundary - PreciseTime.GetCorrectTime();
 
-                DateTime now = PreciseTime.GetCorrectTime();
-                long nextTicks = now.Ticks - (now.Ticks % intervalTicks) + intervalTicks;
-                DateTime nextBoundary = new DateTime(nextTicks, DateTimeKind.Utc);
-                TimeSpan delay = nextBoundary - PreciseTime.GetCorrectTime();
-
-                if (delay.TotalMilliseconds > 15)
-                {
-                    await Task.Delay((int)delay.TotalMilliseconds, token);
-
-                    //while (PreciseTime.GetCorrectTime() < nextBoundary)
-                    //{
-                    //    Thread.SpinWait(10);
-                    //}
-                }
-
-                //Console.WriteLine($"Send hello packet to {peer} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(intervalTicks).Seconds}");
-
-                for (int i = 0; i < (peerResponded ? 1 : 2); i++)
-                {
-                    if (token.IsCancellationRequested)
-                        break;
-
-                    if (peerResponded)
+                    if (delay.TotalMilliseconds > 15)
                     {
-                        await udp.SendAsync(HelloPayload, peer);
-                    }
-                    else
-                    {
-                        await udp.SendAsync(InterogationPayload, peer);
-                        await Task.Delay(250, token);
-                    }
-                }
+                        await Task.Delay((int)delay.TotalMilliseconds, token);
 
-                if (tries % 2 == 0)
-                {
-                    await udp.SendAsync(BuildPingPacket(PreciseTime.GetCorrectTime().Ticks));
+                        //while (PreciseTime.GetCorrectTime() < nextBoundary)
+                        //{
+                        //    Thread.SpinWait(10);
+                        //}
+                    }
+
+                    //Console.WriteLine($"Send hello packet to {peer} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(intervalTicks).Seconds}");
+
+              
+
+                    for (int i = 0; i < (peerResponded ? 1 : 2); i++)
+                    {
+                        if (token.IsCancellationRequested)
+                            break;
+
+                        if (peerResponded)
+                        {
+                            await udp.SendAsync(HelloPayload, peer);
+                        }
+                        else
+                        {
+                            await udp.SendAsync(InterogationPayload, peer);
+                            await Task.Delay(250, token);
+                        }
+                    }
+
+                    if (tries % 2 == 0)
+                    {
+                        await udp.SendAsync(BuildPingPacket(PreciseTime.GetCorrectTime().Ticks), peer);
+                    }
+
+                    tries++;
                 }
-                tries ++;
+                catch(Exception ex)
+                {
+                    Console.WriteLine(ex.ToString());
+                    await Task.Delay(250, token);
+                }
             }
         }
 
