@@ -1,6 +1,7 @@
 using QuicPunch;
 using System;
 using System.Collections.Generic;
+using System.IO.Compression;
 using System.Net.Quic;
 using System.Net.Sockets;
 using System.Text;
@@ -13,7 +14,7 @@ namespace QuicPunch
         public ushort PreferredPort => 0; 
         public string ProtocolName => "Chat";
 
-        public bool Commpression => true;
+        public ZstandardCompressionOptions? CompressionOptions => null; // new ZstandardCompressionOptions() { AppendChecksum = false, EnableLongDistanceMatching = false, Quality = 11 };
         public async Task HandleAsync(
             QuicConnection connection,
             Stream stream,

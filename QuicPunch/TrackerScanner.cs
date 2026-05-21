@@ -12,7 +12,7 @@ namespace QuicPunch
     {
         private readonly byte[] _infoHash;
         private readonly byte[] _peerId = Guid.NewGuid().ToByteArray().Concat(Guid.NewGuid().ToByteArray()).Take(20).ToArray();
-        private readonly int _localPort;
+        private readonly int _port;
 
         private IPAddress PublicIp;
 
@@ -23,14 +23,14 @@ namespace QuicPunch
         public event Action<IPEndPoint>? OnPeerFound;
         public IEnumerable<IPEndPoint> ActivePeers => _peers.Keys;
 
-        public TrackerScanner(byte[] infoHash, int localPort)
+        public TrackerScanner(byte[] infoHash, int port)
         {
             if (infoHash.Length != 20) throw new ArgumentException("Hash must be 20 bytes");
             _infoHash = infoHash;
 
-            if (localPort < 0 || localPort > 65535) throw new ArgumentOutOfRangeException(nameof(localPort), "Port must be an ushort");
+            if (port < 0 || port > 65535) throw new ArgumentOutOfRangeException(nameof(port), "Port must be an ushort");
           
-            _localPort = localPort;
+            _port = port;
 
             PublicIp = Helpers.GetPublicIP().GetAwaiter().GetResult();
         }
@@ -133,7 +133,7 @@ namespace QuicPunch
                 _peerId.CopyTo(span.Slice(36));
                 BinaryPrimitives.WriteInt32BigEndian(span.Slice(80), 2); // Event: Started
                 BinaryPrimitives.WriteInt32BigEndian(span.Slice(92), -1); // NumWant
-                BinaryPrimitives.WriteInt16BigEndian(span.Slice(96), (short)_localPort);
+                BinaryPrimitives.WriteInt16BigEndian(span.Slice(96), (short)_port);
 
                 await udp.SendAsync(announceReq, endpoint);
                 var annRes = await udp.ReceiveAsync().WaitAsync(TimeSpan.FromSeconds(2));
@@ -156,7 +156,7 @@ namespace QuicPunch
                 
                 var endpoint = new IPEndPoint(ip, BinaryPrimitives.ReadUInt16BigEndian(p.Slice(4)));
 
-                if (endpoint.Address.Equals(PublicIp) && endpoint.Port == _localPort) 
+                if (endpoint.Address.Equals(PublicIp) && endpoint.Port == _port) 
                     continue;
 
                 if (_peers.TryAdd(endpoint, DateTime.UtcNow))

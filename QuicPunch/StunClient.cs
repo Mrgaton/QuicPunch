@@ -40,13 +40,15 @@ namespace QuicPunch
                     if (endpoint != null)
                         return endpoint;
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     throw;
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Try next STUN server.
+                    // Do not hide this while debugging: a connected socket, DNS failure,
+                    // IPv4/IPv6 mismatch, or firewall issue can look like a STUN timeout.
+                    Debug.WriteLine($"STUN {host}:{port} failed: {ex}");
                 }
             }
 
@@ -60,37 +62,63 @@ namespace QuicPunch
             TimeSpan timeout,
             CancellationToken cancellationToken)
         {
+            if (udp.Client.Connected)
+                throw new InvalidOperationException("The UdpClient must not be connected before querying STUN.");
+
+            var addresses = await Dns.GetHostAddressesAsync(host, cancellationToken);
+
+            foreach (var address in addresses)
+            {
+                if (!CanUseAddress(udp.Client, address))
+                    continue;
+
+                var remote = new IPEndPoint(address, port);
+                var mapped = await QueryEndpointAsync(udp, remote, timeout, cancellationToken);
+
+                if (mapped != null)
+                    return mapped;
+            }
+
+            return null;
+        }
+
+        private static async Task<IPEndPoint?> QueryEndpointAsync(
+            UdpClient udp,
+            IPEndPoint remote,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
             byte[] request = new byte[20];
 
-            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(0, 2), 0x0001); // STUN Binding
-            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(2, 2), 0); // Message 
-            BinaryPrimitives.WriteUInt32BigEndian(request.AsSpan(4, 4), MagicCookie); // Magic cookie
-            RandomNumberGenerator.Fill(request.AsSpan(8, 12)); // Transaction
+            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(0, 2), 0x0001); // STUN Binding Request
+            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(2, 2), 0);      // Message length
+            BinaryPrimitives.WriteUInt32BigEndian(request.AsSpan(4, 4), MagicCookie);
+            RandomNumberGenerator.Fill(request.AsSpan(8, 12));                  // Transaction ID
 
-            await udp.SendAsync(request, request.Length, host, port);
+            await udp.SendAsync(request, request.Length, remote);
 
-            var started = Stopwatch.GetTimestamp();
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
 
             while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var elapsed = Stopwatch.GetElapsedTime(started);
-                var remaining = timeout - elapsed;
-
-                if (remaining <= TimeSpan.Zero)
-                    return null;
-
                 UdpReceiveResult result;
 
                 try
                 {
-                    result = await udp.ReceiveAsync().WaitAsync(remaining, cancellationToken);
+                    // Important: do not use ReceiveAsync().WaitAsync(timeout).
+                    // WaitAsync only times out the wait; it does not cancel the pending UDP receive.
+                    result = await udp.ReceiveAsync(timeoutCts.Token);
                 }
-                catch (TimeoutException)
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                     return null;
                 }
+
+                // Ignore packets from other peers if this UDP socket is also used elsewhere.
+                // Ideally, no other ReceiveAsync loop should run concurrently on this socket.
+                if (!result.RemoteEndPoint.Equals(remote))
+                    continue;
 
                 var mapped = TryParseBindingResponse(
                     result.Buffer,
@@ -98,8 +126,17 @@ namespace QuicPunch
 
                 if (mapped != null)
                     return mapped;
-
             }
+        }
+
+        private static bool CanUseAddress(Socket socket, IPAddress address)
+        {
+            if (socket.AddressFamily == address.AddressFamily)
+                return true;
+
+            return socket.AddressFamily == AddressFamily.InterNetworkV6
+                && socket.DualMode
+                && address.AddressFamily == AddressFamily.InterNetwork;
         }
 
         private static IPEndPoint? TryParseBindingResponse(
@@ -113,8 +150,7 @@ namespace QuicPunch
             ushort messageLength = BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(2, 2));
             uint magicCookie = BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(4, 4));
 
-            // Binding Success Response
-            if (messageType != 0x0101)
+            if (messageType != 0x0101) // Binding Success Response
                 return null;
 
             if (magicCookie != MagicCookie)
@@ -178,7 +214,6 @@ namespace QuicPunch
                 return null;
 
             byte family = value[1];
-
             ushort port = BinaryPrimitives.ReadUInt16BigEndian(value.Slice(2, 2));
 
             if (xor)

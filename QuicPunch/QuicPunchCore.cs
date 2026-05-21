@@ -2,6 +2,7 @@
 using QuicPunch;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Sockets;
@@ -16,7 +17,8 @@ namespace QuicPunch
     {
         public UdpClient? udp = null;
 
-        public int DiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
+        public int PublicDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
+        public int LocalDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
 
         public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"QuicPunchV0");
 
@@ -56,7 +58,7 @@ namespace QuicPunch
 
         private CertManager CertManager { get; } = new CertManager(AppDataPath);
 
-        private int CurvePublicKeySize { get; set; }
+        private int CertPublicKey { get; set; }
 
         private byte[] HelloPayload;
         private byte[] InterogationPayload;
@@ -67,37 +69,33 @@ namespace QuicPunch
                 throw new NotSupportedException("QUIC is not supported on this machine.");
             }
 
-            DiscoveryPort = discoveryPort;
-
             udp = new UdpClient();
 
             if (OperatingSystem.IsWindows())
                 udp.Client.IOControl(-1744830452, [0], null);
 
             udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            udp.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
+            udp.Client.Bind(new IPEndPoint(IPAddress.Any, discoveryPort));
             udp.Client.DontFragment = true;
 
-            if (DiscoveryPort == 0)
-            {
-                DiscoveryPort = this.IPEndpoint.Port;
-            }
+            LocalDiscoveryPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
+            PublicDiscoveryPort = this.IPEndpoint.Port;
 
-            CancelationSource = cts;
+            CancelationSource = cts ?? new CancellationTokenSource();
 
             PoolId = poolId.Length == 20 ? poolId : SHA1.HashData(poolId);
 
-            TrackerScanner = new TrackerScanner(PoolId, DiscoveryPort);
+            TrackerScanner = new TrackerScanner(PoolId, PublicDiscoveryPort);
             TrackerScanner.Start();
 
             CurrentPeer = new PeerInfo()
             {
                 Name = Environment.UserName,
-                EndPoint = new IPEndPoint(Helpers.GetPublicIP().Result!, DiscoveryPort),
+                EndPoint = this.IPEndpoint,
                 CertHash = CertManager.CertPublicHash,
             };
 
-            CurvePublicKeySize = CertManager.PeerCertificate!.GetPublicKey().Length;
+            CertPublicKey = CertManager.PeerCertificate!.GetPublicKey().Length;
 
             HelloPayload = GenerateHelloPayload(MessageType.Hello);
             InterogationPayload = GenerateHelloPayload(MessageType.Interogation);
@@ -118,7 +116,7 @@ namespace QuicPunch
                 if (TrackerScanner != null)
                 {
                     TrackerScanner.Stop();
-                    TrackerScanner = new TrackerScanner(value, DiscoveryPort);
+                    TrackerScanner = new TrackerScanner(value, PublicDiscoveryPort);
                     TrackerScanner.Start();
                 }
             }
@@ -130,7 +128,6 @@ namespace QuicPunch
 
         public void StartInterogationListener()
         {
-            CancelationSource = new CancellationTokenSource();
             InterogationsListenerTask = ReceiveLoopAsync(udp, CancelationSource.Token);
         }
         public void StopInterogationListener()
@@ -158,7 +155,7 @@ namespace QuicPunch
             public Guid ProtocolId { get; }
             public ushort PreferredPort { get; }
             public string ProtocolName { get; }
-            public bool Commpression { get; }
+            public ZstandardCompressionOptions? CompressionOptions { get; }
             Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct);
         }
         public bool RemoveProtocol(IProtocolHandler handler) => ProtocolHandlers.TryRemove(handler.ProtocolId, out _);
@@ -184,7 +181,7 @@ namespace QuicPunch
         public event Action<PeerInfo>? OnPeerAvilable;
 
         //TODO: add retries :smile:
-        private async Task<HandshakeDecision> NegociateConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        private async Task<HandshakeDecision> NegociateConnection(Guid protocolHandler, PeerInfo peer, int localPort, CancellationTokenSource mainCts)
         {
             byte[] payload;
 
@@ -220,9 +217,16 @@ namespace QuicPunch
                 throw new KeyNotFoundException("Handler not found for protocol: " + nameof(protocolHandler));
             }
 
-            var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
+            var nudp = new UdpClient();
+            if (OperatingSystem.IsWindows())
+                nudp.Client.IOControl(-1744830452, [0], null);
+            nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
+            var publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
 
-            return await QuicConectionCore.OpenPortCore(localPort, peer, (ushort)decision.Port, mainCts.Token);
+            var decision = await NegociateConnection(protocolHandler, peer, publicEndPoint.Port, mainCts);
+
+            return await QuicConectionCore.OpenPortCore(nudp, peer, (ushort)decision.Port, mainCts.Token);
         }
         public async Task InitQuicConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
@@ -231,9 +235,16 @@ namespace QuicPunch
                 throw new KeyNotFoundException("Handler not found for protocol: " + nameof(protocolHandler));
             }
 
-            var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
+            var nudp = new UdpClient();
+            if (OperatingSystem.IsWindows())
+                nudp.Client.IOControl(-1744830452, [0], null);
+            nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
+            var publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
 
-            var conection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint.Address, localPort, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.Commpression, mainCts.Token);
+            var decision = await NegociateConnection(protocolHandler, peer, publicEndPoint.Port, mainCts);
+
+            var conection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint.Address, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
             await handler.HandleAsync(conection.Item1, conection.Item2, peer, mainCts.Token);
 
         }
@@ -263,18 +274,7 @@ namespace QuicPunch
 
             Console.WriteLine($"Starting interogation for {endpoint}...");
 
-            var sendTask = SendLoopAsync(udp!, endpoint, udpCts.Token);
-
-            try
-            {
-                while (!mainCts.Token.IsCancellationRequested && !AvilablePeers.ContainsKey(endpoint))
-                {
-                    await Task.Delay(250, mainCts.Token);
-                }
-            }
-            catch (OperationCanceledException) { }
-
-            udpCts.Cancel();
+            _ = Task.Run(async () => await SendLoopAsync(udp!, endpoint, udpCts.Token));
         }
         private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
         {
@@ -325,15 +325,22 @@ namespace QuicPunch
                                 var certHash = r.ReadBytes(CurrentPeer.CertHash.Length);
                                 byte nameSize = r.ReadByte();
                                 var nameBytes = r.ReadBytes(nameSize);
-                                var publicKeyBytes = r.ReadBytes(CurvePublicKeySize);
+
+                                var certSize = r.ReadUInt16();
+                                var certBytes = r.ReadBytes(certSize);
+                                var cert = new X509Certificate2(certBytes);
+
+                                if (!SHA3_384.HashData(cert.GetPublicKey()).SequenceEqual(CurrentPeer.CertHash))
+                                {
+                                    Console.WriteLine("Corrupted cert hash from " + result.RemoteEndPoint);
+                                    continue;
+                                }
 
                                 var signature = r.ReadBytes(256 / 8);
 
                                 if (!AvilablePeers.ContainsKey(result.RemoteEndPoint))
                                 {
-                                    var ecdsa = ECDsa.Create();
-
-                                    ecdsa.ImportSubjectPublicKeyInfo(publicKeyBytes, out _);
+                                    var ecdsa = cert.GetECDsaPublicKey();
 
                                     var peerInfo = new PeerInfo
                                     {
@@ -367,6 +374,8 @@ namespace QuicPunch
                                     if (!certHash.SequenceEqual(peer.CertHash))
                                     {
                                         //TODO: IDK what to do enter in panick cause someone is spoofing conections!=!="!"?=)i3?_="!
+                                        Console.WriteLine("Received corrupted cert hash from " + result.RemoteEndPoint);
+                                        continue;
                                     }
                                     else
                                     {
@@ -423,6 +432,13 @@ namespace QuicPunch
                                                 }
                                             }
 
+                                            var nudp = new UdpClient();
+                                            if (OperatingSystem.IsWindows())
+                                                nudp.Client.IOControl(-1744830452, [0], null);
+                                            nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                                            nudp.Client.Bind(new IPEndPoint(IPAddress.Any, decidedPort));
+                                            var publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
+
                                             byte[] payload;
 
                                             using (MemoryStream ms = new MemoryStream())
@@ -431,7 +447,7 @@ namespace QuicPunch
                                                 w.Write(MagicHeader);
                                                 w.Write((byte)MessageType.Handshake);
                                                 w.Write((byte)(decidedResponse));
-                                                w.Write(decidedPort);
+                                                w.Write((ushort)publicEndPoint.Port);
                                                 w.Write(connectionType.ToByteArray());
                                                 w.Write(guid.ToByteArray());
                                                 payload = ms.ToArray();
@@ -439,9 +455,18 @@ namespace QuicPunch
 
                                             await udp.SendAsync(payload, result.RemoteEndPoint);
 
+                                            Task.Factory.StartNew(() =>
+                                            {
+                                                for (int i = 0; i < 3; i++)
+                                                {
+                                                    Thread.Sleep(500);
+                                                    udp.Send(payload, result.RemoteEndPoint);
+                                                }
+                                            });
+
                                             if (decidedResponse == HandShakeType.Accept)
                                             {
-                                                var connection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint.Address, decidedPort, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, handler.Commpression, ct);
+                                                var connection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint.Address, nudp, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, handler.CompressionOptions, ct);
 
                                                 handler.HandleAsync(connection.Item1, connection.Item2, AvilablePeers[result.RemoteEndPoint], ct);
                                             }
@@ -521,7 +546,10 @@ namespace QuicPunch
                 w.Write((byte)nameBytes.Length);
                 w.Write(nameBytes);
 
-                w.Write(CertManager.Curve.ExportSubjectPublicKeyInfo());
+                var cert = CertManager.PeerCertificate.Export(X509ContentType.Cert);
+                var certBytes = cert.Length;
+                w.Write((ushort)certBytes);
+                w.Write(cert);
 
                 w.Write(new byte[256 / 8]); //Reserved for signature
 
@@ -623,18 +651,7 @@ namespace QuicPunch
             }
         }
 
-        public async Task<string> GetToken()
-        {
-            if (!string.IsNullOrEmpty(this.IPEndpointStr))
-                return Helpers.EncodeEndpointToken(CurrentPeer);
-
-            await Helpers.GetPublicIP();
-
-            if (string.IsNullOrEmpty(IPEndpointStr))
-                throw new Exception("Failed to obtain public IP address.");
-
-            return await GetToken();
-        }
+        public string GetToken() =>  Helpers.EncodeEndpointToken(CurrentPeer);
 
         public void Dispose()
         {

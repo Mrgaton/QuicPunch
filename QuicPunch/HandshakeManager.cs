@@ -86,15 +86,12 @@ namespace QuicPunch
                     tcs.TrySetException(ex);
             }
         }
-
+        public bool Reject(Guid id) => Complete(id, new HandshakeDecision(false, null, null));
         public bool Approve(Guid id, ushort port, CancellationTokenSource cts) => Complete(id, new HandshakeDecision(true, port, cts?.Token));
-        public bool Reject(Guid id) => Complete(id, new HandshakeDecision(false, 0, null));
-
         private bool Complete(Guid id, HandshakeDecision decision)
         {
             if (decision.Accepted && (decision.Port == 0 || decision.Port == null))
                 throw new InvalidOperationException("Invalid port in handshake decision.");
-
 
             if (!_pending.TryRemove(id, out var tcs))
                 return false;

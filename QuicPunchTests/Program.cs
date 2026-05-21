@@ -94,7 +94,7 @@ internal static class Program
 
         qcc.RegisterProtocol(chatHandler);
 
-        string myToken = await qcc.GetToken();
+        string myToken = qcc.GetToken();
         Console.WriteLine($"Your token: {myToken}\n");
 
         string quickUri = $"https://gato.ovh/protred?uri=QPHP://{HttpUtility.UrlEncode(HttpUtility.UrlEncode(myToken))}";

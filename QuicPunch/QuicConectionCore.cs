@@ -14,25 +14,17 @@ namespace QuicPunch
     internal class QuicConectionCore
     {
         //TODO: also implement stun to retrieve external port?
-        public static async Task<(bool Sucess, UdpClient client)> OpenPortCore(ushort localPort, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
+        public static async Task<(bool Sucess, UdpClient client)> OpenPortCore(UdpClient nudp, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
         {
             try
             {
-                var nudp = new UdpClient();
-
                 IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
-
-                if (OperatingSystem.IsWindows())
-                    nudp.Client.IOControl(-1744830452, [0], null);
-
-                nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
 
                 var punchSuccessful = new TaskCompletionSource<bool>();
 
                 _ = SendLoopAsync(nudp, remotePeerNewPort, mainCt);
 
-                await ReceiveHoleLoopAsync(nudp, localPort, punchSuccessful, mainCt);
+                await ReceiveHoleLoopAsync(nudp, punchSuccessful, mainCt);
                 await punchSuccessful.Task.WaitAsync(mainCt);
 
                 return (true, nudp);
@@ -47,9 +39,9 @@ namespace QuicPunch
                 return (false, null);
             }
         }
-        public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, bool compression, CancellationToken mainCt)
+        public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(IPAddress ownPublicEndpoint, UdpClient nudp, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
         {
-            var udpResult = await OpenPortCore(localPort, remotePeer, peerPort, mainCt).WaitAsync(mainCt);
+            var udpResult = await OpenPortCore(nudp,remotePeer, peerPort, mainCt).WaitAsync(mainCt);
 
             if (!udpResult.Sucess)
             {
@@ -59,8 +51,9 @@ namespace QuicPunch
             udpResult.client.Dispose();  // Free port for use in quic
 
             IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
+            int localPort = ((IPEndPoint)nudp.Client.LocalEndPoint).Port;
 
-            bool isServer = AmIServer(ownPublicEndpoint, localPort, remotePeerNewPort.Address, remotePeerNewPort.Port);
+            bool isServer = AmIServer(ownPublicEndpoint , localPort, remotePeerNewPort.Address, remotePeerNewPort.Port);
 
             QuicConnection connection = null;
             QuicStream stream = null;
@@ -118,15 +111,15 @@ namespace QuicPunch
                 return (null, null);
             }
 
-            if (compression)
+            if (compressionOptions != null)
             {
-                return (connection, new CompressedTransparentStream(stream, new ZstandardCompressionOptions() { AppendChecksum = false, EnableLongDistanceMatching = false, Quality = 11 }));
+                return (connection, new CompressedTransparentStream(stream, compressionOptions));
             }
 
             return (connection, stream);
         }
 
-        public static async Task ReceiveHoleLoopAsync(UdpClient udp, ushort port, TaskCompletionSource<bool> tcs, CancellationToken token)
+        public static async Task ReceiveHoleLoopAsync(UdpClient udp, TaskCompletionSource<bool> tcs, CancellationToken token)
         {
             var ACKPacket = Helpers.Combine(QuicPunchCore.MagicHeader, [(byte)QuicPunchCore.MessageType.Ack]);
 
