@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace QuicPunch
@@ -8,10 +9,11 @@ namespace QuicPunch
     public class PeerInfo
     {
         public byte[] CertHash;
-        public byte[] CurvePublicKey;
         public string Name;
         public IPEndPoint EndPoint;
         public DateTime LastSeen;
+
+        public ECDsa Curve;
         public long? UpTicks { get; set; }
         public long? DownTicks { get; set; }
         public TimeSpan? Ping { get; set; }

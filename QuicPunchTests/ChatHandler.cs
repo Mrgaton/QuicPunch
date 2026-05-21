@@ -4,9 +4,8 @@ using System.Collections.Generic;
 using System.Net.Quic;
 using System.Net.Sockets;
 using System.Text;
-using static UdpPunchHoleTest.QuicPunchCore;
 
-namespace UdpPunchHoleTest
+namespace QuicPunch
 {
     internal class ChatHandler : QuicPunchCore.IProtocolHandler
     {
@@ -14,6 +13,7 @@ namespace UdpPunchHoleTest
         public ushort PreferredPort => 0; 
         public string ProtocolName => "Chat";
 
+        public bool Commpression => true;
         public async Task HandleAsync(
             QuicConnection connection,
             Stream stream,

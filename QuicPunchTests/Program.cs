@@ -9,7 +9,6 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Web;
-using UdpPunchHoleTest;
 
 internal static class Program
 {
@@ -110,7 +109,7 @@ internal static class Program
             _ = qcc.PeerInterogation(peer, new CancellationTokenSource());
         };
 
-        qcc.PeerInterogation("peer", new CancellationTokenSource());
+        qcc.PeerInterogation("peer", false, new CancellationTokenSource());
 
 
         qcc.OnPeerAvilable += (peer) =>

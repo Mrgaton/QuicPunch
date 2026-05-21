@@ -6,10 +6,11 @@ using System.Net;
 using System.Net.Quic;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using static UdpPunchHoleTest.QuicPunchCore;
+using static QuicPunch.QuicPunchCore;
 
-namespace UdpPunchHoleTest
+namespace QuicPunch
 {
     public class QuicPunchCore : IDisposable
     {
@@ -20,36 +21,42 @@ namespace UdpPunchHoleTest
         public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"QuicPunchV0");
 
         public PeerInfo CurrentPeer {  get; private set; }
-        public static void ClearIPv4Cache()
+        public void ClearIPEndpointCache()
         {
-            _IPv4 = null;
-            _IPv4Address = null;
+            _IPEndpoint = null;
+            _IPEndpointStr = null;
         }
 
-        public static string IPv4 {
+        public string IPEndpointStr
+        {
             get
             {
-                if (_IPv4 != null)
-                    return _IPv4;
+                if (_IPEndpointStr != null)
+                    return _IPEndpointStr;
 
-                return _IPv4 = IPv4Address.ToString();
+                return _IPEndpointStr = IPEndpoint.ToString();
             }
         }
-        private static string _IPv4;
+        private string _IPEndpointStr;
 
-        public static IPAddress IPv4Address {
+        public IPEndPoint IPEndpoint
+        {
             get
             {
-                if (_IPv4Address != null)
-                    return _IPv4Address;
+                if (_IPEndpoint != null)
+                    return _IPEndpoint;
 
-                return _IPv4Address = Helpers.GetPublicIP().Result;
+                if (udp == null)
+                    throw new InvalidOperationException("UDP client is not initialized.");
+
+                return _IPEndpoint = Helpers.GetPublicEndPoint(udp).Result;
             }
         }
-        private static IPAddress _IPv4Address;
+        private IPEndPoint _IPEndpoint;
 
         private CertManager CertManager { get; } = new CertManager(AppDataPath);
 
+        private int CurvePublicKeySize { get; set; }
 
         private byte[] HelloPayload;
         private byte[] InterogationPayload;
@@ -73,7 +80,7 @@ namespace UdpPunchHoleTest
 
             if (DiscoveryPort == 0)
             {
-                DiscoveryPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
+                DiscoveryPort = this.IPEndpoint.Port;
             }
 
             CancelationSource = cts;
@@ -88,8 +95,9 @@ namespace UdpPunchHoleTest
                 Name = Environment.UserName,
                 EndPoint = new IPEndPoint(Helpers.GetPublicIP().Result!, DiscoveryPort),
                 CertHash = CertManager.CertPublicHash,
-                CurvePublicKey = CertManager.Curve.ExportSubjectPublicKeyInfo()
             };
+
+            CurvePublicKeySize = CertManager.PeerCertificate!.GetPublicKey().Length;
 
             HelloPayload = GenerateHelloPayload(MessageType.Hello);
             InterogationPayload = GenerateHelloPayload(MessageType.Interogation);
@@ -150,6 +158,7 @@ namespace UdpPunchHoleTest
             public Guid ProtocolId { get; }
             public ushort PreferredPort { get; }
             public string ProtocolName { get; }
+            public bool Commpression { get; }
             Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct);
         }
         public bool RemoveProtocol(IProtocolHandler handler) => ProtocolHandlers.TryRemove(handler.ProtocolId, out _);
@@ -174,6 +183,7 @@ namespace UdpPunchHoleTest
 
         public event Action<PeerInfo>? OnPeerAvilable;
 
+        //TODO: add retries :smile:
         private async Task<HandshakeDecision> NegociateConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
             byte[] payload;
@@ -212,7 +222,7 @@ namespace UdpPunchHoleTest
 
             var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
 
-            return await QuicConectionCore.OpenPortCore(IPv4Address, localPort, peer, (ushort)decision.Port, mainCts.Token);
+            return await QuicConectionCore.OpenPortCore(localPort, peer, (ushort)decision.Port, mainCts.Token);
         }
         public async Task InitQuicConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
@@ -223,11 +233,30 @@ namespace UdpPunchHoleTest
 
             var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
 
-            var conection = await QuicConectionCore.InitQuicConnectionCore(IPv4Address, localPort, peer, (ushort)decision.Port, CertManager.PeerCertificate!, mainCts.Token);
+            var conection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint.Address, localPort, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.Commpression, mainCts.Token);
             await handler.HandleAsync(conection.Item1, conection.Item2, peer, mainCts.Token);
 
         }
 
+        public async Task PeerInterogation(string token, bool replaceIfTampered, CancellationTokenSource mainCts)
+        {
+            var p = Helpers.DecodeEndpointToken(token);
+
+            if (!AvilablePeers.ContainsKey(p.EndPoint))
+            {
+                AvilablePeers[p.EndPoint] = p;
+            }
+            else if (!p.CertHash.SequenceEqual(AvilablePeers[p.EndPoint].CertHash) && replaceIfTampered)
+            {
+                AvilablePeers[p.EndPoint] = p;
+            }
+            else
+            {
+                throw new Exception("Peer info tampering detected.");
+            }
+
+            await PeerInterogation(p.EndPoint, mainCts);
+        }
         public async Task PeerInterogation(IPEndPoint endpoint, CancellationTokenSource mainCts)
         {
             using var udpCts = CancellationTokenSource.CreateLinkedTokenSource(mainCts.Token);
@@ -294,22 +323,60 @@ namespace UdpPunchHoleTest
                                 }
 
                                 var certHash = r.ReadBytes(CurrentPeer.CertHash.Length);
-                                var curvePuiblicKey = r.ReadBytes(CurrentPeer.CurvePublicKey.Length);
-                                var name = r.ReadString();
+                                byte nameSize = r.ReadByte();
+                                var nameBytes = r.ReadBytes(nameSize);
+                                var publicKeyBytes = r.ReadBytes(CurvePublicKeySize);
 
-                                var peerInfo = new PeerInfo
-                                {
-                                    EndPoint = result.RemoteEndPoint,
-                                    CertHash = certHash,
-                                    CurvePublicKey = curvePuiblicKey,
-                                    Name = name,
-                                    LastSeen = PreciseTime.GetCorrectTime()
-                                };
+                                var signature = r.ReadBytes(256 / 8);
 
-                                if (!AvilablePeers.ContainsKey(peerInfo.EndPoint))
+                                if (!AvilablePeers.ContainsKey(result.RemoteEndPoint))
                                 {
+                                    var ecdsa = ECDsa.Create();
+
+                                    ecdsa.ImportSubjectPublicKeyInfo(publicKeyBytes, out _);
+
+                                    var peerInfo = new PeerInfo
+                                    {
+                                        EndPoint = result.RemoteEndPoint,
+                                        CertHash = certHash,
+                                        Name = Encoding.UTF8.GetString(nameBytes),
+                                        LastSeen = PreciseTime.GetCorrectTime(),
+                                        Curve = ecdsa
+                                    };
+
+                                    if (!peerInfo.Curve.VerifyData(result.Buffer.AsSpan(0, result.Buffer.Length - signature.Length), signature, HashAlgorithmName.SHA3_256))
+                                    {
+                                        Console.WriteLine("Received invalid signature from " + result.RemoteEndPoint);  
+                                        continue;
+                                    }
+
+
                                     AvilablePeers[peerInfo.EndPoint] = peerInfo;
                                     OnPeerAvilable?.Invoke(peerInfo);
+                                }
+                                else
+                                {
+                                    var peer = AvilablePeers[result.RemoteEndPoint];
+
+                                    if (!peer.Curve.VerifyData(result.Buffer.AsSpan(0, result.Buffer.Length - signature.Length), signature, HashAlgorithmName.SHA3_256))
+                                    {
+                                        Console.WriteLine("Received invalid signature from " + result.RemoteEndPoint); 
+                                        continue;
+                                    }
+
+                                    if (!certHash.SequenceEqual(peer.CertHash))
+                                    {
+                                        //TODO: IDK what to do enter in panick cause someone is spoofing conections!=!="!"?=)i3?_="!
+                                    }
+                                    else
+                                    {
+                                        if (peer.Name.Length != nameBytes.Length || peer.Name != Encoding.UTF8.GetString(nameBytes))
+                                        {
+                                            peer.Name = Encoding.UTF8.GetString(nameBytes);
+                                        }
+
+                                        peer.LastSeen = PreciseTime.GetCorrectTime();
+                                    }
                                 }
 
                                 await udp.SendAsync(ACKPacket, result.RemoteEndPoint);
@@ -374,7 +441,7 @@ namespace UdpPunchHoleTest
 
                                             if (decidedResponse == HandShakeType.Accept)
                                             {
-                                                var connection = await QuicConectionCore.InitQuicConnectionCore(IPv4Address, decidedPort, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, ct);
+                                                var connection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint.Address, decidedPort, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, handler.Commpression, ct);
 
                                                 handler.HandleAsync(connection.Item1, connection.Item2, AvilablePeers[result.RemoteEndPoint], ct);
                                             }
@@ -401,7 +468,8 @@ namespace UdpPunchHoleTest
                                 {
                                     long t2 = r.ReadInt64();
 
-                                    PeerInfo peer = AvilablePeers[result.RemoteEndPoint];
+                                    if (!AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo peer))
+                                        continue;
 
                                     peer.UpTicks = t2 - t1;
                                     peer.DownTicks = PreciseTime.GetCorrectTime().Ticks - t2;
@@ -430,9 +498,9 @@ namespace UdpPunchHoleTest
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
+
                     if (token.IsCancellationRequested)
                         break;
-                    try { await Task.Delay(3000, token); } catch { break; }
                 }
             }
         }
@@ -448,10 +516,18 @@ namespace UdpPunchHoleTest
                 w.Write(MagicHeader);
                 w.Write((byte)type);
                 w.Write(CurrentPeer.CertHash);
-                w.Write(CurrentPeer.CurvePublicKey);
-                w.Write(CurrentPeer.Name);
+
+                var nameBytes = Encoding.UTF8.GetBytes(CurrentPeer.Name);
+                w.Write((byte)nameBytes.Length);
+                w.Write(nameBytes);
+
+                w.Write(CertManager.Curve.ExportSubjectPublicKeyInfo());
+
+                w.Write(new byte[256 / 8]); //Reserved for signature
 
                 payload = ms.ToArray();
+                var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
+                Array.Copy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
 
             return payload;
@@ -549,12 +625,12 @@ namespace UdpPunchHoleTest
 
         public async Task<string> GetToken()
         {
-            if (!string.IsNullOrEmpty(IPv4))
+            if (!string.IsNullOrEmpty(this.IPEndpointStr))
                 return Helpers.EncodeEndpointToken(CurrentPeer);
 
             await Helpers.GetPublicIP();
 
-            if (string.IsNullOrEmpty(IPv4))
+            if (string.IsNullOrEmpty(IPEndpointStr))
                 throw new Exception("Failed to obtain public IP address.");
 
             return await GetToken();

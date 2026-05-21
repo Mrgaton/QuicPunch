@@ -7,14 +7,13 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
-namespace UdpPunchHoleTest
+namespace QuicPunch
 {
     internal class CertManager
     {
         internal CertManager(string configPath) 
         {
             CertPath = Path.Combine(configPath, "peerCert.pfx");
-            IdentityEcdsaPath = Path.Combine(configPath, "identity_ecdsa.key");
 
             if (!Directory.Exists(configPath))
             {
@@ -22,7 +21,6 @@ namespace UdpPunchHoleTest
             }
         }
         public string CertPath {  get; private set; }
-        public string IdentityEcdsaPath {  get; private set; }
         public X509Certificate2? PeerCertificate { 
             get
             {
@@ -67,16 +65,7 @@ namespace UdpPunchHoleTest
                 if (_curve != null)
                     return _curve;
 
-                if (File.Exists(IdentityEcdsaPath))
-                {
-                    var ecdsa = ECDsa.Create();
-                    ecdsa.ImportECPrivateKey(File.ReadAllBytes(IdentityEcdsaPath), out _);
-                    return _curve = ecdsa;
-                }
-
-                ECDsa curve = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-                File.WriteAllBytes(IdentityEcdsaPath, curve.ExportECPrivateKey());
-                return _curve = curve;
+                return _curve = PeerCertificate.GetECDsaPrivateKey();
             } 
         }
         public ECDsa _curve;
@@ -98,7 +87,7 @@ namespace UdpPunchHoleTest
             var request = new CertificateRequest(
                 $"CN={peerId}",
                 ecdsa,
-                HashAlgorithmName.SHA384);
+                HashAlgorithmName.SHA3_384);
 
 
             request.CertificateExtensions.Add(

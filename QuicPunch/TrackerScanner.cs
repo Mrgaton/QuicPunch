@@ -6,13 +6,15 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace UdpPunchHoleTest
+namespace QuicPunch
 {
     public class TrackerScanner : IDisposable
     {
         private readonly byte[] _infoHash;
         private readonly byte[] _peerId = Guid.NewGuid().ToByteArray().Concat(Guid.NewGuid().ToByteArray()).Take(20).ToArray();
         private readonly int _localPort;
+
+        private IPAddress PublicIp;
 
         private readonly ConcurrentDictionary<IPEndPoint, DateTime> _peers = new();
         private readonly List<IPEndPoint> _trackers = new();
@@ -29,6 +31,8 @@ namespace UdpPunchHoleTest
             if (localPort < 0 || localPort > 65535) throw new ArgumentOutOfRangeException(nameof(localPort), "Port must be an ushort");
           
             _localPort = localPort;
+
+            PublicIp = Helpers.GetPublicIP().GetAwaiter().GetResult();
         }
 
         public async Task Start(string[]? customTrackers = null)
@@ -152,7 +156,7 @@ namespace UdpPunchHoleTest
                 
                 var endpoint = new IPEndPoint(ip, BinaryPrimitives.ReadUInt16BigEndian(p.Slice(4)));
 
-                if (endpoint.Address.Equals(QuicPunchCore.IPv4Address) && endpoint.Port == _localPort) 
+                if (endpoint.Address.Equals(PublicIp) && endpoint.Port == _localPort) 
                     continue;
 
                 if (_peers.TryAdd(endpoint, DateTime.UtcNow))

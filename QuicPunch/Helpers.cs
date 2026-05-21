@@ -4,8 +4,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
-using UdpPunchHoleTest;
 
 namespace QuicPunch
 {
@@ -27,43 +25,23 @@ namespace QuicPunch
 
             return r;
         }
+        public static async Task<IPEndPoint?> GetPublicEndPoint(UdpClient udp, CancellationToken cancellationToken = default)
+        {
+            return await StunClient.GetMappedEndpointAsync(
+                udp,
+                TimeSpan.FromSeconds(2),
+                cancellationToken);
+        }
+
         public static async Task<IPAddress?> GetPublicIP()
         {
-            (string Host, int Port)[] servers =
-            [
-                ("stun.l.google.com",   19302),
-                ("stun1.l.google.com",  19302),
-                ("stun.cloudflare.com", 3478),
-            ];
+            using var udp = new UdpClient(AddressFamily.InterNetwork);
 
-            foreach (var (host, port) in servers)
-            {
-                try
-                {
-                    using var udp = new UdpClient();
+            var endpoint = await StunClient.GetMappedEndpointAsync(
+                udp,
+                TimeSpan.FromSeconds(2));
 
-                    byte[] request = new byte[20];
-                    BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(0), 0x0001);
-                    Random.Shared.NextBytes(request.AsSpan(4, 16));
-
-                    await udp.SendAsync(request.AsMemory(), host, port);
-                    var result = await udp.ReceiveAsync().WaitAsync(TimeSpan.FromSeconds(2));
-                    var buffer = result.Buffer;
-
-                    for (int i = 20; i < buffer.Length - 8; i++)
-                    {
-                        if (buffer[i] == 0x00 && buffer[i + 1] == 0x01)
-                        {
-                            var address = new IPAddress(buffer.AsSpan(i + 8, 4)); ;
-
-                            return address;
-                        }
-                    }
-                }
-                catch { }
-            }
-
-            return null;
+            return endpoint?.Address;
         }
         public static string EncodeEndpointToken(PeerInfo p)
         {
@@ -73,7 +51,6 @@ namespace QuicPunch
                 w.Write(p.EndPoint.Address.GetAddressBytes());
                 w.Write((ushort)p.EndPoint.Port);
                 w.Write(p.CertHash);
-                w.Write(p.CurvePublicKey);
                 return Convert.ToBase64String(ms.ToArray());
             }
         }
@@ -84,14 +61,12 @@ namespace QuicPunch
             {
                 var addressBytes = r.ReadBytes(4);
                 var port = r.ReadUInt16();
-                var certHash = r.ReadBytes(512 / 8);
-                var curvePublicKey = r.ReadBytes(32);
+                var certHash = r.ReadBytes(386 / 8);
 
                 return new PeerInfo
                 {
                     EndPoint = new IPEndPoint(new IPAddress(addressBytes), port),
                     CertHash = certHash,
-                    CurvePublicKey = curvePublicKey
                 };
             }
         }
