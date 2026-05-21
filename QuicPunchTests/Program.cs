@@ -110,6 +110,9 @@ internal static class Program
             _ = qcc.PeerInterogation(peer, new CancellationTokenSource());
         };
 
+        qcc.PeerInterogation("peer", new CancellationTokenSource());
+
+
         qcc.OnPeerAvilable += (peer) =>
         {
             Console.WriteLine($"New Peer Avillablle:  {peer.Name}");
@@ -141,7 +144,7 @@ internal static class Program
         Console.WriteLine("Press enter to conect to someone:");
         Console.ReadLine();
 
-        await qcc.InitPeerConection(chatHandler.ProtocolId, qcc.AvilablePeers.ElementAt(0).Value, (ushort)Random.Shared.Next(1024, 65535), cts);
+        await qcc.InitQuicConection(chatHandler.ProtocolId, qcc.AvilablePeers.ElementAt(0).Value, (ushort)Random.Shared.Next(1024, 65535), cts);
 
         await Task.Delay(-1);
     }

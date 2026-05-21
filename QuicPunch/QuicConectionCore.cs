@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Security;
@@ -13,7 +14,7 @@ namespace QuicPunch
 {
     internal class QuicConectionCore
     {
-        public static async Task<bool> OpenPortCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
+        public static async Task<(bool Sucess, UdpClient client)> OpenPortCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
         {
             try
             {
@@ -34,22 +35,23 @@ namespace QuicPunch
                 await ReceiveHoleLoopAsync(nudp, localPort, punchSuccessful, mainCt);
                 await punchSuccessful.Task.WaitAsync(mainCt);
 
-                nudp.Dispose();
-                return true;
+                return (true, nudp);
             }
             catch (OperationCanceledException)
             {
-                return false;
+                return (false, null);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error in OpenPortCore: {ex.Message}");
-                return false;
+                return (false, null);
             }
         }
-        public static async Task<(QuicConnection,Stream)> InitQuicConnectionCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, CancellationToken mainCt)
+        public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(IPAddress ownPublicEndpoint, ushort localPort, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, CancellationToken mainCt)
         {
-            if (!(await OpenPortCore(ownPublicEndpoint, localPort, remotePeer, peerPort, mainCt).WaitAsync(mainCt)))
+            var udpResult = await OpenPortCore(ownPublicEndpoint, localPort, remotePeer, peerPort, mainCt).WaitAsync(mainCt);
+
+            if (!udpResult.Sucess)
             {
                 return (null, null);
             }
@@ -114,7 +116,7 @@ namespace QuicPunch
                 return (null, null);
             }
 
-            return (connection, new BrotliTransparentStream(stream));
+            return (connection, new CompressedTransparentStream(stream, new ZstandardCompressionOptions() { AppendChecksum = false, EnableLongDistanceMatching = false, Quality = 11 }));
         }
 
         public static async Task ReceiveHoleLoopAsync(UdpClient udp, ushort port, TaskCompletionSource<bool> tcs, CancellationToken token)

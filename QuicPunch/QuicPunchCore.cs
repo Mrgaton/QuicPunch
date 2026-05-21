@@ -144,6 +144,7 @@ namespace UdpPunchHoleTest
         private readonly IpRateLimiter _rateLimiter = new IpRateLimiter(5);
 
         public readonly ConcurrentDictionary<Guid, IProtocolHandler> ProtocolHandlers = new();
+
         public interface IProtocolHandler
         {
             public Guid ProtocolId { get; }
@@ -202,7 +203,7 @@ namespace UdpPunchHoleTest
 
             return decision;
         }
-        public async Task<bool> AskOpenUdpPort(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        public async Task<(bool Success, UdpClient Client)> InitUdpConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
             if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
             {
@@ -213,7 +214,7 @@ namespace UdpPunchHoleTest
 
             return await QuicConectionCore.OpenPortCore(IPv4Address, localPort, peer, (ushort)decision.Port, mainCts.Token);
         }
-        public async Task InitPeerConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        public async Task InitQuicConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
             if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
             {
@@ -221,9 +222,10 @@ namespace UdpPunchHoleTest
             }
 
             var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
-            var conection = await QuicConectionCore.InitQuicConnectionCore(IPv4Address, localPort, peer, (ushort)decision.Port, CertManager.PeerCertificate!, mainCts.Token);
 
+            var conection = await QuicConectionCore.InitQuicConnectionCore(IPv4Address, localPort, peer, (ushort)decision.Port, CertManager.PeerCertificate!, mainCts.Token);
             await handler.HandleAsync(conection.Item1, conection.Item2, peer, mainCts.Token);
+
         }
 
         public async Task PeerInterogation(IPEndPoint endpoint, CancellationTokenSource mainCts)
@@ -513,8 +515,6 @@ namespace UdpPunchHoleTest
                     }
 
                     //Console.WriteLine($"Send hello packet to {peer} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(intervalTicks).Seconds}");
-
-              
 
                     for (int i = 0; i < (peerResponded ? 1 : 2); i++)
                     {
