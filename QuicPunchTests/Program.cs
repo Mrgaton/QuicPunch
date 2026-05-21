@@ -109,9 +109,6 @@ internal static class Program
             _ = qcc.PeerInterogation(peer, new CancellationTokenSource());
         };
 
-        qcc.PeerInterogation("peer", false, new CancellationTokenSource());
-
-
         qcc.OnPeerAvilable += (peer) =>
         {
             Console.WriteLine($"New Peer Avillablle:  {peer.Name}");

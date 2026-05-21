@@ -82,7 +82,7 @@ namespace QuicPunch
         public byte[] _curveHash;
         public X509Certificate2 GenerateIdentityCertificate(string peerId)
         {
-            using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+            using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
             var request = new CertificateRequest(
                 $"CN={peerId}",

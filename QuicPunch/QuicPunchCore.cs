@@ -20,7 +20,7 @@ namespace QuicPunch
         public int PublicDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
         public int LocalDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
 
-        public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"QuicPunchV0");
+        public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"QuicPunchV02");
 
         public PeerInfo CurrentPeer {  get; private set; }
         public void ClearIPEndpointCache()
@@ -62,7 +62,7 @@ namespace QuicPunch
 
         private byte[] HelloPayload;
         private byte[] InterogationPayload;
-        public QuicPunchCore(CancellationTokenSource cts, byte[] poolId, ushort discoveryPort = 443)
+        public QuicPunchCore(CancellationTokenSource cts, byte[]? poolId, ushort discoveryPort = 443)
         {
             if (!QuicListener.IsSupported || !QuicConnection.IsSupported)
             {
@@ -83,10 +83,13 @@ namespace QuicPunch
 
             CancelationSource = cts ?? new CancellationTokenSource();
 
-            PoolId = poolId.Length == 20 ? poolId : SHA1.HashData(poolId);
+            if (poolId == null)
+            {
+                PoolId = poolId.Length == 20 ? poolId : SHA1.HashData(poolId);
 
-            TrackerScanner = new TrackerScanner(PoolId, PublicDiscoveryPort);
-            TrackerScanner.Start();
+                TrackerScanner = new TrackerScanner(PoolId, PublicDiscoveryPort);
+                TrackerScanner.Start();
+            }
 
             CurrentPeer = new PeerInfo()
             {
@@ -181,7 +184,7 @@ namespace QuicPunch
         public event Action<PeerInfo>? OnPeerAvilable;
 
         //TODO: add retries :smile:
-        private async Task<HandshakeDecision> NegociateConnection(Guid protocolHandler, PeerInfo peer, int localPort, CancellationTokenSource mainCts)
+        private async Task<HandshakeDecision> NegociateConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
             byte[] payload;
 
@@ -196,8 +199,6 @@ namespace QuicPunch
                 w.Write(localPort);
                 w.Write(protocolHandler.ToByteArray());
                 w.Write(conectionGuid.ToByteArray());
-                w.Write(new byte[256 / 8]); //Reserved for signature
-
 
                 w.Write(new byte[256 / 8]); //Reserved for signature
                 payload = ms.ToArray();
@@ -230,7 +231,7 @@ namespace QuicPunch
             nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
             var publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
 
-            var decision = await NegociateConnection(protocolHandler, peer, publicEndPoint.Port, mainCts);
+            var decision = await NegociateConnection(protocolHandler, peer, (ushort)publicEndPoint.Port, mainCts);
 
             return await QuicConectionCore.OpenPortCore(nudp, peer, (ushort)decision.Port, mainCts.Token);
         }
@@ -248,14 +249,15 @@ namespace QuicPunch
             nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
             var publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
 
-            var decision = await NegociateConnection(protocolHandler, peer, publicEndPoint.Port, mainCts);
+            var decision = await NegociateConnection(protocolHandler, peer, (ushort)publicEndPoint.Port, mainCts);
 
             var conection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint.Address, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
             await handler.HandleAsync(conection.Item1, conection.Item2, peer, mainCts.Token);
 
         }
 
-        public async Task PeerInterogation(string token, bool replaceIfTampered, CancellationTokenSource mainCts)
+        //TODO: make peer database for long term storage of peers and their info and add some way to manually add peers to it for first time connections
+        /*public async Task PeerInterogation(string token, bool replaceIfTampered, CancellationTokenSource mainCts)
         {
             var p = Helpers.DecodeEndpointToken(token);
 
@@ -273,7 +275,7 @@ namespace QuicPunch
             }
 
             await PeerInterogation(p.EndPoint, mainCts);
-        }
+        }*/
         public async Task PeerInterogation(IPEndPoint endpoint, CancellationTokenSource mainCts)
         {
             using var udpCts = CancellationTokenSource.CreateLinkedTokenSource(mainCts.Token);
@@ -303,7 +305,7 @@ namespace QuicPunch
                     //if (!result.RemoteEndPoint.Address.Equals(targetPeer.Address))
                     //    continue;
 
-                    if (result.Buffer.Length > 512 || result.Buffer.Length < MagicHeader.Length)
+                    if (result.Buffer.Length > 1400 || result.Buffer.Length < MagicHeader.Length)
                         goto skipPacket;
 
                     for (int i = 0; i < MagicHeader.Length; i++)
@@ -336,7 +338,7 @@ namespace QuicPunch
                                 var certBytes = r.ReadBytes(certSize);
                                 var cert = new X509Certificate2(certBytes);
 
-                                if (!SHA3_384.HashData(cert.GetPublicKey()).SequenceEqual(CurrentPeer.CertHash))
+                                if (!SHA3_384.HashData(cert.GetPublicKey()).SequenceEqual(certHash))
                                 {
                                     Console.WriteLine("Corrupted cert hash from " + result.RemoteEndPoint);
                                     continue;

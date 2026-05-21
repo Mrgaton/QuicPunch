@@ -48,9 +48,10 @@ namespace QuicPunch
                 return (null, null);
             }
 
+            IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
+
             udpResult.client.Dispose();  // Free port for use in quic
 
-            IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
             int localPort = ((IPEndPoint)nudp.Client.LocalEndPoint).Port;
 
             bool isServer = AmIServer(ownPublicEndpoint , localPort, remotePeerNewPort.Address, remotePeerNewPort.Port);
