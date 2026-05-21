@@ -196,7 +196,13 @@ namespace QuicPunch
                 w.Write(localPort);
                 w.Write(protocolHandler.ToByteArray());
                 w.Write(conectionGuid.ToByteArray());
+                w.Write(new byte[256 / 8]); //Reserved for signature
+
+
+                w.Write(new byte[256 / 8]); //Reserved for signature
                 payload = ms.ToArray();
+                var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
+                Array.Copy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
 
             await udp.SendAsync(payload, peer.EndPoint);
@@ -402,6 +408,20 @@ namespace QuicPunch
                                 var connectionType = new Guid(r.ReadBytes(16));
                                 var guid = new Guid(r.ReadBytes(16));
 
+                                var signatureHandshake = r.ReadBytes(256 / 8);
+
+                                if (!AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo handshakePeer))
+                                {
+                                    Console.WriteLine($"Received handshake from unknown peer {result.RemoteEndPoint}");
+                                    continue;
+                                }
+
+                                if (!handshakePeer.Curve.VerifyData(result.Buffer.AsSpan(0, result.Buffer.Length - signatureHandshake.Length), signatureHandshake, HashAlgorithmName.SHA3_256))
+                                {
+                                    Console.WriteLine("Received invalid signature from " + result.RemoteEndPoint);
+                                    continue;
+                                }
+
                                 switch (handShakeType)
                                 {
                                     case HandShakeType.Request:
@@ -450,7 +470,13 @@ namespace QuicPunch
                                                 w.Write((ushort)publicEndPoint.Port);
                                                 w.Write(connectionType.ToByteArray());
                                                 w.Write(guid.ToByteArray());
+                                                w.Write(new byte[256 / 8]); //Reserved for signature
+
+
+                                                w.Write(new byte[256 / 8]); //Reserved for signature
                                                 payload = ms.ToArray();
+                                                var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
+                                                Array.Copy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
                                             }
 
                                             await udp.SendAsync(payload, result.RemoteEndPoint);
@@ -552,7 +578,6 @@ namespace QuicPunch
                 w.Write(cert);
 
                 w.Write(new byte[256 / 8]); //Reserved for signature
-
                 payload = ms.ToArray();
                 var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
                 Array.Copy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
