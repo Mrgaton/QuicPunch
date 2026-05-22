@@ -83,7 +83,7 @@ namespace QuicPunch
 
             CancelationSource = cts ?? new CancellationTokenSource();
 
-            if (poolId == null)
+            if (poolId != null)
             {
                 PoolId = poolId.Length == 20 ? poolId : SHA1.HashData(poolId);
 

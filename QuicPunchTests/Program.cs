@@ -137,11 +137,40 @@ internal static class Program
             return new HandshakeDecision(true, (ushort)Random.Shared.Next(1024, 65535), cts.Token);
         };
 
-        Console.WriteLine("Press enter to conect to someone:");
-        Console.ReadLine();
 
-        await qcc.InitQuicConection(chatHandler.ProtocolId, qcc.AvilablePeers.ElementAt(0).Value, (ushort)Random.Shared.Next(1024, 65535), cts);
+        while(true)
+        {
+            Console.WriteLine("Press enter to conect to someone");
+            Console.WriteLine("Select a peer to connect:\n");
+            for (int i = 0; i < qcc.AvilablePeers.Count; i++)
+            {
+                Console.WriteLine($"{i}: {qcc.AvilablePeers.ElementAt(i).Value.Name} - {qcc.AvilablePeers.ElementAt(i).Key}");
+            }
+            Console.WriteLine("Refresh list: R");
 
+            var input = Console.ReadKey();
+
+            if (input.KeyChar.ToString().ToLower() == "r")
+            {
+                continue; 
+            }
+
+            var peer = qcc.AvilablePeers.ElementAt(input.KeyChar - '0').Value;
+
+
+            Console.WriteLine("\nSelect a protocol to use:\n"); 
+
+            for (int i = 0; i < qcc.ProtocolHandlers.Count; i++)
+            {
+                Console.WriteLine($"{i}: {qcc.ProtocolHandlers.ElementAt(i).Value.ProtocolName} - {qcc.ProtocolHandlers.ElementAt(i).Key}");
+            }
+            
+            var protocolInput = Console.ReadKey();
+            var protocolId = qcc.ProtocolHandlers.ElementAt(protocolInput.KeyChar - '0').Key;
+
+           _ = Task.Run(async () => await qcc.InitQuicConection(protocolId, peer, (ushort)Random.Shared.Next(1024, 65535), cts));
+
+        }
         await Task.Delay(-1);
     }
 
