@@ -51,9 +51,9 @@ public static class PreciseTime
             DateTime nextBoundary = new DateTime(nextTicks, DateTimeKind.Utc);
             TimeSpan delay = nextBoundary - GetCorrectTime();
 
-            if (delay.TotalMilliseconds > 15)
+            if (delay.TotalMilliseconds > 5)
             {
-                await Task.Delay((int)delay.TotalMilliseconds - 10);
+                await Task.Delay((int)delay.TotalMilliseconds - 5);
             }
 
             while (GetCorrectTime() < nextBoundary)

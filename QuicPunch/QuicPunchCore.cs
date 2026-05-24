@@ -20,7 +20,7 @@ namespace QuicPunch
         public int PublicDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
         public int LocalDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
 
-        public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"QuicPunchV02");
+        public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"QuicPunchV16");
 
         public PeerInfo CurrentPeer {  get; private set; }
         public void ClearIPEndpointCache()
@@ -200,10 +200,10 @@ namespace QuicPunch
                 w.Write(protocolHandler.ToByteArray());
                 w.Write(conectionGuid.ToByteArray());
 
-                w.Write(new byte[256 / 8]); //Reserved for signature
                 payload = ms.ToArray();
                 var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
-                Array.Copy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
+                Array.Resize(ref payload, payload.Length + signature.Length);
+                Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
 
             await udp.SendAsync(payload, peer.EndPoint);
@@ -282,7 +282,7 @@ namespace QuicPunch
 
             Console.WriteLine($"Starting interogation for {endpoint}...");
 
-            _ = Task.Run(async () => await SendLoopAsync(udp!, endpoint, udpCts.Token));
+            SendLoopAsync(udp!, endpoint, udpCts.Token);
         }
         private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
         {
@@ -331,11 +331,13 @@ namespace QuicPunch
                                 }
 
                                 var certHash = r.ReadBytes(CurrentPeer.CertHash.Length);
+
                                 byte nameSize = r.ReadByte();
                                 var nameBytes = r.ReadBytes(nameSize);
 
                                 var certSize = r.ReadUInt16();
                                 var certBytes = r.ReadBytes(certSize);
+
                                 var cert = new X509Certificate2(certBytes);
 
                                 if (!SHA3_384.HashData(cert.GetPublicKey()).SequenceEqual(certHash))
@@ -344,7 +346,7 @@ namespace QuicPunch
                                     continue;
                                 }
 
-                                var signature = r.ReadBytes(256 / 8);
+                                var signature = r.ReadBytes(64);
 
                                 if (!AvilablePeers.ContainsKey(result.RemoteEndPoint))
                                 {
@@ -358,13 +360,13 @@ namespace QuicPunch
                                         LastSeen = PreciseTime.GetCorrectTime(),
                                         Curve = ecdsa
                                     };
+                                    
 
-                                    if (!peerInfo.Curve.VerifyData(result.Buffer.AsSpan(0, result.Buffer.Length - signature.Length), signature, HashAlgorithmName.SHA3_256))
+                                    if (!peerInfo.Curve.VerifyData(result.Buffer.AsSpan(0, (int)ms.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
                                     {
-                                        Console.WriteLine("Received invalid signature from " + result.RemoteEndPoint);  
+                                        Console.WriteLine("HELLO NEW: Received invalid signature from " + result.RemoteEndPoint);  
                                         continue;
                                     }
-
 
                                     AvilablePeers[peerInfo.EndPoint] = peerInfo;
                                     OnPeerAvilable?.Invoke(peerInfo);
@@ -373,16 +375,16 @@ namespace QuicPunch
                                 {
                                     var peer = AvilablePeers[result.RemoteEndPoint];
 
-                                    if (!peer.Curve.VerifyData(result.Buffer.AsSpan(0, result.Buffer.Length - signature.Length), signature, HashAlgorithmName.SHA3_256))
+                                    if (!peer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)ms.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
                                     {
-                                        Console.WriteLine("Received invalid signature from " + result.RemoteEndPoint); 
+                                        Console.WriteLine("HELLO OLD: Received invalid signature from " + result.RemoteEndPoint); 
                                         continue;
                                     }
 
                                     if (!certHash.SequenceEqual(peer.CertHash))
                                     {
                                         //TODO: IDK what to do enter in panick cause someone is spoofing conections!=!="!"?=)i3?_="!
-                                        Console.WriteLine("Received corrupted cert hash from " + result.RemoteEndPoint);
+                                        Console.WriteLine("HELLO OLD: Received corrupted cert hash from " + result.RemoteEndPoint);
                                         continue;
                                     }
                                     else
@@ -410,7 +412,7 @@ namespace QuicPunch
                                 var connectionType = new Guid(r.ReadBytes(16));
                                 var guid = new Guid(r.ReadBytes(16));
 
-                                var signatureHandshake = r.ReadBytes(256 / 8);
+                                var signatureHandshake = r.ReadBytes(64); //Signature data
 
                                 if (!AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo handshakePeer))
                                 {
@@ -418,7 +420,7 @@ namespace QuicPunch
                                     continue;
                                 }
 
-                                if (!handshakePeer.Curve.VerifyData(result.Buffer.AsSpan(0, result.Buffer.Length - signatureHandshake.Length), signatureHandshake, HashAlgorithmName.SHA3_256))
+                                if (!handshakePeer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)ms.Position - signatureHandshake.Length), signatureHandshake, HashAlgorithmName.SHA3_256))
                                 {
                                     Console.WriteLine("Received invalid signature from " + result.RemoteEndPoint);
                                     continue;
@@ -457,6 +459,7 @@ namespace QuicPunch
                                             var nudp = new UdpClient();
                                             if (OperatingSystem.IsWindows())
                                                 nudp.Client.IOControl(-1744830452, [0], null);
+
                                             nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
                                             nudp.Client.Bind(new IPEndPoint(IPAddress.Any, decidedPort));
                                             var publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
@@ -472,13 +475,11 @@ namespace QuicPunch
                                                 w.Write((ushort)publicEndPoint.Port);
                                                 w.Write(connectionType.ToByteArray());
                                                 w.Write(guid.ToByteArray());
-                                                w.Write(new byte[256 / 8]); //Reserved for signature
 
-
-                                                w.Write(new byte[256 / 8]); //Reserved for signature
                                                 payload = ms.ToArray();
                                                 var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
-                                                Array.Copy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
+                                                Array.Resize(ref payload, payload.Length + signature.Length);
+                                                Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
                                             }
 
                                             await udp.SendAsync(payload, result.RemoteEndPoint);
@@ -579,10 +580,11 @@ namespace QuicPunch
                 w.Write((ushort)certBytes);
                 w.Write(cert);
 
-                w.Write(new byte[256 / 8]); //Reserved for signature
                 payload = ms.ToArray();
+
                 var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
-                Array.Copy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
+                Array.Resize(ref payload, payload.Length + signature.Length);
+                Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
 
             return payload;

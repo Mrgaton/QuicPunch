@@ -1,9 +1,5 @@
-using QuicPunch;
-using System;
-using System.Collections.Generic;
 using System.IO.Compression;
 using System.Net.Quic;
-using System.Net.Sockets;
 using System.Text;
 
 namespace QuicPunch

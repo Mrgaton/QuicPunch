@@ -87,7 +87,7 @@ namespace QuicPunch
             var request = new CertificateRequest(
                 $"CN={peerId}",
                 ecdsa,
-                HashAlgorithmName.SHA3_384);
+                HashAlgorithmName.SHA384);
 
 
             request.CertificateExtensions.Add(

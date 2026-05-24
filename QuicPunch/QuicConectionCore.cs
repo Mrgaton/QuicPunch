@@ -50,9 +50,9 @@ namespace QuicPunch
 
             IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
 
-            udpResult.client.Dispose();  // Free port for use in quic
-
             int localPort = ((IPEndPoint)nudp.Client.LocalEndPoint).Port;
+
+            udpResult.client.Dispose();
 
             bool isServer = AmIServer(ownPublicEndpoint , localPort, remotePeerNewPort.Address, remotePeerNewPort.Port);
 
@@ -61,6 +61,8 @@ namespace QuicPunch
 
             for (int attempt = 1; attempt <= 2; attempt++)
             {
+               await PreciseTime.StartSyncedLoggerAsync(500);
+
                 Console.WriteLine($"\n--- ATTEMPT {attempt}/2: Acting as {(isServer ? "SERVER" : "CLIENT")} ---");
 
                 using var attemptCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -90,7 +92,7 @@ namespace QuicPunch
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[QUIC] Failure: {ex.Message}");
+                    Console.WriteLine($"[QUIC] Failure: {ex.ToString()}");
                 }
 
                 if (connection == null)
@@ -98,7 +100,7 @@ namespace QuicPunch
                     Console.WriteLine("[!] Role failed. Waiting to swap roles...");
                     try
                     {
-                        await Task.Delay(-1, attemptCts.Token);
+                        await PreciseTime.StartSyncedLoggerAsync(10 * 1000);
                     }
                     catch { }
 
@@ -253,7 +255,11 @@ namespace QuicPunch
                               byte[] clientPublicKey = certificate.GetPublicKey();
                               byte[] clientHash = SHA3_384.HashData(clientPublicKey);
 
-                              return CryptographicOperations.FixedTimeEquals(clientHash, peerCertificate);
+                              var valid = clientHash.SequenceEqual(peerCertificate);
+
+                              Console.WriteLine("Client cert hash: " + Convert.ToHexString(clientHash) + " valid: " + valid);
+
+                              return valid;
                           }
                     },
 
@@ -294,14 +300,20 @@ namespace QuicPunch
                         byte[] serverPublicKey = certificate.GetPublicKey();
                         byte[] serverHash = SHA3_384.HashData(serverPublicKey);
 
-                        return CryptographicOperations.FixedTimeEquals(serverHash, peerCertificate);
+                        var valid = serverHash.SequenceEqual(peerCertificate);
+
+                        Console.WriteLine("Server cert hash: " + Convert.ToHexString(serverHash) + " valid: " + valid);
+
+                        return valid;
                     }
                 },
 
                 MaxInboundBidirectionalStreams = 512,
                 MaxInboundUnidirectionalStreams = 512,
                 IdleTimeout = TimeSpan.FromMinutes(10),
-                KeepAliveInterval = TimeSpan.FromSeconds(19)
+                KeepAliveInterval = TimeSpan.FromSeconds(19),
+
+                HandshakeTimeout = TimeSpan.FromSeconds(9),
             };
 
             QuicConnection connection = null;

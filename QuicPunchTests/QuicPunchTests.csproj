@@ -7,10 +7,18 @@
     <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\QuicPunch\QuicPunch.csproj" />
+    <ProjectReference Include="..\Wintun\Wintun.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="wintun.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>
