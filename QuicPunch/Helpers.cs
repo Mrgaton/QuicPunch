@@ -50,11 +50,11 @@ namespace QuicPunch
             using (var ms = new MemoryStream())
             using (var w = new BinaryWriter(ms))
             {
-                w.Write(TokenVersionByte);
+                //w.Write(TokenVersionByte);
                 w.Write(p.EndPoint.Address.GetAddressBytes());
                 w.Write((ushort)p.EndPoint.Port);
 
-                w.Write((byte)p.CertHash.Length);
+                //w.Write((byte)p.CertHash.Length);
                 w.Write(p.CertHash);
                 return Convert.ToBase64String(ms.ToArray());
             }
@@ -64,15 +64,15 @@ namespace QuicPunch
             using (var ms = new MemoryStream(Convert.FromBase64String(t)))
             using (var r = new BinaryReader(ms))
             {
-                var version = r.ReadByte();
-                if (version != TokenVersionByte) 
-                    throw new Exception("Invalid token version");
+                //var version = r.ReadByte();
+               // if (version != TokenVersionByte) 
+               //    throw new Exception("Invalid token version");
 
                 var addressBytes = r.ReadBytes(4);
                 var port = r.ReadUInt16();
 
-                var certHashLength = r.ReadByte();
-                var certHash = r.ReadBytes(certHashLength);
+                //var certHashLength = r.ReadByte();
+                var certHash = r.ReadBytes(384/8);
 
                 return new PeerInfo
                 {

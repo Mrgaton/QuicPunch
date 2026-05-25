@@ -61,7 +61,7 @@ namespace QuicPunch
 
             for (int attempt = 1; attempt <= 2; attempt++)
             {
-               await PreciseTime.StartSyncedLoggerAsync(500);
+               await PreciseTime.StartSyncedLoggerAsync(500, true);
 
                 Console.WriteLine($"\n--- ATTEMPT {attempt}/2: Acting as {(isServer ? "SERVER" : "CLIENT")} ---");
 

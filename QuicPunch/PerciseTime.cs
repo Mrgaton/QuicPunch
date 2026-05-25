@@ -40,7 +40,7 @@ public static class PreciseTime
         return DateTime.UtcNow.Add(_offset);
     }
 
-    public static async Task StartSyncedLoggerAsync(int multipleInMilliseconds)
+    public static async Task StartSyncedLoggerAsync(int multipleInMilliseconds, bool once = false)
     {
         long intervalTicks = TimeSpan.FromMilliseconds(multipleInMilliseconds).Ticks;
 
@@ -60,6 +60,9 @@ public static class PreciseTime
             {
                 Thread.SpinWait(10);
             }
+
+            if (once)
+                break;
 
             Console.WriteLine($"[Triggered every {multipleInMilliseconds}s] Exact Time: {GetCorrectTime():HH:mm:ss.fff}");
         }

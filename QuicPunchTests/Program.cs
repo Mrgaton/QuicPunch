@@ -1,14 +1,14 @@
 using Microsoft.Win32;
 using QuicPunch;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Reflection.Metadata;
 using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics.Arm;
-using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Web;
@@ -19,7 +19,7 @@ internal static class Program
 
     public static Process CurrentProcess = Process.GetCurrentProcess();
     public static string FileName = CurrentProcess.MainModule.FileName;
-    private static readonly byte[] PoolId = Encoding.UTF8.GetBytes("PredifinedPool");//File.ReadAllBytes(FileName);
+    private static readonly byte[] PoolId = Encoding.UTF8.GetBytes("QuicPunch🔥");//File.ReadAllBytes(FileName);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern uint GetModuleFileName(IntPtr hModule, System.Text.StringBuilder lpFilename, uint nSize);
@@ -133,8 +133,6 @@ internal static class Program
             SetAdapterMTU("QuicPunchAdapter", 65535);
 
             _session = adapter.StartSession();
-
-            Task.Run(() => CaptureWintunAndSendToInternet());
         }
         catch (Win32Exception ex)
         {
@@ -150,9 +148,13 @@ internal static class Program
         }
 
         var cts = new CancellationTokenSource();
-        QuicPunchCore qcc = new QuicPunchCore(cts, PoolId, 4001);
+        QuicPunchCore qcc = new QuicPunchCore(cts, PoolId, (ushort)(Debugger.IsAttached ? 4001: 4002));
 
         _friendsLanHandler = new FriendsLanHandler(IPAddress.Parse(ip));
+
+
+        Task.Run(() => CaptureWintunAndSendToInternet(10));
+
         var chatHandler = new ChatHandler();
 
         qcc.RegisterProtocol(_friendsLanHandler);
@@ -271,26 +273,13 @@ internal static class Program
         process.Start();
         process.WaitForExit();
     }
-    private static void CaptureWintunAndSendToInternet()
+
+    /*private static void CaptureWintunAndSendToInternet()
     {
-        unsafe
-        {
+            _session.ReadWaitEvent.WaitOne();
+
             while (true)
             {
-                _session.ReadWaitEvent.WaitOne();
-
-                byte* packetPointer = WintunApi.WintunReceivePacket(_session.Handle, out uint packetSize);
-
-                if (packetPointer == null)
-                {
-                    int error = Marshal.GetLastWin32Error();
-                    const int ERROR_NO_MORE_ITEMS = 259; // Windows error code 259
-
-                    if (error == ERROR_NO_MORE_ITEMS)
-                        continue;
-
-                    throw new Win32Exception(error, "Failed to receive Wintun packet.");
-                }
 
                 try
                 {
@@ -304,11 +293,125 @@ internal static class Program
                         stream.Write(packetSpan);
                     }
                 }
+            catch(Exception ex)
+            {
+                CategoryAttribut
+            }
+        }
+    }*/
+
+    private static unsafe void CaptureWintunAndSendToInternet(byte ipFirstDigit)
+    {
+        const int ERROR_NO_MORE_ITEMS = 259;
+
+        Span<byte> sizeBuffer = stackalloc byte[4];
+
+        while (true)
+        {
+            _session.ReadWaitEvent.WaitOne();
+
+            while (true)
+            {
+                byte* packetPointer =
+                    WintunApi.WintunReceivePacket(_session.Handle, out uint packetSize);
+
+                if (packetPointer == null)
+                {
+                    int error = Marshal.GetLastWin32Error();
+
+                    if (error == ERROR_NO_MORE_ITEMS)
+                        break;
+
+                    throw new Win32Exception(error);
+                }
+
+                try
+                {
+                    uint destIp =
+                        BinaryPrimitives.ReverseEndianness(
+                            *(uint*)(packetPointer + 16));
+
+                    if (packetPointer[16] > 200)
+                        continue;
+
+                    LogPacket(packetPointer, packetSize);
+
+                    if (destIp == 0)
+                    {
+                        WintunApi.WintunSendPacket(_session.Handle, packetPointer);
+                    }
+
+                    if (packetPointer[16] != ipFirstDigit)
+                         continue;
+
+
+
+                    if (packetPointer[16 + 3] == 255)
+                    {
+                        foreach(var stream in _friendsLanHandler.ActivePeers.Values)
+                        {
+                            BinaryPrimitives.WriteUInt32LittleEndian(sizeBuffer, packetSize);
+                            stream.Write(sizeBuffer);
+                            stream.Write(new ReadOnlySpan<byte>(packetPointer, (int)packetSize));
+                        }
+                    }
+                    else if (_friendsLanHandler.ActivePeers.TryGetValue(destIp, out var stream))
+                    //if (_friendsLanHandler.ActivePeers.Count > 0)
+                    {
+                        //var stream = _friendsLanHandler.ActivePeers.ElementAt(0).Value;
+
+                        BinaryPrimitives.WriteUInt32LittleEndian(sizeBuffer, packetSize);
+                        stream.Write(sizeBuffer);
+                        stream.Write(new ReadOnlySpan<byte>(packetPointer, (int)packetSize));
+                    }
+                }
                 finally
                 {
-                    WintunApi.WintunReleaseReceivePacket(_session.Handle, packetPointer);
+                    WintunApi.WintunReleaseReceivePacket(
+                        _session.Handle,
+                        packetPointer);
                 }
             }
         }
+    }
+    public static unsafe void LogPacket(byte* packetPointer, uint packetSize)
+    {
+        byte versionAndIhl = packetPointer[0];
+        int version = versionAndIhl >> 4;
+        int ihl = (versionAndIhl & 0x0F) * 4;
+
+        byte protocol = packetPointer[9];
+        byte ttl = packetPointer[8];
+
+        ushort identification =
+            BinaryPrimitives.ReadUInt16BigEndian(
+                new ReadOnlySpan<byte>(packetPointer + 4, 2));
+
+        ushort totalLength =
+            BinaryPrimitives.ReadUInt16BigEndian(
+                new ReadOnlySpan<byte>(packetPointer + 2, 2));
+
+        var srcIp = new IPAddress(
+            new ReadOnlySpan<byte>(packetPointer + 12, 4));
+
+        var dstIp = new IPAddress(
+            new ReadOnlySpan<byte>(packetPointer + 16, 4));
+
+        string protocolName = protocol switch
+        {
+            1 => "ICMP",
+            6 => "TCP",
+            17 => "UDP",
+            _ => $"UNKNOWN({protocol})"
+        };
+
+        Console.WriteLine(
+            $"IPv{version} {protocolName} " +
+            $"{srcIp} -> {dstIp} " +
+            $"TTL={ttl} " +
+            $"LEN={totalLength} " +
+            $"ID={identification} " +
+            $"HDR={ihl} " +
+            $"PKT={packetSize}");
     }
 }

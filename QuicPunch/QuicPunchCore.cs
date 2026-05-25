@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -60,8 +61,8 @@ namespace QuicPunch
 
         private int CertPublicKey { get; set; }
 
-        private byte[] HelloPayload;
-        private byte[] InterogationPayload;
+        public byte[] HelloPayload;
+        public byte[] InterogationPayload;
         public QuicPunchCore(CancellationTokenSource cts, byte[]? poolId, ushort discoveryPort = 443)
         {
             if (!QuicListener.IsSupported || !QuicConnection.IsSupported)
@@ -284,6 +285,12 @@ namespace QuicPunch
 
             SendLoopAsync(udp!, endpoint, udpCts.Token);
         }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static uint IpToUint(IPAddress ip)
+        {
+            return BinaryPrimitives.ReverseEndianness(
+                Unsafe.As<IPAddress, uint>(ref ip));
+        }
         private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
         {
             var ACKPacket = Helpers.Combine(MagicHeader, [(byte)MessageType.Ack]);
@@ -297,7 +304,7 @@ namespace QuicPunch
 
                     var result = await udp.ReceiveAsync(token);
 
-                    if (!_rateLimiter.IsAllowed(result.RemoteEndPoint.Address))
+                    if (!_rateLimiter.IsAllowed(IpToUint(result.RemoteEndPoint.Address)))
                         goto skipPacket;
 
                     //Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));

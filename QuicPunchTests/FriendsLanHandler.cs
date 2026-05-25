@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Net;
@@ -15,14 +16,14 @@ namespace QuicPunch
 
         private readonly IPAddress _localIp;
 
-        public ConcurrentDictionary<IPAddress, Stream> ActivePeers { get; } = new();
+        public ConcurrentDictionary<uint, Stream> ActivePeers { get; } = new();
 
         public FriendsLanHandler(IPAddress localIp)
         {
             _localIp = localIp ?? throw new ArgumentNullException(nameof(localIp));
         }
 
-        public async Task HandleAsync(
+        public  async Task HandleAsync(
             QuicConnection connection,
             Stream stream,
             PeerInfo peer,
@@ -33,19 +34,19 @@ namespace QuicPunch
 
             Console.WriteLine($"\n[FriendsLAN] Secure tunnel established with peer: {peer.Name} ({peer.EndPoint})");
 
-            IPAddress? remoteIp = null;
+            uint remoteIp;
+
+            byte[] localIpBytes = _localIp.GetAddressBytes();
+            await stream.WriteAsync(localIpBytes, ct);
+            await stream.FlushAsync(ct);
+
+            byte[] remoteIpBytes = new byte[4];
+            await ReadExactlyAsync(stream, remoteIpBytes, 4, ct);
+            remoteIp = BinaryPrimitives.ReadUInt32BigEndian(remoteIpBytes);
+            Console.WriteLine($"[FriendsLAN] Peer virtual IP: {remoteIp}");
 
             try
             {
-                byte[] localIpBytes = _localIp.GetAddressBytes();
-                await stream.WriteAsync(localIpBytes, ct);
-                await stream.FlushAsync(ct);
-
-                byte[] remoteIpBytes = new byte[4];
-                await ReadExactlyAsync(stream, remoteIpBytes, 4, ct);
-                remoteIp = new IPAddress(remoteIpBytes);
-                Console.WriteLine($"[FriendsLAN] Peer virtual IP: {remoteIp}");
-
                 ActivePeers[remoteIp] = stream;
 
             
@@ -62,7 +63,16 @@ namespace QuicPunch
                             continue;
 
                         byte[] packet = new byte[len];
+
                         await ReadExactlyAsync(stream, packet, len, ct);
+
+                        unsafe
+                        {
+                            fixed (byte* p = packet)
+                            {
+                                Program.LogPacket(p, (uint)len);
+                            }
+                        }
 
                         if (Program._session != null)
                         {
@@ -71,7 +81,7 @@ namespace QuicPunch
                     }
                     catch (QuicException quicex)
                     {
-                        Console.WriteLine($"[FriendsLAN] QUIC error with peer {(remoteIp?.ToString() ?? peer.Name)}: {quicex.Message}");
+                        Console.WriteLine($"[FriendsLAN] QUIC error with peer {(remoteIp.ToString() ?? peer.Name)}: {quicex.Message}");
                         return;
                     }
                     catch (Exception ex)
@@ -82,7 +92,7 @@ namespace QuicPunch
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[FriendsLAN] Tunnel error with peer {(remoteIp?.ToString() ?? peer.Name)}: {ex.Message}");
+                Console.WriteLine($"[FriendsLAN] Tunnel error with peer {(peer.EndPoint.ToString() ?? peer.Name)}: {ex.Message}");
             }
             finally
             {

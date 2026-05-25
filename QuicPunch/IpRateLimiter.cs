@@ -8,12 +8,12 @@ namespace QuicPunch
     internal sealed class IpRateLimiter
     {
         private readonly int _maxPerSecond;
-        private readonly Dictionary<IPAddress, (int Count, long Sec)> _buckets = new();
+        private readonly Dictionary<uint, (int Count, long Sec)> _buckets = new();
 
         public IpRateLimiter(int maxPerSecond) => _maxPerSecond = maxPerSecond;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool IsAllowed(IPAddress ip)
+        public bool IsAllowed(uint ip)
         {
             long sec = Environment.TickCount64 / 1000;
 
