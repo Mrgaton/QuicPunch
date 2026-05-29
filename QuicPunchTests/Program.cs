@@ -97,13 +97,11 @@ internal static class Program
             Console.Error.WriteLine($"Protocol setup failed: {ex.Message}");
         }
 
-   
-
         Console.Write("Emter the password for auto conections:");
         string password = Console.ReadLine();
 
         var cts = new CancellationTokenSource();
-        QuicPunchCore qcc = new QuicPunchCore(cts, PoolId, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 4001 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
+        QuicPunchCore qcc = new QuicPunchCore(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 4001 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
 
         _friendsLanHandler = new FriendsLanHandler();
 
@@ -121,13 +119,15 @@ internal static class Program
         Console.WriteLine($"Share this url for quick connection: {quickUri}\n");
         DiyClipper.SetText(quickUri);
 
-
-        qcc.TrackerScanner.OnPeerFound += (peer) =>
+        if (qcc.TrackerScanner != null)
         {
-            Console.WriteLine($"Peer found: {peer} starting interogation...");
+            qcc.TrackerScanner.OnPeerFound += (peer) =>
+            {
+                Console.WriteLine($"Peer found: {peer} starting interogation...");
 
-            _ = qcc.PeerInterogation(peer, new CancellationTokenSource());
-        };
+                _ = qcc.PeerInterogation(peer, new CancellationTokenSource());
+            };
+        }
 
         qcc.OnPeerAvilable += (peer) =>
         {
@@ -163,20 +163,28 @@ internal static class Program
             {
                 Console.WriteLine("Press enter to conect to someone");
                 Console.WriteLine("Select a peer to connect:\n");
-                for (int i = 0; i < qcc.AvilablePeers.Count; i++)
+
+                Console.WriteLine("0: Enter token manualy");
+
+                for (int i = 1; i < qcc.AvilablePeers.Count + 1; i++)
                 {
-                    Console.WriteLine($"{i}: {qcc.AvilablePeers.ElementAt(i).Value.Name} - {qcc.AvilablePeers.ElementAt(i).Key}");
+                    Console.WriteLine($"{i}: {qcc.AvilablePeers.ElementAt(i - 1).Value.Name} - {qcc.AvilablePeers.ElementAt(i - 1).Key}");
                 }
                 Console.WriteLine("Refresh list: R");
 
                 var input = Console.ReadKey();
 
                 if (input.KeyChar.ToString().ToLower() == "r")
-                {
                     continue;
+                
+
+                if (input.KeyChar == '0')
+                {
+                    Console.Write("Enter the tokent to connect: ");
+                    _ = qcc.PeerInterogation(Console.ReadLine(), cts);
                 }
 
-                var peer = qcc.AvilablePeers.ElementAt(input.KeyChar - '0').Value;
+                var peer = qcc.AvilablePeers.ElementAt(input.KeyChar - '1').Value;
 
 
                 Console.WriteLine("\nSelect a protocol to use:\n");

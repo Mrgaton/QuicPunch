@@ -251,25 +251,18 @@ namespace QuicPunch
         }
 
         //TODO: make peer database for long term storage of peers and their info and add some way to manually add peers to it for first time connections
-        /*public async Task PeerInterogation(string token, bool replaceIfTampered, CancellationTokenSource mainCts)
+        
+        public async Task PeerInterogation(string token, CancellationTokenSource mainCts)
         {
             var p = Helpers.DecodeEndpointToken(token);
 
-            if (!AvilablePeers.ContainsKey(p.EndPoint))
+            if (!ExpectedPeerCert.TryGetValue(p.EndPoint, out var cert))
             {
-                AvilablePeers[p.EndPoint] = p;
-            }
-            else if (!p.CertHash.SequenceEqual(AvilablePeers[p.EndPoint].CertHash) && replaceIfTampered)
-            {
-                AvilablePeers[p.EndPoint] = p;
-            }
-            else
-            {
-                throw new Exception("Peer info tampering detected.");
+                ExpectedPeerCert.TryAdd(p.EndPoint, p.CertHash);
             }
 
             await PeerInterogation(p.EndPoint, mainCts);
-        }*/
+        }
         private readonly ConcurrentDictionary<IPEndPoint, CancellationTokenSource> _punchCts = new ConcurrentDictionary<IPEndPoint, CancellationTokenSource>();
         public async Task PeerInterogation(IPEndPoint endpoint, CancellationTokenSource mainCts)
         {

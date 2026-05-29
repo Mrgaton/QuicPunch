@@ -53,7 +53,7 @@ namespace QuicPunch
             var localPort = ((IPEndPoint)nudp.Client.LocalEndPoint!).Port;
             nudp.Dispose();
 
-            bool isServer = AmIServer(ownPublicEndpoint.Address , ownPublicEndpoint.Port, remoteNewEndpoint.Address, remoteNewEndpoint.Port);
+            bool isServer = AmIServer(ownPublicEndpoint.Address, ownPublicEndpoint.Port, remoteNewEndpoint.Address, remoteNewEndpoint.Port);
 
             QuicConnection connection = null;
             QuicStream stream = null;
