@@ -2,9 +2,7 @@
 using QuicPunch;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
-using System.Globalization;
 using System.IO.Compression;
-using System.IO.Pipelines;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Sockets;
@@ -12,7 +10,6 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using static QuicPunch.QuicPunchCore;
 using static QuicPunch.QuicPunchStructures;
 
 namespace QuicPunch
@@ -103,7 +100,7 @@ namespace QuicPunch
 
             CurrentPeer = new PeerInfo()
             {
-                Name = Environment.UserName,
+                Name = Environment.UserName + '\\' + Environment.UserDomainName,
                 EndPoint = this.IPEndpoint,
                 CertHash = CertManager.CertPublicHash,
             };
@@ -170,6 +167,7 @@ namespace QuicPunch
             public string ProtocolName { get; }
             public ZstandardCompressionOptions? CompressionOptions { get; }
             Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct);
+            Task DeniedAsync(PeerInfo peer, CancellationToken ct);
         }
         public bool RemoveProtocol(IProtocolHandler handler) => ProtocolHandlers.TryRemove(handler.ProtocolId, out _);
         public void RegisterProtocol(IProtocolHandler handler) => ProtocolHandlers[handler.ProtocolId] = handler;
@@ -246,8 +244,15 @@ namespace QuicPunch
             var decision = await NegociateConnection(protocolHandler, peer, (ushort)publicEndPoint.Port, mainCts);
 
             var conection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
-            await handler.HandleAsync(conection.Item1, conection.Item2, peer, mainCts.Token);
 
+            if (conection.Conection == null || conection.Stream == null)
+            {
+                await handler.DeniedAsync(peer, mainCts.Token);
+            }
+            else
+            {
+                await handler.HandleAsync(conection.Conection, conection.Stream, peer, mainCts.Token);
+            }
         }
 
         //TODO: make peer database for long term storage of peers and their info and add some way to manually add peers to it for first time connections
@@ -398,6 +403,7 @@ namespace QuicPunch
                                     if (!pop.SequenceEqual(remotePop))
                                     {
                                         Console.WriteLine("Error the peer could not proof the ownership of the password");
+                                        continue;
                                     }
                                 }
 
@@ -462,6 +468,7 @@ namespace QuicPunch
                                 continue;
 
                             case (byte)MessageType.Ack:
+                                
                                 if (AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo ackPeer))
                                 {
                                     var peersCount = r.ReadUInt16();
@@ -494,12 +501,24 @@ namespace QuicPunch
                                         continue;
                                     }
 
+                                    bool neewPeer = false;
+
                                     foreach (var newPeer in remotePeersCertHashes)
                                     {
                                         if (!AvilablePeers.TryGetValue(newPeer.Key, out _))
                                         {
                                             //TODO use the cert hashes
                                             _ = PeerInterogation(newPeer.Key, default);
+
+                                            neewPeer = true;
+                                        }
+                                    }
+
+                                    if (neewPeer)
+                                    {
+                                        foreach(var peer in AvilablePeers)
+                                        {
+                                            await udp.SendAsync(GenerateAck(SharePeers), result.RemoteEndPoint);
                                         }
                                     }
                                 }
@@ -589,7 +608,7 @@ namespace QuicPunch
                                                 w.Write(MagicHeader);
                                                 w.Write((byte)MessageType.Handshake);
                                                 w.Write((byte)(decidedResponse));
-                                                w.Write((ushort)publicEndPoint.Port);
+                                                w.Write(publicEndPoint != null ? (ushort)publicEndPoint.Port : (ushort)0);
                                                 w.Write(connectionType.ToByteArray());
                                                 w.Write(guid.ToByteArray());
 
@@ -614,7 +633,14 @@ namespace QuicPunch
                                             {
                                                 var connection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint, nudp, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, handler.CompressionOptions, ct);
 
-                                                handler.HandleAsync(connection.Item1, connection.Item2, AvilablePeers[result.RemoteEndPoint], ct);
+                                                if (connection.Conection == null || connection.Stream == null)
+                                                {
+                                                    handler.DeniedAsync(AvilablePeers[result.RemoteEndPoint], ct);
+                                                }
+                                                else
+                                                {
+                                                    handler.HandleAsync(connection.Conection, connection.Stream, AvilablePeers[result.RemoteEndPoint], ct);
+                                                }
                                             }
                                         });
                                         continue;

@@ -168,7 +168,7 @@ internal static class Program
 
                 for (int i = 1; i < qcc.AvilablePeers.Count + 1; i++)
                 {
-                    Console.WriteLine($"{i}: {qcc.AvilablePeers.ElementAt(i - 1).Value.Name} - {qcc.AvilablePeers.ElementAt(i - 1).Key}");
+                    Console.WriteLine($"{i}: {qcc.AvilablePeers.ElementAt(i - 1).Value.Name} ({qcc.AvilablePeers.ElementAt(i - 1).Value.Ping.ToString()}) - {qcc.AvilablePeers.ElementAt(i - 1).Key}");
                 }
                 Console.WriteLine("Refresh list: R");
 

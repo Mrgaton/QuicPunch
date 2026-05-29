@@ -11,13 +11,18 @@ namespace QuicPunch
         public string ProtocolName => "Chat";
 
         public ZstandardCompressionOptions? CompressionOptions => null; // new ZstandardCompressionOptions() { AppendChecksum = false, EnableLongDistanceMatching = false, Quality = 11 };
+
+        public async Task DeniedAsync(PeerInfo peer, CancellationToken ct)
+        {
+            Console.WriteLine($"\n[P2P CHAT] Peer: {peer.Name} ({peer.EndPoint}) failed or denied the conection.");
+        }
         public async Task HandleAsync(
             QuicConnection connection,
             Stream stream,
             PeerInfo peer,
             CancellationToken ct)
         {
-            Console.WriteLine("\n--- QUIC SECURE P2P CHAT STARTED (Type a message and press Enter) ---");
+            Console.WriteLine("\n--- P2P CHAT STARTED (Type a message and press Enter) ---");
             var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
             var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
 
@@ -38,7 +43,7 @@ namespace QuicPunch
 
                         if (line == "\0") continue;
 
-                        Console.ForegroundColor = ConsoleColor.Cyan; Console.WriteLine($"[Peer]: {line}"); Console.ResetColor();
+                        Console.ForegroundColor = ConsoleColor.Cyan; Console.WriteLine($"[{peer.Name}]: {line}"); Console.ResetColor();
                     }
                 }
                 catch (Exception ex)

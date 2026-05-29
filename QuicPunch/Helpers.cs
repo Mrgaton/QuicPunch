@@ -27,10 +27,15 @@ namespace QuicPunch
         }
         public static async Task<IPEndPoint?> GetPublicEndPoint(UdpClient udp, CancellationToken cancellationToken = default)
         {
-            return await StunClient.GetMappedEndpointAsync(
+            var endpoint = await StunClient.GetMappedEndpointAsync(
                 udp,
                 TimeSpan.FromSeconds(2),
                 cancellationToken);
+
+            if (endpoint is null)
+                throw new Exception("Failed to get public EndPoint");
+
+            return endpoint;
         }
 
         public static async Task<IPAddress?> GetPublicIP()
@@ -41,7 +46,10 @@ namespace QuicPunch
                 udp,
                 TimeSpan.FromSeconds(2));
 
-            return endpoint?.Address;
+            if (endpoint is null)
+                throw new Exception("Failed to get public IP");
+
+            return endpoint.Address;
         }
 
         private const byte TokenVersionByte = 1;

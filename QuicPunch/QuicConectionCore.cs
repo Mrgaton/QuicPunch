@@ -41,7 +41,10 @@ namespace QuicPunch
         }
         public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(IPEndPoint ownPublicEndpoint, UdpClient nudp, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
         {
-            var udpResult = await OpenPortCore(nudp,remotePeer, peerPort, mainCt).WaitAsync(mainCt);
+            using var openPortCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var openPortLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt, openPortCts.Token);
+
+            var udpResult = await OpenPortCore(nudp,remotePeer, peerPort, openPortLinkedCts.Token).WaitAsync(openPortLinkedCts.Token);
 
             if (!udpResult.Sucess)
             {
@@ -52,6 +55,7 @@ namespace QuicPunch
 
             var localPort = ((IPEndPoint)nudp.Client.LocalEndPoint!).Port;
             nudp.Dispose();
+            openPortLinkedCts.Dispose();
 
             bool isServer = AmIServer(ownPublicEndpoint.Address, ownPublicEndpoint.Port, remoteNewEndpoint.Address, remoteNewEndpoint.Port);
 
@@ -281,9 +285,18 @@ namespace QuicPunch
             Console.WriteLine("[SERVER] Bound to port. Waiting for peer...");
 
             var connection = await listener.AcceptConnectionAsync(token);
-            var stream = await connection.AcceptInboundStreamAsync(token);
 
-            return (connection, stream);
+            try
+            {
+                var stream = await connection.AcceptInboundStreamAsync(token);
+
+                return (connection, stream);
+            }
+            catch
+            {
+                await connection.DisposeAsync();
+                throw;
+            }
         }
 
         public static async Task<(QuicConnection, QuicStream)> TryRunClient(IPEndPoint targetPeer, X509Certificate2 ownCertificate, byte[] peerCertificate, int localPort, CancellationToken token)
@@ -296,6 +309,7 @@ namespace QuicPunch
                 DefaultCloseErrorCode = 0,
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {
+                    TargetHost = targetPeer.Address.ToString(),
                     ApplicationProtocols = SupportedProtocols,
                     ClientCertificates = new X509Certificate2Collection(ownCertificate),
 

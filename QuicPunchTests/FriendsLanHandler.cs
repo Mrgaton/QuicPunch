@@ -84,6 +84,10 @@ namespace QuicPunch
         {
 
         }
+        public async Task DeniedAsync(PeerInfo peer, CancellationToken ct)
+        {
+            Console.WriteLine($"\n[FriendsLAN] Peer: {peer.Name} ({peer.EndPoint}) failed or denied the conection.");
+        }
 
         public  async Task HandleAsync(
             QuicConnection connection,

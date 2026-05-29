@@ -8,8 +8,6 @@ namespace QuicPunch
 {
     public class PeerInfo
     {
-        public byte[] PasswordProofData;
-
         public byte[] CertHash;
         public string Name;
         public IPEndPoint EndPoint;
