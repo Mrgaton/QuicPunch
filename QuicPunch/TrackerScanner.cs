@@ -150,7 +150,9 @@ namespace QuicPunch
             for (int i = 0; i < peerData.Length / 6; i++)
             {
                 var p = peerData.Slice(i * 6, 6);
-                if ((p[0] is 0 or 127 or 10 or 192 or 127) || p[0] >=224) continue;
+
+                if ((p[0] == 0 || p[0] == 127 || p[0] == 10) || p[0] >= 224 || (p[0] == 192 && p[1] == 168) || (p[0] == 172 && p[1] >= 16 && p[1] <= 31))
+                    continue;
 
                 var ip = new IPAddress(p.Slice(0, 4).ToArray());
                 

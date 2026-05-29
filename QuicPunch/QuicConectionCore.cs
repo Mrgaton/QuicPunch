@@ -39,7 +39,7 @@ namespace QuicPunch
                 return (false, null);
             }
         }
-        public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(IPAddress ownPublicEndpoint, UdpClient nudp, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
+        public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(IPEndPoint ownPublicEndpoint, UdpClient nudp, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
         {
             var udpResult = await OpenPortCore(nudp,remotePeer, peerPort, mainCt).WaitAsync(mainCt);
 
@@ -48,20 +48,21 @@ namespace QuicPunch
                 return (null, null);
             }
 
-            IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
+            IPEndPoint remoteNewEndpoint = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
 
-            int localPort = ((IPEndPoint)nudp.Client.LocalEndPoint).Port;
+            var localPort = ((IPEndPoint)nudp.Client.LocalEndPoint!).Port;
+            nudp.Dispose();
 
-            udpResult.client.Dispose();
-
-            bool isServer = AmIServer(ownPublicEndpoint , localPort, remotePeerNewPort.Address, remotePeerNewPort.Port);
+            bool isServer = AmIServer(ownPublicEndpoint.Address , ownPublicEndpoint.Port, remoteNewEndpoint.Address, remoteNewEndpoint.Port);
 
             QuicConnection connection = null;
             QuicStream stream = null;
 
+            await Task.Delay(500);
+
             for (int attempt = 1; attempt <= 2; attempt++)
             {
-               await PreciseTime.StartSyncedLoggerAsync(500, true);
+               await PreciseTime.StartSyncedLoggerAsync(500);
 
                 Console.WriteLine($"\n--- ATTEMPT {attempt}/2: Acting as {(isServer ? "SERVER" : "CLIENT")} ---");
 
@@ -77,7 +78,7 @@ namespace QuicPunch
                     }
                     else
                     {
-                        (connection, stream) = await TryRunClient(remotePeerNewPort, ownCertificate, remotePeer.CertHash, localPort, linkedCts.Token);
+                        (connection, stream) = await TryRunClient(remoteNewEndpoint, ownCertificate, remotePeer.CertHash, localPort, linkedCts.Token);
                     }
 
                     if (connection != null && stream != null)
@@ -110,6 +111,12 @@ namespace QuicPunch
 
             if (connection == null || stream == null)
             {
+                if (connection != null)
+                    await connection.DisposeAsync();
+
+                if (stream != null)
+                    await stream.DisposeAsync();
+
                 Console.WriteLine("\n[FAILED] Both roles failed to connect.");
                 return (null, null);
             }
@@ -124,7 +131,7 @@ namespace QuicPunch
 
         public static async Task ReceiveHoleLoopAsync(UdpClient udp, TaskCompletionSource<bool> tcs, CancellationToken token)
         {
-            var ACKPacket = Helpers.Combine(QuicPunchCore.MagicHeader, [(byte)QuicPunchCore.MessageType.Ack]);
+            var ACKPacket = Helpers.Combine(QuicPunchCore.MagicHeader, [(byte)QuicPunchStructures.MessageType.Ack]);
 
             while (!token.IsCancellationRequested && !tcs.Task.IsCompleted)
             {
@@ -154,13 +161,13 @@ namespace QuicPunch
                     {
                         _ = r.ReadBytes(QuicPunchCore.MagicHeader.Length);
 
-                        var messageType = (QuicPunchCore.MessageType)r.ReadByte();
+                        var messageType = (QuicPunchStructures.MessageType)r.ReadByte();
 
-                        if (messageType == QuicPunchCore.MessageType.FinalHandshake)
+                        if (messageType == QuicPunchStructures.MessageType.FinalHandshake)
                         {
                             udp.Send(ACKPacket, result.RemoteEndPoint);
                         }
-                        else if (messageType == QuicPunchCore.MessageType.Ack)
+                        else if (messageType == QuicPunchStructures.MessageType.Ack)
                         {
                             await Task.Delay(250);
                             udp.Send(ACKPacket, result.RemoteEndPoint);
@@ -194,7 +201,7 @@ namespace QuicPunch
             using (BinaryWriter w = new BinaryWriter(ms))
             {
                 w.Write(QuicPunchCore.MagicHeader);
-                w.Write((byte)QuicPunchCore.MessageType.FinalHandshake);
+                w.Write((byte)QuicPunchStructures.MessageType.FinalHandshake);
                 payload = ms.ToArray();
             }
 

@@ -19,12 +19,11 @@ internal static class Program
 
     public static Process CurrentProcess = Process.GetCurrentProcess();
     public static string FileName = CurrentProcess.MainModule.FileName;
-    private static readonly byte[] PoolId = Encoding.UTF8.GetBytes("QuicPunch🔥");//File.ReadAllBytes(FileName);
+    private static readonly byte[] PoolId = Encoding.UTF8.GetBytes("QuicPunch🔥V1.2");//File.ReadAllBytes(FileName);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern uint GetModuleFileName(IntPtr hModule, System.Text.StringBuilder lpFilename, uint nSize);
 
-    public static WintunSession _session;
     private static FriendsLanHandler _friendsLanHandler;
     private static async Task Main(string[] args)
     {
@@ -98,62 +97,16 @@ internal static class Program
             Console.Error.WriteLine($"Protocol setup failed: {ex.Message}");
         }
 
-        try
-        {
-            uint version = WintunAdapter.GetRunningDriverVersion();
-            Console.WriteLine($"Running driver version: {version}");
-        }
-        catch (DllNotFoundException)
-        {
-            Console.WriteLine("wintun.dll not found in the output directory. Please copy it.");
-            return;
-        }
-        catch (Win32Exception ex)
-        {
-            Console.WriteLine($"Win32Exception while checking driver (expected if not installed/admin): {ex.Message}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Unexpected error: {ex}");
-        }
+   
 
-        Console.Write("Write your last ip digit 10.0.0.x:");
-        string ipDigit = Console.ReadLine();
-
-        string ip = $"10.0.0.{ipDigit}";
-
-        Console.WriteLine("\nTrying to create QuicPunch adapter...");
-        try
-        {
-            var adapter = WintunAdapter.Create("QuicPunchAdapter", "QuicPunchTunnel");
-            Console.WriteLine($"Adapter created successfully! LUID: {adapter.Luid}");
-
-
-            SetAdapterIP("QuicPunchAdapter", ip, "255.0.0.0");
-            SetAdapterMTU("QuicPunchAdapter", 65535);
-
-            _session = adapter.StartSession();
-        }
-        catch (Win32Exception ex)
-        {
-            Console.WriteLine($"Failed to create adapter (requires Administrator privileges): {ex.Message} (Error code: {ex.NativeErrorCode})");
-            if (ex.NativeErrorCode == 5) // ERROR_ACCESS_DENIED
-            {
-                Console.WriteLine("Verification result: The library successfully called wintun.dll! Access Denied is the expected outcome without Administrator privileges.");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Unexpected error during creation: {ex}");
-        }
+        Console.Write("Emter the password for auto conections:");
+        string password = Console.ReadLine();
 
         var cts = new CancellationTokenSource();
-        QuicPunchCore qcc = new QuicPunchCore(cts, PoolId, (ushort)(Debugger.IsAttached ? 4001: 4002));
+        QuicPunchCore qcc = new QuicPunchCore(cts, PoolId, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 4001 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
 
-        _friendsLanHandler = new FriendsLanHandler(IPAddress.Parse(ip));
+        _friendsLanHandler = new FriendsLanHandler();
 
-
-        Task.Run(() => CaptureWintunAndSendToInternet(10));
 
         var chatHandler = new ChatHandler();
 
@@ -242,176 +195,5 @@ internal static class Program
 
         }
         await Task.Delay(-1);
-    }
-    public static void SetAdapterIP(string adapterName, string ipAddress, string subnetMask)
-    {
-        var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "netsh",
-                Arguments = $"interface ip set address name=\"{adapterName}\" static {ipAddress} {subnetMask}",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
-        };
-        process.Start();
-        process.WaitForExit();
-    }
-    public static void SetAdapterMTU(string adapterName, int mtu)
-    {
-        var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "netsh",
-                Arguments = $"interface ipv4 set subinterface \"{adapterName}\" mtu={mtu} store=persistent",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
-        };
-        process.Start();
-        process.WaitForExit();
-    }
-
-    /*private static void CaptureWintunAndSendToInternet()
-    {
-            _session.ReadWaitEvent.WaitOne();
-
-            while (true)
-            {
-
-                try
-                {
-                    var destIp = new IPAddress(new ReadOnlySpan<byte>(packetPointer + 16, 4));
-
-                    if (_friendsLanHandler.ActivePeers.TryGetValue(destIp, out var stream))
-                    {
-                        stream.Write(BitConverter.GetBytes(packetSize));
-
-                        var packetSpan = new ReadOnlySpan<byte>(packetPointer, (int)packetSize);
-                        stream.Write(packetSpan);
-                    }
-                }
-            catch(Exception ex)
-            {
-                CategoryAttribut
-            }
-        }
-    }*/
-
-    private static unsafe void CaptureWintunAndSendToInternet(byte ipFirstDigit)
-    {
-        const int ERROR_NO_MORE_ITEMS = 259;
-
-        Span<byte> sizeBuffer = stackalloc byte[4];
-
-        while (true)
-        {
-            _session.ReadWaitEvent.WaitOne();
-
-            while (true)
-            {
-                byte* packetPointer =
-                    WintunApi.WintunReceivePacket(_session.Handle, out uint packetSize);
-
-                if (packetPointer == null)
-                {
-                    int error = Marshal.GetLastWin32Error();
-
-                    if (error == ERROR_NO_MORE_ITEMS)
-                        break;
-
-                    throw new Win32Exception(error);
-                }
-
-                try
-                {
-                    uint destIp =
-                        BinaryPrimitives.ReverseEndianness(
-                            *(uint*)(packetPointer + 16));
-
-                    if (packetPointer[16] > 200)
-                        continue;
-
-                    LogPacket(packetPointer, packetSize);
-
-                    if (destIp == 0)
-                    {
-                        WintunApi.WintunSendPacket(_session.Handle, packetPointer);
-                    }
-
-                    if (packetPointer[16] != ipFirstDigit)
-                         continue;
-
-
-
-                    if (packetPointer[16 + 3] == 255)
-                    {
-                        foreach(var stream in _friendsLanHandler.ActivePeers.Values)
-                        {
-                            BinaryPrimitives.WriteUInt32LittleEndian(sizeBuffer, packetSize);
-                            stream.Write(sizeBuffer);
-                            stream.Write(new ReadOnlySpan<byte>(packetPointer, (int)packetSize));
-                        }
-                    }
-                    else if (_friendsLanHandler.ActivePeers.TryGetValue(destIp, out var stream))
-                    //if (_friendsLanHandler.ActivePeers.Count > 0)
-                    {
-                        //var stream = _friendsLanHandler.ActivePeers.ElementAt(0).Value;
-
-                        BinaryPrimitives.WriteUInt32LittleEndian(sizeBuffer, packetSize);
-                        stream.Write(sizeBuffer);
-                        stream.Write(new ReadOnlySpan<byte>(packetPointer, (int)packetSize));
-                    }
-                }
-                finally
-                {
-                    WintunApi.WintunReleaseReceivePacket(
-                        _session.Handle,
-                        packetPointer);
-                }
-            }
-        }
-    }
-    public static unsafe void LogPacket(byte* packetPointer, uint packetSize)
-    {
-        byte versionAndIhl = packetPointer[0];
-        int version = versionAndIhl >> 4;
-        int ihl = (versionAndIhl & 0x0F) * 4;
-
-        byte protocol = packetPointer[9];
-        byte ttl = packetPointer[8];
-
-        ushort identification =
-            BinaryPrimitives.ReadUInt16BigEndian(
-                new ReadOnlySpan<byte>(packetPointer + 4, 2));
-
-        ushort totalLength =
-            BinaryPrimitives.ReadUInt16BigEndian(
-                new ReadOnlySpan<byte>(packetPointer + 2, 2));
-
-        var srcIp = new IPAddress(
-            new ReadOnlySpan<byte>(packetPointer + 12, 4));
-
-        var dstIp = new IPAddress(
-            new ReadOnlySpan<byte>(packetPointer + 16, 4));
-
-        string protocolName = protocol switch
-        {
-            1 => "ICMP",
-            6 => "TCP",
-            17 => "UDP",
-            _ => $"UNKNOWN({protocol})"
-        };
-
-        Console.WriteLine(
-            $"IPv{version} {protocolName} " +
-            $"{srcIp} -> {dstIp} " +
-            $"TTL={ttl} " +
-            $"LEN={totalLength} " +
-            $"ID={identification} " +
-            $"HDR={ihl} " +
-            $"PKT={packetSize}");
     }
 }

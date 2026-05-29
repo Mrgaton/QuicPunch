@@ -40,7 +40,7 @@ public static class PreciseTime
         return DateTime.UtcNow.Add(_offset);
     }
 
-    public static async Task StartSyncedLoggerAsync(int multipleInMilliseconds, bool once = false)
+    public static async Task StartSyncedLoggerAsync(int multipleInMilliseconds, bool once = true)
     {
         long intervalTicks = TimeSpan.FromMilliseconds(multipleInMilliseconds).Ticks;
 
