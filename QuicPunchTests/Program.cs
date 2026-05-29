@@ -101,7 +101,7 @@ internal static class Program
         string password = Console.ReadLine();
 
         var cts = new CancellationTokenSource();
-        QuicPunchCore qcc = new QuicPunchCore(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 4001 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
+        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 4001 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
 
         _friendsLanHandler = new FriendsLanHandler();
 
@@ -111,6 +111,7 @@ internal static class Program
         qcc.RegisterProtocol(_friendsLanHandler);
         qcc.RegisterProtocol(chatHandler);
 
+        _friendsLanHandler.SetupTun();
 
         string myToken = qcc.GetToken();
         Console.WriteLine($"Your token: {myToken}\n");
@@ -182,6 +183,7 @@ internal static class Program
                 {
                     Console.Write("Enter the tokent to connect: ");
                     _ = qcc.PeerInterogation(Console.ReadLine(), cts);
+                    continue;
                 }
 
                 var peer = qcc.AvilablePeers.ElementAt(input.KeyChar - '1').Value;

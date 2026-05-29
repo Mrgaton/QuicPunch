@@ -4,7 +4,7 @@ using System.Text;
 
 namespace QuicPunch
 {
-    internal class ChatHandler : QuicPunchCore.IProtocolHandler
+    internal class ChatHandler : QuicPunch.IProtocolHandler
     {
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000001");
         public ushort PreferredPort => 0; 

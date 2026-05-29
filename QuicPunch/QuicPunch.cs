@@ -14,7 +14,7 @@ using static QuicPunch.QuicPunchStructures;
 
 namespace QuicPunch
 {
-    public class QuicPunchCore : IDisposable
+    public class QuicPunch : IDisposable
     {
         public UdpClient? udp = null;
 
@@ -62,7 +62,7 @@ namespace QuicPunch
         private int CertPublicKey { get; set; }
 
         //TODO: implement auto connect and password that must use hmac to make proof of ownership of the password and not just as a shared secret for encrypting the connection (which tbh is not that bad but still) and also add some way to manually add peers for first time connections without needing to capture the token from the interogation packets
-        public QuicPunchCore(CancellationTokenSource cts, byte[]? discoveryId, byte[]? connectionPassword, bool autoAcceptConnections, ushort discoveryPort = 443)
+        public QuicPunch(CancellationTokenSource cts, byte[]? discoveryId, byte[]? connectionPassword, bool autoAcceptConnections, ushort discoveryPort = 443)
         {
             if (!QuicListener.IsSupported || !QuicConnection.IsSupported)
             {
@@ -88,7 +88,7 @@ namespace QuicPunch
                 PoolId = discoveryId.Length == 20 ? discoveryId : SHA1.HashData(discoveryId);
 
                 TrackerScanner = new TrackerScanner(PoolId, PublicDiscoveryPort);
-                TrackerScanner.Start();
+                _ = TrackerScanner.Start();
             }
 
             if (connectionPassword != null)
@@ -163,7 +163,6 @@ namespace QuicPunch
         public interface IProtocolHandler
         {
             public Guid ProtocolId { get; }
-            public ushort PreferredPort { get; }
             public string ProtocolName { get; }
             public ZstandardCompressionOptions? CompressionOptions { get; }
             Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct);
@@ -225,7 +224,7 @@ namespace QuicPunch
 
             var decision = await NegociateConnection(protocolHandler, peer, (ushort)publicEndPoint.Port, mainCts);
 
-            return await QuicConectionCore.OpenPortCore(nudp, peer, (ushort)decision.Port, mainCts.Token);
+            return await QuicConection.OpenPortCore(nudp, peer, (ushort)decision.Port, mainCts.Token);
         }
         public async Task InitQuicConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
@@ -243,7 +242,7 @@ namespace QuicPunch
 
             var decision = await NegociateConnection(protocolHandler, peer, (ushort)publicEndPoint.Port, mainCts);
 
-            var conection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
+            var conection = await QuicConection.InitQuicConnectionCore(this.IPEndpoint, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
 
             if (conection.Conection == null || conection.Stream == null)
             {
@@ -323,8 +322,6 @@ namespace QuicPunch
 
                     //Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));
 
-                    //if (!result.RemoteEndPoint.Address.Equals(targetPeer.Address))
-                    //    continue;
 
                     if (result.Buffer.Length > 1464 || result.Buffer.Length < MagicHeader.Length)
                         goto skipPacket;
@@ -349,7 +346,7 @@ namespace QuicPunch
                             case (byte)MessageType.Hello:
                                 if (messageType == (byte)MessageType.Interogation)
                                 {
-                                    udp.SendAsync(GenerateHelloPayload(MessageType.Hello, true, result.RemoteEndPoint), result.RemoteEndPoint);
+                                    udp.SendAsync(GenerateHelloPayload(MessageType.Hello, true));
                                 }
 
                                 var certHash = r.ReadBytes(CurrentPeer.CertHash.Length);
@@ -436,6 +433,17 @@ namespace QuicPunch
 
                                     AvilablePeers[peerInfo.EndPoint] = peerInfo;
                                     OnPeerAvilable?.Invoke(peerInfo);
+
+                                    if (SharePeers)
+                                    {
+                                        foreach (var peer in AvilablePeers)
+                                        {
+                                            if (peer.Value.EndPoint.Address.Equals(result.RemoteEndPoint.Address))
+                                                continue;
+
+                                            await udp.SendAsync(GenerateAck(SharePeers), result.RemoteEndPoint);
+                                        }
+                                    }
                                 }
                                 else
                                 {
@@ -501,24 +509,14 @@ namespace QuicPunch
                                         continue;
                                     }
 
-                                    bool neewPeer = false;
-
                                     foreach (var newPeer in remotePeersCertHashes)
                                     {
                                         if (!AvilablePeers.TryGetValue(newPeer.Key, out _))
                                         {
                                             //TODO use the cert hashes
+                                            ExpectedPeerCert.TryAdd(newPeer.Key, newPeer.Value);
+
                                             _ = PeerInterogation(newPeer.Key, default);
-
-                                            neewPeer = true;
-                                        }
-                                    }
-
-                                    if (neewPeer)
-                                    {
-                                        foreach(var peer in AvilablePeers)
-                                        {
-                                            await udp.SendAsync(GenerateAck(SharePeers), result.RemoteEndPoint);
                                         }
                                     }
                                 }
@@ -631,15 +629,15 @@ namespace QuicPunch
 
                                             if (decidedResponse == HandShakeType.Accept)
                                             {
-                                                var connection = await QuicConectionCore.InitQuicConnectionCore(this.IPEndpoint, nudp, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, handler.CompressionOptions, ct);
+                                                var connection = await QuicConection.InitQuicConnectionCore(this.IPEndpoint, nudp, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, handler.CompressionOptions, ct);
 
                                                 if (connection.Conection == null || connection.Stream == null)
                                                 {
-                                                    handler.DeniedAsync(AvilablePeers[result.RemoteEndPoint], ct);
+                                                    Task.Run(async () => await handler.DeniedAsync(AvilablePeers[result.RemoteEndPoint], ct));
                                                 }
                                                 else
                                                 {
-                                                    handler.HandleAsync(connection.Conection, connection.Stream, AvilablePeers[result.RemoteEndPoint], ct);
+                                                    Task.Run(async () => await handler.HandleAsync(connection.Conection, connection.Stream, AvilablePeers[result.RemoteEndPoint], ct));
                                                 }
                                             }
                                         });
@@ -712,13 +710,15 @@ namespace QuicPunch
                 w.Write(MagicHeader);
                 w.Write((byte)MessageType.Ack);
 
-                w.Write(sharePeers ? (ushort)AvilablePeers.Count : (ushort)0);
+
+                var peersCopy = AvilablePeers.ToArray();
+
+                w.Write(sharePeers ? (ushort)peersCopy.Length : (ushort)0);
 
                 if (sharePeers)
                 {
-                    for (int i = 0; i < AvilablePeers.Count; i++)
+                    foreach (var peer in peersCopy.Select(p => p.Value))
                     {
-                        var peer = AvilablePeers.ElementAt(i).Value;
                         w.Write(peer.EndPoint.Address.GetAddressBytes());
                         w.Write((ushort)peer.EndPoint.Port);
                         w.Write(peer.CertHash);
@@ -736,7 +736,7 @@ namespace QuicPunch
 
             return payload;
         }
-        private byte[] GenerateHelloPayload(MessageType type, bool passwordProof, IPEndPoint ipe)
+        private byte[] GenerateHelloPayload(MessageType type, bool passwordProof)
         {
             byte[] payload;
 
@@ -806,7 +806,7 @@ namespace QuicPunch
             long intervalTicks = TimeSpan.FromMilliseconds(PunchIntervalMiliseconds).Ticks;
             int tries = 0;
 
-            var helloPayload = GenerateHelloPayload(MessageType.Hello, false, peer);
+            var helloPayload = GenerateHelloPayload(MessageType.Hello, false);
 
             while (!token.IsCancellationRequested)
             {
@@ -852,7 +852,7 @@ namespace QuicPunch
                         }
                         else
                         {
-                            await udp.SendAsync(GenerateHelloPayload(MessageType.Interogation, true, peer), peer);
+                            await udp.SendAsync(GenerateHelloPayload(MessageType.Interogation, true), peer);
                             await Task.Delay(250, token);
                         }
                     }

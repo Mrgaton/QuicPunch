@@ -17,7 +17,7 @@ namespace QuicPunch
         private IPAddress PublicIp;
 
         private readonly ConcurrentDictionary<IPEndPoint, DateTime> _peers = new();
-        private readonly List<IPEndPoint> _trackers = new();
+        private readonly ConcurrentBag<IPEndPoint> _trackers = new();
         private CancellationTokenSource? _cts;
 
         public event Action<IPEndPoint>? OnPeerFound;

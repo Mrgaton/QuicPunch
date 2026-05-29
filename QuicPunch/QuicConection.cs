@@ -11,7 +11,7 @@ using System.Text;
 
 namespace QuicPunch
 {
-    internal class QuicConectionCore
+    internal class QuicConection
     {
         //TODO: also implement stun to retrieve external port?
         public static async Task<(bool Sucess, UdpClient client)> OpenPortCore(UdpClient nudp, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
@@ -19,14 +19,13 @@ namespace QuicPunch
             try
             {
                 IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
-
                 var punchSuccessful = new TaskCompletionSource<bool>();
+                using var punchCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt);
+                _ = SendLoopAsync(nudp, remotePeerNewPort, punchCts.Token);
 
-                _ = SendLoopAsync(nudp, remotePeerNewPort, mainCt);
-
-                await ReceiveHoleLoopAsync(nudp, punchSuccessful, mainCt);
-                await punchSuccessful.Task.WaitAsync(mainCt);
-
+                await ReceiveHoleLoopAsync(nudp, punchSuccessful, punchCts.Token);
+                await punchSuccessful.Task.WaitAsync(punchCts.Token);
+                punchCts.Cancel();
                 return (true, nudp);
             }
             catch (OperationCanceledException)
@@ -135,7 +134,7 @@ namespace QuicPunch
 
         public static async Task ReceiveHoleLoopAsync(UdpClient udp, TaskCompletionSource<bool> tcs, CancellationToken token)
         {
-            var ACKPacket = Helpers.Combine(QuicPunchCore.MagicHeader, [(byte)QuicPunchStructures.MessageType.Ack]);
+            var ACKPacket = Helpers.Combine(QuicPunch.MagicHeader, [(byte)QuicPunchStructures.MessageType.Ack]);
 
             while (!token.IsCancellationRequested && !tcs.Task.IsCompleted)
             {
@@ -151,19 +150,19 @@ namespace QuicPunch
                     //if (!result.RemoteEndPoint.Address.Equals(targetPeer.Address))
                     //    continue;
 
-                    if (result.Buffer.Length > 512 || result.Buffer.Length < QuicPunchCore.MagicHeader.Length)
+                    if (result.Buffer.Length > 512 || result.Buffer.Length < QuicPunch.MagicHeader.Length)
                         goto skipPacket;
 
-                    for (int i = 0; i < QuicPunchCore.MagicHeader.Length; i++)
+                    for (int i = 0; i < QuicPunch.MagicHeader.Length; i++)
                     {
-                        if (result.Buffer[i] != QuicPunchCore.MagicHeader[i])
+                        if (result.Buffer[i] != QuicPunch.MagicHeader[i])
                             goto skipPacket;
                     }
 
                     using (MemoryStream ms = new MemoryStream(result.Buffer))
                     using (BinaryReader r = new BinaryReader(ms))
                     {
-                        _ = r.ReadBytes(QuicPunchCore.MagicHeader.Length);
+                        _ = r.ReadBytes(QuicPunch.MagicHeader.Length);
 
                         var messageType = (QuicPunchStructures.MessageType)r.ReadByte();
 
@@ -204,12 +203,12 @@ namespace QuicPunch
             using (MemoryStream ms = new MemoryStream())
             using (BinaryWriter w = new BinaryWriter(ms))
             {
-                w.Write(QuicPunchCore.MagicHeader);
+                w.Write(QuicPunch.MagicHeader);
                 w.Write((byte)QuicPunchStructures.MessageType.FinalHandshake);
                 payload = ms.ToArray();
             }
 
-            long intervalTicks = TimeSpan.FromMilliseconds(QuicPunchCore.PunchIntervalMiliseconds).Ticks;
+            long intervalTicks = TimeSpan.FromMilliseconds(QuicPunch.PunchIntervalMiliseconds).Ticks;
             int tries = 0;
 
             while (tries < 32)

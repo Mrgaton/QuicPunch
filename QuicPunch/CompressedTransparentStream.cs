@@ -57,10 +57,10 @@ public class CompressedTransparentStream : Stream
         _innerStream.Flush();
     }
 
-    public override Task FlushAsync(CancellationToken cancellationToken)
+    public override async Task FlushAsync(CancellationToken cancellationToken)
     {
-        return _compressor.FlushAsync(cancellationToken)
-            .ContinueWith(_ => _innerStream.FlushAsync(cancellationToken), cancellationToken).Unwrap();
+        await _compressor.FlushAsync(cancellationToken).ConfigureAwait(false);
+        await _innerStream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
 

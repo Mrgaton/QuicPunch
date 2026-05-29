@@ -10,7 +10,7 @@ using Wintun;
 
 namespace QuicPunch
 {
-    internal class FriendsLanHandler : QuicPunchCore.IProtocolHandler
+    internal class FriendsLanHandler : QuicPunch.IProtocolHandler
     {
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000002");
         public ushort PreferredPort => 0; 
@@ -209,14 +209,14 @@ namespace QuicPunch
                         throw new Win32Exception(error);
                     }
 
-                    if (packetSize < 20) // minimum ipv4 header size
-                        continue;
-
-                    if (packetPointer[0] >> 4 != 4) // not IPv4
-                        continue;
-
                     try
                     {
+                        if (packetSize < 20) // minimum ipv4 header size
+                            continue;
+
+                        if (packetPointer[0] >> 4 != 4) // not IPv4
+                            continue;
+
                         uint destIp =
                             BinaryPrimitives.ReverseEndianness(
                                 *(uint*)(packetPointer + 16));

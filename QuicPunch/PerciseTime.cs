@@ -17,8 +17,11 @@ public static class PreciseTime
         await socket.ConnectAsync("pool.ntp.org", 123);
 
         var sw = Stopwatch.StartNew();
-        await socket.SendAsync(ntpData, SocketFlags.None);
-        await socket.ReceiveAsync(ntpData, SocketFlags.None);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+
+        await socket.SendAsync(ntpData, SocketFlags.None, cts.Token);
+        await socket.ReceiveAsync(ntpData, SocketFlags.None, cts.Token);
         sw.Stop();
 
         ulong intPart = (ulong)ntpData[40] << 24 | (ulong)ntpData[41] << 16 | (ulong)ntpData[42] << 8 | (ulong)ntpData[43];
