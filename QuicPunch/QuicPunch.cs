@@ -1,6 +1,7 @@
 
 using QuicPunch;
 using System.Buffers.Binary;
+using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Net;
@@ -69,6 +70,7 @@ namespace QuicPunch
                 throw new NotSupportedException("QUIC is not supported on this machine.");
             }
 
+            
             udp = new UdpClient();
 
             if (OperatingSystem.IsWindows())
@@ -107,6 +109,27 @@ namespace QuicPunch
 
             CertPublicKey = CertManager.PeerCertificate!.GetPublicKey().Length;
 
+            PeerStore = new PeerStore(Path.Combine(AppDataPath, "peers.db"));
+
+            foreach (var speer in PeerStore.GetAll())
+            {
+                if (!ExpectedPeerCert.TryGetValue(speer.EndPoint, out _))
+                {
+                    ExpectedPeerCert.TryAdd(speer.EndPoint, speer.CertHash);
+                }
+
+                _ = PeerInterogation(speer.EndPoint, cts);
+            }
+
+            PeerStore.PeerAdded += (PeerStore.SavedPeer speer, bool external) =>
+            {
+                if (!ExpectedPeerCert.TryGetValue(speer.EndPoint, out _))
+                {
+                    ExpectedPeerCert.TryAdd(speer.EndPoint, speer.CertHash);
+                }
+
+                _ = PeerInterogation(speer.EndPoint, cts);
+            };
             StartInterogationListener();
         }
 
@@ -153,6 +176,8 @@ namespace QuicPunch
 
         public ConcurrentDictionary<IPEndPoint, PeerInfo> AvilablePeers = new ConcurrentDictionary<IPEndPoint, PeerInfo>();
         public ConcurrentDictionary<IPEndPoint, byte[]> ExpectedPeerCert = new ConcurrentDictionary<IPEndPoint, byte[]>();
+
+        public PeerStore PeerStore { get; private set; }
 
         public HandshakeManager Manager = new HandshakeManager();
 
@@ -258,7 +283,7 @@ namespace QuicPunch
         
         public async Task PeerInterogation(string token, CancellationTokenSource mainCts)
         {
-            var p = Helpers.DecodeEndpointToken(token);
+            var p = DecodeEndpointToken(token);
 
             if (!ExpectedPeerCert.TryGetValue(p.EndPoint, out var cert))
             {
@@ -872,8 +897,45 @@ namespace QuicPunch
             }
         }
 
-        public string GetToken() => Helpers.EncodeEndpointToken(CurrentPeer);
+        public string GetToken() => EncodeEndpointToken(CurrentPeer);
 
+        private const byte TokenVersionByte = 1;
+        public static string EncodeEndpointToken(PeerInfo p)
+        {
+            using (var ms = new MemoryStream())
+            using (var w = new BinaryWriter(ms))
+            {
+                //w.Write(TokenVersionByte);
+                w.Write(p.EndPoint.Address.GetAddressBytes());
+                w.Write((ushort)p.EndPoint.Port);
+
+                //w.Write((byte)p.CertHash.Length);
+                w.Write(p.CertHash);
+                return Base64Url.EncodeToString(ms.ToArray());
+            }
+        }
+        public static PeerInfo DecodeEndpointToken(string t)
+        {
+            using (var ms = new MemoryStream(Base64Url.DecodeFromChars(t)))
+            using (var r = new BinaryReader(ms))
+            {
+                //var version = r.ReadByte();
+                // if (version != TokenVersionByte) 
+                //    throw new Exception("Invalid token version");
+
+                var addressBytes = r.ReadBytes(4);
+                var port = r.ReadUInt16();
+
+                //var certHashLength = r.ReadByte();
+                var certHash = r.ReadBytes(384 / 8);
+
+                return new PeerInfo
+                {
+                    EndPoint = new IPEndPoint(new IPAddress(addressBytes), port),
+                    CertHash = certHash,
+                };
+            }
+        }
         public void Dispose()
         {
             CancelationSource?.Cancel();

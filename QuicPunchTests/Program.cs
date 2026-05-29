@@ -13,6 +13,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Web;
 using Wintun;
+using static PeerStore;
 
 internal static class Program
 {
@@ -24,7 +25,7 @@ internal static class Program
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern uint GetModuleFileName(IntPtr hModule, System.Text.StringBuilder lpFilename, uint nSize);
 
-    private static FriendsLanHandler _friendsLanHandler;
+    private static VirtualLanHandler _friendsLanHandler;
     private static async Task Main(string[] args)
     {
         //args = ["vgjnSQG7"];
@@ -34,6 +35,18 @@ internal static class Program
         if (args.Length > 0 && args[0].Contains("://"))
         {
             args = args[0].Split("/").Skip(2).Select(e => HttpUtility.UrlDecode(e)).ToArray();
+        }
+
+       // args = ["vgjnSaIPkdhdVT3GVATmCT4u/6nX7E0JZx582cDqA8vUu0CGd0BfzfO7/7bAgoOb9kOlvS9H"];
+
+        if (args.Length > 0)
+        {
+            var decodedPeer = QuicPunch.QuicPunch.DecodeEndpointToken(args[0]);
+
+            PeerStore ps = new PeerStore(Path.Combine(QuicPunch.QuicPunch.AppDataPath, "peers.db"));
+            ps.AddOrUpdate(decodedPeer.EndPoint, decodedPeer.CertHash);
+            ps.Dispose();
+            return;
         }
 
         const string scheme = "QPHP";
@@ -103,7 +116,7 @@ internal static class Program
         var cts = new CancellationTokenSource();
         QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 4001 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
 
-        _friendsLanHandler = new FriendsLanHandler();
+        _friendsLanHandler = new VirtualLanHandler();
 
 
         var chatHandler = new ChatHandler();

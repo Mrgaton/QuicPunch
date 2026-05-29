@@ -10,7 +10,7 @@ using Wintun;
 
 namespace QuicPunch
 {
-    internal class FriendsLanHandler : QuicPunch.IProtocolHandler
+    internal class VirtualLanHandler : QuicPunch.IProtocolHandler
     {
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000002");
         public ushort PreferredPort => 0; 
@@ -67,6 +67,7 @@ namespace QuicPunch
             catch (Win32Exception ex)
             {
                 Console.WriteLine($"Failed to create adapter (requires Administrator privileges): {ex.Message} (Error code: {ex.NativeErrorCode})");
+
                 if (ex.NativeErrorCode == 5) // ERROR_ACCESS_DENIED
                 {
                     Console.WriteLine("Verification result: The library successfully called wintun.dll! Access Denied is the expected outcome without Administrator privileges.");
@@ -77,10 +78,13 @@ namespace QuicPunch
                 Console.WriteLine($"Unexpected error during creation: {ex}");
             }
 
-            Task.Run(() => CaptureWintunAndSendToInternet(10));
+            if (_session != null)
+            {
+                Task.Run(() => CaptureWintunAndSendToInternet(10));
+            }
         }
 
-        public FriendsLanHandler()
+        public VirtualLanHandler()
         {
 
         }
