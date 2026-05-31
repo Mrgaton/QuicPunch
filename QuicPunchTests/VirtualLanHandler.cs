@@ -26,25 +26,6 @@ namespace QuicPunch
 
         public void SetupTun()
         {
-            try
-            {
-                uint version = WintunAdapter.GetRunningDriverVersion();
-                Console.WriteLine($"Running driver version: {version}");
-            }
-            catch (DllNotFoundException)
-            {
-                Console.WriteLine("wintun.dll not found in the output directory. Please copy it.");
-                return;
-            }
-            catch (Win32Exception ex)
-            {
-                Console.WriteLine($"Win32Exception while checking driver (expected if not installed/admin): {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Unexpected error: {ex}");
-            }
-
             Console.Write("Write your last ip digit 10.0.0.x:");
             string ipDigit = Console.ReadLine();
 
@@ -52,15 +33,14 @@ namespace QuicPunch
 
             _localIp = IPAddress.Parse(ip);
 
-            Console.WriteLine("\nTrying to create QuicPunch adapter...");
             try
             {
+                Console.WriteLine("\nTrying to create QuicPunch adapter...");
                 var adapter = WintunAdapter.Create("QuicPunchAdapter", "QuicPunchTunnel");
-                Console.WriteLine($"Adapter created successfully! LUID: {adapter.Luid}");
-
+                Console.WriteLine($"Adapter created LUID: {adapter.Luid}");
 
                 SetAdapterIP("QuicPunchAdapter", ip, "255.0.0.0");
-                SetAdapterMTU("QuicPunchAdapter", 65535);
+                SetAdapterMTU("QuicPunchAdapter", 9000);
 
                 _session = adapter.StartSession();
             }

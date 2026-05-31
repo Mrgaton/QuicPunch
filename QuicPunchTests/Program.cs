@@ -114,7 +114,7 @@ internal static class Program
         string password = Console.ReadLine();
 
         var cts = new CancellationTokenSource();
-        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 4001 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
+        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 443 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
 
         _friendsLanHandler = new VirtualLanHandler();
 
@@ -127,6 +127,7 @@ internal static class Program
         _friendsLanHandler.SetupTun();
 
         string myToken = qcc.GetToken();
+        Console.WriteLine($"Your public endpoint: {qcc.IPEndpoint}\n");
         Console.WriteLine($"Your token: {myToken}\n");
 
         string quickUri = $"https://gato.ovh/protred?uri=QPHP://{HttpUtility.UrlEncode(HttpUtility.UrlEncode(myToken))}";
