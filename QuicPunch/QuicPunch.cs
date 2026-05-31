@@ -1,5 +1,6 @@
 
 using QuicPunch;
+using QuicPunch.PacketHandler;
 using System.Buffers.Binary;
 using System.Buffers.Text;
 using System.Collections.Concurrent;
@@ -58,7 +59,7 @@ namespace QuicPunch
         }
         private IPEndPoint _IPEndpoint;
 
-        private CertManager CertManager { get; } = new CertManager(AppDataPath);
+        internal CertManager CertManager { get; } = new CertManager(AppDataPath);
 
         private int CertPublicKey { get; set; }
 
@@ -70,7 +71,7 @@ namespace QuicPunch
                 throw new NotSupportedException("QUIC is not supported on this machine.");
             }
 
-            
+
             udp = new UdpClient();
 
             if (OperatingSystem.IsWindows())
@@ -151,9 +152,10 @@ namespace QuicPunch
                 }
             }
         }
-        private byte[] PasswordHash { get; set; }
+        internal byte[] PasswordHash { get; set; }
         public bool AutoAcceptConnections { get; set; }
         public bool SharePeers { get; set; }
+        public bool AcceptSharedPeers { get; set; }
 
         public TrackerScanner TrackerScanner { get; private set; }
         public CancellationTokenSource CancelationSource { get; private set; }
@@ -198,6 +200,10 @@ namespace QuicPunch
 
 
         public event Action<PeerInfo>? OnPeerAvilable;
+        internal void RaisePeerAvailable(PeerInfo peerInfo)
+        {
+            OnPeerAvilable?.Invoke(peerInfo);
+        }
 
         //TODO: add retries :smile:
         private async Task<HandshakeDecision> NegociateConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
@@ -280,7 +286,7 @@ namespace QuicPunch
         }
 
         //TODO: make peer database for long term storage of peers and their info and add some way to manually add peers to it for first time connections
-        
+
         public async Task PeerInterogation(string token, CancellationTokenSource mainCts)
         {
             var p = DecodeEndpointToken(token);
@@ -363,342 +369,24 @@ namespace QuicPunch
                         _ = r.ReadBytes(MagicHeader.Length);
 
                         byte messageType = r.ReadByte();
-                        byte[] signature = new byte[64];
 
                         switch (messageType)
                         {
                             case (byte)MessageType.Interogation:
                             case (byte)MessageType.Hello:
-                                if (messageType == (byte)MessageType.Interogation)
-                                {
-                                    udp.SendAsync(GenerateHelloPayload(MessageType.Hello, true));
-                                }
-
-                                var certHash = r.ReadBytes(CurrentPeer.CertHash.Length);
-
-                                if (ExpectedPeerCert.TryGetValue(result.RemoteEndPoint, out var helloPeerCertHash) && !helloPeerCertHash.SequenceEqual(certHash))
-                                {
-                                    Console.WriteLine("HELLO INIT: Peer presented unexpected certificate");
-                                    continue;
-                                }
-
-                                byte nameSize = r.ReadByte();
-                                var nameBytes = r.ReadBytes(nameSize);
-
-                                var certSize = r.ReadUInt16();
-                                var certBytes = r.ReadBytes(certSize);
-
-                                var cert = new X509Certificate2(certBytes);
-
-                                if (!SHA3_384.HashData(cert.GetPublicKey()).SequenceEqual(certHash))
-                                {
-                                    Console.WriteLine("Corrupted cert hash from " + result.RemoteEndPoint);
-                                    continue;
-                                }
-
-                                var passwordConnection = r.ReadByte() > 0;
-
-                                if (passwordConnection && PasswordHash == null)
-                                {
-                                    Console.WriteLine("Peer has password connection but current instant doenst");
-                                    continue;
-                                }
-                                else if (passwordConnection)
-                                {
-                                    var remoteTicks = r.ReadInt64();
-                                    long nowTicks = PreciseTime.GetCorrectTime().Ticks;
-
-                                    long diffTicks = nowTicks - remoteTicks;
-
-                                    if (Math.Abs(diffTicks) > 30_000_000)
-                                    {
-                                        Console.WriteLine($"HELLO NEW: Packet from {result.RemoteEndPoint} rejected. Timestamp drifted by {diffTicks / 10_000.0}ms.");
-                                        continue;
-                                    }
-
-                                    var nonce = r.ReadBytes(32);
-
-                                    var pop = HMACSHA3_256.HashData(Helpers.Combine(BitConverter.GetBytes(remoteTicks), nonce, result.RemoteEndPoint.Address.GetAddressBytes(), BitConverter.GetBytes((ushort)result.RemoteEndPoint.Port)), PasswordHash);
-
-                                    var remotePop = r.ReadBytes(256 / 8);
-
-                                    if (!pop.SequenceEqual(remotePop))
-                                    {
-                                        Console.WriteLine("Error the peer could not proof the ownership of the password");
-                                        continue;
-                                    }
-                                }
-
-                                r.ReadExactly(signature);
-
-                                if (!AvilablePeers.ContainsKey(result.RemoteEndPoint))
-                                {
-                                    if (PasswordHash != null && !passwordConnection)
-                                    {
-                                        Console.WriteLine("Error instance has password configured but peer didnt sended one");
-                                        continue;
-                                    }
-
-                                    var ecdsa = cert.GetECDsaPublicKey();
-
-                                    var peerInfo = new PeerInfo
-                                    {
-                                        EndPoint = result.RemoteEndPoint,
-                                        CertHash = certHash,
-                                        Name = Encoding.UTF8.GetString(nameBytes),
-                                        LastSeen = PreciseTime.GetCorrectTime(),
-                                        Curve = ecdsa
-                                    };
-
-                                    if (!peerInfo.Curve.VerifyData(result.Buffer.AsSpan(0, (int)ms.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
-                                    {
-                                        Console.WriteLine("HELLO NEW: Received invalid signature from " + result.RemoteEndPoint);
-                                        continue;
-                                    }
-
-                                    AvilablePeers[peerInfo.EndPoint] = peerInfo;
-                                    OnPeerAvilable?.Invoke(peerInfo);
-
-                                    if (SharePeers)
-                                    {
-                                        foreach (var peer in AvilablePeers)
-                                        {
-                                            if (peer.Value.EndPoint.Address.Equals(result.RemoteEndPoint.Address))
-                                                continue;
-
-                                            await udp.SendAsync(GenerateAck(SharePeers), result.RemoteEndPoint);
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    var peer = AvilablePeers[result.RemoteEndPoint];
-
-                                    if (!peer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)ms.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
-                                    {
-                                        Console.WriteLine("HELLO OLD: Received invalid signature from " + result.RemoteEndPoint);
-                                        continue;
-                                    }
-
-                                    if (!certHash.SequenceEqual(peer.CertHash))
-                                    {
-                                        //TODO: IDK what to do enter in panick cause someone is spoofing conections!=!="!"?=)i3?_="!
-                                        Console.WriteLine("HELLO OLD: Received corrupted cert hash from " + result.RemoteEndPoint);
-                                        continue;
-                                    }
-                                    else
-                                    {
-                                        if (peer.Name.Length != nameBytes.Length || peer.Name != Encoding.UTF8.GetString(nameBytes))
-                                        {
-                                            peer.Name = Encoding.UTF8.GetString(nameBytes);
-                                        }
-
-                                        peer.LastSeen = PreciseTime.GetCorrectTime();
-                                    }
-                                }
-
-                                await udp.SendAsync(GenerateAck(SharePeers), result.RemoteEndPoint);
+                                HelloHandler.HandleHello(this, r, udp, result, messageType);
                                 continue;
 
                             case (byte)MessageType.Ack:
-                                
-                                if (AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo ackPeer))
-                                {
-                                    var peersCount = r.ReadUInt16();
-                                    Dictionary<IPEndPoint, byte[]> remotePeersCertHashes = new Dictionary<IPEndPoint, byte[]>(peersCount);
-
-                                    for (int i = 0; i < peersCount; i++)
-                                    {
-                                        IPAddress ip = new IPAddress(r.ReadBytes(4));
-                                        ushort port = r.ReadUInt16();
-                                        var peerCertHash = r.ReadBytes(CurrentPeer.CertHash.Length);
-                                        remotePeersCertHashes.Add(new IPEndPoint(ip, port), peerCertHash);
-                                    }
-
-                                    long receivedTicks = r.ReadInt64();
-                                    long nowTicks = PreciseTime.GetCorrectTime().Ticks;
-
-                                    long diffTicks = nowTicks - receivedTicks;
-
-                                    if (Math.Abs(diffTicks) > 30_000_000)
-                                    {
-                                        Console.WriteLine($"ACK: Packet from {result.RemoteEndPoint} rejected. Timestamp drifted by {diffTicks / 10_000.0}ms.");
-                                        continue;
-                                    }
-
-                                    r.ReadExactly(signature);
-
-                                    if (!ackPeer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)ms.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
-                                    {
-                                        Console.WriteLine("ACK: Received invalid signature from " + result.RemoteEndPoint);
-                                        continue;
-                                    }
-
-                                    foreach (var newPeer in remotePeersCertHashes)
-                                    {
-                                        if (!AvilablePeers.TryGetValue(newPeer.Key, out _))
-                                        {
-                                            //TODO use the cert hashes
-                                            ExpectedPeerCert.TryAdd(newPeer.Key, newPeer.Value);
-
-                                            _ = PeerInterogation(newPeer.Key, default);
-                                        }
-                                    }
-                                }
-                                //Console.WriteLine($"Received ACK from {result.RemoteEndPoint}");
+                                AckHandler.HandleAck(this, r, udp, result);
                                 continue;
 
                             case (byte)MessageType.Handshake:
-                                var handShakeType = (HandShakeType)r.ReadByte();
-                                var remotePort = r.ReadUInt16();
-
-                                var connectionType = new Guid(r.ReadBytes(16));
-                                var guid = new Guid(r.ReadBytes(16));
-
-                                var signatureHandshake = r.ReadBytes(64); //Signature data
-
-                                if (!AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo handshakePeer))
-                                {
-                                    Console.WriteLine($"Received handshake from unknown peer {result.RemoteEndPoint}");
-                                    continue;
-                                }
-
-                                if (!handshakePeer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)ms.Position - signatureHandshake.Length), signatureHandshake, HashAlgorithmName.SHA3_256))
-                                {
-                                    Console.WriteLine("Received invalid signature from " + result.RemoteEndPoint);
-                                    continue;
-                                }
-
-                                switch (handShakeType)
-                                {
-                                    case HandShakeType.Request:
-                                        Console.WriteLine($"Received handshake request from {result.RemoteEndPoint}");
-
-                                        _ = Task.Run(async () =>
-                                        {
-                                            HandShakeType decidedResponse = HandShakeType.Unsuported;
-                                            ushort decidedPort = 0;
-                                            CancellationToken ct = CancellationToken.None;
-
-                                            if (ProtocolHandlers.TryGetValue(connectionType, out var handler))
-                                            {
-                                                HandshakeDecision decision;
-
-                                                if (AutoAcceptConnections)
-                                                {
-                                                    decision = new HandshakeDecision(true, (ushort)Random.Shared.Next(ushort.MaxValue / 2, ushort.MaxValue), CancellationToken.None);
-                                                }
-                                                else
-                                                {
-                                                    decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, result.RemoteEndPoint), TimeSpan.FromSeconds(30), true, CancellationToken.None);
-                                                }
-
-                                                if (decision.Accepted)
-                                                {
-                                                    if (decision.Port == null || decision.Port == 0)
-                                                        throw new Exception("Invalid port in handshake decision.");
-
-                                                    decidedResponse = HandShakeType.Accept;
-                                                    decidedPort = (ushort)decision.Port;
-                                                    ct = decision.Ct ?? CancellationToken.None;
-                                                }
-                                                else
-                                                {
-                                                    decidedResponse = HandShakeType.Decline;
-                                                    decidedPort = 0;
-                                                }
-                                            }
-
-                                            UdpClient? nudp = null;
-                                            IPEndPoint? publicEndPoint = null;
-
-                                            if (decidedResponse == HandShakeType.Accept)
-                                            {
-                                                nudp = new UdpClient();
-                                                if (OperatingSystem.IsWindows())
-                                                    nudp.Client.IOControl(-1744830452, [0], null);
-
-                                                nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                                                nudp.Client.Bind(new IPEndPoint(IPAddress.Any, decidedPort));
-                                                publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
-                                            }
-
-                                            byte[] payload;
-
-                                            using (MemoryStream ms = new MemoryStream())
-                                            using (BinaryWriter w = new BinaryWriter(ms))
-                                            {
-                                                w.Write(MagicHeader);
-                                                w.Write((byte)MessageType.Handshake);
-                                                w.Write((byte)(decidedResponse));
-                                                w.Write(publicEndPoint != null ? (ushort)publicEndPoint.Port : (ushort)0);
-                                                w.Write(connectionType.ToByteArray());
-                                                w.Write(guid.ToByteArray());
-
-                                                payload = ms.ToArray();
-                                                var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
-                                                Array.Resize(ref payload, payload.Length + signature.Length);
-                                                Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
-                                            }
-
-                                            await udp.SendAsync(payload, result.RemoteEndPoint);
-
-                                            Task.Factory.StartNew(() =>
-                                            {
-                                                for (int i = 0; i < 3; i++)
-                                                {
-                                                    Thread.Sleep(500);
-                                                    udp.Send(payload, result.RemoteEndPoint);
-                                                }
-                                            });
-
-                                            if (decidedResponse == HandShakeType.Accept)
-                                            {
-                                                var connection = await QuicConection.InitQuicConnectionCore(this.IPEndpoint, nudp, AvilablePeers[result.RemoteEndPoint], remotePort, CertManager.PeerCertificate!, handler.CompressionOptions, ct);
-
-                                                if (connection.Conection == null || connection.Stream == null)
-                                                {
-                                                    Task.Run(async () => await handler.DeniedAsync(AvilablePeers[result.RemoteEndPoint], ct));
-                                                }
-                                                else
-                                                {
-                                                    Task.Run(async () => await handler.HandleAsync(connection.Conection, connection.Stream, AvilablePeers[result.RemoteEndPoint], ct));
-                                                }
-                                            }
-                                        });
-                                        continue;
-
-                                    case HandShakeType.Accept:
-                                        Console.WriteLine($"Received handshake ACCEPT from {result.RemoteEndPoint}");
-                                        Manager.Approve(guid, remotePort, null);
-                                        continue;
-
-                                    case HandShakeType.Decline or HandShakeType.Unsuported:
-                                        Console.WriteLine($"Handshake canceled from {result.RemoteEndPoint}");
-                                        Manager.Reject(guid);
-                                        continue;
-                                }
+                                HandshakeHandler.HandleHandshake(this, r, udp, result);
                                 continue;
 
                             case (byte)MessageType.Ping:
-                                bool secondTimestamp = ms.ReadByte() > 0;
-                                long t1 = r.ReadInt64();
-
-                                if (secondTimestamp)
-                                {
-                                    long t2 = r.ReadInt64();
-
-                                    if (!AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo peer))
-                                        continue;
-
-                                    peer.UpTicks = t2 - t1;
-                                    peer.DownTicks = PreciseTime.GetCorrectTime().Ticks - t2;
-                                    peer.Ping = TimeSpan.FromTicks(PreciseTime.GetCorrectTime().Ticks - t1);
-                                }
-                                else
-                                {
-                                    udp.SendAsync(BuildPingPacket(t1, PreciseTime.GetCorrectTime().Ticks), result.RemoteEndPoint);
-                                }
+                                PingHandler.HandlePing(this, r, udp, result);
                                 continue;
 
                             default:
@@ -725,7 +413,7 @@ namespace QuicPunch
             }
         }
 
-        private byte[] GenerateAck(bool sharePeers)
+        internal byte[] GenerateAck(bool sharePeers)
         {
             byte[] payload;
 
@@ -761,7 +449,7 @@ namespace QuicPunch
 
             return payload;
         }
-        private byte[] GenerateHelloPayload(MessageType type, bool passwordProof)
+        internal byte[] GenerateHelloPayload(MessageType type, bool passwordProof)
         {
             byte[] payload;
 
@@ -805,7 +493,7 @@ namespace QuicPunch
             return payload;
         }
 
-        public byte[] BuildPingPacket(long t1, long? t2 = null)
+        internal byte[] BuildPingPacket(long t1, long? t2 = null)
         {
             int size = MagicHeader.Length + 2 + 8 + (t2.HasValue ? 8 : 0);
 
