@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
@@ -7,8 +8,23 @@ using System.Net.Sockets;
 
 namespace QuicPunch
 {
-    internal class Helpers
+    internal static class Helpers
     {
+        public static async Task BigSendAsync( this UdpClient udp, byte[] data, PeerInfo peerInfo)
+        {
+            var tasks = new List<Task>();
+
+            foreach (var address in peerInfo.Addresses)
+            {
+                for (int port = peerInfo.MinPort; port <= peerInfo.MaxPort; port++)
+                {
+                    tasks.Add(udp.SendAsync(data, data.Length, new IPEndPoint(address, port)));
+                }
+            }
+
+            await Task.WhenAll(tasks);
+        }
+        
         public static byte[] Combine(params byte[][] arrays)
         {
             int len = 0;
@@ -25,34 +41,98 @@ namespace QuicPunch
 
             return r;
         }
-        public static async Task<IPEndPoint?> GetPublicEndPoint(UdpClient udp, CancellationToken cancellationToken = default)
+
+        
+        static bool TryParseEndpoint(string line, out string host, out int port)
+    {
+        host = "";
+        port = 0;
+
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        line = line.Trim();
+
+        int colon = line.LastIndexOf(':');
+        if (colon <= 0 || colon == line.Length - 1)
+            return false;
+
+        host = line[..colon].Trim();
+        return int.TryParse(line[(colon + 1)..].Trim(), out port);
+    }
+
+   public static IPEndPoint[]? ResolveEndpoint(string line)
+    {
+        if (!TryParseEndpoint(line, out var host, out var port))
+            return null;
+
+        if (IPAddress.TryParse(host, out var ip))
         {
-            var endpoint = await StunClient.GetMappedEndpointAsync(
-                udp,
-                TimeSpan.FromSeconds(2),
-                cancellationToken);
-
-            if (endpoint is null)
-                throw new Exception("Failed to get public EndPoint");
-
-            return endpoint;
+            if (ip.AddressFamily == AddressFamily.InterNetwork) // IPv4 only
+                return [new IPEndPoint(ip, port)];
         }
 
-        public static async Task<IPAddress?> GetPublicIP()
+        try
         {
-            using var udp = new UdpClient(AddressFamily.InterNetwork);
+            var addresses = Dns.GetHostAddresses(host);
 
-            var endpoint = await StunClient.GetMappedEndpointAsync(
-                udp,
-                TimeSpan.FromSeconds(2));
+            return addresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork)
+                .Select(a => new IPEndPoint(a, port)).ToArray();
+        }
+        catch (SocketException ex)
+        {
+            Console.Error.WriteLine($"DNS lookup failed for '{host}': {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Failed to resolve '{host}': {ex.Message}");
+            return null;
+        }
+    }
 
-            if (endpoint is null)
-                throw new Exception("Failed to get public IP");
 
-            return endpoint.Address;
+  public static QuicPunch.NetworkType GetNetworkType(ConcurrentDictionary<IPEndPoint, int> stunsHits)
+    {
+        if (stunsHits.Count == 0)
+            throw new ArgumentException("No STUN hits provided.", nameof(stunsHits));
+        
+        var hitsByIp = stunsHits
+            .GroupBy(x => x.Key.Address)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Sum(x => x.Value)
+            ).OrderByDescending(e => e.Value).ToArray();
+
+        var biggestAddressHits = hitsByIp[0].Value;
+        var otherAddressHits = hitsByIp.Skip(1).Sum(e => e.Value);
+        double addressRatio = (double)biggestAddressHits / (biggestAddressHits + otherAddressHits) ;
+        
+        var hitsByPort = stunsHits
+            .GroupBy(x => x.Key.Port)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Sum(x => x.Value)
+            ).OrderByDescending(e => e.Value).ToArray();
+
+        var biggestPortHits = hitsByPort[0].Value;
+        var otherPortHits = hitsByPort.Skip(1).Sum(e => e.Value);
+        double portRatio = (double)biggestPortHits / (biggestPortHits + otherPortHits);
+
+        if (addressRatio > 0.99 && portRatio > 0.99)
+        {
+            return QuicPunch.NetworkType.Static;
+        }
+        else if (addressRatio > 0.99 &&   portRatio < 0.99)
+        {
+            return QuicPunch.NetworkType.DynamicPort;
+        }
+        else if (addressRatio < 0.99 && portRatio > 0.99)
+        {
+            return QuicPunch.NetworkType.DynamicAddress;
         }
 
-      
-
+        return QuicPunch.NetworkType.DynamicPortAndAddress;
+    }
     }
 }

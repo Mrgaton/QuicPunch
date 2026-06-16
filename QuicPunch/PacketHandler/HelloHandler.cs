@@ -8,7 +8,7 @@ namespace QuicPunch.PacketHandler
 {
     internal class HelloHandler
     {
-        internal static async void HandleHello(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result, byte messageType) {
+        internal static void HandleHello(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result, byte messageType) {
             if (messageType == (byte)MessageType.Interogation)
             {
                 udp.SendAsync(qc.GenerateHelloPayload(MessageType.Hello, true));
@@ -16,7 +16,7 @@ namespace QuicPunch.PacketHandler
 
             var certHash = r.ReadBytes(qc.CurrentPeer.CertHash.Length);
 
-            if (qc.ExpectedPeerCert.TryGetValue(result.RemoteEndPoint, out var helloPeerCertHash) && !helloPeerCertHash.SequenceEqual(certHash))
+            if (qc.ExpectedPeerCerts.TryGetValue(result.RemoteEndPoint.Address , out var helloPeerCertHashes) && !helloPeerCertHashes.Any(c => c.SequenceEqual(certHash)))
             {
                 Console.WriteLine("HELLO INIT: Peer presented unexpected certificate");
                 return;
@@ -84,7 +84,7 @@ namespace QuicPunch.PacketHandler
 
                 var peerInfo = new PeerInfo
                 {
-                    EndPoint = result.RemoteEndPoint,
+                    ActiveEndPoint = result.RemoteEndPoint,
                     CertHash = certHash,
                     Name = Encoding.UTF8.GetString(nameBytes),
                     LastSeen = PreciseTime.GetCorrectTime(),
@@ -97,17 +97,17 @@ namespace QuicPunch.PacketHandler
                     return;
                 }
 
-                qc.AvilablePeers[peerInfo.EndPoint] = peerInfo;
+                qc.AvilablePeers[peerInfo.ActiveEndPoint] = peerInfo;
                 qc.RaisePeerAvailable(peerInfo);
 
                 if (qc.SharePeers)
                 {
                     foreach (var peer in qc.AvilablePeers)
                     {
-                        if (peer.Value.EndPoint.Address.Equals(result.RemoteEndPoint.Address))
+                        if (peer.Value.ActiveEndPoint.Address.Equals(result.RemoteEndPoint.Address))
                             continue;
 
-                        await udp.SendAsync(qc.GenerateAck(qc.SharePeers), result.RemoteEndPoint);
+                        udp.SendAsync(qc.GenerateAck(qc.SharePeers), result.RemoteEndPoint);
                     }
                 }
             }
@@ -138,7 +138,7 @@ namespace QuicPunch.PacketHandler
                 }
             }
 
-            await udp.SendAsync(qc.GenerateAck(qc.SharePeers), result.RemoteEndPoint);
+            udp.SendAsync(qc.GenerateAck(qc.SharePeers), result.RemoteEndPoint);
         }
     }
 }

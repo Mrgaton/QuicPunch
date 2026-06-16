@@ -18,46 +18,51 @@ namespace QuicPunch
 {
     public class QuicPunch : IDisposable
     {
+        private HttpClient client = new HttpClient();
+        
         public UdpClient? udp = null;
 
-        public int PublicDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
         public int LocalDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
 
         public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QuicPunchV16");
 
         public PeerInfo CurrentPeer { get; private set; }
-        public void ClearIPEndpointCache()
-        {
-            _IPEndpoint = null;
-            _IPEndpointStr = null;
-        }
 
         public string IPEndpointStr
         {
-            get
-            {
-                if (_IPEndpointStr != null)
-                    return _IPEndpointStr;
-
-                return _IPEndpointStr = IPEndpoint.ToString();
-            }
+            get => IPEndpoint.ToString();
         }
-        private string _IPEndpointStr;
-
         public IPEndPoint IPEndpoint
         {
             get
             {
-                if (_IPEndpoint != null)
-                    return _IPEndpoint;
-
-                if (udp == null)
-                    throw new InvalidOperationException("UDP client is not initialized.");
-
-                return _IPEndpoint = Helpers.GetPublicEndPoint(udp).Result;
+                return StunResponseEndpointHits.OrderByDescending(e => e.Value).ToArray().FirstOrDefault().Key;
             }
         }
         private IPEndPoint _IPEndpoint;
+        
+        private IPEndPoint[] _StunServerEndpoints;
+        
+        private SimpleStunClient _StunClient;
+
+        private ConcurrentDictionary<IPEndPoint, int> StunResponseEndpointHits;
+
+        private int MostUsedPort => StunResponseEndpointHits
+            .GroupBy(x => x.Key.Port)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Sum(x => x.Value)
+            ).OrderByDescending(e => e.Value).FirstOrDefault().Key;
+        
+        private (int minPort, int maxPort) StunPortRange
+        {
+            get
+            {
+                var portOrder = StunResponseEndpointHits.OrderByDescending(k => k.Key.Port);
+                
+                return (portOrder.Last().Key.Port, portOrder.First().Key.Port);
+            }
+        }
 
         internal CertManager CertManager { get; } = new CertManager(AppDataPath);
 
@@ -71,6 +76,48 @@ namespace QuicPunch
                 throw new NotSupportedException("QUIC is not supported on this machine.");
             }
 
+            var urls = new string[]
+            {
+                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_nat_testing_hosts.txt",
+                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_nat_testing_ipv4s.txt",
+                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/candidates.txt",
+                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_ipv4s.txt",
+                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_hosts.txt",
+
+                "https://gist.githubusercontent.com/mondain/b0ec1cf5f60ae726202e/raw/2d2b96b4508a38d342e0228d46eab84dad2398a3/public-stun-list.txt",
+                "https://gist.githubusercontent.com/zziuni/3741933/raw/212e4b6316110dc5c128d08f65ff8f174d7ae383/stuns",
+            };
+
+            var parsedEndpoints = new List<string>();
+
+            foreach (var url in urls) 
+            {
+                var data =  client.GetStringAsync(url).Result;
+            
+                foreach(var line in data.Split("\n").Select(l => l.Trim()).Where(l => !string.IsNullOrEmpty(l) && !l.StartsWith("#")))
+                {
+                    parsedEndpoints.Add(line);
+                }
+            }
+
+            var uniqueList = parsedEndpoints
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var servers = new ConcurrentBag<IPEndPoint>();
+
+            Parallel.ForEach(uniqueList,new ParallelOptions() { MaxDegreeOfParallelism = 64 }, line =>
+            {
+                var ep = Helpers.ResolveEndpoint(line);
+
+                if (ep is not null)
+                {
+                    foreach (var e in ep)
+                    {
+                        servers.Add(e);
+                    }
+                }
+            });
 
             udp = new UdpClient();
 
@@ -82,15 +129,28 @@ namespace QuicPunch
             udp.Client.DontFragment = true;
 
             LocalDiscoveryPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
-            PublicDiscoveryPort = this.IPEndpoint.Port;
+            
+            _StunServerEndpoints = servers.ToArray();
+            _StunClient = new SimpleStunClient(udp, _StunServerEndpoints);
 
-            CancelationSource = cts ?? new CancellationTokenSource();
+            StunResponseEndpointHits = new ConcurrentDictionary<IPEndPoint, int>();
+            
+            _StunClient.MappedAddressResolved += (sender, args) =>
+            {
+                if (!StunResponseEndpointHits.TryGetValue(args.MappedEndPoint, out _)){
+                    StunResponseEndpointHits[args.MappedEndPoint] = 0;
+                }
+
+                StunResponseEndpointHits[args.MappedEndPoint]++;
+            };
+
+            _CancelationSource = cts ?? new CancellationTokenSource();
 
             if (discoveryId != null)
             {
                 PoolId = discoveryId.Length == 20 ? discoveryId : SHA1.HashData(discoveryId);
 
-                TrackerScanner = new TrackerScanner(PoolId, PublicDiscoveryPort);
+                TrackerScanner = new TrackerScanner(PoolId, LocalDiscoveryPort);
                 _ = TrackerScanner.Start();
             }
 
@@ -104,7 +164,6 @@ namespace QuicPunch
             CurrentPeer = new PeerInfo()
             {
                 Name = Environment.UserName + '\\' + Environment.UserDomainName,
-                EndPoint = this.IPEndpoint,
                 CertHash = CertManager.CertPublicHash,
             };
 
@@ -114,24 +173,32 @@ namespace QuicPunch
 
             foreach (var speer in PeerStore.GetAll())
             {
-                if (!ExpectedPeerCert.TryGetValue(speer.EndPoint, out _))
+                AddCertToAddress(speer.EndPoint.Address, speer.CertHash);
+                
+                _ = PeerInterogation(new PeerInfo()
                 {
-                    ExpectedPeerCert.TryAdd(speer.EndPoint, speer.CertHash);
-                }
-
-                _ = PeerInterogation(speer.EndPoint, cts);
+                    CertHash = speer.CertHash,
+                    Addresses =  [speer.EndPoint.Address],
+                    MaxPort =  speer.EndPoint.Port,
+                    MinPort = speer.EndPoint.Port
+                },cts);
             }
 
             PeerStore.PeerAdded += (PeerStore.SavedPeer speer, bool external) =>
             {
-                if (!ExpectedPeerCert.TryGetValue(speer.EndPoint, out _))
+                AddCertToAddress(speer.EndPoint.Address, speer.CertHash);
+                
+                _ = PeerInterogation(new PeerInfo()
                 {
-                    ExpectedPeerCert.TryAdd(speer.EndPoint, speer.CertHash);
-                }
-
-                _ = PeerInterogation(speer.EndPoint, cts);
+                    CertHash = speer.CertHash,
+                    Addresses =  [speer.EndPoint.Address],
+                    MaxPort =  speer.EndPoint.Port,
+                    MinPort = speer.EndPoint.Port
+                },cts);
             };
-            StartInterogationListener();
+
+            Task.Run(ReceiveLoopAsync);
+            Task.Run(StartStunRequest);
         }
 
         private byte[] _poolId = [];
@@ -147,7 +214,7 @@ namespace QuicPunch
                 if (TrackerScanner != null)
                 {
                     TrackerScanner.Stop();
-                    TrackerScanner = new TrackerScanner(value, PublicDiscoveryPort);
+                    TrackerScanner = new TrackerScanner(value, LocalDiscoveryPort);
                     TrackerScanner.Start();
                 }
             }
@@ -158,27 +225,45 @@ namespace QuicPunch
         public bool AcceptSharedPeers { get; set; }
 
         public TrackerScanner TrackerScanner { get; private set; }
-        public CancellationTokenSource CancelationSource { get; private set; }
+        public CancellationTokenSource _CancelationSource { get; private set; }
 
-        public void StartInterogationListener()
+        public async Task StartStunRequest()
         {
-            InterogationsListenerTask = ReceiveLoopAsync(udp, CancelationSource.Token);
-        }
-        public void StopInterogationListener()
-        {
-            CancelationSource.Cancel();
-        }
-        public Task InterogationsListenerTask { get; private set; }
+            while (!_CancelationSource.IsCancellationRequested)
+            {
+                try
+                {
+                    await _StunClient.SendRequest(_CancelationSource.Token);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(ex.ToString());
+                }
 
-
+                await Task.Delay(5000);
+            }
+        }
 
         public const int PunchIntervalMiliseconds = 2500 / 2;
 
         public static byte[] MagicHeader = Encoding.UTF8.GetBytes("PuNch");
 
         public ConcurrentDictionary<IPEndPoint, PeerInfo> AvilablePeers = new ConcurrentDictionary<IPEndPoint, PeerInfo>();
-        public ConcurrentDictionary<IPEndPoint, byte[]> ExpectedPeerCert = new ConcurrentDictionary<IPEndPoint, byte[]>();
+        public ConcurrentDictionary<IPAddress, byte[][]> ExpectedPeerCerts = new ConcurrentDictionary<IPAddress, byte[][]>();
 
+        public void AddCertToAddress(IPAddress address, byte[] cert)
+        {
+            if (ExpectedPeerCerts.TryGetValue(address, out var  peerCerts))
+            {
+                ExpectedPeerCerts.TryAdd(address,  peerCerts.Append(cert).ToArray());
+                            
+            }
+            else
+            {
+                ExpectedPeerCerts.TryAdd(address, [ cert ]);
+            }
+        }
+        
         public PeerStore PeerStore { get; private set; }
 
         public HandshakeManager Manager = new HandshakeManager();
@@ -228,18 +313,18 @@ namespace QuicPunch
                 Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
 
-            await udp.SendAsync(payload, peer.EndPoint);
+            await udp.BigSendAsync(payload, peer);
 
-            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(conectionGuid, protocolHandler, peer.EndPoint), TimeSpan.FromSeconds(30), false, mainCts.Token);
+            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(conectionGuid, protocolHandler, peer.ActiveEndPoint), TimeSpan.FromSeconds(30), false, mainCts.Token);
 
             if (!decision.Accepted)
                 throw new Exception("Handshake declined by peer.");
 
-            Console.WriteLine("Peer acepted :D");
+            Console.WriteLine("Peer accepted :D");
 
             return decision;
         }
-        public async Task<(bool Success, UdpClient Client)> InitUdpConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        public async Task<(bool Success, UdpClient Client, IPEndPoint remoteEndpoint)> InitUdpConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
             if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
             {
@@ -251,9 +336,8 @@ namespace QuicPunch
                 nudp.Client.IOControl(-1744830452, [0], null);
             nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
-            var publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
 
-            var decision = await NegociateConnection(protocolHandler, peer, (ushort)publicEndPoint.Port, mainCts);
+            var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
 
             return await QuicConection.OpenPortCore(nudp, peer, (ushort)decision.Port, mainCts.Token);
         }
@@ -269,9 +353,8 @@ namespace QuicPunch
                 nudp.Client.IOControl(-1744830452, [0], null);
             nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
-            var publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
 
-            var decision = await NegociateConnection(protocolHandler, peer, (ushort)publicEndPoint.Port, mainCts);
+            var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
 
             var conection = await QuicConection.InitQuicConnectionCore(this.IPEndpoint, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
 
@@ -291,39 +374,39 @@ namespace QuicPunch
         {
             var p = DecodeEndpointToken(token);
 
-            if (!ExpectedPeerCert.TryGetValue(p.EndPoint, out var cert))
+            foreach (var address in p.Addresses)
             {
-                ExpectedPeerCert.TryAdd(p.EndPoint, p.CertHash);
+                if (!ExpectedPeerCerts.TryGetValue(address, out byte[][] certs))
+                {
+                    ExpectedPeerCerts.TryAdd(address, [ p.CertHash ] );
+                }
+                else if (!certs.Any(c => c.SequenceEqual(p.CertHash)))
+                {
+                    ExpectedPeerCerts[address] = certs.Append(p.CertHash).ToArray();
+                }
             }
 
-            await PeerInterogation(p.EndPoint, mainCts);
+            await PeerInterogation(p, mainCts);
         }
-        private readonly ConcurrentDictionary<IPEndPoint, CancellationTokenSource> _punchCts = new ConcurrentDictionary<IPEndPoint, CancellationTokenSource>();
-        public async Task PeerInterogation(IPEndPoint endpoint, CancellationTokenSource mainCts)
+       public async Task PeerInterogation(PeerInfo peer, CancellationTokenSource cts)
         {
-            if (mainCts == null)
-                mainCts = new CancellationTokenSource();
+            if (cts == null)
+                cts = new CancellationTokenSource();
 
-            var cts = CancellationTokenSource.CreateLinkedTokenSource(mainCts!.Token);
+            var lcts = CancellationTokenSource.CreateLinkedTokenSource(cts!.Token);
 
-            if (!_punchCts.TryAdd(endpoint, cts))
-            {
-                cts.Dispose();
-                return;
-            }
 
-            Console.WriteLine($"Starting interogation for {endpoint}...");
+            Console.WriteLine($"Starting interogation for {string.Join(", ",peer.Addresses)}...");
 
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await SendLoopAsync(udp!, endpoint, cts.Token);
+                    await SendLoopAsync(udp!, peer, lcts.Token);
                 }
                 finally
                 {
-                    _punchCts.TryRemove(endpoint, out _);
-                    cts.Dispose();
+                    lcts.Dispose();
                 }
             });
         }
@@ -337,24 +420,26 @@ namespace QuicPunch
 
             return BinaryPrimitives.ReadUInt32BigEndian(bytes);
         }
-        private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken token)
+        private async Task ReceiveLoopAsync()
         {
-            while (!token.IsCancellationRequested)
+            while (!_CancelationSource.IsCancellationRequested)
             {
                 try
                 {
-
                 skipPacket:
 
-                    var result = await udp.ReceiveAsync(token);
+                    var result = await udp.ReceiveAsync(_CancelationSource.Token);
 
                     if (!_rateLimiter.IsAllowed(IpToUint(result.RemoteEndPoint.Address)))
                         goto skipPacket;
-
+                    
+                    if (_StunClient.TryProcessIncoming(result.Buffer, result.RemoteEndPoint))
+                       continue;
+                    
                     //Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));
 
 
-                    if (result.Buffer.Length > 1464 || result.Buffer.Length < MagicHeader.Length)
+                    if (result.Buffer.Length > 1464 || result.Buffer.Length < MagicHeader.Length + (256 / 8))
                         goto skipPacket;
 
                     for (int i = 0; i < MagicHeader.Length; i++)
@@ -407,7 +492,7 @@ namespace QuicPunch
                 {
                     Console.WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
 
-                    if (token.IsCancellationRequested)
+                    if (_CancelationSource.IsCancellationRequested)
                         break;
                 }
             }
@@ -423,7 +508,6 @@ namespace QuicPunch
                 w.Write(MagicHeader);
                 w.Write((byte)MessageType.Ack);
 
-
                 var peersCopy = AvilablePeers.ToArray();
 
                 w.Write(sharePeers ? (ushort)peersCopy.Length : (ushort)0);
@@ -432,8 +516,15 @@ namespace QuicPunch
                 {
                     foreach (var peer in peersCopy.Select(p => p.Value))
                     {
-                        w.Write(peer.EndPoint.Address.GetAddressBytes());
-                        w.Write((ushort)peer.EndPoint.Port);
+                        w.Write((byte)peer.NetworkType);
+                        w.Write((byte)peer.Addresses.Length);
+                        foreach (var e in peer.Addresses)
+                        {
+                            w.Write(e.GetAddressBytes());
+                        }
+                        
+                        w.Write((ushort)peer.MinPort);
+                        w.Write((ushort)peer.MaxPort);
                         w.Write(peer.CertHash);
                     }
                 }
@@ -513,10 +604,10 @@ namespace QuicPunch
 
             return packet;
         }
-        private async Task SendLoopAsync(UdpClient udp, IPEndPoint peer, CancellationToken token)
+        private async Task SendLoopAsync(UdpClient udp, PeerInfo peer, CancellationToken token)
         {
             double maxIntervalTicks = TimeSpan.FromSeconds(20).Ticks;
-            long intervalTicks = TimeSpan.FromMilliseconds(PunchIntervalMiliseconds).Ticks;
+            long intervalTicks = (long)Math.Min(TimeSpan.FromMilliseconds(PunchIntervalMiliseconds * 3).Ticks, maxIntervalTicks);
             int tries = 0;
 
             var helloPayload = GenerateHelloPayload(MessageType.Hello, false);
@@ -525,8 +616,9 @@ namespace QuicPunch
             {
                 try
                 {
-                    bool peerResponded = AvilablePeers.ContainsKey(peer);
-
+                    KeyValuePair<IPEndPoint,PeerInfo>? avilablePeer = AvilablePeers.Where(k => EqualityComparer<PeerInfo>.Default.Equals( k.Value, peer )).FirstOrDefault();
+                    bool peerResponded = avilablePeer != null;
+                    
                     if (tries > 0)
                     {
                         bool isPowerOfTwo = (tries & (tries - 1)) == 0;
@@ -561,18 +653,19 @@ namespace QuicPunch
 
                         if (peerResponded)
                         {
-                            await udp.SendAsync(helloPayload, peer);
+                            await udp.SendAsync(helloPayload, avilablePeer.Value.Key);
                         }
                         else
                         {
-                            await udp.SendAsync(GenerateHelloPayload(MessageType.Interogation, true), peer);
+                            var payload = GenerateHelloPayload(MessageType.Interogation, true);
+                            await udp.BigSendAsync(payload, peer);
                             await Task.Delay(250, token);
                         }
                     }
 
-                    if (tries % 2 == 0)
+                    if (peerResponded && tries % 2 == 0)
                     {
-                        await udp.SendAsync(BuildPingPacket(PreciseTime.GetCorrectTime().Ticks), peer);
+                        await udp.SendAsync(BuildPingPacket(PreciseTime.GetCorrectTime().Ticks), avilablePeer.Value.Key);
                     }
 
                     tries++;
@@ -593,9 +686,36 @@ namespace QuicPunch
             using (var ms = new MemoryStream())
             using (var w = new BinaryWriter(ms))
             {
-                //w.Write(TokenVersionByte);
-                w.Write(p.EndPoint.Address.GetAddressBytes());
-                w.Write((ushort)p.EndPoint.Port);
+                PackedFlags pf = new PackedFlags()
+                {
+                    NetworkType = p.NetworkType
+                };
+
+                w.Write((byte)pf.RawValue);
+
+                if (p.NetworkType == NetworkType.DynamicAddress || p.NetworkType == NetworkType.DynamicPortAndAddress)
+                {
+                    w.Write((byte)p.Addresses.Length);
+
+                    for (int i = 0; i < p.Addresses.Length; i++)
+                    {
+                        w.Write(p.Addresses[i].GetAddressBytes());
+                    }
+                }
+                else
+                {
+                    w.Write(p.Addresses[0].GetAddressBytes());
+                }
+
+                if (pf.NetworkType == NetworkType.DynamicPort || pf.NetworkType == NetworkType.DynamicPortAndAddress)
+                {
+                    w.Write((short)p.MinPort);
+                    w.Write((short)p.MaxPort);
+                }
+                else
+                {
+                    w.Write((ushort)p.MinPort);
+                }
 
                 //w.Write((byte)p.CertHash.Length);
                 w.Write(p.CertHash);
@@ -604,6 +724,8 @@ namespace QuicPunch
         }
         public static PeerInfo DecodeEndpointToken(string t)
         {
+            var peer = new PeerInfo();
+            
             using (var ms = new MemoryStream(Base64Url.DecodeFromChars(t)))
             using (var r = new BinaryReader(ms))
             {
@@ -611,25 +733,55 @@ namespace QuicPunch
                 // if (version != TokenVersionByte) 
                 //    throw new Exception("Invalid token version");
 
-                var addressBytes = r.ReadBytes(4);
-                var port = r.ReadUInt16();
+                PackedFlags pf = new PackedFlags(r.ReadByte());
 
-                //var certHashLength = r.ReadByte();
-                var certHash = r.ReadBytes(384 / 8);
-
-                return new PeerInfo
+                if (pf.NetworkType == NetworkType.DynamicAddress || pf.NetworkType == NetworkType.DynamicPortAndAddress)
                 {
-                    EndPoint = new IPEndPoint(new IPAddress(addressBytes), port),
-                    CertHash = certHash,
-                };
+                   var addressesLength = r.ReadByte();
+
+                   IPAddress[] addresses = new IPAddress[addressesLength];
+                   
+                    for (int i = 0; i < addressesLength; i++)
+                    {
+                        addresses[i] = new IPAddress(r.ReadBytes(4));
+                    }
+
+                    peer.Addresses = addresses;
+                }
+                else
+                {
+                    peer.Addresses = [new IPAddress(r.ReadBytes(4))];
+                }
+
+                if (pf.NetworkType == NetworkType.DynamicPort || pf.NetworkType == NetworkType.DynamicPortAndAddress)
+                {
+                    peer.MinPort = r.ReadUInt16();
+                    peer.MaxPort = r.ReadUInt16();
+                }
+                else
+                {
+                    peer.MinPort =  r.ReadUInt16();
+                }
+                
+                var certHash = r.ReadBytes(384 / 8);
+                peer.CertHash = certHash;
+                return peer;
             }
         }
         public void Dispose()
         {
-            CancelationSource?.Cancel();
-            try { CancelationSource?.Dispose(); } catch { }
+            _CancelationSource?.Cancel();
+            try { _CancelationSource?.Dispose(); } catch { }
             try { TrackerScanner?.Dispose(); } catch { }
             try { udp?.Dispose(); } catch { }
+        }
+        
+        public enum NetworkType:byte
+        {
+            Static  = 0,
+            DynamicPort = 1,
+            DynamicAddress = 2,
+            DynamicPortAndAddress = 3
         }
     }
 }

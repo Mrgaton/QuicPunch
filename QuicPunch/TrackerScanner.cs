@@ -32,7 +32,7 @@ namespace QuicPunch
           
             _port = port;
 
-            PublicIp = Helpers.GetPublicIP().GetAwaiter().GetResult();
+            PublicIp = IPAddress.Parse("127.0.0.1");
         }
 
         public async Task Start(string[]? customTrackers = null)

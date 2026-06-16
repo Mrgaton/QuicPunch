@@ -8,7 +8,7 @@ namespace QuicPunch.PacketHandler
 {
     internal class PingHandler
     {
-        internal static async void HandlePing(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
+        internal static void HandlePing(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
         {
             bool secondTimestamp = r.ReadByte() > 0;
             long t1 = r.ReadInt64();

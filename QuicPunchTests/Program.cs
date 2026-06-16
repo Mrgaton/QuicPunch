@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Hosting;
 using Microsoft.Win32;
 using QuicPunch;
 using System.Buffers.Binary;
@@ -11,6 +12,7 @@ using System.Reflection.Metadata;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
+using System.Threading.Channels;
 using System.Web;
 using Wintun;
 using static PeerStore;
@@ -19,7 +21,9 @@ internal static class Program
 {
 
     public static Process CurrentProcess = Process.GetCurrentProcess();
+    
     public static string FileName = CurrentProcess.MainModule.FileName;
+    
     private static readonly byte[] PoolId = Encoding.UTF8.GetBytes("QuicPunch🔥V1.2");//File.ReadAllBytes(FileName);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -28,23 +32,18 @@ internal static class Program
     private static VirtualLanHandler _friendsLanHandler;
     private static async Task Main(string[] args)
     {
-        //args = ["vgjnSQG7"];
-
         Console.OutputEncoding = Encoding.UTF8;
-
         if (args.Length > 0 && args[0].Contains("://"))
         {
             args = args[0].Split("/").Skip(2).Select(e => HttpUtility.UrlDecode(e)).ToArray();
         }
-
-       // args = ["vgjnSaIPkdhdVT3GVATmCT4u/6nX7E0JZx582cDqA8vUu0CGd0BfzfO7/7bAgoOb9kOlvS9H"];
-
+        // args = ["vgjnSaIPkdhdVT3GVATmCT4u/6nX7E0JZx582cDqA8vUu0CGd0BfzfO7/7bAgoOb9kOlvS9H"];
         if (args.Length > 0)
         {
             var decodedPeer = QuicPunch.QuicPunch.DecodeEndpointToken(args[0]);
 
             PeerStore ps = new PeerStore(Path.Combine(QuicPunch.QuicPunch.AppDataPath, "peers.db"));
-            ps.AddOrUpdate(decodedPeer.EndPoint, decodedPeer.CertHash);
+            ps.AddOrUpdate(decodedPeer.ActiveEndPoint, decodedPeer.CertHash);
             ps.Dispose();
             return;
         }
@@ -117,8 +116,6 @@ internal static class Program
         QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 443 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
 
         _friendsLanHandler = new VirtualLanHandler();
-
-
         var chatHandler = new ChatHandler();
 
         qcc.RegisterProtocol(_friendsLanHandler);
@@ -138,15 +135,15 @@ internal static class Program
         {
             qcc.TrackerScanner.OnPeerFound += (peer) =>
             {
-                Console.WriteLine($"Peer found: {peer} starting interogation...");
+                Console.WriteLine($"Peer found: {peer} starting interrogation...");
 
-                _ = qcc.PeerInterogation(peer, new CancellationTokenSource());
+                //_ = qcc.PeerInterogation(peer, new CancellationTokenSource());
             };
         }
-
+                
         qcc.OnPeerAvilable += (peer) =>
         {
-            Console.WriteLine($"New Peer Avillablle:  {peer.Name}");
+            Console.WriteLine($"New Peer Available:  {peer.Name}");
         };
 
         qcc.Manager.HandshakeRequested += async (request, ct) =>
@@ -159,7 +156,7 @@ internal static class Program
             Console.WriteLine($"ProtocolId: {request.ProtocolId}");
             Console.WriteLine($"Remote: {request.RemoteEndPoint}");
 
-            Console.Write($"New conection request from {request.RemoteEndPoint} for type {request.ProtocolId}.");
+            Console.Write($"New connection request from {request.RemoteEndPoint} for type {request.ProtocolId}.");
 
             var res = MessageBox.Show("New connection request", $"Id: {request.Id}\nType: {request.ProtocolId}\nName: {protocol.ProtocolName}\nRemote: {request.RemoteEndPoint}\n\nAccept?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 
@@ -176,7 +173,7 @@ internal static class Program
         {
             try
             {
-                Console.WriteLine("Press enter to conect to someone");
+                Console.WriteLine("Press enter to connect to someone");
                 Console.WriteLine("Select a peer to connect:\n");
 
                 Console.WriteLine("0: Enter token manualy");

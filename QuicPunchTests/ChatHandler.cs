@@ -14,7 +14,7 @@ namespace QuicPunch
 
         public async Task DeniedAsync(PeerInfo peer, CancellationToken ct)
         {
-            Console.WriteLine($"\n[P2P CHAT] Peer: {peer.Name} ({peer.EndPoint}) failed or denied the conection.");
+            Console.WriteLine($"\n[P2P CHAT] Peer: {peer.Name} ({peer.ActiveEndPoint}) failed or denied the conection.");
         }
         public async Task HandleAsync(
             QuicConnection connection,
