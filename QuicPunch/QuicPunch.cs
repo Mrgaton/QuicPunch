@@ -4,6 +4,7 @@ using QuicPunch.PacketHandler;
 using System.Buffers.Binary;
 using System.Buffers.Text;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Quic;
@@ -18,6 +19,13 @@ namespace QuicPunch
 {
     public class QuicPunch : IDisposable
     {
+        private static bool DebugMode = Debugger.IsAttached;
+        private static void WriteLine(string m)
+        {
+            if (DebugMode)
+                Console.WriteLine(m);
+        }
+
         private HttpClient client = new HttpClient();
         
         public UdpClient? udp = null;
@@ -47,22 +55,18 @@ namespace QuicPunch
 
         private ConcurrentDictionary<IPEndPoint, int> StunResponseEndpointHits;
 
-        private int MostUsedPort => StunResponseEndpointHits
+        private int MostUsedPort;
+        private int GetMostUsedPort()
+        {
+            return StunResponseEndpointHits
             .GroupBy(x => x.Key.Port)
             .ToDictionary(
                 g => g.Key,
                 g => g.Sum(x => x.Value)
             ).OrderByDescending(e => e.Value).FirstOrDefault().Key;
-        
-        private (int minPort, int maxPort) StunPortRange
-        {
-            get
-            {
-                var portOrder = StunResponseEndpointHits.OrderByDescending(k => k.Key.Port);
-                
-                return (portOrder.Last().Key.Port, portOrder.First().Key.Port);
-            }
         }
+
+        private (int minPort, int maxPort) StunPortRange;              
 
         internal CertManager CertManager { get; } = new CertManager(AppDataPath);
 
@@ -194,7 +198,7 @@ namespace QuicPunch
                     Addresses =  [speer.EndPoint.Address],
                     MaxPort =  speer.EndPoint.Port,
                     MinPort = speer.EndPoint.Port
-                },cts);
+                }, cts);
             };
 
             Task.Run(ReceiveLoopAsync);
@@ -234,6 +238,16 @@ namespace QuicPunch
                 try
                 {
                     await _StunClient.SendRequest(_CancelationSource.Token);
+
+                    var type = Helpers.GetNetworkType(StunResponseEndpointHits);
+
+                    MostUsedPort = GetMostUsedPort();
+
+                    var portOrder = StunResponseEndpointHits.OrderByDescending(k => k.Key.Port);
+
+                    StunPortRange = ((portOrder.Last().Key.Port / 255) * 255, ((portOrder.First().Key.Port + (255 - 1)) / 255) * 255);
+                    CurrentPeer.Addresses = StunResponseEndpointHits.Select(k => k.Key.Address).Distinct().ToArray();
+                    StunResponseEndpointHits.Clear();
                 }
                 catch (Exception ex)
                 {
@@ -253,10 +267,9 @@ namespace QuicPunch
 
         public void AddCertToAddress(IPAddress address, byte[] cert)
         {
-            if (ExpectedPeerCerts.TryGetValue(address, out var  peerCerts))
+            if (ExpectedPeerCerts.TryGetValue(address, out var peerCerts))
             {
-                ExpectedPeerCerts.TryAdd(address,  peerCerts.Append(cert).ToArray());
-                            
+                ExpectedPeerCerts[address] = peerCerts.Append(cert).ToArray();
             }
             else
             {
@@ -295,7 +308,7 @@ namespace QuicPunch
         {
             byte[] payload;
 
-            var conectionGuid = Guid.NewGuid();
+            var connectionGuid = Guid.NewGuid();
 
             using (MemoryStream ms = new MemoryStream())
             using (BinaryWriter w = new BinaryWriter(ms))
@@ -305,7 +318,7 @@ namespace QuicPunch
                 w.Write((byte)HandShakeType.Request);
                 w.Write(localPort);
                 w.Write(protocolHandler.ToByteArray());
-                w.Write(conectionGuid.ToByteArray());
+                w.Write(connectionGuid.ToByteArray());
 
                 payload = ms.ToArray();
                 var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
@@ -313,18 +326,18 @@ namespace QuicPunch
                 Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
 
-            await udp.BigSendAsync(payload, peer);
+            udp.BigSendAsync(payload, peer);
 
-            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(conectionGuid, protocolHandler, peer.ActiveEndPoint), TimeSpan.FromSeconds(30), false, mainCts.Token);
+            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(connectionGuid, protocolHandler, peer.ActiveEndPoint), TimeSpan.FromSeconds(30), false, mainCts.Token);
 
             if (!decision.Accepted)
                 throw new Exception("Handshake declined by peer.");
 
-            Console.WriteLine("Peer accepted :D");
+            WriteLine("Peer accepted :D");
 
             return decision;
         }
-        public async Task<(bool Success, UdpClient Client, IPEndPoint remoteEndpoint)> InitUdpConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        public async Task<(bool Success, UdpClient Client, IPEndPoint remoteEndpoint)> InitUdpConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
             if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
             {
@@ -339,9 +352,9 @@ namespace QuicPunch
 
             var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
 
-            return await QuicConection.OpenPortCore(nudp, peer, (ushort)decision.Port, mainCts.Token);
+            return await QuicPunchConnection.OpenPortCore(nudp, peer, (ushort)decision.Port, mainCts.Token);
         }
-        public async Task InitQuicConection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        public async Task InitQuicConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
         {
             if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
             {
@@ -356,15 +369,15 @@ namespace QuicPunch
 
             var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
 
-            var conection = await QuicConection.InitQuicConnectionCore(this.IPEndpoint, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
+            var connection = await QuicPunchConnection.InitQuicConnectionCore(this.IPEndpoint, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
 
-            if (conection.Conection == null || conection.Stream == null)
+            if (connection.Connection == null || connection.Stream == null)
             {
                 await handler.DeniedAsync(peer, mainCts.Token);
             }
             else
             {
-                await handler.HandleAsync(conection.Conection, conection.Stream, peer, mainCts.Token);
+                await handler.HandleAsync(connection.Connection, connection.Stream, peer, mainCts.Token);
             }
         }
 
@@ -376,14 +389,7 @@ namespace QuicPunch
 
             foreach (var address in p.Addresses)
             {
-                if (!ExpectedPeerCerts.TryGetValue(address, out byte[][] certs))
-                {
-                    ExpectedPeerCerts.TryAdd(address, [ p.CertHash ] );
-                }
-                else if (!certs.Any(c => c.SequenceEqual(p.CertHash)))
-                {
-                    ExpectedPeerCerts[address] = certs.Append(p.CertHash).ToArray();
-                }
+                AddCertToAddress(address, p.CertHash);
             }
 
             await PeerInterogation(p, mainCts);
@@ -396,7 +402,7 @@ namespace QuicPunch
             var lcts = CancellationTokenSource.CreateLinkedTokenSource(cts!.Token);
 
 
-            Console.WriteLine($"Starting interogation for {string.Join(", ",peer.Addresses)}...");
+            WriteLine($"Starting interogation for {string.Join(", ",peer.Addresses)}...");
 
             _ = Task.Run(async () =>
             {
@@ -475,7 +481,7 @@ namespace QuicPunch
                                 continue;
 
                             default:
-                                Console.WriteLine($"Received unknown message type {(char)messageType} from {result.RemoteEndPoint}");
+                                WriteLine($"Received unknown message type {(char)messageType} from {result.RemoteEndPoint}");
                                 continue;
                         }
                     }
@@ -490,7 +496,7 @@ namespace QuicPunch
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
+                    WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
 
                     if (_CancelationSource.IsCancellationRequested)
                         break;

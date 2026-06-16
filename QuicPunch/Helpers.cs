@@ -12,6 +12,9 @@ namespace QuicPunch
     {
         public static async Task BigSendAsync( this UdpClient udp, byte[] data, PeerInfo peerInfo)
         {
+            if (peerInfo.MinPort > peerInfo.MaxPort || peerInfo.MinPort - peerInfo.MaxPort > ushort.MaxValue / 2)
+                throw new ArgumentException("Invalid port range.", nameof(peerInfo));
+
             var tasks = new List<Task>();
 
             foreach (var address in peerInfo.Addresses)

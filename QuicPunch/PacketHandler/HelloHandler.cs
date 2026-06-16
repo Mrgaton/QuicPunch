@@ -11,12 +11,14 @@ namespace QuicPunch.PacketHandler
         internal static void HandleHello(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result, byte messageType) {
             if (messageType == (byte)MessageType.Interogation)
             {
-                udp.SendAsync(qc.GenerateHelloPayload(MessageType.Hello, true));
+                udp.SendAsync(qc.GenerateHelloPayload(MessageType.Hello, true), result.RemoteEndPoint);
             }
 
             var certHash = r.ReadBytes(qc.CurrentPeer.CertHash.Length);
 
-            if (qc.ExpectedPeerCerts.TryGetValue(result.RemoteEndPoint.Address , out var helloPeerCertHashes) && !helloPeerCertHashes.Any(c => c.SequenceEqual(certHash)))
+            var foundExpectedCert = qc.ExpectedPeerCerts.TryGetValue(result.RemoteEndPoint.Address, out var helloPeerCertHashes);
+
+            if (!foundExpectedCert || !helloPeerCertHashes.Any(c => c.SequenceEqual(certHash)))
             {
                 Console.WriteLine("HELLO INIT: Peer presented unexpected certificate");
                 return;
@@ -123,7 +125,7 @@ namespace QuicPunch.PacketHandler
 
                 if (!certHash.SequenceEqual(peer.CertHash))
                 {
-                    //TODO: IDK what to do enter in panick cause someone is spoofing conections!=!="!"?=)i3?_="!
+                    //TODO: IDK what to do enter in panick cause someone is spoofing connections!=!="!"?=)i3?_="!
                     Console.WriteLine("HELLO OLD: Received corrupted cert hash from " + result.RemoteEndPoint);
                     return;
                 }
