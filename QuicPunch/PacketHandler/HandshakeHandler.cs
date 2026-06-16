@@ -117,15 +117,15 @@ namespace QuicPunch.PacketHandler
 
                         if (decidedResponse == HandShakeType.Accept)
                         {
-                            var connection = await QuicConection.InitQuicConnectionCore(qc.IPEndpoint, nudp, qc.AvilablePeers[result.RemoteEndPoint], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
+                            var connection = await QuicPunchConnection.InitQuicConnectionCore(qc.IPEndpoint, nudp, qc.AvilablePeers[result.RemoteEndPoint], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
 
-                            if (connection.Conection == null || connection.Stream == null)
+                            if (connection.Connection == null || connection.Stream == null)
                             {
                                 Task.Run(async () => await handler.DeniedAsync(qc.AvilablePeers[result.RemoteEndPoint], ct));
                             }
                             else
                             {
-                                Task.Run(async () => await handler.HandleAsync(connection.Conection, connection.Stream, qc.AvilablePeers[result.RemoteEndPoint], ct));
+                                Task.Run(async () => await handler.HandleAsync(connection.Connection, connection.Stream, qc.AvilablePeers[result.RemoteEndPoint], ct));
                             }
                         }
                     });

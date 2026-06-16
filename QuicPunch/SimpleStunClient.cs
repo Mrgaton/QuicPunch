@@ -68,6 +68,8 @@ namespace QuicPunch
         
         public async Task SendRequest(CancellationToken cancellationToken)
         {
+            CleanupTimeouts();
+
             await Task.WhenAll(_servers.Select(server => SendRequestSafeAsync(server, cancellationToken)));
         }
 

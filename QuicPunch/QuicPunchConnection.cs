@@ -11,7 +11,7 @@ using System.Text;
 
 namespace QuicPunch
 {
-    internal class QuicConection
+    internal class QuicPunchConnection
     {
         //TODO: also implement stun to retrieve external port?
         public static async Task<(bool Sucess, UdpClient client, IPEndPoint remoteEndpoint)> OpenPortCore(
@@ -19,12 +19,10 @@ namespace QuicPunch
         {
             try
             {
-                var punchSuccessful = new TaskCompletionSource<bool>();
                 using var punchCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt);
                 _ = SendLoopAsync(nudp, remotePeer, peerPort, punchCts.Token);
 
-                var remoteEndpoint = await ReceiveHoleLoopAsync(nudp, punchSuccessful, punchCts.Token);
-                await punchSuccessful.Task.WaitAsync(punchCts.Token);
+                var remoteEndpoint = await ReceiveHoleLoopAsync(nudp, punchCts.Token);
                 punchCts.Cancel();
                 return (true, nudp, remoteEndpoint);
             }
@@ -39,7 +37,7 @@ namespace QuicPunch
             }
         }
 
-        public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(
+        public static async Task<(QuicConnection Connection, Stream Stream)> InitQuicConnectionCore(
             IPEndPoint ownPublicEndpoint, UdpClient nudp, PeerInfo remotePeer, ushort peerPort,
             X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
         {
@@ -141,12 +139,11 @@ namespace QuicPunch
             return (connection, stream);
         }
 
-        public static async Task<IPEndPoint> ReceiveHoleLoopAsync(UdpClient udp, TaskCompletionSource<bool> tcs,
-            CancellationToken token)
+        public static async Task<IPEndPoint> ReceiveHoleLoopAsync(UdpClient udp,CancellationToken token)
         {
             var ACKPacket = Helpers.Combine(QuicPunch.MagicHeader, [(byte)QuicPunchStructures.MessageType.Ack]);
 
-            while (!token.IsCancellationRequested && !tcs.Task.IsCompleted)
+            while (!token.IsCancellationRequested)
             {
                 try
                 {
@@ -204,7 +201,7 @@ namespace QuicPunch
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
-                    if (token.IsCancellationRequested || tcs.Task.IsCompleted)
+                    if (token.IsCancellationRequested)
                         break;
                     try
                     {
@@ -217,7 +214,7 @@ namespace QuicPunch
                 }
             }
             
-                return null;
+            return null;
         }
     
 
