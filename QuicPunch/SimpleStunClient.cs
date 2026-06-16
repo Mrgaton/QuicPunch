@@ -1,4 +1,5 @@
 ﻿using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -32,6 +33,8 @@ namespace QuicPunch
         private readonly Dictionary<TxId, PendingRequest> _pending = new();
         private readonly List<TxId> _expiredKeysBuffer = new(); // Evita allocations al limpiar
         private readonly object _lock = new();
+
+        public ConcurrentDictionary<IPEndPoint, int> StunResponseEndpointHits = new ConcurrentDictionary<IPEndPoint, int>();
 
         public event EventHandler<StunResultEventArgs>? MappedAddressResolved;
 
@@ -119,14 +122,14 @@ namespace QuicPunch
 
                 var rtt = TimeSpan.FromMilliseconds(Environment.TickCount64 - req.SentTicks);
 
+                StunResponseEndpointHits.AddOrUpdate(req.Remote, 1, (_, count) => count + 1);
+
                 MappedAddressResolved?.Invoke(
                     this,
                     new StunResultEventArgs(req.Remote, mapped, rtt)
                 );
 
                 return true;
-
-                return false;
             }
             catch
             {

@@ -5,21 +5,57 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 
 public sealed class PeerStore : IDisposable
 {
-    public sealed record SavedPeer(IPEndPoint EndPoint, byte[] CertHash)
+    public sealed record SavedPeer
     {
-        internal string Key => $"{EndPoint.Address}|{EndPoint.Port}";
+        public IPAddress[] Addresses { get; init; }
+        public int MinPort { get; init; }
+        public int MaxPort { get; init; }
+        public byte[] CertHash { get; init; }
 
-        internal SavedPeer Copy() =>
-            new(new IPEndPoint(EndPoint.Address, EndPoint.Port), CertHash.ToArray());
+        // Certificate hash is the stable peer identity. Addresses and ports can change with NAT.
+        internal string Key => PeerStore.Key(CertHash);
+
+        public SavedPeer(IPAddress[] addresses, int minPort, int maxPort, byte[] certHash)
+        {
+            Addresses = NormalizeAddresses(addresses);
+            ValidatePorts(minPort, maxPort);
+
+            if (certHash is null || certHash.Length == 0)
+                throw new ArgumentException("Certificate hash cannot be empty.", nameof(certHash));
+
+            MinPort = minPort;
+            MaxPort = maxPort;
+            CertHash = certHash.ToArray();
+        }
+
+        public SavedPeer(IEnumerable<IPAddress> addresses, int minPort, int maxPort, byte[] certHash)
+            : this(NormalizeAddresses(addresses), minPort, maxPort, certHash)
+        {
+        }
+
+        internal SavedPeer Copy() => new(Addresses.Select(CloneAddress).ToArray(), MinPort, MaxPort, CertHash.ToArray());
 
         internal bool SameCertificate(SavedPeer other) =>
             CertHash.AsSpan().SequenceEqual(other.CertHash);
+
+        internal bool SameValue(SavedPeer other) =>
+            SameCertificate(other) &&
+            MinPort == other.MinPort &&
+            MaxPort == other.MaxPort &&
+            Addresses.Select(a => a.ToString()).SequenceEqual(other.Addresses.Select(a => a.ToString()), StringComparer.Ordinal);
+
+        internal bool Contains(IPEndPoint endPoint) =>
+            endPoint.Port >= MinPort &&
+            endPoint.Port <= MaxPort &&
+            Addresses.Any(a => SameAddress(a, endPoint.Address));
     }
 
     private sealed class Db
@@ -30,9 +66,17 @@ public sealed class PeerStore : IDisposable
 
     private sealed class Row
     {
-        public string Ip { get; set; } = "";
-        public int Port { get; set; }
+        public string[] Ips { get; set; } = [];
+        public int MinPort { get; set; }
+        public int MaxPort { get; set; }
         public string CertHash { get; set; } = "";
+
+        // Legacy-read support for older files that used { Ip, Port, CertHash }.
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Ip { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? Port { get; set; }
     }
 
     private readonly string _path;
@@ -41,7 +85,12 @@ public sealed class PeerStore : IDisposable
     private readonly string _name;
     private readonly object _sync = new();
     private readonly Dictionary<string, SavedPeer> _peers = new(StringComparer.Ordinal);
-    private readonly JsonSerializerOptions _json = new() { WriteIndented = true, TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+    private readonly JsonSerializerOptions _json = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+    };
     private readonly TimeSpan _lockTimeout = TimeSpan.FromSeconds(10);
 
     private FileSystemWatcher? _watcher;
@@ -76,11 +125,17 @@ public sealed class PeerStore : IDisposable
             return _peers.Values.Select(p => p.Copy()).ToArray();
     }
 
-    public bool TryGet(IPEndPoint endPoint, out SavedPeer? peer)
+    public bool TryGet(byte[] certificate, out SavedPeer? peer)
     {
+        if (certificate is null || certificate.Length == 0)
+        {
+            peer = null;
+            return false;
+        }
+
         lock (_sync)
         {
-            if (_peers.TryGetValue(Key(endPoint), out var p))
+            if (_peers.TryGetValue(Key(certificate), out var p))
             {
                 peer = p.Copy();
                 return true;
@@ -91,13 +146,59 @@ public sealed class PeerStore : IDisposable
         }
     }
 
+    // Range lookup: returns the peer whose address array contains endPoint.Address
+    // and whose port range contains endPoint.Port.
+    public bool TryGet(IPEndPoint endPoint, out SavedPeer? peer)
+    {
+        ArgumentNullException.ThrowIfNull(endPoint);
+        return TryGet(endPoint.Address, endPoint.Port, out peer);
+    }
+
+    public bool TryGet(IPAddress address, int port, out SavedPeer? peer)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+
+        lock (_sync)
+        {
+            var p = _peers.Values.FirstOrDefault(x => x.Contains(new IPEndPoint(address, port)));
+            peer = p?.Copy();
+            return peer is not null;
+        }
+    }
+
+    // Exact lookup by stored group, useful for tools/tests that do not know the certificate yet.
+    public bool TryGet(IEnumerable<IPAddress> addresses, int minPort, int maxPort, out SavedPeer? peer)
+    {
+        var normalized = NormalizeAddresses(addresses);
+        ValidatePorts(minPort, maxPort);
+
+        lock (_sync)
+        {
+            var p = _peers.Values.FirstOrDefault(x =>
+                x.MinPort == minPort &&
+                x.MaxPort == maxPort &&
+                x.Addresses.Select(a => a.ToString()).SequenceEqual(normalized.Select(a => a.ToString()), StringComparer.Ordinal));
+
+            peer = p?.Copy();
+            return peer is not null;
+        }
+    }
+
+    // Backward-compatible helper: stores one IP with min/max equal to the endpoint port.
     public bool AddOrUpdate(IPEndPoint endPoint, byte[] certificate, bool save = true)
+    {
+        ArgumentNullException.ThrowIfNull(endPoint);
+        return AddOrUpdate(new[] { endPoint.Address }, endPoint.Port, endPoint.Port, certificate, save);
+    }
+
+    public bool AddOrUpdate(IPAddress[] addresses, int minPort, int maxPort, byte[] certificate, bool save = true) =>
+        AddOrUpdate((IEnumerable<IPAddress>)addresses, minPort, maxPort, certificate, save);
+
+    public bool AddOrUpdate(IEnumerable<IPAddress> addresses, int minPort, int maxPort, byte[] certificate, bool save = true)
     {
         ThrowIfDisposed();
 
-        var peer = new SavedPeer(
-            new IPEndPoint(endPoint.Address, endPoint.Port),
-            certificate.ToArray());
+        var peer = new SavedPeer(addresses, minPort, maxPort, certificate);
 
         bool added;
         bool modified;
@@ -110,7 +211,7 @@ public sealed class PeerStore : IDisposable
                 added = true;
                 modified = false;
             }
-            else if (!old.SameCertificate(peer))
+            else if (!old.SameValue(peer))
             {
                 _peers[peer.Key] = peer;
                 added = false;
@@ -126,14 +227,92 @@ public sealed class PeerStore : IDisposable
         return true;
     }
 
-    public bool Remove(IPEndPoint endPoint, bool save = true)
+    public bool Remove(byte[] certificate, bool save = true)
     {
         ThrowIfDisposed();
+
+        if (certificate is null || certificate.Length == 0)
+            return false;
 
         SavedPeer? removed;
 
         lock (_sync)
-            _peers.Remove(Key(endPoint), out removed);
+            _peers.Remove(Key(certificate), out removed);
+
+        if (removed is null)
+            return false;
+
+        Safe(() => PeerRemoved?.Invoke(removed.Copy(), false));
+
+        if (save)
+            SaveOverwrite();
+
+        return true;
+    }
+
+    // Compatibility removal for older code that only has one endpoint.
+    public bool Remove(IPEndPoint endPoint, bool save = true)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(endPoint);
+
+        SavedPeer? removed = null;
+        string? removeKey = null;
+
+        lock (_sync)
+        {
+            foreach (var (key, peer) in _peers)
+            {
+                if (peer.Contains(endPoint))
+                {
+                    removeKey = key;
+                    removed = peer;
+                    break;
+                }
+            }
+
+            if (removeKey is not null)
+                _peers.Remove(removeKey);
+        }
+
+        if (removed is null)
+            return false;
+
+        Safe(() => PeerRemoved?.Invoke(removed.Copy(), false));
+
+        if (save)
+            SaveOverwrite();
+
+        return true;
+    }
+
+    public bool Remove(IEnumerable<IPAddress> addresses, int minPort, int maxPort, bool save = true)
+    {
+        ThrowIfDisposed();
+
+        var normalized = NormalizeAddresses(addresses);
+        ValidatePorts(minPort, maxPort);
+
+        SavedPeer? removed = null;
+        string? removeKey = null;
+
+        lock (_sync)
+        {
+            foreach (var (key, peer) in _peers)
+            {
+                if (peer.MinPort == minPort &&
+                    peer.MaxPort == maxPort &&
+                    peer.Addresses.Select(a => a.ToString()).SequenceEqual(normalized.Select(a => a.ToString()), StringComparer.Ordinal))
+                {
+                    removeKey = key;
+                    removed = peer;
+                    break;
+                }
+            }
+
+            if (removeKey is not null)
+                _peers.Remove(removeKey);
+        }
 
         if (removed is null)
             return false;
@@ -230,7 +409,7 @@ public sealed class PeerStore : IDisposable
             foreach (var (k, p) in next)
             {
                 if (!_peers.TryGetValue(k, out var old)) added.Add(p.Copy());
-                else if (!old.SameCertificate(p)) modified.Add(p.Copy());
+                else if (!old.SameValue(p)) modified.Add(p.Copy());
             }
 
             foreach (var (k, p) in _peers)
@@ -265,8 +444,18 @@ public sealed class PeerStore : IDisposable
 
         foreach (var r in db.SavedPeers)
         {
-            var ep = new IPEndPoint(IPAddress.Parse(r.Ip), r.Port);
-            var p = new SavedPeer(ep, Convert.FromBase64String(r.CertHash));
+            var ips = r.Ips is { Length: > 0 }
+                ? r.Ips
+                : !string.IsNullOrWhiteSpace(r.Ip)
+                    ? new[] { r.Ip }
+                    : throw new InvalidDataException("Peer row does not contain any IP address.");
+
+            var minPort = r.Port is not null && r.Ips is not { Length: > 0 } ? r.Port.Value : r.MinPort;
+            var maxPort = r.Port is not null && r.Ips is not { Length: > 0 } ? r.Port.Value : r.MaxPort;
+            var certHash = Convert.FromBase64String(r.CertHash);
+            var addresses = ParseAddresses(ips);
+            var p = new SavedPeer(addresses, minPort, maxPort, certHash);
+
             result[p.Key] = p;
         }
 
@@ -280,12 +469,15 @@ public sealed class PeerStore : IDisposable
         var db = new Db
         {
             SavedPeers = peers.Values
-                .OrderBy(p => p.EndPoint.Address.ToString(), StringComparer.Ordinal)
-                .ThenBy(p => p.EndPoint.Port)
+                .OrderBy(p => p.Addresses[0].ToString(), StringComparer.Ordinal)
+                .ThenBy(p => p.MinPort)
+                .ThenBy(p => p.MaxPort)
+                .ThenBy(p => Convert.ToBase64String(p.CertHash), StringComparer.Ordinal)
                 .Select(p => new Row
                 {
-                    Ip = p.EndPoint.Address.ToString(),
-                    Port = p.EndPoint.Port,
+                    Ips = p.Addresses.Select(a => a.ToString()).ToArray(),
+                    MinPort = p.MinPort,
+                    MaxPort = p.MaxPort,
                     CertHash = Convert.ToBase64String(p.CertHash)
                 })
                 .ToList()
@@ -362,7 +554,74 @@ public sealed class PeerStore : IDisposable
         return f.Exists ? (true, f.Length, f.LastWriteTimeUtc.Ticks) : default;
     }
 
-    private static string Key(IPEndPoint ep) => $"{ep.Address}|{ep.Port}";
+    private static string Key(byte[] certificate) => Convert.ToBase64String(certificate);
+
+    private static IPAddress[] ParseAddresses(IEnumerable<string> ips)
+    {
+        var addresses = new List<IPAddress>();
+
+        foreach (var ip in ips)
+        {
+            if (!IPAddress.TryParse(ip, out var address))
+                throw new InvalidDataException($"Invalid peer IP address: {ip}");
+
+            addresses.Add(address);
+        }
+
+        return NormalizeAddresses(addresses);
+    }
+
+    private static IPAddress[] NormalizeAddresses(IEnumerable<IPAddress> addresses)
+    {
+        ArgumentNullException.ThrowIfNull(addresses);
+
+        var result = addresses
+            .Select(a => a ?? throw new ArgumentException("IP address entries cannot be null.", nameof(addresses)))
+            .GroupBy(a => a.ToString(), StringComparer.Ordinal)
+            .Select(g => CloneAddress(g.First()))
+            .OrderBy(a => a.ToString(), StringComparer.Ordinal)
+            .ToArray();
+
+        if (result.Length == 0)
+            throw new ArgumentException("At least one IP address is required.", nameof(addresses));
+
+        return result;
+    }
+
+    private static IPAddress CloneAddress(IPAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+
+        var clone = new IPAddress(address.GetAddressBytes());
+
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+            clone.ScopeId = address.ScopeId;
+
+        return clone;
+    }
+
+    private static void ValidatePorts(int minPort, int maxPort)
+    {
+        if (minPort < 1 || minPort > IPEndPoint.MaxPort)
+            throw new ArgumentOutOfRangeException(nameof(minPort), "MinPort must be between 1 and 65535.");
+
+        if (maxPort < 1 || maxPort > IPEndPoint.MaxPort)
+            throw new ArgumentOutOfRangeException(nameof(maxPort), "MaxPort must be between 1 and 65535.");
+
+        if (minPort > maxPort)
+            throw new ArgumentException("MinPort cannot be greater than MaxPort.", nameof(minPort));
+    }
+
+    private static bool SameAddress(IPAddress left, IPAddress right)
+    {
+        if (left.AddressFamily != right.AddressFamily)
+            return false;
+
+        if (!left.GetAddressBytes().AsSpan().SequenceEqual(right.GetAddressBytes()))
+            return false;
+
+        return left.AddressFamily != AddressFamily.InterNetworkV6 || left.ScopeId == right.ScopeId;
+    }
 
     private void Safe(Action action)
     {

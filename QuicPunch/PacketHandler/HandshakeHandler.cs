@@ -117,7 +117,7 @@ namespace QuicPunch.PacketHandler
 
                         if (decidedResponse == HandShakeType.Accept)
                         {
-                            var connection = await QuicPunchConnection.InitQuicConnectionCore(qc.IPEndpoint, nudp, qc.AvilablePeers[result.RemoteEndPoint], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
+                            var connection = await QuicPunchConnection.InitQuicConnectionCore(new IPEndPoint(qc.CurrentPeer.Addresses[0],qc.CurrentPeer.MinPort), nudp, qc.AvilablePeers[result.RemoteEndPoint], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
 
                             if (connection.Connection == null || connection.Stream == null)
                             {

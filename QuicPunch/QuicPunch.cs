@@ -36,29 +36,17 @@ namespace QuicPunch
 
         public PeerInfo CurrentPeer { get; private set; }
 
-        public string IPEndpointStr
-        {
-            get => IPEndpoint.ToString();
-        }
-        public IPEndPoint IPEndpoint
-        {
-            get
-            {
-                return StunResponseEndpointHits.OrderByDescending(e => e.Value).ToArray().FirstOrDefault().Key;
-            }
-        }
         private IPEndPoint _IPEndpoint;
         
         private IPEndPoint[] _StunServerEndpoints;
         
         private SimpleStunClient _StunClient;
 
-        private ConcurrentDictionary<IPEndPoint, int> StunResponseEndpointHits;
 
         private int MostUsedPort;
         private int GetMostUsedPort()
         {
-            return StunResponseEndpointHits
+            return _StunClient.StunResponseEndpointHits
             .GroupBy(x => x.Key.Port)
             .ToDictionary(
                 g => g.Key,
@@ -110,7 +98,7 @@ namespace QuicPunch
 
             var servers = new ConcurrentBag<IPEndPoint>();
 
-            Parallel.ForEach(uniqueList,new ParallelOptions() { MaxDegreeOfParallelism = 64 }, line =>
+            Parallel.ForEach(uniqueList,new ParallelOptions() { MaxDegreeOfParallelism = 64 * 5}, line =>
             {
                 var ep = Helpers.ResolveEndpoint(line);
 
@@ -137,18 +125,23 @@ namespace QuicPunch
             _StunServerEndpoints = servers.ToArray();
             _StunClient = new SimpleStunClient(udp, _StunServerEndpoints);
 
-            StunResponseEndpointHits = new ConcurrentDictionary<IPEndPoint, int>();
             
             _StunClient.MappedAddressResolved += (sender, args) =>
             {
-                if (!StunResponseEndpointHits.TryGetValue(args.MappedEndPoint, out _)){
-                    StunResponseEndpointHits[args.MappedEndPoint] = 0;
-                }
 
-                StunResponseEndpointHits[args.MappedEndPoint]++;
+            };
+
+            CurrentPeer = new PeerInfo()
+            {
+                Name = Environment.UserName + '\\' + Environment.UserDomainName,
+                CertHash = CertManager.CertPublicHash,
             };
 
             _CancelationSource = cts ?? new CancellationTokenSource();
+
+            _ = ReceiveLoopAsync();
+
+            StunRequest().GetAwaiter().GetResult();
 
             if (discoveryId != null)
             {
@@ -165,43 +158,36 @@ namespace QuicPunch
 
             AutoAcceptConnections = autoAcceptConnections;
 
-            CurrentPeer = new PeerInfo()
-            {
-                Name = Environment.UserName + '\\' + Environment.UserDomainName,
-                CertHash = CertManager.CertPublicHash,
-            };
-
             CertPublicKey = CertManager.PeerCertificate!.GetPublicKey().Length;
 
             PeerStore = new PeerStore(Path.Combine(AppDataPath, "peers.db"));
 
             foreach (var speer in PeerStore.GetAll())
             {
-                AddCertToAddress(speer.EndPoint.Address, speer.CertHash);
+                AddCertToAddress(speer.Addresses, speer.CertHash);
                 
                 _ = PeerInterogation(new PeerInfo()
                 {
                     CertHash = speer.CertHash,
-                    Addresses =  [speer.EndPoint.Address],
-                    MaxPort =  speer.EndPoint.Port,
-                    MinPort = speer.EndPoint.Port
-                },cts);
+                    Addresses = speer.Addresses,
+                    MaxPort =  speer.MaxPort,
+                    MinPort = speer.MinPort
+                }, cts);
             }
 
             PeerStore.PeerAdded += (PeerStore.SavedPeer speer, bool external) =>
             {
-                AddCertToAddress(speer.EndPoint.Address, speer.CertHash);
-                
+                AddCertToAddress(speer.Addresses, speer.CertHash);
+
                 _ = PeerInterogation(new PeerInfo()
                 {
                     CertHash = speer.CertHash,
-                    Addresses =  [speer.EndPoint.Address],
-                    MaxPort =  speer.EndPoint.Port,
-                    MinPort = speer.EndPoint.Port
+                    Addresses = speer.Addresses,
+                    MaxPort =  speer.MaxPort,
+                    MinPort = speer.MinPort
                 }, cts);
             };
 
-            Task.Run(ReceiveLoopAsync);
             Task.Run(StartStunRequest);
         }
 
@@ -231,23 +217,14 @@ namespace QuicPunch
         public TrackerScanner TrackerScanner { get; private set; }
         public CancellationTokenSource _CancelationSource { get; private set; }
 
+        private string LastToken;
         public async Task StartStunRequest()
         {
             while (!_CancelationSource.IsCancellationRequested)
             {
                 try
                 {
-                    await _StunClient.SendRequest(_CancelationSource.Token);
-
-                    var type = Helpers.GetNetworkType(StunResponseEndpointHits);
-
-                    MostUsedPort = GetMostUsedPort();
-
-                    var portOrder = StunResponseEndpointHits.OrderByDescending(k => k.Key.Port);
-
-                    StunPortRange = ((portOrder.Last().Key.Port / 255) * 255, ((portOrder.First().Key.Port + (255 - 1)) / 255) * 255);
-                    CurrentPeer.Addresses = StunResponseEndpointHits.Select(k => k.Key.Address).Distinct().ToArray();
-                    StunResponseEndpointHits.Clear();
+                    await StunRequest();
                 }
                 catch (Exception ex)
                 {
@@ -258,6 +235,33 @@ namespace QuicPunch
             }
         }
 
+        private async Task StunRequest()
+        {
+            await Task.Delay(100);
+
+            await _StunClient.SendRequest(_CancelationSource.Token);
+
+            var type = Helpers.GetNetworkType(_StunClient.StunResponseEndpointHits);
+
+            MostUsedPort = GetMostUsedPort();
+
+            var portOrder = _StunClient.StunResponseEndpointHits.OrderByDescending(k => k.Key.Port);
+
+            StunPortRange = ((portOrder.Last().Key.Port / 255) * 255, ((portOrder.First().Key.Port + (255 - 1)) / 255) * 255);
+            CurrentPeer.Addresses = _StunClient.StunResponseEndpointHits.Select(k => k.Key.Address).Distinct().ToArray();
+
+            var newToken = GetToken();
+
+            if (newToken != LastToken)
+            {
+                LastToken = newToken;
+
+                Console.WriteLine($"New token generated: {newToken}");
+            }
+
+            _StunClient.StunResponseEndpointHits.Clear();
+        }
+
         public const int PunchIntervalMiliseconds = 2500 / 2;
 
         public static byte[] MagicHeader = Encoding.UTF8.GetBytes("PuNch");
@@ -265,6 +269,13 @@ namespace QuicPunch
         public ConcurrentDictionary<IPEndPoint, PeerInfo> AvilablePeers = new ConcurrentDictionary<IPEndPoint, PeerInfo>();
         public ConcurrentDictionary<IPAddress, byte[][]> ExpectedPeerCerts = new ConcurrentDictionary<IPAddress, byte[][]>();
 
+        public void AddCertToAddress(IPAddress[] addresses, byte[] cert)
+        {
+            foreach(var a in addresses)
+            {
+                AddCertToAddress(a, cert);
+            }
+        }
         public void AddCertToAddress(IPAddress address, byte[] cert)
         {
             if (ExpectedPeerCerts.TryGetValue(address, out var peerCerts))
@@ -369,7 +380,7 @@ namespace QuicPunch
 
             var decision = await NegociateConnection(protocolHandler, peer, localPort, mainCts);
 
-            var connection = await QuicPunchConnection.InitQuicConnectionCore(this.IPEndpoint, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
+            var connection = await QuicPunchConnection.InitQuicConnectionCore(new IPEndPoint(CurrentPeer.Addresses[0], CurrentPeer.MinPort), nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
 
             if (connection.Connection == null || connection.Stream == null)
             {
@@ -575,7 +586,7 @@ namespace QuicPunch
                     var nonce = RandomNumberGenerator.GetBytes(32);
                     w.Write(nonce);
 
-                    var pop = HMACSHA3_256.HashData(Helpers.Combine(BitConverter.GetBytes(ticks), nonce, IPEndpoint.Address.GetAddressBytes(), BitConverter.GetBytes((ushort)IPEndpoint.Port)), PasswordHash);
+                    var pop = HMACSHA3_256.HashData(Helpers.Combine(BitConverter.GetBytes(ticks), nonce, CurrentPeer.Addresses[0].GetAddressBytes(), BitConverter.GetBytes((ushort)StunPortRange.minPort)), PasswordHash);
 
                     w.Write(pop);
                 }
@@ -623,7 +634,7 @@ namespace QuicPunch
                 try
                 {
                     KeyValuePair<IPEndPoint,PeerInfo>? avilablePeer = AvilablePeers.Where(k => EqualityComparer<PeerInfo>.Default.Equals( k.Value, peer )).FirstOrDefault();
-                    bool peerResponded = avilablePeer != null;
+                    bool peerResponded = avilablePeer.Value.Key != null;
                     
                     if (tries > 0)
                     {
