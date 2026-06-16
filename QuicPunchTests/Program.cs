@@ -124,7 +124,7 @@ internal static class Program
         _friendsLanHandler.SetupTun();
 
         string myToken = qcc.GetToken();
-        Console.WriteLine($"Your public endpoint: {qcc.IPEndpoint}\n");
+        Console.WriteLine($"Your public endpoints: {string.Join(", ", qcc.CurrentPeer.Addresses)}\n");
         Console.WriteLine($"Your token: {myToken}\n");
 
         string quickUri = $"https://gato.ovh/protred?uri=QPHP://{HttpUtility.UrlEncode(HttpUtility.UrlEncode(myToken))}";
@@ -210,7 +210,7 @@ internal static class Program
                 var protocolInput = Console.ReadKey();
                 var protocolId = qcc.ProtocolHandlers.ElementAt(protocolInput.KeyChar - '0').Key;
 
-                _ = Task.Run(async () => await qcc.InitQuicConection(protocolId, peer, (ushort)Random.Shared.Next(1024, 65535), cts));
+                _ = Task.Run(async () => await qcc.InitQuicConnection(protocolId, peer, (ushort)Random.Shared.Next(1024, 65535), cts));
             }
             catch { }
 
