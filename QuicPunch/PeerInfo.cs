@@ -10,7 +10,16 @@ namespace QuicPunch
     {
         public byte[] CertHash;
         public string Name;
-        public IPEndPoint EndPoint;
+        
+        public QuicPunch.NetworkType NetworkType;
+        
+        public IPEndPoint ActiveEndPoint;
+        
+        public IPAddress[] Addresses;
+
+        public int MinPort;
+        public int MaxPort;
+        
         public DateTime LastSeen;
 
         public ECDsa Curve;

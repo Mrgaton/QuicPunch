@@ -14,49 +14,54 @@ namespace QuicPunch
     internal class QuicConection
     {
         //TODO: also implement stun to retrieve external port?
-        public static async Task<(bool Sucess, UdpClient client)> OpenPortCore(UdpClient nudp, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
+        public static async Task<(bool Sucess, UdpClient client, IPEndPoint remoteEndpoint)> OpenPortCore(
+            UdpClient nudp, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
         {
             try
             {
-                IPEndPoint remotePeerNewPort = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
                 var punchSuccessful = new TaskCompletionSource<bool>();
                 using var punchCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt);
-                _ = SendLoopAsync(nudp, remotePeerNewPort, punchCts.Token);
+                _ = SendLoopAsync(nudp, remotePeer, peerPort, punchCts.Token);
 
-                await ReceiveHoleLoopAsync(nudp, punchSuccessful, punchCts.Token);
+                var remoteEndpoint = await ReceiveHoleLoopAsync(nudp, punchSuccessful, punchCts.Token);
                 await punchSuccessful.Task.WaitAsync(punchCts.Token);
                 punchCts.Cancel();
-                return (true, nudp);
+                return (true, nudp, remoteEndpoint);
             }
             catch (OperationCanceledException)
             {
-                return (false, null);
+                return (false, null, null);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error in OpenPortCore: {ex.Message}");
-                return (false, null);
+                return (false, null, null);
             }
         }
-        public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(IPEndPoint ownPublicEndpoint, UdpClient nudp, PeerInfo remotePeer, ushort peerPort, X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
+
+        public static async Task<(QuicConnection Conection, Stream Stream)> InitQuicConnectionCore(
+            IPEndPoint ownPublicEndpoint, UdpClient nudp, PeerInfo remotePeer, ushort peerPort,
+            X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
         {
             using var openPortCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             using var openPortLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt, openPortCts.Token);
 
-            var udpResult = await OpenPortCore(nudp,remotePeer, peerPort, openPortLinkedCts.Token).WaitAsync(openPortLinkedCts.Token);
+            var udpResult = await OpenPortCore(nudp, remotePeer, peerPort, openPortLinkedCts.Token)
+                .WaitAsync(openPortLinkedCts.Token);
 
             if (!udpResult.Sucess)
             {
                 return (null, null);
             }
 
-            IPEndPoint remoteNewEndpoint = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
+            //IPEndPoint remoteNewEndpoint = new IPEndPoint(remotePeer.EndPoint.Address, peerPort);
 
             var localPort = ((IPEndPoint)nudp.Client.LocalEndPoint!).Port;
             nudp.Dispose();
             openPortLinkedCts.Dispose();
 
-            bool isServer = AmIServer(ownPublicEndpoint.Address, ownPublicEndpoint.Port, remoteNewEndpoint.Address, remoteNewEndpoint.Port);
+            bool isServer = AmIServer(ownPublicEndpoint.Address, ownPublicEndpoint.Port, remotePeer.Addresses[0],
+                remotePeer.MinPort);
 
             QuicConnection connection = null;
             QuicStream stream = null;
@@ -65,7 +70,7 @@ namespace QuicPunch
 
             for (int attempt = 1; attempt <= 2; attempt++)
             {
-               await PreciseTime.StartSyncedLoggerAsync(500);
+                await PreciseTime.StartSyncedLoggerAsync(500);
 
                 Console.WriteLine($"\n--- ATTEMPT {attempt}/2: Acting as {(isServer ? "SERVER" : "CLIENT")} ---");
 
@@ -77,11 +82,13 @@ namespace QuicPunch
                 {
                     if (isServer)
                     {
-                        (connection, stream) = await TryRunServer(localPort, ownCertificate, remotePeer.CertHash ,linkedCts.Token);
+                        (connection, stream) = await TryRunServer(localPort, ownCertificate, remotePeer.CertHash,
+                            linkedCts.Token);
                     }
                     else
                     {
-                        (connection, stream) = await TryRunClient(remoteNewEndpoint, ownCertificate, remotePeer.CertHash, localPort, linkedCts.Token);
+                        (connection, stream) = await TryRunClient(udpResult.remoteEndpoint, ownCertificate,
+                            remotePeer.CertHash, localPort, linkedCts.Token);
                     }
 
                     if (connection != null && stream != null)
@@ -106,7 +113,9 @@ namespace QuicPunch
                     {
                         await PreciseTime.StartSyncedLoggerAsync(10 * 1000);
                     }
-                    catch { }
+                    catch
+                    {
+                    }
 
                     isServer = !isServer;
                 }
@@ -132,7 +141,8 @@ namespace QuicPunch
             return (connection, stream);
         }
 
-        public static async Task ReceiveHoleLoopAsync(UdpClient udp, TaskCompletionSource<bool> tcs, CancellationToken token)
+        public static async Task<IPEndPoint> ReceiveHoleLoopAsync(UdpClient udp, TaskCompletionSource<bool> tcs,
+            CancellationToken token)
         {
             var ACKPacket = Helpers.Combine(QuicPunch.MagicHeader, [(byte)QuicPunchStructures.MessageType.Ack]);
 
@@ -141,7 +151,7 @@ namespace QuicPunch
                 try
                 {
 
-                skipPacket:
+                    skipPacket:
 
                     var result = await udp.ReceiveAsync(token);
 
@@ -172,9 +182,13 @@ namespace QuicPunch
                         }
                         else if (messageType == QuicPunchStructures.MessageType.Ack)
                         {
-                            await Task.Delay(250);
-                            udp.Send(ACKPacket, result.RemoteEndPoint);
-                            tcs.SetResult(true);
+                            for (int i = 0; i < 3; i++)
+                            {
+                                udp.Send(ACKPacket, result.RemoteEndPoint);
+                                await Task.Delay(150);
+                            }
+
+                            return result.RemoteEndPoint;
                         }
                     }
                 }
@@ -182,7 +196,8 @@ namespace QuicPunch
                 {
                     break;
                 }
-                catch (SocketException ex) when (ex.SocketErrorCode is SocketError.OperationAborted or SocketError.Interrupted)
+                catch (SocketException ex) when (ex.SocketErrorCode is SocketError.OperationAborted
+                                                     or SocketError.Interrupted)
                 {
                     break;
                 }
@@ -191,12 +206,22 @@ namespace QuicPunch
                     Console.WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
                     if (token.IsCancellationRequested || tcs.Task.IsCompleted)
                         break;
-                    try { await Task.Delay(1000, token); } catch { break; }
+                    try
+                    {
+                        await Task.Delay(1000, token);
+                    }
+                    catch
+                    {
+                        break;
+                    }
                 }
             }
+            
+                return null;
         }
+    
 
-        public static async Task SendLoopAsync(UdpClient udp, IPEndPoint peer, CancellationToken token)
+    public static async Task SendLoopAsync(UdpClient udp, PeerInfo peer,ushort askedPort, CancellationToken token)
         {
             byte[] payload;
 
@@ -232,7 +257,14 @@ namespace QuicPunch
                     if (token.IsCancellationRequested)
                         break;
 
-                    await udp.SendAsync(payload, payload.Length, peer);
+                    if (peer.NetworkType == QuicPunch.NetworkType.Static || peer.NetworkType == QuicPunch.NetworkType.DynamicAddress)
+                    {
+                        foreach (var address in peer.Addresses)
+                        {                        
+                            await udp.SendAsync(payload, new IPEndPoint(address, askedPort));
+                        }
+                    }
+                    await udp.BigSendAsync(payload, peer);
                     await Task.Delay(250, token);
                 }
 

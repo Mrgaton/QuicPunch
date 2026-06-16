@@ -2,5 +2,88 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp Servers/DynamicCertificatePinning" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../DSFILES" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../FileDiffGenerator" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp-Libs/JSPaste" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/AnyDesk Tools" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/AsciiPlayer" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/BlackScreenForUser" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/BytesEncoding" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/CRUNInstaller" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/CRUNInstallerClone" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/CameraMovementDetector" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/Cats" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/ClackyClicky" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/CloudStorageModifier" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/DisableWindowsDefender" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/EncriptadorSecreto" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/Estufa simulator" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/FilesUpdater" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/FondoGupo" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/GitDrive" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/GitHibAutoReleaseUpdator" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/MinecraftConfigHelper" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/OnlineVideoPlayer" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/OnlineVideoPlayerNewClone" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/PopcornDoodle" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/ProcessWatcher" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/Telefono de rosalia" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/TempoClick" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/Thanos el guarro" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/WinrarActivator" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../CSharp/YoutubeDownloader" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/AcountGrabberLogin" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/DiscordTokenLoginX" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/ElINJECTORTROLLL" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/NOIPAPICHANGE" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/Rage" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/RageAltF4" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/RemoteCustomRRS" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/TokenJuaker" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Dark CSharp Programs/kenzo-fivem" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../KiraAndMrgaton/K1R4FN-NEW/Programs/K1R4FN-AC" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../KiraAndMrgaton/K1R4FN-NEW/Programs/K1R4FN-DLL" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../KiraAndMrgaton/K1R4FN-NEW/Programs/K1R4FN-Launcher" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../KiraAndMrgaton/K1R4FN-NEW/Programs/ProxyThingies2" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../KiraAndMrgaton/K1R4FN-NEW/Server/K1R4FN-API" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../KiraAndMrgaton/K1R4FN-NEW/Server/K1R4FN-NEO" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../KiraAndMrgaton/K1R4FN-NEW/Server/K1R4FN-V2-API" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../KiraAndMrgaton/Proyectos Kira/controllerTest" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Programas absurdos/ChineseBalloonTelecomLangV3" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Programas absurdos/CrashMePlease" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../Programas absurdos/SussySillyCat" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../VelocisLauncher" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../VelocisLauncher/VelocisLauncher" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../VelocisLauncher/files-updater" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/BotAccountDate" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/CoreServerShared" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/CoreServerSource" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/CoreServerSource/shared" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/DSFILES-SERVER" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/DSFilesWeb" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Assiduity" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Assiduity/Fluxzy.Core.Old" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Comet" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Crystal" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Demure" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Eclipse" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Magnus" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Media" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Perception" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Pragmatic" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Reverie" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Winsome" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNLB/Zenith" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/FNRARO" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/JSP-Backend" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/JSP-Library" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/K1R4FN-SelfbotV2" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/KIRA-WEBSITE" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/ProseBot" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Node/github-repo-analysis" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Servers/Python/K1R4FN-BOT" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../things-autoruner/SaveTheWorldClaimer" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../things-autoruner/free-games-claimer" vcs="Git" />
   </component>
 </project>

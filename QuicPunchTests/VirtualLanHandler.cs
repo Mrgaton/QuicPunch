@@ -70,7 +70,7 @@ namespace QuicPunch
         }
         public async Task DeniedAsync(PeerInfo peer, CancellationToken ct)
         {
-            Console.WriteLine($"\n[FriendsLAN] Peer: {peer.Name} ({peer.EndPoint}) failed or denied the conection.");
+            Console.WriteLine($"\n[FriendsLAN] Peer: {peer.Name} ({peer.ActiveEndPoint}) failed or denied the conection.");
         }
 
         public  async Task HandleAsync(
@@ -82,7 +82,7 @@ namespace QuicPunch
             if (connection == null) 
                 throw new ArgumentNullException(nameof(connection));
 
-            Console.WriteLine($"\n[FriendsLAN] Secure tunnel established with peer: {peer.Name} ({peer.EndPoint})");
+            Console.WriteLine($"\n[FriendsLAN] Secure tunnel established with peer: {peer.Name} ({peer.ActiveEndPoint})");
 
             uint remoteIp;
 
@@ -142,7 +142,7 @@ namespace QuicPunch
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[FriendsLAN] Tunnel error with peer {(peer.EndPoint.ToString() ?? peer.Name)}: {ex.Message}");
+                Console.WriteLine($"[FriendsLAN] Tunnel error with peer {(peer.ActiveEndPoint.ToString() ?? peer.Name)}: {ex.Message}");
             }
             finally
             {

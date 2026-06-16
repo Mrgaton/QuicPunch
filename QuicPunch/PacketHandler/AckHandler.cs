@@ -9,7 +9,7 @@ namespace QuicPunch.PacketHandler
 {
     internal class AckHandler
     {
-        internal static async void HandleAck(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
+        internal static void HandleAck(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
         {
             if (!qc.AcceptSharedPeers)
                 return;
@@ -17,14 +17,28 @@ namespace QuicPunch.PacketHandler
             if (qc.AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo ackPeer))
             {
                 var peersCount = r.ReadUInt16();
-                Dictionary<IPEndPoint, byte[]> remotePeersCertHashes = new Dictionary<IPEndPoint, byte[]>(peersCount);
+                List<PeerInfo> remotePeers = new List<PeerInfo>(peersCount);
 
                 for (int i = 0; i < peersCount; i++)
                 {
-                    IPAddress ip = new IPAddress(r.ReadBytes(4));
-                    ushort port = r.ReadUInt16();
-                    var peerCertHash = r.ReadBytes(qc.CurrentPeer.CertHash.Length);
-                    remotePeersCertHashes.Add(new IPEndPoint(ip, port), peerCertHash);
+                    PeerInfo pi = new PeerInfo();
+                    
+                    pi.NetworkType = (QuicPunch.NetworkType)r.ReadByte();
+                    byte addressCount = r.ReadByte();
+
+                    IPAddress[] addresses = new IPAddress[addressCount];
+                    for (int e = 0 ; e < addressCount; e++)
+                    {
+                        addresses[e] = new IPAddress(r.ReadBytes(4));
+                    }
+
+                    pi.Addresses = addresses;
+                    
+                    pi.MinPort = r.ReadUInt16();
+                    pi.MaxPort = r.ReadUInt16();
+                    
+                    pi.CertHash = r.ReadBytes(qc.CurrentPeer.CertHash.Length); 
+                    remotePeers.Add(pi);
                 }
 
                 long receivedTicks = r.ReadInt64();
@@ -49,15 +63,16 @@ namespace QuicPunch.PacketHandler
 
                 bool peersUpdated = false;
 
-                foreach (var newPeer in remotePeersCertHashes)
+                foreach (var peer in remotePeers)
                 {
-                    if (!qc.AvilablePeers.TryGetValue(newPeer.Key, out _))
+                    if (!qc.AvilablePeers.Any(avilablePeer => avilablePeer.Value.CertHash.SequenceEqual(peer.CertHash)))
                     {
-                        //TODO use the cert hashes
-                        qc.ExpectedPeerCert.TryAdd(newPeer.Key, newPeer.Value);
-
-                        _ = qc.PeerInterogation(newPeer.Key, default);
-
+                        foreach (var address in peer.Addresses)
+                        { 
+                          
+                        }
+ 
+                        _ = qc.PeerInterogation(peer, default);
                         peersUpdated = true;
                     }
                 }
@@ -68,7 +83,7 @@ namespace QuicPunch.PacketHandler
 
                     foreach (var peer in qc.AvilablePeers.Select(p => p.Value))
                     {
-                        udp.SendAsync(ack, peer.EndPoint);
+                        udp.SendAsync(ack, peer.ActiveEndPoint);
                     }
                 }
             }

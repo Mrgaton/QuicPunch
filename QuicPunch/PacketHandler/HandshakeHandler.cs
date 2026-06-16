@@ -12,7 +12,7 @@ namespace QuicPunch.PacketHandler
 {
     internal class HandshakeHandler
     {
-        internal static async void HandleHandshake(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
+        internal static void HandleHandshake(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
         {
             var handShakeType = (HandShakeType)r.ReadByte();
             var remotePort = r.ReadUInt16();
@@ -75,7 +75,6 @@ namespace QuicPunch.PacketHandler
                         }
 
                         UdpClient? nudp = null;
-                        IPEndPoint? publicEndPoint = null;
 
                         if (decidedResponse == HandShakeType.Accept)
                         {
@@ -85,7 +84,6 @@ namespace QuicPunch.PacketHandler
 
                             nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
                             nudp.Client.Bind(new IPEndPoint(IPAddress.Any, decidedPort));
-                            publicEndPoint = await Helpers.GetPublicEndPoint(nudp);
                         }
 
                         byte[] payload;
@@ -96,7 +94,7 @@ namespace QuicPunch.PacketHandler
                             w.Write(MagicHeader);
                             w.Write((byte)MessageType.Handshake);
                             w.Write((byte)(decidedResponse));
-                            w.Write(publicEndPoint != null ? (ushort)publicEndPoint.Port : (ushort)0);
+                            w.Write(decidedPort);
                             w.Write(connectionType.ToByteArray());
                             w.Write(guid.ToByteArray());
 
