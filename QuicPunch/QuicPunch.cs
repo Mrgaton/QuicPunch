@@ -237,9 +237,9 @@ namespace QuicPunch
 
         private async Task StunRequest()
         {
-            await Task.Delay(100);
-
             await _StunClient.SendRequest(_CancelationSource.Token);
+
+            await Task.Delay(600);
 
             var type = Helpers.GetNetworkType(_StunClient.StunResponseEndpointHits);
 
@@ -451,8 +451,11 @@ namespace QuicPunch
                         goto skipPacket;
                     
                     if (_StunClient.TryProcessIncoming(result.Buffer, result.RemoteEndPoint))
-                       continue;
-                    
+                    {
+                        //WriteLine($"Processed STUN response from {result.RemoteEndPoint}");
+                        continue;
+                    }
+
                     //Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));
 
 

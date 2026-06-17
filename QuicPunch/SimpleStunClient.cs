@@ -122,7 +122,7 @@ namespace QuicPunch
 
                 var rtt = TimeSpan.FromMilliseconds(Environment.TickCount64 - req.SentTicks);
 
-                StunResponseEndpointHits.AddOrUpdate(req.Remote, 1, (_, count) => count + 1);
+                StunResponseEndpointHits.AddOrUpdate(mapped, 1, (_, count) => count + 1);
 
                 MappedAddressResolved?.Invoke(
                     this,
