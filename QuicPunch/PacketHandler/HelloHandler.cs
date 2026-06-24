@@ -25,6 +25,8 @@ namespace QuicPunch.PacketHandler
                 return;
             }
 
+            PackedFlags pf = new PackedFlags(r.ReadByte());
+
             var addressesAmount = r.ReadByte();
             IPAddress[]  addresses = new IPAddress[addressesAmount];
             for (int i = 0; i < addressesAmount; i++)
@@ -98,6 +100,7 @@ namespace QuicPunch.PacketHandler
                 var peerInfo = new PeerInfo
                 {
                     ActiveEndPoint = result.RemoteEndPoint,
+                    NetworkType =  pf.NetworkType,
                     
                     Addresses =  addresses,
                     MaxPort = maxPort,
