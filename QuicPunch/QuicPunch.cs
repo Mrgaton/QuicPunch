@@ -6,6 +6,7 @@ using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Compression;
+using System.IO.Pipes;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Sockets;
@@ -68,49 +69,65 @@ namespace QuicPunch
                 throw new NotSupportedException("QUIC is not supported on this machine.");
             }
 
-            var urls = new string[]
-            {
-                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_nat_testing_hosts.txt",
-                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_nat_testing_ipv4s.txt",
-                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/candidates.txt",
-                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_ipv4s.txt",
-                "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_hosts.txt",
-
-                "https://gist.githubusercontent.com/mondain/b0ec1cf5f60ae726202e/raw/2d2b96b4508a38d342e0228d46eab84dad2398a3/public-stun-list.txt",
-                "https://gist.githubusercontent.com/zziuni/3741933/raw/212e4b6316110dc5c128d08f65ff8f174d7ae383/stuns",
-            };
-
-            var parsedEndpoints = new List<string>();
-
-            foreach (var url in urls) 
-            {
-                var data =  client.GetStringAsync(url).Result;
-            
-                foreach(var line in data.Split("\n").Select(l => l.Trim()).Where(l => !string.IsNullOrEmpty(l) && !l.StartsWith("#")))
-                {
-                    parsedEndpoints.Add(line);
-                }
-            }
-
-            var uniqueList = parsedEndpoints
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            string stunEndpointsCachePath = Path.Combine(Path.GetTempPath(), "stunServersCache.epl");
 
             var servers = new ConcurrentBag<IPEndPoint>();
-
-            Parallel.ForEach(uniqueList,new ParallelOptions() { MaxDegreeOfParallelism = 64 * 5}, line =>
+            
+            if (File.Exists(stunEndpointsCachePath))
             {
-                var ep = Helpers.ResolveEndpoint(line);
-
-                if (ep is not null)
+                foreach (var parsedLine in File.ReadAllLines(stunEndpointsCachePath))
                 {
-                    foreach (var e in ep)
+                    servers.Add(IPEndPoint.Parse(parsedLine));
+                }
+            }
+            else
+            {
+                var urls = new string[]
+                {
+                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_nat_testing_hosts.txt",
+                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_nat_testing_ipv4s.txt",
+                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/candidates.txt",
+                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_ipv4s.txt",
+                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_hosts.txt",
+
+                    "https://gist.githubusercontent.com/mondain/b0ec1cf5f60ae726202e/raw/2d2b96b4508a38d342e0228d46eab84dad2398a3/public-stun-list.txt",
+                    "https://gist.githubusercontent.com/zziuni/3741933/raw/212e4b6316110dc5c128d08f65ff8f174d7ae383/stuns",
+                };
+
+                var parsedEndpoints = new List<string>();
+
+                foreach (var url in urls) 
+                {
+                    var data =  client.GetStringAsync(url).Result;
+            
+                    foreach(var line in data.Split("\n").Select(l => l.Trim()).Where(l => !string.IsNullOrEmpty(l) && !l.StartsWith("#")))
                     {
-                        servers.Add(e);
+                        parsedEndpoints.Add(line);
                     }
                 }
-            });
 
+                var uniqueList = parsedEndpoints
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                
+                Parallel.ForEach(uniqueList,new ParallelOptions() { MaxDegreeOfParallelism = 64 * 5}, line =>
+                {
+                    var ep = Helpers.ResolveEndpoint(line);
+
+                    if (ep is not null)
+                    {
+                        foreach (var e in ep)
+                        {
+                            servers.Add(e);
+                        }
+                    }
+                });
+                
+                File.WriteAllText(stunEndpointsCachePath, string.Join('\n', servers.Select(e => e.ToString())));
+            }
+
+            
+            
             udp = new UdpClient();
 
             if (OperatingSystem.IsWindows())
@@ -247,11 +264,14 @@ namespace QuicPunch
 
             var portOrder = _StunClient.StunResponseEndpointHits.OrderByDescending(k => k.Key.Port);
 
-            StunPortRange = ((portOrder.Last().Key.Port / 255) * 255, ((portOrder.First().Key.Port + (255 - 1)) / 255) * 255);
+            StunPortRange = portOrder.All(po => po.Key.Port == MostUsedPort) ?  (MostUsedPort, MostUsedPort) : ((portOrder.Last().Key.Port / 255) * 255, ((portOrder.First().Key.Port + (255 - 1)) / 255) * 255);
             CurrentPeer.Addresses = _StunClient.StunResponseEndpointHits.Select(k => k.Key.Address).Distinct().ToArray();
 
+            CurrentPeer.MinPort = StunPortRange.minPort;
+            CurrentPeer.MaxPort = StunPortRange.maxPort;
+            
             var newToken = GetToken();
-
+         
             if (newToken != LastToken)
             {
                 LastToken = newToken;
@@ -308,10 +328,10 @@ namespace QuicPunch
         public void RegisterProtocol(IProtocolHandler handler) => ProtocolHandlers[handler.ProtocolId] = handler;
 
 
-        public event Action<PeerInfo>? OnPeerAvilable;
+        public event Action<PeerInfo>? OnPeerAvailable;
         internal void RaisePeerAvailable(PeerInfo peerInfo)
         {
-            OnPeerAvilable?.Invoke(peerInfo);
+            OnPeerAvailable?.Invoke(peerInfo);
         }
 
         //TODO: add retries :smile:
@@ -396,7 +416,7 @@ namespace QuicPunch
 
         public async Task PeerInterogation(string token, CancellationTokenSource mainCts)
         {
-            var p = DecodeEndpointToken(token);
+            var p = Helpers.DecodeEndpointToken(token);
 
             foreach (var address in p.Addresses)
             {
@@ -510,7 +530,7 @@ namespace QuicPunch
                 }
                 catch (Exception ex)
                 {
-                    WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
+                    WriteLine($"Error in ReceiveLoopAsync: {ex.ToString()}");
 
                     if (_CancelationSource.IsCancellationRequested)
                         break;
@@ -570,6 +590,15 @@ namespace QuicPunch
                 w.Write(MagicHeader);
                 w.Write((byte)type);
                 w.Write(CurrentPeer.CertHash);
+                
+                w.Write((byte)CurrentPeer.Addresses.Length);
+                foreach (var address in CurrentPeer.Addresses)
+                {
+                    w.Write(address.GetAddressBytes());
+                }
+                
+                w.Write((ushort)CurrentPeer.MinPort);
+                w.Write((ushort)CurrentPeer.MaxPort);
 
                 var nameBytes = Encoding.UTF8.GetBytes(CurrentPeer.Name);
                 w.Write((byte)nameBytes.Length);
@@ -698,96 +727,10 @@ namespace QuicPunch
             }
         }
 
-        public string GetToken() => EncodeEndpointToken(CurrentPeer);
+        public string GetToken() => 
+            Helpers.EncodeEndpointToken(CurrentPeer);
 
-        private const byte TokenVersionByte = 1;
-        public static string EncodeEndpointToken(PeerInfo p)
-        {
-            using (var ms = new MemoryStream())
-            using (var w = new BinaryWriter(ms))
-            {
-                PackedFlags pf = new PackedFlags()
-                {
-                    NetworkType = p.NetworkType
-                };
-
-                w.Write((byte)pf.RawValue);
-
-                if (p.NetworkType == NetworkType.DynamicAddress || p.NetworkType == NetworkType.DynamicPortAndAddress)
-                {
-                    w.Write((byte)p.Addresses.Length);
-
-                    for (int i = 0; i < p.Addresses.Length; i++)
-                    {
-                        w.Write(p.Addresses[i].GetAddressBytes());
-                    }
-                }
-                else
-                {
-                    w.Write(p.Addresses[0].GetAddressBytes());
-                }
-
-                if (pf.NetworkType == NetworkType.DynamicPort || pf.NetworkType == NetworkType.DynamicPortAndAddress)
-                {
-                    w.Write((short)p.MinPort);
-                    w.Write((short)p.MaxPort);
-                }
-                else
-                {
-                    w.Write((ushort)p.MinPort);
-                }
-
-                //w.Write((byte)p.CertHash.Length);
-                w.Write(p.CertHash);
-                return Base64Url.EncodeToString(ms.ToArray());
-            }
-        }
-        public static PeerInfo DecodeEndpointToken(string t)
-        {
-            var peer = new PeerInfo();
-            
-            using (var ms = new MemoryStream(Base64Url.DecodeFromChars(t)))
-            using (var r = new BinaryReader(ms))
-            {
-                //var version = r.ReadByte();
-                // if (version != TokenVersionByte) 
-                //    throw new Exception("Invalid token version");
-
-                PackedFlags pf = new PackedFlags(r.ReadByte());
-
-                if (pf.NetworkType == NetworkType.DynamicAddress || pf.NetworkType == NetworkType.DynamicPortAndAddress)
-                {
-                   var addressesLength = r.ReadByte();
-
-                   IPAddress[] addresses = new IPAddress[addressesLength];
-                   
-                    for (int i = 0; i < addressesLength; i++)
-                    {
-                        addresses[i] = new IPAddress(r.ReadBytes(4));
-                    }
-
-                    peer.Addresses = addresses;
-                }
-                else
-                {
-                    peer.Addresses = [new IPAddress(r.ReadBytes(4))];
-                }
-
-                if (pf.NetworkType == NetworkType.DynamicPort || pf.NetworkType == NetworkType.DynamicPortAndAddress)
-                {
-                    peer.MinPort = r.ReadUInt16();
-                    peer.MaxPort = r.ReadUInt16();
-                }
-                else
-                {
-                    peer.MinPort =  r.ReadUInt16();
-                }
-                
-                var certHash = r.ReadBytes(384 / 8);
-                peer.CertHash = certHash;
-                return peer;
-            }
-        }
+       
         public void Dispose()
         {
             _CancelationSource?.Cancel();

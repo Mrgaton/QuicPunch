@@ -1,4 +1,5 @@
-﻿using System.Net.Sockets;
+﻿using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -24,6 +25,16 @@ namespace QuicPunch.PacketHandler
                 return;
             }
 
+            var addressesAmount = r.ReadByte();
+            IPAddress[]  addresses = new IPAddress[addressesAmount];
+            for (int i = 0; i < addressesAmount; i++)
+            {
+                addresses[i] =  new IPAddress(r.ReadBytes(4));
+            }
+
+            ushort minPort = r.ReadUInt16();
+            ushort maxPort = r.ReadUInt16();
+            
             byte nameSize = r.ReadByte();
             var nameBytes = r.ReadBytes(nameSize);
 
@@ -87,6 +98,11 @@ namespace QuicPunch.PacketHandler
                 var peerInfo = new PeerInfo
                 {
                     ActiveEndPoint = result.RemoteEndPoint,
+                    
+                    Addresses =  addresses,
+                    MaxPort = maxPort,
+                    MinPort =  minPort,
+                    
                     CertHash = certHash,
                     Name = Encoding.UTF8.GetString(nameBytes),
                     LastSeen = PreciseTime.GetCorrectTime(),

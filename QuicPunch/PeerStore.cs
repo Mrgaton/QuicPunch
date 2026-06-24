@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Tracing;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -10,6 +11,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading;
+using QuicPunch;
 
 public sealed class PeerStore : IDisposable
 {
@@ -185,10 +187,18 @@ public sealed class PeerStore : IDisposable
     }
 
     // Backward-compatible helper: stores one IP with min/max equal to the endpoint port.
-    public bool AddOrUpdate(IPEndPoint endPoint, byte[] certificate, bool save = true)
+    public bool AddOrUpdate(string token, bool save = true)
+    {            var decodedPeer = Helpers.DecodeEndpointToken(token);
+        
+        ArgumentNullException.ThrowIfNull(decodedPeer.Addresses);
+        return AddOrUpdate(decodedPeer.Addresses, decodedPeer.MinPort, decodedPeer.MaxPort, decodedPeer.CertHash, save);
+    }   
+    
+    public bool AddOrUpdate(PeerInfo peer, bool save = true)
     {
-        ArgumentNullException.ThrowIfNull(endPoint);
-        return AddOrUpdate(new[] { endPoint.Address }, endPoint.Port, endPoint.Port, certificate, save);
+        ArgumentNullException.ThrowIfNull(peer.Addresses);
+        
+        return AddOrUpdate(peer.Addresses, peer.MinPort, peer.MaxPort, peer.CertHash, save);
     }
 
     public bool AddOrUpdate(IPAddress[] addresses, int minPort, int maxPort, byte[] certificate, bool save = true) =>
