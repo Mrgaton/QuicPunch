@@ -38,12 +38,11 @@ internal static class Program
             args = args[0].Split("/").Skip(2).Select(e => HttpUtility.UrlDecode(e)).ToArray();
         }
         // args = ["vgjnSaIPkdhdVT3GVATmCT4u/6nX7E0JZx582cDqA8vUu0CGd0BfzfO7/7bAgoOb9kOlvS9H"];
+        
         if (args.Length > 0)
         {
-            var decodedPeer = QuicPunch.QuicPunch.DecodeEndpointToken(args[0]);
-
             PeerStore ps = new PeerStore(Path.Combine(QuicPunch.QuicPunch.AppDataPath, "peers.db"));
-            ps.AddOrUpdate(decodedPeer.ActiveEndPoint, decodedPeer.CertHash);
+            ps.AddOrUpdate(args[0]);
             ps.Dispose();
             return;
         }
@@ -113,7 +112,7 @@ internal static class Program
         string password = Console.ReadLine();
 
         var cts = new CancellationTokenSource();
-        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 443 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
+        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 2000 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
 
         _friendsLanHandler = new VirtualLanHandler();
         var chatHandler = new ChatHandler();
@@ -141,7 +140,7 @@ internal static class Program
             };
         }
                 
-        qcc.OnPeerAvilable += (peer) =>
+        qcc.OnPeerAvailable += (peer) =>
         {
             Console.WriteLine($"New Peer Available:  {peer.Name}");
         };
