@@ -258,10 +258,10 @@ namespace QuicPunch
 
             await Task.Delay(600);
 
-            var type = Helpers.GetNetworkType(_StunClient.StunResponseEndpointHits);
+            CurrentPeer.NetworkType =  Helpers.GetNetworkType(_StunClient.StunResponseEndpointHits);
 
             MostUsedPort = GetMostUsedPort();
-
+            
             var portOrder = _StunClient.StunResponseEndpointHits.OrderByDescending(k => k.Key.Port);
 
             StunPortRange = portOrder.All(po => po.Key.Port == MostUsedPort) ?  (MostUsedPort, MostUsedPort) : ((portOrder.Last().Key.Port / 255) * 255, ((portOrder.First().Key.Port + (255 - 1)) / 255) * 255);
@@ -556,7 +556,13 @@ namespace QuicPunch
                 {
                     foreach (var peer in peersCopy.Select(p => p.Value))
                     {
-                        w.Write((byte)peer.NetworkType);
+                        PackedFlags pf = new PackedFlags()
+                        {
+                            NetworkType = peer.NetworkType
+                        };
+
+                        w.Write((byte)pf.RawValue);
+
                         w.Write((byte)peer.Addresses.Length);
                         foreach (var e in peer.Addresses)
                         {
@@ -591,6 +597,12 @@ namespace QuicPunch
                 w.Write((byte)type);
                 w.Write(CurrentPeer.CertHash);
                 
+                PackedFlags pf = new PackedFlags()
+                {
+                    NetworkType = CurrentPeer.NetworkType
+                };
+                w.Write((byte)pf.RawValue);
+
                 w.Write((byte)CurrentPeer.Addresses.Length);
                 foreach (var address in CurrentPeer.Addresses)
                 {

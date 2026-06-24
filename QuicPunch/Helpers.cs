@@ -37,9 +37,12 @@ namespace QuicPunch
 
                foreach (var address in peerInfo.Addresses)
                {
+                   Console.WriteLine(peerInfo.MinPort + ", " + peerInfo.MaxPort);
+                   
                    for (int port = peerInfo.MinPort; port <= peerInfo.MaxPort; port++)
                    {
-                       await udp.SendAsync(data, data.Length, new IPEndPoint(address, port));
+                       Console.WriteLine("Sending packet to " + address + ":" + port); 
+                       udp.SendAsync(data, data.Length, new IPEndPoint(address, port));
                    }
                }
 

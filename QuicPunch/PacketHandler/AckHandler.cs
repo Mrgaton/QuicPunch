@@ -22,8 +22,10 @@ namespace QuicPunch.PacketHandler
                 for (int i = 0; i < peersCount; i++)
                 {
                     PeerInfo pi = new PeerInfo();
+
+                    PackedFlags pf = new PackedFlags(r.ReadByte());
+                    pi.NetworkType = pf.NetworkType;
                     
-                    pi.NetworkType = (QuicPunch.NetworkType)r.ReadByte();
                     byte addressCount = r.ReadByte();
 
                     IPAddress[] addresses = new IPAddress[addressCount];
