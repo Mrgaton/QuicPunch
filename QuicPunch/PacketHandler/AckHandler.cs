@@ -13,8 +13,10 @@ namespace QuicPunch.PacketHandler
         {
             if (!qc.AcceptSharedPeers)
                 return;
-
-            if (qc.AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo ackPeer))
+            
+            var certHash = r.ReadBytes(qc.CertManager.CertPublicHash.Length);
+            
+            if (qc.AvailablePeers.TryGetValue(certHash, out PeerInfo ackPeer))
             {
                 var peersCount = r.ReadUInt16();
                 List<PeerInfo> remotePeers = new List<PeerInfo>(peersCount);
@@ -67,7 +69,7 @@ namespace QuicPunch.PacketHandler
 
                 foreach (var peer in remotePeers)
                 {
-                    if (!qc.AvilablePeers.Any(avilablePeer => avilablePeer.Value.CertHash.SequenceEqual(peer.CertHash)))
+                    if (!qc.AvailablePeers.Any(avilablePeer => avilablePeer.Value.CertHash.SequenceEqual(peer.CertHash)))
                     {
                         foreach (var address in peer.Addresses)
                         { 
@@ -83,7 +85,7 @@ namespace QuicPunch.PacketHandler
                 {
                     var ack = qc.GenerateAck(qc.SharePeers);
 
-                    foreach (var peer in qc.AvilablePeers.Select(p => p.Value))
+                    foreach (var peer in qc.AvailablePeers.Select(p => p.Value))
                     {
                         udp.SendAsync(ack, peer.ActiveEndPoint);
                     }

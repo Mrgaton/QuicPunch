@@ -30,27 +30,24 @@ namespace QuicPunch
 
                await Task.WhenAll(tasks);
            }*/public static async Task BigSendAsync( this UdpClient udp, byte[] data, PeerInfo peerInfo)
-           {
-               if ((peerInfo.MinPort > peerInfo.MaxPort && peerInfo.MinPort > 0 && peerInfo.MaxPort > 0) || peerInfo.MinPort - peerInfo.MaxPort > ushort.MaxValue / 2)
-                   throw new ArgumentException("Invalid port range.", nameof(peerInfo));
+        {
+            if ((peerInfo.MinPort > peerInfo.MaxPort && peerInfo.MinPort > 0 && peerInfo.MaxPort > 0) || peerInfo.MinPort - peerInfo.MaxPort > ushort.MaxValue / 2)
+                throw new ArgumentException("Invalid port range.", nameof(peerInfo));
 
 
-               foreach (var address in peerInfo.Addresses)
-               {
-                   Console.WriteLine(peerInfo.MinPort + ", " + peerInfo.MaxPort);
+            foreach (var address in peerInfo.Addresses)
+            {
+                //Console.WriteLine(peerInfo.MinPort + ", " + peerInfo.MaxPort);
                    
-                   for (int port = peerInfo.MinPort; port <= peerInfo.MaxPort; port++)
-                   {
-                       Console.WriteLine("Sending packet to " + address + ":" + port); 
-                       udp.SendAsync(data, data.Length, new IPEndPoint(address, port));
-                   }
-               }
+                for (int port = peerInfo.MinPort; port <= peerInfo.MaxPort; port++)
+                {
+                    Console.WriteLine("Sending packet to " + address + ":" + port); 
+                    udp.SendAsync(data, data.Length, new IPEndPoint(address, port));
+                }
+            }
 
-           }
+        }
         
-
-
-            
         public static byte[] Combine(params byte[][] arrays)
         {
             int len = 0;
@@ -247,6 +244,25 @@ namespace QuicPunch
                 var certHash = r.ReadBytes(384 / 8);
                 peer.CertHash = certHash;
                 return peer;
+            }
+        }
+        public sealed class ByteArrayComparer : IEqualityComparer<byte[]>
+        {
+            public static ByteArrayComparer Instance { get; } = new();
+
+            private ByteArrayComparer() { }
+
+            public bool Equals(byte[]? x, byte[]? y) =>
+                x.AsSpan().SequenceEqual(y);
+
+            public int GetHashCode(byte[] obj)
+            {
+                var hash = new HashCode();
+
+                foreach (byte b in obj)
+                    hash.Add(b);
+
+                return hash.ToHashCode();
             }
         }
     }

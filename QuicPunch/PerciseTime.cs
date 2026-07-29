@@ -1,8 +1,7 @@
-﻿using System;
 using System.Diagnostics;
 using System.Net.Sockets;
-using System.Threading;
-using System.Threading.Tasks;
+
+namespace QuicPunch;
 
 public static class PreciseTime
 {
@@ -38,7 +37,15 @@ public static class PreciseTime
     public static DateTime GetCorrectTime()
     {
         if (_offset == TimeSpan.Zero)
-            SyncWithNtpAsync().GetAwaiter().GetResult();
+        {
+            try
+            {
+                SyncWithNtpAsync().GetAwaiter().GetResult();
+            }
+            catch
+            {
+            }
+        }
 
         return DateTime.UtcNow.Add(_offset);
     }

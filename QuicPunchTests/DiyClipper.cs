@@ -1,8 +1,8 @@
-﻿using System;
-using System.Diagnostics;
-using System.IO;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+
+namespace QuicPunchTests;
 
 public static class DiyClipper
 {
