@@ -1,10 +1,11 @@
 using System.IO.Compression;
 using System.Net.Quic;
 using System.Text;
+using QuicPunch;
 
-namespace QuicPunch
+namespace QuicPunchTests
 {
-    internal class ChatHandler : QuicPunch.IProtocolHandler
+    internal class ChatHandler : QuicPunch.QuicPunch.IProtocolHandler
     {
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000001");
         public ushort PreferredPort => 0; 

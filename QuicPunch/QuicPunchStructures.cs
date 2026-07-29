@@ -4,7 +4,7 @@ using System.Text;
 
 namespace QuicPunch
 {
-    internal class QuicPunchStructures
+    internal static class QuicPunchStructures
     {
         public enum MessageType : byte
         {

@@ -1,5 +1,6 @@
 ﻿using System.Runtime.InteropServices;
 
+namespace QuicPunchTests;
 
 /// <summary>
 /// Represents the return value of a message box. This enum is identical to System.Windows.Forms.DialogResult.

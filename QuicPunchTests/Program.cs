@@ -1,21 +1,13 @@
-using Microsoft.Extensions.Hosting;
-using Microsoft.Win32;
-using QuicPunch;
-using System.Buffers.Binary;
-using System.Collections.Concurrent;
-using System.ComponentModel;
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
 using System.Reflection;
-using System.Reflection.Metadata;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
-using System.Threading.Channels;
 using System.Web;
-using Wintun;
-using static PeerStore;
+using Microsoft.Win32;
+using QuicPunch;
+
+namespace QuicPunchTests;
 
 internal static class Program
 {
@@ -177,9 +169,9 @@ internal static class Program
 
                 Console.WriteLine("0: Enter token manualy");
 
-                for (int i = 1; i < qcc.AvilablePeers.Count + 1; i++)
+                for (int i = 1; i < qcc.AvailablePeers.Count + 1; i++)
                 {
-                    Console.WriteLine($"{i}: {qcc.AvilablePeers.ElementAt(i - 1).Value.Name} ({qcc.AvilablePeers.ElementAt(i - 1).Value.Ping.ToString()}) - {qcc.AvilablePeers.ElementAt(i - 1).Key}");
+                    Console.WriteLine($"{i}: {qcc.AvailablePeers.ElementAt(i - 1).Value.Name} ({qcc.AvailablePeers.ElementAt(i - 1).Value.Ping.ToString()}) - {qcc.AvailablePeers.ElementAt(i - 1).Key}");
                 }
                 Console.WriteLine("Refresh list: R");
 
@@ -196,8 +188,7 @@ internal static class Program
                     continue;
                 }
 
-                var peer = qcc.AvilablePeers.ElementAt(input.KeyChar - '1').Value;
-
+                var peer = qcc.AvailablePeers.ElementAt(input.KeyChar - '1').Value;
 
                 Console.WriteLine("\nSelect a protocol to use:\n");
 

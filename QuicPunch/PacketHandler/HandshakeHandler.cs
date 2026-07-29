@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
@@ -14,6 +14,8 @@ namespace QuicPunch.PacketHandler
     {
         internal static void HandleHandshake(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
         {
+            var certHash = r.ReadBytes(qc.CertManager.CertPublicHash.Length);
+            
             var handShakeType = (HandShakeType)r.ReadByte();
             var remotePort = r.ReadUInt16();
 
@@ -22,7 +24,7 @@ namespace QuicPunch.PacketHandler
 
             var signatureHandshake = r.ReadBytes(64); //Signature data
 
-            if (!qc.AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo handshakePeer))
+            if (!qc.AvailablePeers.TryGetValue(certHash, out PeerInfo handshakePeer))
             {
                 Console.WriteLine($"Received handshake from unknown peer {result.RemoteEndPoint}");
                 return;
@@ -79,8 +81,7 @@ namespace QuicPunch.PacketHandler
                         if (decidedResponse == HandShakeType.Accept)
                         {
                             nudp = new UdpClient();
-                            if (OperatingSystem.IsWindows())
-                                nudp.Client.IOControl(-1744830452, [0], null);
+                            ConfigureUdpSocket(nudp);
 
                             nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
                             nudp.Client.Bind(new IPEndPoint(IPAddress.Any, decidedPort));
@@ -93,6 +94,7 @@ namespace QuicPunch.PacketHandler
                         {
                             w.Write(MagicHeader);
                             w.Write((byte)MessageType.Handshake);
+                            w.Write(qc.CertManager.CertPublicHash);
                             w.Write((byte)(decidedResponse));
                             w.Write(decidedPort);
                             w.Write(connectionType.ToByteArray());
@@ -105,27 +107,27 @@ namespace QuicPunch.PacketHandler
                         }
 
                         await udp.SendAsync(payload, result.RemoteEndPoint);
-
-                        Task.Factory.StartNew(() =>
+                        
+                        _ = Task.Run(async () =>
                         {
                             for (int i = 0; i < 3; i++)
                             {
-                                Thread.Sleep(500);
-                                udp.Send(payload, result.RemoteEndPoint);
+                                await Task.Delay(250);
+                                await udp.SendAsync(payload, result.RemoteEndPoint);
                             }
                         });
 
                         if (decidedResponse == HandShakeType.Accept)
                         {
-                            var connection = await QuicPunchConnection.InitQuicConnectionCore(new IPEndPoint(qc.CurrentPeer.Addresses[0],qc.CurrentPeer.MinPort), nudp, qc.AvilablePeers[result.RemoteEndPoint], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
+                            var connection = await QuicPunchConnection.InitQuicConnectionCore(new IPEndPoint(qc.CurrentPeer.Addresses[0],qc.CurrentPeer.MinPort), nudp, qc.AvailablePeers[certHash], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
 
                             if (connection.Connection == null || connection.Stream == null)
                             {
-                                Task.Run(async () => await handler.DeniedAsync(qc.AvilablePeers[result.RemoteEndPoint], ct));
+                                _ = Task.Run(async () => await handler.DeniedAsync(qc.AvailablePeers[certHash], ct));
                             }
                             else
                             {
-                                Task.Run(async () => await handler.HandleAsync(connection.Connection, connection.Stream, qc.AvilablePeers[result.RemoteEndPoint], ct));
+                                _ = Task.Run(async () => await handler.HandleAsync(connection.Connection, connection.Stream, qc.AvailablePeers[certHash], ct));
                             }
                         }
                     });

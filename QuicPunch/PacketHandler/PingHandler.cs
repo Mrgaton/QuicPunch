@@ -17,12 +17,12 @@ namespace QuicPunch.PacketHandler
             {
                 long t2 = r.ReadInt64();
 
-                if (!qc.AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo peer))
+                /*if (!qc.AvilablePeers.TryGetValue(result.RemoteEndPoint, out PeerInfo peer))
                     return;
 
                 peer.UpTicks = t2 - t1;
                 peer.DownTicks = PreciseTime.GetCorrectTime().Ticks - t2;
-                peer.Ping = TimeSpan.FromTicks(PreciseTime.GetCorrectTime().Ticks - t1);
+                peer.Ping = TimeSpan.FromTicks(PreciseTime.GetCorrectTime().Ticks - t1);*/
             }
             else
             {

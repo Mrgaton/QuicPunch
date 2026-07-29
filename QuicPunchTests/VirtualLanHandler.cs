@@ -6,11 +6,12 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Quic;
 using System.Runtime.InteropServices;
+using QuicPunch;
 using Wintun;
 
-namespace QuicPunch
+namespace QuicPunchTests
 {
-    internal class VirtualLanHandler : QuicPunch.IProtocolHandler
+    internal class VirtualLanHandler : QuicPunch.QuicPunch.IProtocolHandler
     {
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000002");
         public ushort PreferredPort => 0; 

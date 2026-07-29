@@ -1,17 +1,12 @@
 ﻿#nullable enable
 
-using System;
-using System.Collections.Generic;
-using System.Diagnostics.Tracing;
-using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
-using System.Threading;
-using QuicPunch;
+
+namespace QuicPunch;
 
 public sealed class PeerStore : IDisposable
 {
@@ -87,6 +82,7 @@ public sealed class PeerStore : IDisposable
     private readonly string _name;
     private readonly object _sync = new();
     private readonly Dictionary<string, SavedPeer> _peers = new(StringComparer.Ordinal);
+    private IReadOnlyList<SavedPeer> _cachedPeers = [];
     private readonly JsonSerializerOptions _json = new()
     {
         WriteIndented = true,
@@ -121,11 +117,16 @@ public sealed class PeerStore : IDisposable
         if (watch) StartWatcher();
     }
 
-    public IReadOnlyList<SavedPeer> GetAll()
+    public IReadOnlyList<SavedPeer> SavedPeers
     {
-        lock (_sync)
-            return _peers.Values.Select(p => p.Copy()).ToArray();
+        get
+        {
+            lock (_sync)
+                return _cachedPeers;
+        }
     }
+
+    public IReadOnlyList<SavedPeer> GetAll() => SavedPeers;
 
     public bool TryGet(byte[] certificate, out SavedPeer? peer)
     {
@@ -220,12 +221,14 @@ public sealed class PeerStore : IDisposable
                 _peers[peer.Key] = peer;
                 added = true;
                 modified = false;
+                UpdateCacheLocked();
             }
             else if (!old.SameValue(peer))
             {
                 _peers[peer.Key] = peer;
                 added = false;
                 modified = true;
+                UpdateCacheLocked();
             }
             else return false;
         }
@@ -247,7 +250,12 @@ public sealed class PeerStore : IDisposable
         SavedPeer? removed;
 
         lock (_sync)
-            _peers.Remove(Key(certificate), out removed);
+        {
+            if (_peers.Remove(Key(certificate), out removed))
+            {
+                UpdateCacheLocked();
+            }
+        }
 
         if (removed is null)
             return false;
@@ -282,7 +290,10 @@ public sealed class PeerStore : IDisposable
             }
 
             if (removeKey is not null)
+            {
                 _peers.Remove(removeKey);
+                UpdateCacheLocked();
+            }
         }
 
         if (removed is null)
@@ -321,7 +332,10 @@ public sealed class PeerStore : IDisposable
             }
 
             if (removeKey is not null)
+            {
                 _peers.Remove(removeKey);
+                UpdateCacheLocked();
+            }
         }
 
         if (removed is null)
@@ -430,13 +444,20 @@ public sealed class PeerStore : IDisposable
 
             foreach (var (k, p) in next)
                 _peers[k] = p.Copy();
+
+            UpdateCacheLocked();
         }
 
         foreach (var p in added) Safe(() => PeerAdded?.Invoke(p.Copy(), external));
         foreach (var p in modified) Safe(() => PeerModified?.Invoke(p.Copy(), external));
         foreach (var p in removed) Safe(() => PeerRemoved?.Invoke(p.Copy(), external));
 
-        Safe(() => PeersLoaded?.Invoke(GetAll(), external));
+        Safe(() => PeersLoaded?.Invoke(SavedPeers, external));
+    }
+
+    private void UpdateCacheLocked()
+    {
+        _cachedPeers = _peers.Values.ToArray();
     }
 
     private Dictionary<string, SavedPeer> ReadUnlocked()

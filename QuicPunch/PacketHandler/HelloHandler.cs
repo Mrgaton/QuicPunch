@@ -17,9 +17,9 @@ namespace QuicPunch.PacketHandler
 
             var certHash = r.ReadBytes(qc.CurrentPeer.CertHash.Length);
 
-            var foundExpectedCert = qc.ExpectedPeerCerts.TryGetValue(result.RemoteEndPoint.Address, out var helloPeerCertHashes);
+            var foundExpectedCert = qc.ExpectedPeerCerts.Contains(certHash);
 
-            if (!foundExpectedCert || !helloPeerCertHashes.Any(c => c.SequenceEqual(certHash)))
+            if (!foundExpectedCert && !qc.PeerStore.SavedPeers.Any(sp => sp.CertHash.SequenceEqual(certHash)))
             {
                 Console.WriteLine("HELLO INIT: Peer presented unexpected certificate");
                 return;
@@ -71,11 +71,9 @@ namespace QuicPunch.PacketHandler
                     return;
                 }
 
-                var nonce = r.ReadBytes(32);
-
-                var pop = HMACSHA3_256.HashData(Helpers.Combine(BitConverter.GetBytes(remoteTicks), nonce, result.RemoteEndPoint.Address.GetAddressBytes(), BitConverter.GetBytes((ushort)result.RemoteEndPoint.Port)), qc.PasswordHash);
-
-                var remotePop = r.ReadBytes(256 / 8);
+                byte[] nonce = r.ReadBytes(24);
+                byte[] pop = HMACSHA3_256.HashData(Helpers.Combine(BitConverter.GetBytes(remoteTicks), nonce), qc.PasswordHash);
+                byte[] remotePop = r.ReadBytes(256 / 8);
 
                 if (!pop.SequenceEqual(remotePop))
                 {
@@ -84,10 +82,11 @@ namespace QuicPunch.PacketHandler
                 }
             }
 
+            int payloadLength = (int)r.BaseStream.Position;
             byte[] signature = new byte[64];
             r.ReadExactly(signature);
 
-            if (!qc.AvilablePeers.ContainsKey(result.RemoteEndPoint))
+            if (!qc.AvailablePeers.ContainsKey(certHash))
             {
                 if (qc.PasswordHash != null && !passwordConnection)
                 {
@@ -112,18 +111,19 @@ namespace QuicPunch.PacketHandler
                     Curve = ecdsa
                 };
 
-                if (!peerInfo.Curve.VerifyData(result.Buffer.AsSpan(0, (int)r.BaseStream.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
+                if (!peerInfo.Curve.VerifyData(result.Buffer.AsSpan(0, payloadLength), signature, HashAlgorithmName.SHA3_256))
                 {
                     Console.WriteLine("HELLO NEW: Received invalid signature from " + result.RemoteEndPoint);
                     return;
                 }
 
-                qc.AvilablePeers[peerInfo.ActiveEndPoint] = peerInfo;
+                qc.AvailablePeers[certHash] = peerInfo;
                 qc.RaisePeerAvailable(peerInfo);
-
+                qc.PeerStore.AddOrUpdate(peerInfo.Addresses,peerInfo.MinPort, peerInfo.MaxPort, peerInfo.CertHash);
+                
                 if (qc.SharePeers)
                 {
-                    foreach (var peer in qc.AvilablePeers)
+                    foreach (var peer in qc.AvailablePeers)
                     {
                         if (peer.Value.ActiveEndPoint.Address.Equals(result.RemoteEndPoint.Address))
                             continue;
@@ -134,8 +134,8 @@ namespace QuicPunch.PacketHandler
             }
             else
             {
-                var peer = qc.AvilablePeers[result.RemoteEndPoint];
-
+                var peer = qc.AvailablePeers[certHash];
+                
                 if (!peer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)r.BaseStream.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
                 {
                     Console.WriteLine("HELLO OLD: Received invalid signature from " + result.RemoteEndPoint);
@@ -150,6 +150,8 @@ namespace QuicPunch.PacketHandler
                 }
                 else
                 {
+                    peer.ActiveEndPoint = result.RemoteEndPoint;
+                 
                     if (peer.Name.Length != nameBytes.Length || peer.Name != Encoding.UTF8.GetString(nameBytes))
                     {
                         peer.Name = Encoding.UTF8.GetString(nameBytes);
