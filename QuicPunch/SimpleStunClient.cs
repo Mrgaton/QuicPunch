@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
@@ -31,7 +31,7 @@ namespace QuicPunch
         private readonly UdpClient _udp;
         private readonly IReadOnlyList<IPEndPoint> _servers;
         private readonly Dictionary<TxId, PendingRequest> _pending = new();
-        private readonly List<TxId> _expiredKeysBuffer = new(); // Evita allocations al limpiar
+        private readonly List<TxId> _expiredKeysBuffer = new();
         private readonly object _lock = new();
 
         public ConcurrentDictionary<IPEndPoint, int> StunResponseEndpointHits = new ConcurrentDictionary<IPEndPoint, int>();
@@ -56,7 +56,6 @@ namespace QuicPunch
             {
                 CleanupTimeouts();
 
-                // Lanza las peticiones en paralelo. Si un DNS falla o bloquea, no detiene a los demás.
                 var sendTasks = _servers.Select(server => SendRequestSafeAsync(server, cancellationToken));
                 
                 await Task.WhenAll(sendTasks);
@@ -80,9 +79,8 @@ namespace QuicPunch
         {
             try
             {
-                // 1. Filtrado ultra-rápido. Si no parece STUN, descartar inmediatamente.
                 if (buffer.Length < 20) return false;
-                if ((buffer[0] & 0xC0) != 0) return false; // STUN siempre empieza con bits 00
+                if ((buffer[0] & 0xC0) != 0) return false;
 
                 ushort msgType = BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(0, 2));
                 if (msgType != BindingSuccessResponse) return false;
@@ -90,7 +88,6 @@ namespace QuicPunch
                 uint cookie = BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(4, 4));
                 if (cookie != MagicCookie) return false;
 
-                // 2. Extraer el Transaction ID sin asignar memoria (usando el struct TxId)
                 ulong p1 = BinaryPrimitives.ReadUInt64BigEndian(buffer.AsSpan(8, 8));
                 uint p2 = BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(16, 4));
                 var txId = new TxId(p1, p2);
@@ -98,26 +95,15 @@ namespace QuicPunch
                 PendingRequest req;
                 lock (_lock)
                 {
-                    if (!_pending.Remove(txId, out req)) return false; // No es nuestra o expiró
+                    if (!_pending.Remove(txId, out req))
+                        return false;
                 }
 
                 var mapped = ParseMappedAddress(buffer);
                 if (mapped is null)
                     return false;
 
-                // Ensure IPv4 before inspecting bytes
-                if (mapped.AddressFamily != AddressFamily.InterNetwork)
-                    return false;
-
-                var bytes = mapped.Address.GetAddressBytes();
-
-                // Filter RFC1918 private ranges (10.0.0.0/8, 172.16/12, 192.168/16)
-                bool isPrivate =
-                    bytes[0] == 10 ||
-                    (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
-                    (bytes[0] == 192 && bytes[1] == 168);
-
-                if (isPrivate)
+                if (IsBogonOrLocalhost(mapped.Address))
                     return false;
 
                 var rtt = TimeSpan.FromMilliseconds(Environment.TickCount64 - req.SentTicks);
@@ -133,7 +119,6 @@ namespace QuicPunch
             }
             catch
             {
-                // Si el paquete está corrupto o mal formado, no crasheamos el bucle del usuario
                 return false;
             }
         }
@@ -148,10 +133,8 @@ namespace QuicPunch
                 BinaryPrimitives.WriteUInt16BigEndian(reqBytes.AsSpan(2, 2), 0);
                 BinaryPrimitives.WriteUInt32BigEndian(reqBytes.AsSpan(4, 4), MagicCookie);
 
-                // Generar ID de transacción directamente en el buffer
                 RandomNumberGenerator.Fill(reqBytes.AsSpan(8, 12));
 
-                // Leer el ID generado para guardarlo en el diccionario sin strings
                 ulong p1 = BinaryPrimitives.ReadUInt64BigEndian(reqBytes.AsSpan(8, 8));
                 uint p2 = BinaryPrimitives.ReadUInt32BigEndian(reqBytes.AsSpan(16, 4));
                 var txId = new TxId(p1, p2);
@@ -165,8 +148,7 @@ namespace QuicPunch
             }
             catch
             {
-                // Ignoramos fallos individuales (DNS caído, red no disponible) 
-                // para que los demás servidores sigan operando sin problema.
+
             }
         }
 
@@ -222,15 +204,74 @@ namespace QuicPunch
                         return new IPEndPoint(new IPAddress(ipBytes), port);
                     }
                 }
-                offset = valOffset + ((attrLen + 3) & ~3); // Avanzar saltando el Padding
+                offset = valOffset + ((attrLen + 3) & ~3);
             }
             return null;
         }
 
-        // Struct de 12 bytes que evita tener que generar strings de Base64
+        public static bool IsBogonOrLocalhost(IPAddress address)
+        {
+            if (IPAddress.IsLoopback(address)) return true;
+
+            if (address.AddressFamily == AddressFamily.InterNetwork)
+            {
+                var bytes = address.GetAddressBytes();
+
+                // 0.0.0.0/8 (This host / network)
+                if (bytes[0] == 0) return true;
+
+                // 10.0.0.0/8 (Private RFC 1918)
+                if (bytes[0] == 10) return true;
+
+                // 100.64.0.0/10 (Carrier-Grade NAT RFC 6598)
+                if (bytes[0] == 100 && (bytes[1] & 0xC0) == 64) return true;
+
+                // 127.0.0.0/8 (Loopback RFC 1122)
+                if (bytes[0] == 127) return true;
+
+                // 169.254.0.0/16 (Link-Local / APIPA RFC 3927)
+                if (bytes[0] == 169 && bytes[1] == 254) return true;
+
+                // 172.16.0.0/12 (Private RFC 1918)
+                if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
+
+                // 192.0.0.0/24 (IETF Protocol Assignments)
+                if (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 0) return true;
+
+                // 192.0.2.0/24 (TEST-NET-1)
+                if (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 2) return true;
+
+                // 192.88.99.0/24 (6to4 Relay Anycast)
+                if (bytes[0] == 192 && bytes[1] == 88 && bytes[2] == 99) return true;
+
+                // 192.168.0.0/16 (Private RFC 1918)
+                if (bytes[0] == 192 && bytes[1] == 168) return true;
+
+                // 198.18.0.0/15 (Benchmarking RFC 2544)
+                if (bytes[0] == 198 && (bytes[1] == 18 || bytes[1] == 19)) return true;
+
+                // 198.51.100.0/24 (TEST-NET-2)
+                if (bytes[0] == 198 && bytes[1] == 51 && bytes[2] == 100) return true;
+
+                // 203.0.113.0/24 (TEST-NET-3)
+                if (bytes[0] == 203 && bytes[1] == 0 && bytes[2] == 113) return true;
+
+                // 224.0.0.0/4 (Multicast)
+                if (bytes[0] >= 224 && bytes[0] <= 239) return true;
+
+                // 240.0.0.0/4 (Reserved / Class E / Broadcast)
+                if (bytes[0] >= 240) return true;
+            }
+            else if (address.AddressFamily == AddressFamily.InterNetworkV6)
+            {
+                if (address.IsIPv6SiteLocal || address.IsIPv6LinkLocal || address.IsIPv6Multicast) return true;
+            }
+
+            return false;
+        }
+
         private readonly record struct TxId(ulong Part1, uint Part2);
 
-        // Usamos Ticks en vez de DateTimeOffset para ser inmunes a cambios de hora del Windows
         private readonly record struct PendingRequest(IPEndPoint Remote, long SentTicks);
     }
 }

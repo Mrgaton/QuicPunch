@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO.Hashing;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Intrinsics.Arm;
@@ -14,21 +15,29 @@ namespace QuicPunch.PacketHandler
     {
         internal static void HandleHandshake(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
         {
-            var certHash = r.ReadBytes(qc.CertManager.CertPublicHash.Length);
-            
+            var peerId = new Guid(r.ReadBytes(16));
+            if (peerId == Guid.Empty) return;
+
             var handShakeType = (HandShakeType)r.ReadByte();
             var remotePort = r.ReadUInt16();
 
-            var connectionType = new Guid(r.ReadBytes(16));
-            var guid = new Guid(r.ReadBytes(16));
-
+            var connectionTypeBytes = r.ReadBytes(16);
+            var guidBytes = r.ReadBytes(16);
             var signatureHandshake = r.ReadBytes(64); //Signature data
 
-            if (!qc.AvailablePeers.TryGetValue(certHash, out PeerInfo handshakePeer))
+            if (connectionTypeBytes.Length != 16 || guidBytes.Length != 16 || signatureHandshake.Length != 64)
+                return;
+
+            var connectionType = new Guid(connectionTypeBytes);
+            var guid = new Guid(guidBytes);
+
+            if (!qc.AvailablePeers.TryGetValue(peerId, out PeerInfo handshakePeer))
             {
                 Console.WriteLine($"Received handshake from unknown peer {result.RemoteEndPoint}");
                 return;
             }
+
+            handshakePeer.ActiveEndPoint = result.RemoteEndPoint;
 
             if (!handshakePeer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)r.BaseStream.Position - signatureHandshake.Length), signatureHandshake, HashAlgorithmName.SHA3_256))
             {
@@ -43,7 +52,7 @@ namespace QuicPunch.PacketHandler
 
                     _ = Task.Run(async () =>
                     {
-                        HandShakeType decidedResponse = HandShakeType.Unsuported;
+                        HandShakeType decidedResponse = HandShakeType.Unsupported;
                         ushort decidedPort = 0;
                         CancellationToken ct = CancellationToken.None;
 
@@ -94,7 +103,7 @@ namespace QuicPunch.PacketHandler
                         {
                             w.Write(MagicHeader);
                             w.Write((byte)MessageType.Handshake);
-                            w.Write(qc.CertManager.CertPublicHash);
+                            w.Write(qc.CurrentPeer.IdRaw);
                             w.Write((byte)(decidedResponse));
                             w.Write(decidedPort);
                             w.Write(connectionType.ToByteArray());
@@ -119,15 +128,15 @@ namespace QuicPunch.PacketHandler
 
                         if (decidedResponse == HandShakeType.Accept)
                         {
-                            var connection = await QuicPunchConnection.InitQuicConnectionCore(new IPEndPoint(qc.CurrentPeer.Addresses[0],qc.CurrentPeer.MinPort), nudp, qc.AvailablePeers[certHash], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
+                            var connection = await QuicPunchConnection.InitQuicConnectionCore(qc.CurrentPeer, nudp, qc.AvailablePeers[peerId], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
 
                             if (connection.Connection == null || connection.Stream == null)
                             {
-                                _ = Task.Run(async () => await handler.DeniedAsync(qc.AvailablePeers[certHash], ct));
+                                _ = Task.Run(async () => await handler.DeniedAsync(qc.AvailablePeers[peerId], ct));
                             }
                             else
                             {
-                                _ = Task.Run(async () => await handler.HandleAsync(connection.Connection, connection.Stream, qc.AvailablePeers[certHash], ct));
+                                _ = Task.Run(async () => await handler.HandleAsync(connection.Connection, connection.Stream, qc.AvailablePeers[peerId], ct));
                             }
                         }
                     });
@@ -138,7 +147,7 @@ namespace QuicPunch.PacketHandler
                     qc.Manager.Approve(guid, remotePort, null);
                     return;
 
-                case HandShakeType.Decline or HandShakeType.Unsuported:
+                case HandShakeType.Decline or HandShakeType.Unsupported:
                     Console.WriteLine($"Handshake canceled from {result.RemoteEndPoint}");
                     qc.Manager.Reject(guid);
                     return;

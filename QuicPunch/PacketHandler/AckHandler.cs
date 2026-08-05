@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
@@ -14,9 +14,9 @@ namespace QuicPunch.PacketHandler
             if (!qc.AcceptSharedPeers)
                 return;
             
-            var certHash = r.ReadBytes(qc.CertManager.CertPublicHash.Length);
-            
-            if (qc.AvailablePeers.TryGetValue(certHash, out PeerInfo ackPeer))
+            var peerId = new Guid(r.ReadBytes(16));
+
+            if (qc.AvailablePeers.TryGetValue(peerId, out PeerInfo ackPeer))
             {
                 var peersCount = r.ReadUInt16();
                 List<PeerInfo> remotePeers = new List<PeerInfo>(peersCount);
@@ -41,7 +41,7 @@ namespace QuicPunch.PacketHandler
                     pi.MinPort = r.ReadUInt16();
                     pi.MaxPort = r.ReadUInt16();
                     
-                    pi.CertHash = r.ReadBytes(qc.CurrentPeer.CertHash.Length); 
+                    pi.SetCertificateHash(r.ReadBytes(qc.CurrentPeer.CertHash.Length)); 
                     remotePeers.Add(pi);
                 }
 
@@ -76,7 +76,7 @@ namespace QuicPunch.PacketHandler
                           
                         }
  
-                        _ = qc.PeerInterogation(peer, default);
+                        _ = qc.PeerInterrogation(peer, default);
                         peersUpdated = true;
                     }
                 }

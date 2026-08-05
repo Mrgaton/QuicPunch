@@ -1,4 +1,5 @@
-﻿using System.Net;
+using System.IO.Hashing;
+using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -10,19 +11,24 @@ namespace QuicPunch.PacketHandler
     internal class HelloHandler
     {
         internal static void HandleHello(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result, byte messageType) {
-            if (messageType == (byte)MessageType.Interogation)
-            {
-                udp.SendAsync(qc.GenerateHelloPayload(MessageType.Hello, true), result.RemoteEndPoint);
-            }
-
             var certHash = r.ReadBytes(qc.CurrentPeer.CertHash.Length);
 
             var foundExpectedCert = qc.ExpectedPeerCerts.Contains(certHash);
 
-            if (!foundExpectedCert && !qc.PeerStore.SavedPeers.Any(sp => sp.CertHash.SequenceEqual(certHash)))
+            if (messageType != (byte)MessageType.Interrogation && !foundExpectedCert && !qc.PeerStore.SavedPeers.Any(sp => sp.CertHash.SequenceEqual(certHash)))
             {
                 Console.WriteLine("HELLO INIT: Peer presented unexpected certificate");
                 return;
+            }
+
+            if (!foundExpectedCert)
+            {
+                qc.ExpectedPeerCerts.Add(certHash);
+            }
+
+            if (messageType == (byte)MessageType.Interrogation)
+            {
+                udp.SendAsync(qc.GenerateHelloPayload(MessageType.Hello, true), result.RemoteEndPoint);
             }
 
             PackedFlags pf = new PackedFlags(r.ReadByte());
@@ -36,6 +42,9 @@ namespace QuicPunch.PacketHandler
 
             ushort minPort = r.ReadUInt16();
             ushort maxPort = r.ReadUInt16();
+
+            if (minPort == 0) minPort = (ushort)result.RemoteEndPoint.Port;
+            if (maxPort == 0) maxPort = (ushort)result.RemoteEndPoint.Port;
             
             byte nameSize = r.ReadByte();
             var nameBytes = r.ReadBytes(nameSize);
@@ -43,13 +52,18 @@ namespace QuicPunch.PacketHandler
             var certSize = r.ReadUInt16();
             var certBytes = r.ReadBytes(certSize);
 
-            var cert = new X509Certificate2(certBytes);
+            var ecdhSize = r.ReadByte();
+            var ecdhKeyRaw = r.ReadBytes(ecdhSize);
+
+            var cert = X509CertificateLoader.LoadCertificate(certBytes);
 
             if (!SHA3_384.HashData(cert.GetPublicKey()).SequenceEqual(certHash))
             {
                 Console.WriteLine("Corrupted cert hash from " + result.RemoteEndPoint);
                 return;
             }
+
+            var peerId = new Guid(XxHash128.Hash(certHash));
 
             var passwordConnection = r.ReadByte() > 0;
 
@@ -86,7 +100,14 @@ namespace QuicPunch.PacketHandler
             byte[] signature = new byte[64];
             r.ReadExactly(signature);
 
-            if (!qc.AvailablePeers.ContainsKey(certHash))
+            var ecdsa = cert.GetECDsaPublicKey();
+            if (ecdsa == null || !ecdsa.VerifyData(result.Buffer.AsSpan(0, payloadLength), signature, HashAlgorithmName.SHA3_256))
+            {
+                Console.WriteLine("HELLO: Received invalid signature from " + result.RemoteEndPoint);
+                return;
+            }
+
+            if (!qc.AvailablePeers.ContainsKey(peerId))
             {
                 if (qc.PasswordHash != null && !passwordConnection)
                 {
@@ -94,9 +115,7 @@ namespace QuicPunch.PacketHandler
                     return;
                 }
 
-                var ecdsa = cert.GetECDsaPublicKey();
-
-                var peerInfo = new PeerInfo
+                var peerInfo = new PeerInfo(cert, ecdhKeyRaw)
                 {
                     ActiveEndPoint = result.RemoteEndPoint,
                     NetworkType =  pf.NetworkType,
@@ -105,21 +124,15 @@ namespace QuicPunch.PacketHandler
                     MaxPort = maxPort,
                     MinPort =  minPort,
                     
-                    CertHash = certHash,
                     Name = Encoding.UTF8.GetString(nameBytes),
-                    LastSeen = PreciseTime.GetCorrectTime(),
-                    Curve = ecdsa
+                    LastSeen = PreciseTime.GetCorrectTime()
                 };
 
-                if (!peerInfo.Curve.VerifyData(result.Buffer.AsSpan(0, payloadLength), signature, HashAlgorithmName.SHA3_256))
-                {
-                    Console.WriteLine("HELLO NEW: Received invalid signature from " + result.RemoteEndPoint);
-                    return;
-                }
+                peerInfo.InitSession(qc);
 
-                qc.AvailablePeers[certHash] = peerInfo;
+                qc.AvailablePeers[peerId] = peerInfo;
                 qc.RaisePeerAvailable(peerInfo);
-                qc.PeerStore.AddOrUpdate(peerInfo.Addresses,peerInfo.MinPort, peerInfo.MaxPort, peerInfo.CertHash);
+                qc.PeerStore.AddOrUpdate(peerInfo);
                 
                 if (qc.SharePeers)
                 {
@@ -134,31 +147,22 @@ namespace QuicPunch.PacketHandler
             }
             else
             {
-                var peer = qc.AvailablePeers[certHash];
+                var peer = qc.AvailablePeers[peerId];
                 
-                if (!peer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)r.BaseStream.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
-                {
-                    Console.WriteLine("HELLO OLD: Received invalid signature from " + result.RemoteEndPoint);
-                    return;
-                }
-
                 if (!certHash.SequenceEqual(peer.CertHash))
                 {
-                    //TODO: IDK what to do enter in panick cause someone is spoofing connections!=!="!"?=)i3?_="!
                     Console.WriteLine("HELLO OLD: Received corrupted cert hash from " + result.RemoteEndPoint);
                     return;
                 }
-                else
+                
+                peer.ActiveEndPoint = result.RemoteEndPoint;
+             
+                if (peer.Name.Length != nameBytes.Length || peer.Name != Encoding.UTF8.GetString(nameBytes))
                 {
-                    peer.ActiveEndPoint = result.RemoteEndPoint;
-                 
-                    if (peer.Name.Length != nameBytes.Length || peer.Name != Encoding.UTF8.GetString(nameBytes))
-                    {
-                        peer.Name = Encoding.UTF8.GetString(nameBytes);
-                    }
-
-                    peer.LastSeen = PreciseTime.GetCorrectTime();
+                    peer.Name = Encoding.UTF8.GetString(nameBytes);
                 }
+
+                peer.LastSeen = PreciseTime.GetCorrectTime();
             }
 
             udp.SendAsync(qc.GenerateAck(qc.SharePeers), result.RemoteEndPoint);

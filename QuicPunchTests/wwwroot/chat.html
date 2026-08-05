@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuicPunch Direct Messaging</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #090d16;
+            --sidebar-bg: #0f172a;
+            --card-bg: rgba(21, 28, 46, 0.7);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --accent: #38bdf8;
+            --emerald: #10b981;
+            --amber: #f59e0b;
+            --rose: #f43f5e;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        header {
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--card-border);
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 60px;
+        }
+
+        .logo-box { display: flex; align-items: center; gap: 10px; }
+        .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, var(--emerald), var(--accent)); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; }
+        .logo-title { font-size: 18px; font-weight: 700; }
+
+        .nav-links { display: flex; gap: 12px; }
+        .nav-link { color: var(--text-secondary); text-decoration: none; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; transition: all 0.2s ease; border: 1px solid transparent; }
+        .nav-link:hover, .nav-link.active { color: var(--text-primary); background: rgba(255, 255, 255, 0.06); border-color: var(--card-border); }
+
+        /* WhatsApp Style Split Layout */
+        .chat-app-container {
+            flex: 1;
+            display: flex;
+            height: calc(100vh - 60px);
+            overflow: hidden;
+        }
+
+        /* Sidebar Left Panel */
+        .sidebar {
+            width: 320px;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--card-border);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .sidebar-title { font-size: 14px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+
+        .peer-thread-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .peer-thread-item {
+            padding: 14px 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            cursor: pointer;
+            transition: background 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .peer-thread-item:hover { background: rgba(255, 255, 255, 0.04); }
+        .peer-thread-item.active { background: rgba(56, 189, 248, 0.12); border-left: 3px solid var(--accent); }
+
+        .thread-info { display: flex; flex-direction: column; gap: 2px; }
+        .thread-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
+        .thread-status { font-size: 11px; color: var(--text-muted); }
+
+        .badge-status {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        .badge-connected { background: rgba(16, 185, 129, 0.2); color: var(--emerald); }
+        .badge-available { background: rgba(255, 255, 255, 0.08); color: var(--text-secondary); }
+
+        /* Main Chat Panel Right */
+        .chat-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: rgba(9, 13, 22, 0.8);
+        }
+
+        .chat-header {
+            padding: 16px 24px;
+            background: rgba(15, 23, 42, 0.6);
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-title { font-weight: 600; font-size: 16px; }
+        .chat-subtitle { font-size: 12px; color: var(--text-muted); }
+
+        .chat-messages-container {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .chat-msg {
+            max-width: 65%;
+            padding: 10px 16px;
+            border-radius: 14px;
+            font-size: 14px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .chat-msg.me {
+            align-self: flex-end;
+            background: linear-gradient(135deg, #0284c7, #0369a1);
+            color: #fff;
+            border-bottom-right-radius: 2px;
+            box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25);
+        }
+
+        .chat-msg.other {
+            align-self: flex-start;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-primary);
+            border-bottom-left-radius: 2px;
+            border: 1px solid var(--card-border);
+        }
+
+        .chat-sender { font-size: 11px; opacity: 0.7; margin-bottom: 4px; font-weight: 500; }
+
+        .chat-input-bar {
+            padding: 16px 24px;
+            background: rgba(15, 23, 42, 0.8);
+            border-top: 1px solid var(--card-border);
+            display: flex;
+            gap: 12px;
+        }
+
+        .input-text {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--card-border);
+            border-radius: 10px;
+            padding: 12px 18px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, var(--accent), #0284c7);
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-emerald { background: linear-gradient(135deg, var(--emerald), #059669); }
+        .btn-secondary { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); border: 1px solid var(--card-border); }
+
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 1000; opacity: 0; pointer-events: none; transition: opacity 0.3s ease; }
+        .modal-overlay.active { opacity: 1; pointer-events: auto; }
+        .modal-card { background: #151c2e; border: 1px solid var(--accent); border-radius: 20px; padding: 32px; width: 420px; text-align: center; }
+
+        .toast { position: fixed; bottom: 24px; right: 24px; background: var(--emerald); color: #fff; padding: 12px 24px; border-radius: 10px; font-weight: 600; font-size: 14px; transform: translateY(100px); opacity: 0; transition: all 0.3s ease; }
+        .toast.show { transform: translateY(0); opacity: 1; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo-box">
+            <div class="logo-icon">💬</div>
+            <div class="logo-title">Direct Messaging</div>
+        </div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">🏠 Dashboard</a>
+            <a href="/chat.html" class="nav-link active">💬 Chat App</a>
+            <a href="/call.html" class="nav-link">📞 Voice Studio</a>
+        </div>
+    </header>
+
+    <div class="chat-app-container">
+        <!-- Sidebar Peer Conversations -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-title">Peer Channels (<span id="peerCount">0</span>)</div>
+            </div>
+            <div id="peerThreadList" class="peer-thread-list">
+                <div style="color: var(--text-muted); text-align: center; padding: 24px; font-size: 13px;">Scanning peers...</div>
+            </div>
+        </div>
+
+        <!-- Main Active Chat Session -->
+        <div class="chat-main">
+            <div class="chat-header">
+                <div>
+                    <div class="chat-title" id="activePeerName">Select a peer channel</div>
+                    <div class="chat-subtitle" id="activePeerEndpoint">No active session selected</div>
+                </div>
+                <div id="chatActions" style="display: none; gap: 8px;">
+                    <button class="btn btn-emerald" style="padding: 6px 14px; font-size: 13px;" onclick="callActivePeer()">📞 Start Voice Call</button>
+                </div>
+            </div>
+
+            <div class="chat-messages-container" id="chatMessagesBox">
+                <div style="color: var(--text-muted); text-align: center; margin: auto; font-size: 13px;">Select a peer from the left sidebar to start chatting.</div>
+            </div>
+
+            <div class="chat-input-bar">
+                <input type="text" id="chatInput" class="input-text" placeholder="Type message..." onkeypress="if(event.key==='Enter') sendChatMessage()">
+                <button class="btn" onclick="sendChatMessage()">⚡ Send</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Incoming Petition Modal -->
+    <div id="incomingModal" class="modal-overlay">
+        <div class="modal-card">
+            <div style="font-size: 44px; margin-bottom: 12px;">⚡</div>
+            <h2 style="font-size: 18px; margin-bottom: 8px;">Incoming Connection Request</h2>
+            <p id="incomingCallerName" style="color: var(--accent); font-weight: 600; margin-bottom: 24px;">Peer</p>
+            <div style="display: flex; gap: 12px; justify-content: center;">
+                <button class="btn btn-emerald" style="flex:1;" onclick="acceptPetition()">✅ Accept</button>
+                <button class="btn btn-secondary" style="flex:1;" onclick="declinePetition()">❌ Decline</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast">Notification</div>
+
+    <script>
+        let currentStatus = null;
+        let selectedPeerId = null;
+        let currentPetitionId = null;
+
+        let bufferedMessages = [];
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                currentStatus = data;
+                renderPeerThreads(data);
+                renderChatMessages(data);
+                checkPendingPetitions(data);
+                checkAutoPeer(data);
+                flushBufferedMessages(data);
+            } catch (err) {}
+        }
+
+        let pendingHandshakes = new Set();
+
+        async function flushBufferedMessages(data) {
+            const activeChats = data.activeChats || [];
+            activeChats.forEach(c => pendingHandshakes.delete(c.peerId));
+
+            if (bufferedMessages.length === 0) return;
+            const remaining = [];
+            for (const item of bufferedMessages) {
+                if (activeChats.some(c => c.peerId === item.peerId)) {
+                    try {
+                        await fetch('/api/chat-send', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ peerId: item.peerId, message: item.msg })
+                        });
+                        showToast('⚡ Connection accepted! Buffered message delivered.');
+                    } catch {}
+                } else {
+                    remaining.push(item);
+                }
+            }
+            bufferedMessages = remaining;
+        }
+
+        let autoPeerHandled = false;
+        function checkAutoPeer(data) {
+            if (autoPeerHandled) return;
+            const urlParams = new URLSearchParams(window.location.search);
+            const peerIdParam = urlParams.get('peerId');
+            if (peerIdParam && data.availablePeers) {
+                const peerObj = data.availablePeers.find(p => p.id === peerIdParam);
+                if (peerObj) {
+                    autoPeerHandled = true;
+                    selectThread(peerObj.id);
+                }
+            }
+        }
+
+        function renderPeerThreads(data) {
+            const list = document.getElementById('peerThreadList');
+            const availablePeers = data.availablePeers || [];
+            const activeChats = data.activeChats || [];
+            const activeIds = new Set(activeChats.map(c => c.peerId));
+
+            const allMap = new Map();
+            availablePeers.forEach(p => allMap.set(p.id, { id: p.id, name: p.name, activeEndPoint: p.activeEndPoint, isConnected: activeIds.has(p.id) }));
+            activeChats.forEach(c => {
+                if (!allMap.has(c.peerId)) {
+                    allMap.set(c.peerId, { id: c.peerId, name: c.peerName, activeEndPoint: 'Connected Session', isConnected: true });
+                } else {
+                    allMap.get(c.peerId).isConnected = true;
+                }
+            });
+
+            const sorted = Array.from(allMap.values());
+            sorted.sort((a, b) => (b.isConnected ? 1 : 0) - (a.isConnected ? 1 : 0));
+
+            document.getElementById('peerCount').innerText = sorted.length;
+
+            if (sorted.length === 0) {
+                list.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 24px; font-size: 13px;">No peers available.</div>';
+            } else {
+                list.innerHTML = sorted.map(p => `
+                    <div class="peer-thread-item ${selectedPeerId === p.id ? 'active' : ''}" onclick="selectThread('${p.id}')">
+                        <div class="thread-info">
+                            <div class="thread-name">${escapeHtml(p.name)}</div>
+                            <div class="thread-status">${escapeHtml(p.activeEndPoint)}</div>
+                        </div>
+                        <span class="badge-status ${p.isConnected ? 'badge-connected' : 'badge-available'}">
+                            ${p.isConnected ? '🟢 Active' : 'Available'}
+                        </span>
+                    </div>
+                `).join('');
+            }
+        }
+
+        function selectThread(peerId) {
+            selectedPeerId = peerId;
+            if (currentStatus) {
+                const peerObj = (currentStatus.availablePeers || []).find(p => p.id === peerId) ||
+                                (currentStatus.activeChats || []).find(c => c.peerId === peerId);
+                const activeChats = currentStatus.activeChats || [];
+                const isConnected = activeChats.some(c => c.peerId === peerId);
+
+                if (peerObj) {
+                    document.getElementById('activePeerName').innerText = peerObj.name || peerObj.peerName || 'Peer';
+                    document.getElementById('activePeerEndpoint').innerText = isConnected ? '🟢 Connected Session' : (peerObj.activeEndPoint || 'Disconnected');
+                    
+                    const actionsBox = document.getElementById('chatActions');
+                    actionsBox.style.display = 'flex';
+                    if (isConnected) {
+                        actionsBox.innerHTML = `
+                            <button class="btn btn-emerald" style="padding: 6px 14px; font-size: 13px;" onclick="callActivePeer()">📞 Start Voice Call</button>
+                        `;
+                    } else {
+                        actionsBox.innerHTML = `
+                            <button class="btn btn-emerald" style="padding: 6px 14px; font-size: 13px;" onclick="connectPeerChannel('${peerId}')">⚡ Connect & Start Chat</button>
+                        `;
+                    }
+                }
+                renderPeerThreads(currentStatus);
+                renderChatMessages(currentStatus);
+            }
+        }
+
+        async function connectPeerChannel(peerId) {
+            if (pendingHandshakes.has(peerId)) {
+                showToast('Handshake request already pending with peer...');
+                return;
+            }
+            pendingHandshakes.add(peerId);
+            showToast('Initiating connection handshake...');
+            try {
+                await fetch('/api/connect-peer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId, protocol: '00000000-0000-0000-0000-000000000001' })
+                });
+                showToast('Connection request sent to peer!');
+            } catch (err) {
+                pendingHandshakes.delete(peerId);
+                showToast('Failed to send connection request.');
+            }
+        }
+
+        function renderChatMessages(data) {
+            const box = document.getElementById('chatMessagesBox');
+            let messages = data.chatMessages || [];
+            if (selectedPeerId) {
+                messages = messages.filter(m => !m.peerId || m.peerId === selectedPeerId);
+            }
+
+            // Chronological time sorting
+            messages.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+
+            if (messages.length === 0) {
+                box.innerHTML = '<div style="color: var(--text-muted); text-align: center; margin: auto; font-size: 13px;">No messages in session. Type below to chat!</div>';
+            } else {
+                box.innerHTML = messages.map(m => `
+                    <div class="chat-msg ${m.isMe ? 'me' : 'other'}">
+                        <div class="chat-sender">
+                            ${escapeHtml(m.sender)} • ${m.time}
+                            ${m.isMe ? (m.isConfirmed ? ' <span style="color:#10b981; font-weight:bold; margin-left:4px;" title="Delivered & Confirmed">✓✓</span>' : ' <span style="color:#94a3b8; margin-left:4px;" title="Sent">✓</span>') : ''}
+                        </div>
+                        <div>${escapeHtml(m.message)}</div>
+                    </div>
+                `).join('');
+                box.scrollTop = box.scrollHeight;
+            }
+        }
+
+        async function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const msg = input.value.trim();
+            let targetPeerId = selectedPeerId;
+            if (!targetPeerId && currentStatus && currentStatus.activeChats && currentStatus.activeChats.length > 0) {
+                targetPeerId = currentStatus.activeChats[0].peerId;
+            }
+            if (!targetPeerId && currentStatus && currentStatus.availablePeers && currentStatus.availablePeers.length > 0) {
+                targetPeerId = currentStatus.availablePeers[0].id;
+            }
+            if (!msg || !targetPeerId) {
+                if (!targetPeerId) showToast('Please select a peer first.');
+                return;
+            }
+
+            const activeChats = (currentStatus && currentStatus.activeChats) ? currentStatus.activeChats : [];
+            const isConnected = activeChats.some(c => c.peerId === targetPeerId);
+
+            if (!isConnected) {
+                if (pendingHandshakes.has(targetPeerId)) {
+                    bufferedMessages.push({ peerId: targetPeerId, msg });
+                    input.value = '';
+                    showToast('Message buffered. Waiting for peer handshake response...');
+                    return;
+                }
+
+                pendingHandshakes.add(targetPeerId);
+                showToast('⚡ Peer disconnected. Auto-initiating connection handshake...');
+                try {
+                    await fetch('/api/connect-peer', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ peerId: targetPeerId, protocol: '00000000-0000-0000-0000-000000000001' })
+                    });
+                    bufferedMessages.push({ peerId: targetPeerId, msg });
+                    input.value = '';
+                    showToast('Message buffered. Handshake request sent!');
+                } catch (err) {
+                    pendingHandshakes.delete(targetPeerId);
+                    showToast('Failed to send connection request.');
+                }
+                return;
+            }
+
+            // Realtime Optimistic Local Render
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            if (currentStatus) {
+                if (!currentStatus.chatMessages) currentStatus.chatMessages = [];
+                currentStatus.chatMessages.push({
+                    peerId: targetPeerId,
+                    msgId: 'temp-' + Date.now(),
+                    sender: 'Me',
+                    message: msg,
+                    time: timeStr,
+                    isMe: true,
+                    isConfirmed: false
+                });
+                renderChatMessages(currentStatus);
+            }
+
+            input.value = '';
+
+            try {
+                const res = await fetch('/api/chat-send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId: targetPeerId, message: msg })
+                });
+                const resData = await res.json();
+                if (resData.success) {
+                    fetchStatus();
+                } else {
+                    showToast('Error sending message: ' + (resData.error || 'Disconnected'));
+                }
+            } catch (err) {
+                showToast('Failed to send message.');
+            }
+        }
+
+        function callActivePeer() {
+            if (selectedPeerId) {
+                window.location.href = `/call.html?peerId=${encodeURIComponent(selectedPeerId)}`;
+            }
+        }
+
+        let pendingIncomingProtocolId = null;
+        let pendingIncomingPeerId = null;
+
+        function checkPendingPetitions(data) {
+            const petitions = data.pendingPetitions || [];
+            const modal = document.getElementById('incomingModal');
+            if (petitions.length > 0) {
+                const p = petitions[0];
+                currentPetitionId = p.requestId;
+                pendingIncomingProtocolId = p.protocolId;
+                pendingIncomingPeerId = p.peerId;
+                document.getElementById('incomingCallerName').innerText = p.peerName + ' (' + p.protocolName + ')';
+                modal.classList.add('active');
+            } else {
+                modal.classList.remove('active');
+                currentPetitionId = null;
+                pendingIncomingProtocolId = null;
+                pendingIncomingPeerId = null;
+            }
+        }
+
+        async function acceptPetition() {
+            if (!currentPetitionId) return;
+            try {
+                await fetch('/api/accept-petition', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requestId: currentPetitionId })
+                });
+                document.getElementById('incomingModal').classList.remove('active');
+                showToast('Accepted connection request!');
+                if (pendingIncomingProtocolId === '00000000-0000-0000-0000-000000000003' && pendingIncomingPeerId && pendingIncomingPeerId !== '00000000-0000-0000-0000-000000000000') {
+                    window.location.href = `/call.html?peerId=${encodeURIComponent(pendingIncomingPeerId)}`;
+                } else {
+                    fetchStatus();
+                }
+            } catch (err) { showToast('Error accepting request.'); }
+        }
+
+        async function declinePetition() {
+            if (!currentPetitionId) return;
+            try {
+                await fetch('/api/decline-petition', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requestId: currentPetitionId })
+                });
+                document.getElementById('incomingModal').classList.remove('active');
+                showToast('Declined request.');
+            } catch (err) { showToast('Error declining request.'); }
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        function escapeHtml(str) {
+            return (str || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        setInterval(fetchStatus, 400);
+        fetchStatus();
+    </script>
+</body>
+</html>

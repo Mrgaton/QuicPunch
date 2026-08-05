@@ -14,7 +14,7 @@ namespace QuicPunch
     internal class QuicPunchConnection
     {
         //TODO: also implement stun to retrieve external port?
-        public static async Task<(bool Sucess, UdpClient client, IPEndPoint remoteEndpoint)> OpenPortCore(
+        public static async Task<(bool Success, UdpClient client, IPEndPoint remoteEndpoint)> OpenPortCore(
             UdpClient nudp, PeerInfo remotePeer, ushort peerPort, CancellationToken mainCt)
         {
             try
@@ -38,7 +38,7 @@ namespace QuicPunch
         }
 
         public static async Task<(QuicConnection Connection, Stream Stream)> InitQuicConnectionCore(
-            IPEndPoint ownPublicEndpoint, UdpClient nudp, PeerInfo remotePeer, ushort peerPort,
+            PeerInfo ownPeer, UdpClient nudp, PeerInfo remotePeer, ushort peerPort,
             X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
         {
             using var openPortCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -47,7 +47,7 @@ namespace QuicPunch
             var udpResult = await OpenPortCore(nudp, remotePeer, peerPort, openPortLinkedCts.Token)
                 .WaitAsync(openPortLinkedCts.Token);
 
-            if (!udpResult.Sucess)
+            if (!udpResult.Success)
             {
                 return (null, null);
             }
@@ -58,13 +58,10 @@ namespace QuicPunch
             nudp.Dispose();
             openPortLinkedCts.Dispose();
 
-            bool isServer = AmIServer(ownPublicEndpoint.Address, ownPublicEndpoint.Port, remotePeer.Addresses[0],
-                remotePeer.MinPort);
+            bool isServer = AmIServer(ownPeer, remotePeer);
 
             QuicConnection connection = null;
             QuicStream stream = null;
-
-            await Task.Delay(500);
 
             for (int attempt = 1; attempt <= 2; attempt++)
             {
@@ -72,7 +69,7 @@ namespace QuicPunch
 
                 Console.WriteLine($"\n--- ATTEMPT {attempt}/2: Acting as {(isServer ? "SERVER" : "CLIENT")} ---");
 
-                using var attemptCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var attemptCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt, attemptCts.Token);
 
@@ -152,7 +149,7 @@ namespace QuicPunch
 
                     var result = await udp.ReceiveAsync(token);
 
-                    Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));
+                    Console.WriteLine("Received: " + Encoding.UTF8.GetString(result.Buffer));
 
                     //if (!result.RemoteEndPoint.Address.Equals(targetPeer.Address))
                     //    continue;
@@ -173,17 +170,10 @@ namespace QuicPunch
 
                         var messageType = (QuicPunchStructures.MessageType)r.ReadByte();
 
-                        if (messageType == QuicPunchStructures.MessageType.FinalHandshake)
+                        if (messageType == QuicPunchStructures.MessageType.FinalHandshake || messageType == QuicPunchStructures.MessageType.Ack)
                         {
-                            udp.Send(ACKPacket, result.RemoteEndPoint);
-                        }
-                        else if (messageType == QuicPunchStructures.MessageType.Ack)
-                        {
-                            for (int i = 0; i < 3; i++)
-                            {
-                                udp.Send(ACKPacket, result.RemoteEndPoint);
-                                await Task.Delay(150);
-                            }
+                            try { udp.Send(ACKPacket, result.RemoteEndPoint); } catch { }
+                            try { udp.Send(ACKPacket, result.RemoteEndPoint); } catch { }
 
                             return result.RemoteEndPoint;
                         }
@@ -254,14 +244,29 @@ namespace QuicPunch
                     if (token.IsCancellationRequested)
                         break;
 
-                    if (peer.NetworkType == QuicPunch.NetworkType.Static || peer.NetworkType == QuicPunch.NetworkType.DynamicAddress)
+                    var addresses = new List<IPAddress>();
+                    if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Address != null)
+                        addresses.Add(peer.ActiveEndPoint.Address);
+
+                    if (peer.Addresses != null)
                     {
-                        foreach (var address in peer.Addresses)
-                        {                        
-                            await udp.SendAsync(payload, new IPEndPoint(address, askedPort));
+                        foreach (var addr in peer.Addresses)
+                        {
+                            if (addr != null && !addresses.Contains(addr))
+                                addresses.Add(addr);
                         }
                     }
-                    await udp.BigSendAsync(payload, peer);
+
+                    foreach (var address in addresses)
+                    {
+                        await udp.SendAsync(payload, new IPEndPoint(address, askedPort));
+                    }
+
+                    if (peer.MinPort > 0 && peer.MaxPort > 0)
+                    {
+                        await udp.BigSendAsync(payload, peer);
+                    }
+
                     await Task.Delay(250, token);
                 }
 
@@ -309,21 +314,44 @@ namespace QuicPunch
                 }),
             };
 
-            await using var listener = await QuicListener.ListenAsync(options, token);
-            Console.WriteLine("[SERVER] Bound to port. Waiting for peer...");
-
-            var connection = await listener.AcceptConnectionAsync(token);
-
-            try
+            QuicListener listener = null;
+            int bindTries = 0;
+            while (!token.IsCancellationRequested && bindTries < 10)
             {
-                var stream = await connection.AcceptInboundStreamAsync(token);
-
-                return (connection, stream);
+                try
+                {
+                    listener = await QuicListener.ListenAsync(options, token);
+                    break;
+                }
+                catch when (bindTries < 9 && !token.IsCancellationRequested)
+                {
+                    bindTries++;
+                    await Task.Delay(150, token);
+                }
             }
-            catch
+
+            if (listener == null)
+                return (null, null);
+
+            await using (listener)
             {
-                await connection.DisposeAsync();
-                throw;
+                Console.WriteLine("[SERVER] Bound to port. Waiting for peer...");
+
+                var connection = await listener.AcceptConnectionAsync(token);
+
+                try
+                {
+                    var stream = await connection.AcceptInboundStreamAsync(token);
+                    byte[] headerByte = new byte[1];
+                    await stream.ReadExactlyAsync(headerByte, token);
+
+                    return (connection, stream);
+                }
+                catch
+                {
+                    await connection.DisposeAsync();
+                    throw;
+                }
             }
         }
 
@@ -362,7 +390,7 @@ namespace QuicPunch
                 IdleTimeout = TimeSpan.FromMinutes(10),
                 KeepAliveInterval = TimeSpan.FromSeconds(19),
 
-                HandshakeTimeout = TimeSpan.FromSeconds(9),
+                HandshakeTimeout = TimeSpan.FromSeconds(12),
             };
 
             QuicConnection connection = null;
@@ -386,21 +414,25 @@ namespace QuicPunch
                 return (null, null);
 
             var stream = await connection.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, token);
-
-            //await stream.WriteAsync(new byte[] { 0x00 }, token); // Trigger server's AcceptInboundStreamAsync
+            await stream.WriteAsync(new byte[] { 0x00 }, token);
+            await stream.FlushAsync(token);
 
             return (connection, stream);
         }
 
-        public static bool AmIServer(IPAddress myPublicIp, int myPort, IPAddress peerPublicIp, int peerPort)
+        public static bool AmIServer(PeerInfo ownPeer, PeerInfo remotePeer)
         {
-            byte[] m = myPublicIp.GetAddressBytes(), p = peerPublicIp.GetAddressBytes();
-            for (int i = 0; i < m.Length; i++)
+            if (ownPeer?.IdRaw != null && remotePeer?.IdRaw != null)
             {
-                if (m[i] > p[i]) return true;
-                if (m[i] < p[i]) return false;
+                return ownPeer.Id.CompareTo(remotePeer.Id) > 0;
             }
-            return myPort > peerPort;
+
+            if (ownPeer?.CertHash != null && remotePeer?.CertHash != null)
+            {
+                return Convert.ToBase64String(ownPeer.CertHash).CompareTo(Convert.ToBase64String(remotePeer.CertHash)) > 0;
+            }
+
+            return true;
         }
     }
 }

@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuicPunch Network Console</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0b0f19;
+            --card-bg: rgba(21, 28, 46, 0.7);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.25);
+            --emerald: #10b981;
+            --indigo: #818cf8;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background-image: 
+                radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.1) 0%, transparent 40%),
+                radial-gradient(circle at 85% 85%, rgba(129, 140, 248, 0.1) 0%, transparent 40%);
+        }
+
+        header {
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--card-border);
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo-box { display: flex; align-items: center; gap: 12px; }
+        .logo-icon { width: 36px; height: 36px; background: linear-gradient(135deg, var(--accent), var(--indigo)); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; box-shadow: 0 0 15px var(--accent-glow); }
+        .logo-title { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: var(--emerald);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .pulse-dot { width: 8px; height: 8px; background: var(--emerald); border-radius: 50%; animation: pulse 2s infinite; }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        main { flex: 1; padding: 32px; max-width: 1400px; margin: 0 auto; width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        
+        .full-width { grid-column: span 2; }
+
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transition: border-color 0.3s ease;
+        }
+        .card:hover { border-color: rgba(255, 255, 255, 0.15); }
+
+        .card-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+
+        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .info-item { background: rgba(255, 255, 255, 0.03); padding: 12px 16px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.04); }
+        .info-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+        .info-value { font-size: 15px; font-weight: 600; word-break: break-all; }
+
+        .token-box {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 12px 16px;
+            font-family: monospace;
+            font-size: 13px;
+            color: var(--accent);
+            word-break: break-all;
+            position: relative;
+            margin-bottom: 12px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, var(--accent), #0284c7);
+            color: #fff;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 16px var(--accent-glow); }
+        .btn:active { transform: translateY(0); }
+
+        .btn-secondary { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); border: 1px solid var(--card-border); }
+        .btn-secondary:hover { background: rgba(255, 255, 255, 0.15); box-shadow: none; }
+
+        .btn-emerald { background: linear-gradient(135deg, var(--emerald), #059669); }
+        .btn-emerald:hover { box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3); }
+
+        .input-group { display: flex; gap: 12px; }
+        .input-text {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--card-border);
+            border-radius: 10px;
+            padding: 10px 16px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s ease;
+        }
+        .input-text:focus { border-color: var(--accent); }
+
+        .peers-list { display: flex; flex-direction: column; gap: 12px; }
+        .peer-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .peer-info-main { display: flex; flex-direction: column; gap: 4px; }
+        .peer-name { font-weight: 600; font-size: 16px; color: var(--text-primary); }
+        .peer-meta { font-size: 12px; color: var(--text-muted); }
+
+        .terminal {
+            background: #050811;
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 16px;
+            font-family: monospace;
+            font-size: 12px;
+            color: #38bdf8;
+            height: 220px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .chat-box {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            height: 250px;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .chat-msg {
+            max-width: 80%;
+            padding: 8px 14px;
+            border-radius: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        .chat-msg.me {
+            align-self: flex-end;
+            background: linear-gradient(135deg, #0284c7, #0369a1);
+            color: #fff;
+            border-bottom-right-radius: 2px;
+        }
+        .chat-msg.other {
+            align-self: flex-start;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-primary);
+            border-bottom-left-radius: 2px;
+        }
+        .chat-sender { font-size: 10px; opacity: 0.7; margin-bottom: 2px; }
+
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--emerald);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 14px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+        }
+        .toast.show { transform: translateY(0); opacity: 1; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo-box">
+            <div class="logo-icon">QP</div>
+            <div class="logo-title">QuicPunch Console</div>
+        </div>
+        <div style="display: flex; gap: 16px; align-items: center;">
+            <a href="/chat.html" class="btn btn-emerald" style="text-decoration: none; padding: 6px 14px; font-size: 13px;">💬 Direct Chat</a>
+            <a href="/call.html" class="btn btn-secondary" style="text-decoration: none; padding: 6px 14px; font-size: 13px;">🎙️ Voice Studio</a>
+            <div class="status-badge">
+                <div class="pulse-dot"></div>
+                <span>Node Active</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- My Node Profile -->
+        <div class="card">
+            <div class="card-title">Node Profile</div>
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="info-label">Identity</div>
+                    <div class="info-value" id="nodeName">Loading...</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Network & Ports</div>
+                    <div class="info-value"><span id="natType">...</span> (<span id="portRange">...</span>)</div>
+                </div>
+                <div class="info-item" style="grid-column: span 2;">
+                    <div class="info-label">IP Addresses</div>
+                    <div class="info-value" id="publicEndpoints">Loading...</div>
+                </div>
+            </div>
+
+            <div class="info-label" style="margin-bottom: 6px;">Connection Token</div>
+            <div class="token-box" id="nodeToken">Loading...</div>
+
+            <div style="display: flex; gap: 10px;">
+                <button class="btn" onclick="copyToken()">📋 Copy Token</button>
+                <button class="btn btn-secondary" onclick="copyQuickLink()">🔗 Copy Link</button>
+            </div>
+        </div>
+        <!-- Incoming Connection Requests Banner -->
+        <div class="card full-width" id="petitionCard" style="display: none; border-color: var(--amber); background: rgba(245, 158, 11, 0.05);">
+            <div class="card-title" style="color: var(--amber);">⚡ Incoming Connection Request</div>
+            <div id="petitionsContainer"></div>
+        </div>
+
+        <!-- Connect to Peer via Token -->
+        <div class="card">
+            <div class="card-title">Connect via Remote Token</div>
+            <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">Paste a peer's token or QPHP:// URI to initiate NAT hole punching and add them to your peer list.</p>
+            
+            <div class="input-group">
+                <input type="text" id="connectTokenInput" class="input-text" placeholder="Paste token or QPHP:// URI here...">
+                <button class="btn btn-emerald" onclick="connectByToken()">⚡ Connect</button>
+            </div>
+        </div>
+
+        <!-- Discovered & Available Peers -->
+        <div class="card full-width">
+            <div class="card-title">
+                <span>Available Peers (<span id="peerCount">0</span>)</span>
+                <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="fetchStatus()">🔄 Refresh</button>
+            </div>
+            
+            <div id="peersContainer" class="peers-list">
+                <div style="color: var(--text-muted); text-align: center; padding: 24px;">Scanning for available peers...</div>
+            </div>
+        </div>
+
+        <!-- Saved Peers (peers.db) -->
+        <div class="card full-width">
+            <div class="card-title">
+                <span>Saved Peers Database (<span id="savedPeerCount">0</span>)</span>
+            </div>
+            <div id="savedPeersContainer" class="peers-list">
+                <div style="color: var(--text-muted); text-align: center; padding: 16px;">No saved peers in database.</div>
+            </div>
+        </div>
+
+        <!-- Terminal Event Logs -->
+        <div class="card">
+            <div class="card-title">Network Event Log</div>
+            <div class="terminal" id="terminalLogs">
+                <div>[00:00:00] Dashboard connected. Waiting for network events...</div>
+            </div>
+        </div>
+    </main>
+
+    <div id="toast" class="toast">Copied to clipboard!</div>
+
+    <script>
+        let currentStatus = null;
+        let selectedPeerId = null;
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                currentStatus = data;
+                renderStatus(data);
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function renderStatus(data) {
+            const elName = document.getElementById('nodeName'); if (elName) elName.innerText = data.nodeName || 'LocalNode';
+            const elNat = document.getElementById('natType'); if (elNat) elNat.innerText = data.networkType || 'Unknown';
+            const elPorts = document.getElementById('portRange'); if (elPorts) elPorts.innerText = (data.minPort && data.maxPort) ? `${data.minPort}-${data.maxPort}` : 'Auto';
+            const elEps = document.getElementById('publicEndpoints'); if (elEps) elEps.innerText = (data.publicEndpoints && data.publicEndpoints.length > 0) ? data.publicEndpoints.join(', ') : 'Discovering...';
+            const elToken = document.getElementById('nodeToken'); if (elToken) elToken.innerText = data.token || 'Generating...';
+
+            let protoOptionsHtml = '';
+            if (data.registeredProtocols && data.registeredProtocols.length > 0) {
+                protoOptionsHtml = data.registeredProtocols.map(pr => '<option value="' + pr.id + '">' + pr.name + '</option>').join('');
+            } else {
+                protoOptionsHtml = '<option value="chat">Chat</option><option value="lan">FriendsLAN</option>';
+            }
+
+            const peersContainer = document.getElementById('peersContainer');
+            document.getElementById('peerCount').innerText = data.availablePeers ? data.availablePeers.length : 0;
+
+            if (!data.availablePeers || data.availablePeers.length === 0) {
+                peersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 24px;">No peers available yet. Share your token to connect!</div>';
+            } else {
+                peersContainer.innerHTML = data.availablePeers.map(p => `
+                    <div class="peer-card">
+                        <div class="peer-info-main">
+                            <div class="peer-name">${escapeHtml(p.name)} <span style="font-size:12px; color: var(--emerald); font-weight:normal;">(${p.ping}ms)</span></div>
+                            <div class="peer-meta">ID: ${p.id} | Endpoint: ${escapeHtml(p.activeEndPoint)}</div>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <select id="proto-select-${p.id}" class="input-text" style="padding: 6px 10px; font-size: 13px;">
+                                ${protoOptionsHtml}
+                            </select>
+                            <button class="btn btn-emerald" onclick="connectPeerSelected('${p.id}')">⚡ Connect</button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            const savedPeersContainer = document.getElementById('savedPeersContainer');
+            document.getElementById('savedPeerCount').innerText = data.savedPeers ? data.savedPeers.length : 0;
+            if (data.savedPeers && data.savedPeers.length > 0) {
+                savedPeersContainer.innerHTML = data.savedPeers.map(sp => `
+                    <div class="peer-card">
+                        <div class="peer-info-main">
+                            <div class="peer-name">Saved Peer <span style="font-size:12px; color: var(--accent); font-family:monospace;">(Cert: ${sp.certHash.substring(0,12)}...)</span></div>
+                            <div class="peer-meta">Ports: ${sp.minPort}-${sp.maxPort} | IPs: ${(sp.addresses || []).join(', ')}</div>
+                        </div>
+                        <div style="display:flex; gap: 8px;">
+                            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="promptEditSavedPeer('${sp.certHash}', ${sp.minPort}, ${sp.maxPort}, '${(sp.addresses || []).join(', ')}')">✏️ Edit</button>
+                            <button class="btn btn-rose" style="padding: 4px 10px; font-size: 12px; background: rgba(244,63,94,0.2); border:1px solid rgba(244,63,94,0.4);" onclick="deleteSavedPeer('${sp.certHash}')">🗑️ Remove</button>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                savedPeersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 16px;">No saved peers in database.</div>';
+            }
+
+            const petitionCard = document.getElementById('petitionCard');
+            const petitionsContainer = document.getElementById('petitionsContainer');
+            if (data.pendingPetitions && data.pendingPetitions.length > 0) {
+                petitionCard.style.display = 'block';
+                petitionsContainer.innerHTML = data.pendingPetitions.map(p => `
+                    <div style="display:flex; justify-space-between; align-items:center; padding: 10px 14px; background: rgba(245, 158, 11, 0.1); border-radius: 8px; margin-bottom: 8px;">
+                        <div>
+                            <b>${escapeHtml(p.peerName)}</b> wants to connect via <b>${escapeHtml(p.protocolName)}</b>
+                        </div>
+                        <div style="display:flex; gap: 8px;">
+                            <button class="btn btn-emerald" style="padding: 4px 12px; font-size: 12px;" onclick="acceptPetition('${p.requestId}', '${p.protocolId}', '${p.peerId}')">Accept</button>
+                            <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="declinePetition('${p.requestId}')">Decline</button>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                petitionCard.style.display = 'none';
+            }
+
+            const terminal = document.getElementById('terminalLogs');
+            if (data.logs && data.logs.length > 0) {
+                terminal.innerHTML = data.logs.map(l => `<div>${escapeHtml(l)}</div>`).join('');
+                terminal.scrollTop = terminal.scrollHeight;
+            }
+        }
+
+        async function acceptPetition(requestId, protocolId, peerId) {
+            try {
+                await fetch('/api/accept-petition', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requestId })
+                });
+                showToast('Accepted connection request!');
+                if (protocolId === '00000000-0000-0000-0000-000000000003' && peerId && peerId !== '00000000-0000-0000-0000-000000000000') {
+                    window.location.href = `/call.html?peerId=${encodeURIComponent(peerId)}`;
+                } else {
+                    fetchStatus();
+                }
+            } catch (err) { showToast('Error accepting request.'); }
+        }
+
+        async function declinePetition(requestId) {
+            try {
+                await fetch('/api/decline-petition', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requestId })
+                });
+                showToast('Declined connection request.');
+                fetchStatus();
+            } catch (err) { showToast('Error declining request.'); }
+        }
+
+        async function deleteSavedPeer(certHash) {
+            if (!confirm('Are you sure you want to remove this peer record from peers.db?')) return;
+            try {
+                await fetch('/api/saved-peer-delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ certHash })
+                });
+                showToast('Removed peer from database.');
+                fetchStatus();
+            } catch (err) { showToast('Error removing peer.'); }
+        }
+
+        async function promptEditSavedPeer(certHash, oldMinPort, oldMaxPort, oldAddrs) {
+            const minPort = parseInt(prompt('Min Port:', oldMinPort));
+            if (isNaN(minPort)) return;
+            const maxPort = parseInt(prompt('Max Port:', oldMaxPort));
+            if (isNaN(maxPort)) return;
+            const addresses = prompt('IP Addresses (comma separated):', oldAddrs);
+            if (addresses === null) return;
+
+            try {
+                await fetch('/api/saved-peer-update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ certHash, minPort, maxPort, addresses })
+                });
+                showToast('Updated saved peer settings!');
+                fetchStatus();
+            } catch (err) { showToast('Error updating peer settings.'); }
+        }
+
+        function connectPeerSelected(peerId) {
+            const sel = document.getElementById('proto-select-' + peerId);
+            const protocolId = sel ? sel.value : 'chat';
+            
+            if (protocolId === '00000000-0000-0000-0000-000000000003') {
+                window.location.href = `/call.html?peerId=${encodeURIComponent(peerId)}`;
+                return;
+            }
+            if (protocolId === '00000000-0000-0000-0000-000000000001') {
+                window.location.href = `/chat.html?peerId=${encodeURIComponent(peerId)}`;
+                return;
+            }
+
+            const peerObj = currentStatus ? currentStatus.availablePeers.find(p => p.id === peerId) : null;
+            if (peerObj) {
+                selectedPeerId = peerId;
+            }
+            connectProtocol(peerId, protocolId);
+        }
+
+        function selectPeerForChat(peerId, peerName) {
+            selectedPeerId = peerId;
+            showToast(`Selected ${peerName} for Chat.`);
+        }
+
+        async function connectProtocol(peerId, protocol) {
+            try {
+                const res = await fetch('/api/connect-peer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId, protocol })
+                });
+                if (res.ok) {
+                    showToast(`Initiating connection...`);
+                }
+            } catch (err) {
+                showToast('Failed to connect.');
+            }
+        }
+
+        async function connectByToken() {
+            const token = document.getElementById('connectTokenInput').value.trim();
+            if (!token) return;
+            try {
+                const res = await fetch('/api/connect-token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                });
+                if (res.ok) {
+                    showToast('Token sent for interrogation!');
+                    document.getElementById('connectTokenInput').value = '';
+                }
+            } catch (err) {
+                showToast('Error sending token.');
+            }
+        }
+
+        function copyToken() {
+            if (!currentStatus) return;
+            navigator.clipboard.writeText(currentStatus.token);
+            showToast('Token copied to clipboard!');
+        }
+
+        function copyQuickLink() {
+            if (!currentStatus) return;
+            navigator.clipboard.writeText(currentStatus.quickUri);
+            showToast('Quick Link copied to clipboard!');
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        function escapeHtml(str) {
+            return (str || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        let lastClipboardText = '';
+
+        function isValidTokenFormat(text) {
+            if (!text || typeof text !== 'string') return false;
+            text = text.trim();
+
+            if (/^qphp:\/\//i.test(text)) {
+                return text.length > 15;
+            }
+
+            if (text.length >= 30 && /^[A-Za-z0-9+/=_-]+$/.test(text)) {
+                if (currentStatus && currentStatus.token && text === currentStatus.token.trim()) return false;
+                return true;
+            }
+
+            return false;
+        }
+
+        async function checkClipboardForToken() {
+            if (!navigator.clipboard || !navigator.clipboard.readText) return;
+            try {
+                const text = (await navigator.clipboard.readText()).trim();
+                if (text && text !== lastClipboardText) {
+                    lastClipboardText = text;
+                    if (isValidTokenFormat(text)) {
+                        const input = document.getElementById('connectTokenInput');
+                        if (input && input.value.trim() !== text) {
+                            input.value = text;
+                            showToast('📋 Auto-detected valid token from clipboard!');
+                        }
+                    }
+                }
+            } catch (err) {}
+        }
+
+        window.addEventListener('focus', checkClipboardForToken);
+        setInterval(checkClipboardForToken, 1500);
+
+        setInterval(fetchStatus, 1500);
+        fetchStatus();
+    </script>
+</body>
+</html>
