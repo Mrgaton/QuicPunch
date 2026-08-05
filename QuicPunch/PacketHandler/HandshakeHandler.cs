@@ -121,7 +121,7 @@ namespace QuicPunch.PacketHandler
                         {
                             for (int i = 0; i < 3; i++)
                             {
-                                await Task.Delay(250);
+                                await Task.Delay(25);
                                 await udp.SendAsync(payload, result.RemoteEndPoint);
                             }
                         });

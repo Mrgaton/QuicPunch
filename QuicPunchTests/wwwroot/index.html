@@ -69,9 +69,37 @@
             100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
         }
 
-        main { flex: 1; padding: 32px; max-width: 1400px; margin: 0 auto; width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-        
-        .full-width { grid-column: span 2; }
+        main {
+            flex: 1;
+            padding: 32px;
+            max-width: 1400px;
+            margin: 0 auto;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            align-items: stretch;
+        }
+
+        @media (max-width: 900px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .col {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .full-width { width: 100%; }
 
         .card {
             background: var(--card-bg);
@@ -113,16 +141,16 @@
             font-weight: 600;
             font-size: 14px;
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: filter 0.2s ease, box-shadow 0.2s ease;
             display: inline-flex;
             align-items: center;
             gap: 8px;
         }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 16px var(--accent-glow); }
-        .btn:active { transform: translateY(0); }
+        .btn:hover { filter: brightness(1.15); box-shadow: 0 4px 16px var(--accent-glow); }
+        .btn:active { filter: brightness(0.95); box-shadow: none; }
 
         .btn-secondary { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); border: 1px solid var(--card-border); }
-        .btn-secondary:hover { background: rgba(255, 255, 255, 0.15); box-shadow: none; }
+        .btn-secondary:hover { background: rgba(255, 255, 255, 0.15); box-shadow: none; filter: none; }
 
         .btn-emerald { background: linear-gradient(135deg, var(--emerald), #059669); }
         .btn-emerald:hover { box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3); }
@@ -238,47 +266,88 @@
     </header>
 
     <main>
-        <!-- My Node Profile -->
-        <div class="card">
-            <div class="card-title">Node Profile</div>
-            <div class="info-grid">
-                <div class="info-item">
-                    <div class="info-label">Identity</div>
-                    <div class="info-value" id="nodeName">Loading...</div>
+        <!-- Top Section: Symmetrical 2-Column Grid -->
+        <div class="dashboard-grid">
+            <!-- Left Column: Profile & Connect -->
+            <div class="col">
+                <!-- My Node Profile -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>Node Identity & Settings</span>
+                        <span class="status-badge" style="font-size:11px; padding: 2px 8px;">Active</span>
+                    </div>
+                    
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Identity</div>
+                            <div class="info-value" id="nodeName">Loading...</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Network & STUN Port</div>
+                            <div class="info-value"><span id="natType">...</span> (<span id="portRange">...</span>)</div>
+                        </div>
+                        <div class="info-item" style="grid-column: span 2;">
+                            <div class="info-label">IP Addresses</div>
+                            <div class="info-value" id="publicEndpoints">Loading...</div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--card-border);">
+                        <div class="info-label" style="margin-bottom: 6px;">Listener Port (Local UDP)</div>
+                        <div class="input-group">
+                            <input type="number" id="listenerPortInput" class="input-text" placeholder="Port (e.g. 49152)" min="1" max="65535">
+                            <button class="btn btn-secondary" onclick="changeListenerPort()">⚙️ Change Port</button>
+                        </div>
+                    </div>
                 </div>
-                <div class="info-item">
-                    <div class="info-label">Network & Ports</div>
-                    <div class="info-value"><span id="natType">...</span> (<span id="portRange">...</span>)</div>
-                </div>
-                <div class="info-item" style="grid-column: span 2;">
-                    <div class="info-label">IP Addresses</div>
-                    <div class="info-value" id="publicEndpoints">Loading...</div>
+
+                <!-- Connection Token & Connect -->
+                <div class="card">
+                    <div class="card-title">Share Token & Connect</div>
+                    <div class="info-label" style="margin-bottom: 6px;">Your Connection Token</div>
+                    <div class="token-box" id="nodeToken">Loading...</div>
+
+                    <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+                        <button class="btn" onclick="copyToken()">📋 Copy Token</button>
+                        <button class="btn btn-secondary" onclick="copyQuickLink()">🔗 Copy Link</button>
+                    </div>
+
+                    <div style="padding-top: 16px; border-top: 1px solid var(--card-border);">
+                        <div class="info-label" style="margin-bottom: 6px;">Connect via Remote Token</div>
+                        <div class="input-group">
+                            <input type="text" id="connectTokenInput" class="input-text" placeholder="Paste token or QPHP:// URI here...">
+                            <button class="btn btn-emerald" onclick="connectByToken()">⚡ Connect</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <div class="info-label" style="margin-bottom: 6px;">Connection Token</div>
-            <div class="token-box" id="nodeToken">Loading...</div>
+            <!-- Right Column: Active Punching & Terminal Logs -->
+            <div class="col">
+                <!-- Active Hole Punching / Interrogations -->
+                <div class="card" id="interrogationCard">
+                    <div class="card-title">
+                        <span>Active Hole Punching (<span id="interrogationCount">0</span>)</span>
+                    </div>
+                    <div id="interrogationsContainer" class="peers-list">
+                        <div style="color: var(--text-muted); text-align: center; padding: 16px;">No active hole punching attempts.</div>
+                    </div>
+                </div>
 
-            <div style="display: flex; gap: 10px;">
-                <button class="btn" onclick="copyToken()">📋 Copy Token</button>
-                <button class="btn btn-secondary" onclick="copyQuickLink()">🔗 Copy Link</button>
+                <!-- Terminal Event Logs -->
+                <div class="card" style="flex: 1; display: flex; flex-direction: column;">
+                    <div class="card-title">Network Event Log</div>
+                    <div class="terminal" id="terminalLogs" style="flex: 1; min-height: 240px;">
+                        <div>[00:00:00] Dashboard connected. Waiting for network events...</div>
+                    </div>
+                </div>
             </div>
         </div>
+
         <!-- Incoming Connection Requests Banner -->
         <div class="card full-width" id="petitionCard" style="display: none; border-color: var(--amber); background: rgba(245, 158, 11, 0.05);">
             <div class="card-title" style="color: var(--amber);">⚡ Incoming Connection Request</div>
             <div id="petitionsContainer"></div>
-        </div>
-
-        <!-- Connect to Peer via Token -->
-        <div class="card">
-            <div class="card-title">Connect via Remote Token</div>
-            <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">Paste a peer's token or QPHP:// URI to initiate NAT hole punching and add them to your peer list.</p>
-            
-            <div class="input-group">
-                <input type="text" id="connectTokenInput" class="input-text" placeholder="Paste token or QPHP:// URI here...">
-                <button class="btn btn-emerald" onclick="connectByToken()">⚡ Connect</button>
-            </div>
         </div>
 
         <!-- Discovered & Available Peers -->
@@ -302,14 +371,6 @@
                 <div style="color: var(--text-muted); text-align: center; padding: 16px;">No saved peers in database.</div>
             </div>
         </div>
-
-        <!-- Terminal Event Logs -->
-        <div class="card">
-            <div class="card-title">Network Event Log</div>
-            <div class="terminal" id="terminalLogs">
-                <div>[00:00:00] Dashboard connected. Waiting for network events...</div>
-            </div>
-        </div>
     </main>
 
     <div id="toast" class="toast">Copied to clipboard!</div>
@@ -329,10 +390,33 @@
             }
         }
 
+        function formatLastSeenBadge(secAgo, formattedTime) {
+            if (secAgo < 6) {
+                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:12px; background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.4); color:#10b981; font-weight:600;"><span style="width:6px; height:6px; border-radius:50%; background:#10b981; display:inline-block;"></span> Active now</span>`;
+            } else if (secAgo < 30) {
+                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:12px; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.4); color:#f59e0b; font-weight:600;"><span style="width:6px; height:6px; border-radius:50%; background:#f59e0b; display:inline-block;"></span> Active ${secAgo}s ago</span>`;
+            } else if (secAgo < 3600) {
+                const mins = Math.floor(secAgo / 60);
+                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:12px; background:rgba(244,63,94,0.15); border:1px solid rgba(244,63,94,0.4); color:#f43f5e; font-weight:500;">Idle ${mins}m ago (${formattedTime})</span>`;
+            } else {
+                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:12px; background:rgba(148,163,184,0.15); border:1px solid rgba(148,163,184,0.3); color:#94a3b8; font-weight:400;">Offline (${formattedTime})</span>`;
+            }
+        }
+
+        function formatPingBadge(hasPing, ping) {
+            if (!hasPing || ping < 0) return `<span style="font-size:11px; color:var(--text-muted); background:rgba(255,255,255,0.05); padding:2px 6px; border-radius:4px;">⚡ Measuring...</span>`;
+            const pingStr = ping < 10 ? ping.toFixed(1) : Math.round(ping);
+            return `<span style="font-size:12px; color:var(--emerald); font-weight:600; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); padding:2px 7px; border-radius:6px;">⚡ ${pingStr}ms</span>`;
+        }
+
         function renderStatus(data) {
             const elName = document.getElementById('nodeName'); if (elName) elName.innerText = data.nodeName || 'LocalNode';
             const elNat = document.getElementById('natType'); if (elNat) elNat.innerText = data.networkType || 'Unknown';
-            const elPorts = document.getElementById('portRange'); if (elPorts) elPorts.innerText = (data.minPort && data.maxPort) ? `${data.minPort}-${data.maxPort}` : 'Auto';
+            const elPorts = document.getElementById('portRange'); if (elPorts) elPorts.innerText = (data.minPort && data.maxPort) ? (data.minPort === data.maxPort ? `${data.minPort}` : `${data.minPort}-${data.maxPort}`) : 'Auto';
+            const elListenerPort = document.getElementById('listenerPortInput');
+            if (elListenerPort && !isEditingListenerPort && document.activeElement !== elListenerPort) {
+                elListenerPort.value = data.listenerPort || '';
+            }
             const elEps = document.getElementById('publicEndpoints'); if (elEps) elEps.innerText = (data.publicEndpoints && data.publicEndpoints.length > 0) ? data.publicEndpoints.join(', ') : 'Discovering...';
             const elToken = document.getElementById('nodeToken'); if (elToken) elToken.innerText = data.token || 'Generating...';
 
@@ -352,14 +436,19 @@
                 peersContainer.innerHTML = data.availablePeers.map(p => `
                     <div class="peer-card">
                         <div class="peer-info-main">
-                            <div class="peer-name">${escapeHtml(p.name)} <span style="font-size:12px; color: var(--emerald); font-weight:normal;">(${p.ping}ms)</span></div>
-                            <div class="peer-meta">ID: ${p.id} | Endpoint: ${escapeHtml(p.activeEndPoint)}</div>
+                            <div class="peer-name" style="display:flex; align-items:center; gap:10px;">
+                                <strong style="font-size:15px; color:var(--text-main);">${escapeHtml(p.name)}</strong>
+                                ${formatLastSeenBadge(p.lastSeenSecondsAgo, p.lastSeenFormatted)}
+                                ${formatPingBadge(p.hasPing, p.ping)}
+                            </div>
+                            <div class="peer-meta" style="margin-top:4px;">ID: ${p.id} | Endpoint: <code style="color:var(--text-muted);">${escapeHtml(p.activeEndPoint)}</code></div>
                         </div>
                         <div style="display: flex; gap: 8px; align-items: center;">
                             <select id="proto-select-${p.id}" class="input-text" style="padding: 6px 10px; font-size: 13px;">
                                 ${protoOptionsHtml}
                             </select>
-                            <button class="btn btn-emerald" onclick="connectPeerSelected('${p.id}')">⚡ Connect</button>
+                            <button class="btn btn-emerald" style="padding: 6px 12px; font-size: 13px;" onclick="connectPeerSelected('${p.id}')">⚡ Connect</button>
+                            <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px; background: rgba(244,63,94,0.15); border-color: rgba(244,63,94,0.4); color: #f43f5e;" onclick="disconnectPeer('${p.id}')">🔌 Disconnect</button>
                         </div>
                     </div>
                 `).join('');
@@ -372,7 +461,7 @@
                     <div class="peer-card">
                         <div class="peer-info-main">
                             <div class="peer-name">Saved Peer <span style="font-size:12px; color: var(--accent); font-family:monospace;">(Cert: ${sp.certHash.substring(0,12)}...)</span></div>
-                            <div class="peer-meta">Ports: ${sp.minPort}-${sp.maxPort} | IPs: ${(sp.addresses || []).join(', ')}</div>
+                            <div class="peer-meta">Ports: ${sp.minPort === sp.maxPort ? `${sp.minPort}` : `${sp.minPort}-${sp.maxPort}`} | IPs: ${(sp.addresses || []).join(', ')}</div>
                         </div>
                         <div style="display:flex; gap: 8px;">
                             <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="promptEditSavedPeer('${sp.certHash}', ${sp.minPort}, ${sp.maxPort}, '${(sp.addresses || []).join(', ')}')">✏️ Edit</button>
@@ -389,18 +478,52 @@
             if (data.pendingPetitions && data.pendingPetitions.length > 0) {
                 petitionCard.style.display = 'block';
                 petitionsContainer.innerHTML = data.pendingPetitions.map(p => `
-                    <div style="display:flex; justify-space-between; align-items:center; padding: 10px 14px; background: rgba(245, 158, 11, 0.1); border-radius: 8px; margin-bottom: 8px;">
-                        <div>
-                            <b>${escapeHtml(p.peerName)}</b> wants to connect via <b>${escapeHtml(p.protocolName)}</b>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; margin-bottom: 10px; gap: 16px;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 24px;">⚡</span>
+                            <div>
+                                <div style="font-size: 15px; font-weight: 700; color: #f8fafc;">
+                                    ${escapeHtml(p.peerName)}
+                                </div>
+                                <div style="font-size: 13px; color: #f59e0b; margin-top: 2px;">
+                                    Wants to establish a <b>${escapeHtml(p.protocolName)}</b> session
+                                </div>
+                            </div>
                         </div>
-                        <div style="display:flex; gap: 8px;">
-                            <button class="btn btn-emerald" style="padding: 4px 12px; font-size: 12px;" onclick="acceptPetition('${p.requestId}', '${p.protocolId}', '${p.peerId}')">Accept</button>
-                            <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="declinePetition('${p.requestId}')">Decline</button>
+                        <div style="display: flex; gap: 10px; flex-shrink: 0;">
+                            <button class="btn btn-emerald" style="padding: 8px 18px; font-size: 13px;" onclick="acceptPetition('${p.requestId}', '${p.protocolId}', '${p.peerId}')">✅ Accept</button>
+                            <button class="btn btn-secondary" style="padding: 8px 18px; font-size: 13px; background: rgba(244,63,94,0.15); border-color: rgba(244,63,94,0.4); color: #f43f5e;" onclick="declinePetition('${p.requestId}')">❌ Decline</button>
                         </div>
                     </div>
                 `).join('');
             } else {
                 petitionCard.style.display = 'none';
+            }
+
+            const interrogationContainer = document.getElementById('interrogationsContainer');
+            const elIntCount = document.getElementById('interrogationCount');
+            if (elIntCount) elIntCount.innerText = data.activeInterrogations ? data.activeInterrogations.length : 0;
+
+            if (data.activeInterrogations && data.activeInterrogations.length > 0) {
+                interrogationContainer.innerHTML = data.activeInterrogations.map(item => `
+                    <div class="peer-card" style="border-color: rgba(56, 189, 248, 0.3);">
+                        <div class="peer-info-main">
+                            <div class="peer-name">
+                                ⚡ ${escapeHtml(item.peerName || 'Remote Target')}
+                                <span style="font-size:12px; color: var(--accent); font-weight:normal;">(Started: ${item.startTime})</span>
+                            </div>
+                            <div class="peer-meta">
+                                IPs: ${(item.addresses || []).join(', ') || 'Discovering...'} |
+                                Ports: ${item.minPort === item.maxPort ? `${item.minPort}` : `${item.minPort}-${item.maxPort}`}
+                            </div>
+                        </div>
+                        <div>
+                            <button class="btn btn-rose" style="padding: 6px 14px; font-size: 13px; background: rgba(244,63,94,0.2); border:1px solid rgba(244,63,94,0.4);" onclick="cancelInterrogation('${item.id}')">❌ Cancel</button>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                interrogationContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 16px;">No active hole punching attempts.</div>';
             }
 
             const terminal = document.getElementById('terminalLogs');
@@ -449,6 +572,24 @@
                 showToast('Removed peer from database.');
                 fetchStatus();
             } catch (err) { showToast('Error removing peer.'); }
+        }
+
+        async function disconnectPeer(peerId) {
+            try {
+                const res = await fetch('/api/disconnect-peer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId })
+                });
+                if (res.ok) {
+                    showToast('Disconnected peer.');
+                    fetchStatus();
+                } else {
+                    showToast('Failed to disconnect peer.');
+                }
+            } catch (err) {
+                showToast('Error disconnecting peer.');
+            }
         }
 
         async function promptEditSavedPeer(certHash, oldMinPort, oldMaxPort, oldAddrs) {
@@ -528,6 +669,53 @@
             }
         }
 
+        async function cancelInterrogation(id) {
+            try {
+                const res = await fetch('/api/cancel-interrogation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                if (res.ok) {
+                    showToast('Canceled hole punching attempt.');
+                    fetchStatus();
+                } else {
+                    showToast('Failed to cancel attempt.');
+                }
+            } catch (err) {
+                showToast('Error canceling attempt.');
+            }
+        }
+
+        let isEditingListenerPort = false;
+
+        async function changeListenerPort() {
+            const elInput = document.getElementById('listenerPortInput');
+            if (!elInput) return;
+            const port = parseInt(elInput.value.trim());
+            if (isNaN(port) || port < 1 || port > 65535) {
+                showToast('Please enter a valid port between 1 and 65535.');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/change-listener-port', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast(`Listener port changed to ${data.listenerPort}!`);
+                    fetchStatus();
+                } else {
+                    showToast(`Failed to change port: ${data.error || 'Unknown error'}`);
+                }
+            } catch (err) {
+                showToast('Error changing listener port.');
+            }
+        }
+
         function copyToken() {
             if (!currentStatus) return;
             navigator.clipboard.writeText(currentStatus.token);
@@ -589,7 +777,18 @@
         window.addEventListener('focus', checkClipboardForToken);
         setInterval(checkClipboardForToken, 1500);
 
-        setInterval(fetchStatus, 1500);
+        document.addEventListener('DOMContentLoaded', () => {
+            const elInput = document.getElementById('listenerPortInput');
+            if (elInput) {
+                elInput.addEventListener('focus', () => { isEditingListenerPort = true; });
+                elInput.addEventListener('blur', () => { isEditingListenerPort = false; });
+                elInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') changeListenerPort();
+                });
+            }
+        });
+
+        setInterval(fetchStatus, 250);
         fetchStatus();
     </script>
 </body>

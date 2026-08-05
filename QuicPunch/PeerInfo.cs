@@ -23,7 +23,7 @@ namespace QuicPunch
         }
 
         private byte[]? _certHash;
-        public byte[] CertHash => _certHash ??= SHA3_384.HashData(Certificate.GetPublicKey());
+        public byte[] CertHash => _certHash ??= SHA3_256.HashData(Certificate.GetPublicKey());
 
         private byte[]? _idRaw;
         public byte[] IdRaw => _idRaw ??= CertHash == null ? throw new NullReferenceException("Certificate hash is null.") : XxHash128.Hash(CertHash);

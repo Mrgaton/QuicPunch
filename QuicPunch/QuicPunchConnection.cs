@@ -65,8 +65,6 @@ namespace QuicPunch
 
             for (int attempt = 1; attempt <= 2; attempt++)
             {
-                await PreciseTime.StartSyncedLoggerAsync(500);
-
                 Console.WriteLine($"\n--- ATTEMPT {attempt}/2: Acting as {(isServer ? "SERVER" : "CLIENT")} ---");
 
                 using var attemptCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -223,21 +221,9 @@ namespace QuicPunch
             long intervalTicks = TimeSpan.FromMilliseconds(QuicPunch.PunchIntervalMiliseconds).Ticks;
             int tries = 0;
 
-            while (tries < 32)
+            while (tries < 32 && !token.IsCancellationRequested)
             {
                 tries++;
-
-                DateTime now = PreciseTime.GetCorrectTime();
-                long nextTicks = now.Ticks - (now.Ticks % intervalTicks) + intervalTicks;
-                DateTime nextBoundary = new DateTime(nextTicks, DateTimeKind.Utc);
-                TimeSpan delay = nextBoundary - PreciseTime.GetCorrectTime();
-
-                if (delay.TotalMilliseconds > 1)
-                {
-                    await Task.Delay((int)delay.TotalMilliseconds, token);
-                }
-
-                Console.WriteLine($"Send hello packet to {peer} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(intervalTicks).Seconds}");
 
                 for (int i = 0; i < 2; i++)
                 {
@@ -267,10 +253,8 @@ namespace QuicPunch
                         await udp.BigSendAsync(payload, peer);
                     }
 
-                    await Task.Delay(250, token);
+                    await Task.Delay(25, token);
                 }
-
-                tries++;
             }
         }
 
@@ -297,7 +281,7 @@ namespace QuicPunch
                                   return false;
 
                               byte[] clientPublicKey = certificate.GetPublicKey();
-                              byte[] clientHash = SHA3_384.HashData(clientPublicKey);
+                              byte[] clientHash = SHA3_256.HashData(clientPublicKey);
 
                               var valid = clientHash.SequenceEqual(peerCertificate);
 
@@ -326,7 +310,7 @@ namespace QuicPunch
                 catch when (bindTries < 9 && !token.IsCancellationRequested)
                 {
                     bindTries++;
-                    await Task.Delay(150, token);
+                    await Task.Delay(20, token);
                 }
             }
 
@@ -375,7 +359,7 @@ namespace QuicPunch
                             return false;
 
                         byte[] serverPublicKey = certificate.GetPublicKey();
-                        byte[] serverHash = SHA3_384.HashData(serverPublicKey);
+                        byte[] serverHash = SHA3_256.HashData(serverPublicKey);
 
                         var valid = serverHash.SequenceEqual(peerCertificate);
 
@@ -406,7 +390,7 @@ namespace QuicPunch
                 }
                 catch
                 {
-                    await Task.Delay(500, token); // Small backoff, then try again
+                    await Task.Delay(25, token); // Small backoff, then try again
                 }
             }
 

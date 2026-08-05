@@ -155,34 +155,50 @@
             </div>
 
             <div class="input-group">
-                <div class="input-label">Audio Quality</div>
-                <select id="bitrateSelect" class="input-text">
-                    <option value="32000">Standard Voice (32 kbps)</option>
-                    <option value="64000" selected>High Quality (64 kbps)</option>
-                    <option value="128000">Studio Quality (128 kbps)</option>
-                </select>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <div class="input-label" style="margin:0;">Opus Target Bitrate</div>
+                    <span id="bitrateValueBadge" class="badge" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: var(--accent); font-weight: 600; font-size: 11px; padding: 2px 8px; border-radius: 6px;">
+                        64 kbps (High Quality Voice)
+                    </span>
+                </div>
+                
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="bitrateRange" min="6" max="320" value="64" step="1" 
+                           style="flex: 1; accent-color: var(--accent); cursor: pointer; height: 6px;"
+                           oninput="onBitrateInput(this.value)">
+                    <input type="number" id="bitrateNumber" min="6" max="320" value="64" 
+                           class="input-text" style="width: 75px; text-align: center; padding: 4px 6px; font-size: 13px; font-weight: 600;"
+                           oninput="onBitrateInput(this.value)">
+                    <span style="font-size: 12px; color: var(--text-muted); font-weight: 500;">kbps</span>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+                    <span>6 kbps (Min)</span>
+                    <span>64 kbps (Voice)</span>
+                    <span>128 kbps (Music)</span>
+                    <span>320 kbps (Max)</span>
+                </div>
             </div>
 
-            <button id="testMicBtn" class="btn btn-secondary" style="width: 100%;" onclick="initAudioPreview()">🎙️ Test Microphone Preview</button>
+            <button id="testMicBtn" class="btn btn-secondary" style="width: 100%; margin-top: 8px;" onclick="initAudioPreview()">🎙️ Test Microphone Preview</button>
         </div>
 
         <!-- Active Call Control Center -->
         <div class="card">
             <div class="card-title">
-                <span>Active Call Control</span>
+                <span>Active Call Participants (<span id="activeCallCount">0</span>)</span>
                 <span id="callStatusTag" style="font-size:12px; color: var(--text-muted);">Idle</span>
             </div>
 
             <canvas id="visualizer" class="visualizer-canvas"></canvas>
 
-            <div style="text-align: center; margin-bottom: 16px;">
-                <div id="activePeerBanner" style="font-weight: 600; font-size: 16px; color: var(--accent);">No active call</div>
-                <div id="callTimerTag" style="font-size: 13px; font-weight: 600; color: var(--emerald); display: none; margin-top: 4px;">00:00:00</div>
+            <div id="activeCallsContainer" style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
+                <div style="color: var(--text-muted); text-align: center; padding: 16px;">No active voice calls.</div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px;">
                 <button id="muteBtn" class="btn btn-secondary" onclick="toggleMute()" disabled>🎙️ Mute Mic</button>
-                <button id="endCallBtn" class="btn btn-rose" onclick="endVoiceCall()" disabled>🔴 End Call</button>
+                <button id="endCallBtn" class="btn btn-rose" onclick="endAllVoiceCalls()" disabled>🔴 Hang Up All</button>
             </div>
         </div>
 
@@ -222,13 +238,13 @@
         let scriptProcessor = null;
         let audioCtx = null;
         let outputAudioCtx = null;
-        let pcmNextStartTime = 0;
         let analyser = null;
         let isMuted = false;
         let isCallActive = false;
 
-        let callStartTime = null;
+        let peerCallStartTimes = new Map();
         let callTimerInterval = null;
+        let mutedRemotePeers = new Set();
 
         let isTestingMic = false;
         let testAudioStream = null;
@@ -258,12 +274,9 @@
                 
                 isTestingMic = true;
                 const btn = document.getElementById('testMicBtn');
-                if (btn) btn.innerText = '🛑 Stop Microphone Test';
-                document.getElementById('callStatusTag').innerText = 'Testing Mic';
-                document.getElementById('callStatusTag').style.color = '#38bdf8';
+                btn.innerText = '🔴 Stop Preview';
+                btn.classList.replace('btn-secondary', 'btn-rose');
                 drawVisualizer();
-                showToast('Microphone test active! You can now hear your mic output.');
-            } catch (err) {
                 showToast('Microphone test failed: ' + (err.message || err.name));
             }
         }
@@ -288,7 +301,58 @@
             showToast('Microphone test stopped.');
         }
 
+        let bitrateDebounceTimer = null;
+        let currentConfiguredBitrate = 64;
+
+        function getBitrateDescription(kbps) {
+            if (kbps <= 15) return `${kbps} kbps (Ultra Low Bandwidth)`;
+            if (kbps <= 32) return `${kbps} kbps (Speech / VoIP)`;
+            if (kbps <= 96) return `${kbps} kbps (High Quality Voice)`;
+            if (kbps <= 192) return `${kbps} kbps (Opus Music)`;
+            return `${kbps} kbps (Studio / Max Opus)`;
+        }
+
+        function onBitrateInput(val) {
+            let kbps = parseInt(val);
+            if (isNaN(kbps)) kbps = 64;
+            kbps = Math.max(6, Math.min(320, kbps));
+
+            const rangeEl = document.getElementById('bitrateRange');
+            const numEl = document.getElementById('bitrateNumber');
+            const badgeEl = document.getElementById('bitrateValueBadge');
+
+            if (rangeEl && rangeEl.value != kbps) rangeEl.value = kbps;
+            if (numEl && numEl.value != kbps) numEl.value = kbps;
+            if (badgeEl) badgeEl.innerText = getBitrateDescription(kbps);
+
+            if (bitrateDebounceTimer) {
+                clearTimeout(bitrateDebounceTimer);
+            }
+
+            bitrateDebounceTimer = setTimeout(() => {
+                applyBitrateChange(kbps);
+            }, 1000);
+        }
+
+        function applyBitrateChange(kbps) {
+            currentConfiguredBitrate = kbps;
+            localStorage.setItem('voice_target_bitrate', kbps);
+            showToast(`Applied Opus target bitrate: ${kbps} kbps`);
+        }
+
+        function loadSavedBitrate() {
+            const saved = localStorage.getItem('voice_target_bitrate');
+            if (saved) {
+                onBitrateInput(saved);
+                if (bitrateDebounceTimer) {
+                    clearTimeout(bitrateDebounceTimer);
+                    currentConfiguredBitrate = parseInt(saved);
+                }
+            }
+        }
+
         async function initDevices() {
+            loadSavedBitrate();
             try {
                 await navigator.mediaDevices.getUserMedia({ audio: true });
                 const devices = await navigator.mediaDevices.enumerateDevices();
@@ -538,6 +602,21 @@
             }
         }
 
+        async function endAllVoiceCalls() {
+            if (!currentStatus || !currentStatus.activeVoiceCalls) return;
+            for (const c of currentStatus.activeVoiceCalls) {
+                try {
+                    await fetch('/api/voice-hangup', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ peerId: c.peerId })
+                    });
+                } catch (e) {}
+            }
+            showToast('Ended all voice calls.');
+            fetchStatus();
+        }
+
         async function startAudioEngine() {
             if (isTestingMic) stopAudioPreview();
             if (isCallActive && mediaStream) return;
@@ -546,15 +625,11 @@
                 const deviceId = document.getElementById('micSelect').value;
 
                 const constraints = {
-                    audio: (deviceId && deviceId.length > 0) ? {
-                        deviceId: { exact: deviceId },
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    } : {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
+                    audio: {
+                        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
                     }
                 };
 
@@ -628,12 +703,34 @@
             } catch (err) {}
         }
 
+        let audioJitterBuffer = [];
+        let outputScriptNode = null;
+
+        function initOutputAudioEngine() {
+            if (outputAudioCtx) return;
+
+            outputAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+            if (outputAudioCtx.state === 'suspended') {
+                outputAudioCtx.resume();
+            }
+
+            outputScriptNode = outputAudioCtx.createScriptProcessor(2048, 1, 1);
+            outputScriptNode.onaudioprocess = (e) => {
+                const output = e.outputBuffer.getChannelData(0);
+                for (let i = 0; i < output.length; i++) {
+                    if (audioJitterBuffer.length > 0) {
+                        output[i] = audioJitterBuffer.shift();
+                    } else {
+                        output[i] = 0.0;
+                    }
+                }
+            };
+            outputScriptNode.connect(outputAudioCtx.destination);
+        }
+
         function playRemoteAudioChunk(base64Data) {
             try {
-                if (!outputAudioCtx) {
-                    outputAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                    pcmNextStartTime = outputAudioCtx.currentTime;
-                }
+                initOutputAudioEngine();
                 if (outputAudioCtx.state === 'suspended') {
                     outputAudioCtx.resume();
                 }
@@ -643,22 +740,13 @@
                 for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
                 const int16Samples = new Int16Array(bytes.buffer);
 
-                const audioBuffer = outputAudioCtx.createBuffer(1, int16Samples.length, 16000);
-                const channelData = audioBuffer.getChannelData(0);
+                if (audioJitterBuffer.length > 8000) {
+                    audioJitterBuffer = audioJitterBuffer.slice(-4000);
+                }
+
                 for (let i = 0; i < int16Samples.length; i++) {
-                    channelData[i] = int16Samples[i] / 32768.0;
+                    audioJitterBuffer.push(int16Samples[i] / 32768.0);
                 }
-
-                const source = outputAudioCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(outputAudioCtx.destination);
-
-                const now = outputAudioCtx.currentTime;
-                if (pcmNextStartTime < now + 0.01) {
-                    pcmNextStartTime = now + 0.03;
-                }
-                source.start(pcmNextStartTime);
-                pcmNextStartTime += audioBuffer.duration;
             } catch (err) {
                 console.error('Error playing remote audio chunk:', err);
             }
@@ -744,7 +832,7 @@
         }
 
         initDevices();
-        setInterval(fetchStatus, 2000);
+        setInterval(fetchStatus, 250);
         setInterval(pollVoiceDatagrams, 60);
         fetchStatus();
     </script>
