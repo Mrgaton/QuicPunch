@@ -361,3 +361,34 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# JetBrains Rider / IntelliJ IDEA
+.idea/
+*.sln.iml
+
+# Repository hygiene: local identities, synchronization state, and source backups.
+*.pem
+!*public*.pem
+*.key
+*.keystore
+*.jks
+*.p12
+*.snk
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.sync-conflict-*
+.stfolder/
+.stversions/
+.catalog-prepare.lock
+/UdpPunchHoleTest.zip
+/UdpPunchHoleTest.rar
+/UdpPunchHoleTest.7z
+/QuicPunchTests/wwwroot/wwwroot.zip
+
+# Android native outputs are reproducible with build-native-android.sh.
+/QuicPunch.AndroidProbe/native/arm64-v8a/libqp_probe.so
+/QuicPunch.AndroidProbe/native/arm64-v8a/libqp_transport.so
+/QuicPunch/runtimes/android-arm64/native/libmsquic.so

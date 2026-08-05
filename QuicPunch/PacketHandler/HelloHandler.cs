@@ -13,6 +13,12 @@ namespace QuicPunch.PacketHandler
         internal static void HandleHello(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result, byte messageType) {
             var certHash = r.ReadBytes(qc.CurrentPeer.CertHash.Length);
 
+            if (qc.CurrentPeer.CertHash != null && certHash.SequenceEqual(qc.CurrentPeer.CertHash))
+            {
+                // Imaginate conocerte a ti mismo
+                return;
+            }
+
             var foundExpectedCert = qc.ExpectedPeerCerts.Contains(certHash);
 
             if (messageType != (byte)MessageType.Interrogation && !foundExpectedCert && !qc.PeerStore.SavedPeers.Any(sp => sp.CertHash.SequenceEqual(certHash)))
@@ -52,12 +58,17 @@ namespace QuicPunch.PacketHandler
             var certSize = r.ReadUInt16();
             var certBytes = r.ReadBytes(certSize);
 
-            var ecdhSize = r.ReadByte();
-            var ecdhKeyRaw = r.ReadBytes(ecdhSize);
-
             var cert = X509CertificateLoader.LoadCertificate(certBytes);
 
-            if (!SHA3_384.HashData(cert.GetPublicKey()).SequenceEqual(certHash))
+            var ecdhExt = cert.Extensions[CertManager.EcdhExtensionOid];
+            if (ecdhExt == null)
+            {
+                Console.WriteLine("Certificate missing ECDH extension from " + result.RemoteEndPoint);
+                return;
+            }
+            var ecdhKeyRaw = ecdhExt.RawData;
+
+            if (!SHA3_256.HashData(cert.GetPublicKey()).SequenceEqual(certHash))
             {
                 Console.WriteLine("Corrupted cert hash from " + result.RemoteEndPoint);
                 return;
@@ -79,7 +90,7 @@ namespace QuicPunch.PacketHandler
 
                 long diffTicks = nowTicks - remoteTicks;
 
-                if (Math.Abs(diffTicks) > 30_000_000)
+                if (Math.Abs(diffTicks) > 1_200_000_000)
                 {
                     Console.WriteLine($"HELLO NEW: Packet from {result.RemoteEndPoint} rejected. Timestamp drifted by {diffTicks / 10_000.0}ms.");
                     return;
@@ -111,7 +122,9 @@ namespace QuicPunch.PacketHandler
             {
                 if (qc.PasswordHash != null && !passwordConnection)
                 {
-                    Console.WriteLine("Error instance has password configured but peer didnt sended one");
+                    Console.WriteLine("Instance requires password authentication, but peer didn't send proof. Requesting re-authentication from " + result.RemoteEndPoint);
+                    var challengePayload = qc.GenerateHelloPayload(MessageType.Interrogation, true);
+                    _ = udp.SendAsync(challengePayload, result.RemoteEndPoint);
                     return;
                 }
 
@@ -148,6 +161,14 @@ namespace QuicPunch.PacketHandler
             else
             {
                 var peer = qc.AvailablePeers[peerId];
+
+                if (qc.PasswordHash != null && !passwordConnection)
+                {
+                    Console.WriteLine("Existing peer sent unauthenticated Hello, requesting re-authentication from " + result.RemoteEndPoint);
+                    var challengePayload = qc.GenerateHelloPayload(MessageType.Interrogation, true);
+                    _ = udp.SendAsync(challengePayload, result.RemoteEndPoint);
+                    return;
+                }
                 
                 if (!certHash.SequenceEqual(peer.CertHash))
                 {

@@ -4,14 +4,72 @@ using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 
 namespace QuicPunch
 {
-    internal static class Helpers
+    public static class Helpers
     {
+        public static List<IPAddress> GetValidLocalIPAddresses()
+        {
+            var list = new List<IPAddress>();
+            try
+            {
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up)
+                        continue;
+
+                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                        ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel)
+                        continue;
+
+                    string name = ni.Name.ToLowerInvariant();
+                    string desc = ni.Description.ToLowerInvariant();
+
+                    // Exclude virtual/Docker/VMware/VBox/bridge/WSL interfaces
+                    if (name.StartsWith("docker") || name.StartsWith("veth") || name.StartsWith("br-") ||
+                        name.StartsWith("virbr") || name.StartsWith("vboxnet") || name.StartsWith("vmnet") ||
+                        name.Contains("wsl") || desc.Contains("virtual") || desc.Contains("hyper-v") ||
+                        desc.Contains("docker") || desc.Contains("vmware") || desc.Contains("virtualbox"))
+                    {
+                        continue;
+                    }
+
+                    var props = ni.GetIPProperties();
+
+                    // Check if interface has a default gateway (providing Internet/LAN access)
+                    bool hasGateway = props.GatewayAddresses.Any(g => g.Address != null &&
+                        !IPAddress.Any.Equals(g.Address) &&
+                        !IPAddress.IPv6Any.Equals(g.Address) &&
+                        g.Address.AddressFamily == AddressFamily.InterNetwork);
+
+                    bool isPhysical = ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
+                                     ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
+
+                    foreach (var unicast in props.UnicastAddresses)
+                    {
+                        var ip = unicast.Address;
+                        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+
+                        if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
+                        {
+                            if (hasGateway || isPhysical)
+                            {
+                                if (!list.Contains(ip))
+                                    list.Add(ip);
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return list;
+        }
         /*public static async Task BigSendAsync( this UdpClient udp, byte[] data, PeerInfo peerInfo)
            {
                if (peerInfo.MinPort > peerInfo.MaxPort || peerInfo.MinPort - peerInfo.MaxPort > ushort.MaxValue / 2)
@@ -225,10 +283,14 @@ namespace QuicPunch
                     w.Write((ushort)p.MinPort);
                 }
 
-                //w.Write((byte)p.CertHash.Length);
+                var localIps = GetValidLocalIPAddresses().Where(ip => !addresses.Contains(ip)).ToList();
+                w.Write((byte)localIps.Count);
+                for (int i = 0; i < localIps.Count; i++)
+                {
+                    w.Write(localIps[i].GetAddressBytes());
+                }
+
                 w.Write(p.CertHash);
-                w.Write((byte)p.EcdhPublicKey.Length);
-                w.Write(p.EcdhPublicKey);
 
                 return Base64Url.EncodeToString(ms.ToArray());
             }
@@ -240,28 +302,22 @@ namespace QuicPunch
             using (var ms = new MemoryStream(Base64Url.DecodeFromChars(t)))
             using (var r = new BinaryReader(ms))
             {
-                //var version = r.ReadByte();
-                // if (version != TokenVersionByte) 
-                //    throw new Exception("Invalid token version");
-
                 PackedFlags pf = new PackedFlags(r.ReadByte());
+
+                var allAddresses = new List<IPAddress>();
 
                 if (pf.NetworkType == QuicPunch.NetworkType.DynamicAddress || pf.NetworkType == QuicPunch.NetworkType.DynamicPortAndAddress)
                 {
                     var addressesLength = r.ReadByte();
 
-                    IPAddress[] addresses = new IPAddress[addressesLength];
-
                     for (int i = 0; i < addressesLength; i++)
                     {
-                        addresses[i] = new IPAddress(r.ReadBytes(4));
+                        allAddresses.Add(new IPAddress(r.ReadBytes(4)));
                     }
-
-                    peer.Addresses = addresses;
                 }
                 else
                 {
-                    peer.Addresses = [new IPAddress(r.ReadBytes(4))];
+                    allAddresses.Add(new IPAddress(r.ReadBytes(4)));
                 }
 
                 if (pf.NetworkType == QuicPunch.NetworkType.DynamicPort || pf.NetworkType == QuicPunch.NetworkType.DynamicPortAndAddress)
@@ -274,12 +330,23 @@ namespace QuicPunch
                     peer.MinPort = peer.MaxPort = r.ReadUInt16();
                 }
 
-                var certHash = r.ReadBytes(384 / 8);
+                if (r.BaseStream.Position < r.BaseStream.Length - (256 / 8))
+                {
+                    var localIpCount = r.ReadByte();
+                    for (int i = 0; i < localIpCount; i++)
+                    {
+                        var localIp = new IPAddress(r.ReadBytes(4));
+                        if (!allAddresses.Contains(localIp) && !IPAddress.Any.Equals(localIp))
+                        {
+                            allAddresses.Add(localIp);
+                        }
+                    }
+                }
+
+                var certHash = r.ReadBytes(256 / 8);
                 peer.SetCertificateHash(certHash);
 
-                var ecdhLen = r.ReadByte();
-                var ecdhPublicKey = r.ReadBytes(ecdhLen);
-                peer.EcdhPublicKey = ecdhPublicKey;
+                peer.Addresses = allAddresses.ToArray();
 
                 return peer;
             }

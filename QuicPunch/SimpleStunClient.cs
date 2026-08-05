@@ -211,7 +211,13 @@ namespace QuicPunch
 
         public static bool IsBogonOrLocalhost(IPAddress address)
         {
+            if (address is null) return true;
             if (IPAddress.IsLoopback(address)) return true;
+
+            if (address.IsIPv4MappedToIPv6)
+            {
+                address = address.MapToIPv4();
+            }
 
             if (address.AddressFamily == AddressFamily.InterNetwork)
             {
@@ -265,8 +271,26 @@ namespace QuicPunch
             else if (address.AddressFamily == AddressFamily.InterNetworkV6)
             {
                 if (address.IsIPv6SiteLocal || address.IsIPv6LinkLocal || address.IsIPv6Multicast) return true;
+                var bytes = address.GetAddressBytes();
+                // fc00::/7 (Unique Local Address RFC 4193)
+                if ((bytes[0] & 0xFE) == 0xFC) return true;
             }
 
+            if (IsLocalInterfaceAddress(address)) return true;
+
+            return false;
+        }
+
+        private static bool IsLocalInterfaceAddress(IPAddress address)
+        {
+            try
+            {
+                foreach (var localIp in Helpers.GetValidLocalIPAddresses())
+                {
+                    if (localIp.Equals(address)) return true;
+                }
+            }
+            catch { }
             return false;
         }
 

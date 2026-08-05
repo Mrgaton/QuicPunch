@@ -14,7 +14,8 @@ namespace QuicPunch
             Ack = (byte)('K'),
             Handshake = (byte)('S'),
             FinalHandshake = (byte)('F'),
-            Data = (byte)('D')
+            Data = (byte)('D'),
+            Disconnect = (byte)('X')
         }
         public enum HandShakeType : byte
         {

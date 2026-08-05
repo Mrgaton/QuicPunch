@@ -21,6 +21,9 @@ namespace QuicPunch
                 Directory.CreateDirectory(configPath);
             }
         }
+
+        public const string EcdhExtensionOid = "1.3.6.1.4.1.99999.1";
+
         public string CertPath {  get; private set; }
         public string EcdhKeyPath { get; private set; }
         public X509Certificate2? PeerCertificate { 
@@ -31,11 +34,22 @@ namespace QuicPunch
 
                 if (File.Exists(CertPath))
                 {
-                    return _peerCertificate = new X509Certificate2(
+                    var cert = new X509Certificate2(
                         CertPath,
                         (string?)null,
                         X509KeyStorageFlags.Exportable |
                         X509KeyStorageFlags.PersistKeySet);
+
+                    if (cert.Extensions[EcdhExtensionOid] == null)
+                    {
+                        cert.Dispose();
+                        try { File.Delete(CertPath); } catch { }
+                        var newCert = GenerateIdentityCertificate(Environment.MachineName);
+                        File.WriteAllBytes(CertPath, newCert.Export(X509ContentType.Pfx));
+                        return _peerCertificate = newCert;
+                    }
+
+                    return _peerCertificate = cert;
                 }
                 else
                 {
@@ -56,7 +70,7 @@ namespace QuicPunch
                 if (_peerCertPublicHash != null)
                     return _peerCertPublicHash;
 
-                return _peerCertPublicHash = SHA3_384.HashData(PeerCertificate.GetPublicKey());
+                return _peerCertPublicHash = SHA3_256.HashData(PeerCertificate.GetPublicKey());
             }
         }
         public byte[] _peerCertPublicHash;
@@ -91,13 +105,14 @@ namespace QuicPunch
                 if (_ecdhPublicKeyRaw != null)
                     return _ecdhPublicKeyRaw;
 
+                var ext = PeerCertificate.Extensions[EcdhExtensionOid];
+                if (ext != null)
+                    return _ecdhPublicKeyRaw = ext.RawData;
+
                 return _ecdhPublicKeyRaw = EcdhKey.ExportSubjectPublicKeyInfo();
             }
         }
         private byte[]? _ecdhPublicKeyRaw;
-
-
-
 
         public ECDsa Curve { 
             get
@@ -115,7 +130,6 @@ namespace QuicPunch
             {
                 if (_curveHash != null)
                     return _curveHash;
-
                 return _curveHash = SHA3_256.HashData(Curve.ExportSubjectPublicKeyInfo());
             }
         }
@@ -128,7 +142,6 @@ namespace QuicPunch
                 $"CN={peerId}",
                 ecdsa,
                 HashAlgorithmName.SHA384);
-
 
             request.CertificateExtensions.Add(
                 new X509BasicConstraintsExtension(
@@ -154,16 +167,21 @@ namespace QuicPunch
                     critical: true));
 
             var san = new SubjectAlternativeNameBuilder();
-
-
             san.AddUserPrincipalName(peerId);
-
             request.CertificateExtensions.Add(san.Build());
 
             request.CertificateExtensions.Add(
                 new X509SubjectKeyIdentifierExtension(
                     request.PublicKey,
                     false));
+
+            // Embed ECDH Public Key as custom X.509 extension
+            byte[] ecdhPub = EcdhKey.ExportSubjectPublicKeyInfo();
+            request.CertificateExtensions.Add(
+                new X509Extension(
+                    new Oid(EcdhExtensionOid, "ECDH Key Extension"),
+                    ecdhPub,
+                    critical: false));
 
             var notBefore = DateTimeOffset.UtcNow.AddMinutes(-5);
             var notAfter = notBefore.AddYears(20);

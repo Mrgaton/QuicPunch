@@ -106,7 +106,7 @@ internal static class Program
         string password = "sdasd";//Console.ReadLine();
 
         var cts = new CancellationTokenSource();
-        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 2000 : 4002)) { AutoAcceptConnections = false, SharePeers = true };
+        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true) { AutoAcceptConnections = false, SharePeers = true };
 
         _friendsLanHandler = new VirtualLanHandler();
         var chatHandler = new ChatHandler();

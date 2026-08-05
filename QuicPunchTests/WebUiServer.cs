@@ -91,6 +91,11 @@ namespace QuicPunchTests
                 }
             };
 
+            _qcc.OnPeerDisconnected += (peer) =>
+            {
+                LogEvent($"[NETWORK] Peer {peer.Name ?? "Unknown"} disconnected");
+            };
+
             _qcc.Manager.HandshakeRequested += (request, ct) =>
             {
                 string protoName = _qcc.ProtocolHandlers.TryGetValue(request.ProtocolId, out var h) ? h.ProtocolName : "Connection";
@@ -124,6 +129,9 @@ namespace QuicPunchTests
 
             _voiceHandler.OnCallEstablished += (peer) =>
             {
+                var keys = PendingPetitions.Where(kv => kv.Value.PeerId == peer.Id).Select(kv => kv.Key).ToList();
+                foreach (var k in keys) PendingPetitions.TryRemove(k, out _);
+
                 CallSignals.Enqueue((peer.Id.ToString(), "call-established"));
                 LogEvent($"[VOICE] Voice call established with {peer.Name}");
             };
@@ -193,12 +201,78 @@ namespace QuicPunchTests
                     {
                         var window = new PhotinoWindow();
                         window.SetTitle("QuicPunch Console")
-                              .SetSize(1280, 820)
-                              .Center()
-                              .SetUseOsDefaultSize(false)
-                              .Load(url);
+                              .SetUseOsDefaultSize(false);
+
+                        string configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QuicPunch");
+                        Directory.CreateDirectory(configDir);
+                        string stateFilePath = Path.Combine(configDir, "window_state.json");
+
+                        WindowStateConfig state = new WindowStateConfig();
+                        if (File.Exists(stateFilePath))
+                        {
+                            try
+                            {
+                                string json = File.ReadAllText(stateFilePath);
+                                state = JsonSerializer.Deserialize<WindowStateConfig>(json) ?? new WindowStateConfig();
+                            }
+                            catch { }
+                        }
+
+                        if (state.Width >= 300 && state.Height >= 200)
+                        {
+                            window.SetSize(state.Width, state.Height);
+                        }
+                        else
+                        {
+                            window.SetSize(1280, 820);
+                        }
+
+                        if (state.Left >= 0 && state.Top >= 0)
+                        {
+                            window.SetLocation(new System.Drawing.Point(state.Left, state.Top));
+                        }
+                        else
+                        {
+                            window.Center();
+                        }
+
+                        if (state.IsMaximized)
+                        {
+                            window.SetMaximized(true);
+                        }
+
+                        window.Load(url);
+
+                        void SaveState()
+                        {
+                            try
+                            {
+                                var currentState = new WindowStateConfig
+                                {
+                                    Width = window.Width,
+                                    Height = window.Height,
+                                    Left = window.Left,
+                                    Top = window.Top,
+                                    IsMaximized = window.Maximized
+                                };
+                                string json = JsonSerializer.Serialize(currentState, new JsonSerializerOptions { WriteIndented = true });
+                                File.WriteAllText(stateFilePath, json);
+                            }
+                            catch { }
+                        }
+
+                        window.WindowClosing += (sender, e) =>
+                        {
+                            SaveState();
+                            try { _cts?.Cancel(); } catch { }
+                            Environment.Exit(0);
+                            return false;
+                        };
 
                         window.WaitForClose();
+
+                        try { _cts?.Cancel(); } catch { }
+                        Environment.Exit(0);
                     }
                     catch (Exception ex)
                     {
@@ -324,6 +398,8 @@ namespace QuicPunchTests
                         if (VoiceCallHandler.ActiveCalls.TryRemove(pid, out var call))
                         {
                             try { call.Stream.Close(); } catch { }
+                            try { call.Connection.DisposeAsync(); } catch { }
+                            CallSignals.Enqueue((pid.ToString(), "call-ended"));
                             LogEvent($"[VOICE] Ended voice call with {call.Peer.Name}");
                         }
                     }
@@ -416,6 +492,91 @@ namespace QuicPunchTests
                     resp.ContentLength64 = respBytes.Length;
                     await resp.OutputStream.WriteAsync(respBytes);
                 }
+                else if (path == "/api/cancel-interrogation" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string id = doc.RootElement.GetProperty("id").GetString() ?? "";
+
+                    if (_qcc.CancelInterrogation(id))
+                    {
+                        LogEvent($"[NETWORK] Canceled hole punching / interrogation attempt ({id})");
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 404;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Interrogation session not found\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
+                else if (path == "/api/disconnect-peer" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string peerIdStr = doc.RootElement.GetProperty("peerId").GetString() ?? "";
+
+                    if (Guid.TryParse(peerIdStr, out var peerId))
+                    {
+                        _qcc.DisconnectPeer(peerId);
+                        LogEvent($"[NETWORK] Disconnected peer {peerId}");
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 400;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Invalid peer ID\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
+                else if (path == "/api/change-listener-port" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    int port = doc.RootElement.TryGetProperty("port", out var pEl) ? pEl.GetInt32() : 0;
+
+                    if (port > 0 && port <= 65535)
+                    {
+                        bool success = _qcc.RebindListenerPort((ushort)port);
+                        if (success)
+                        {
+                            LogEvent($"[NETWORK] Listener port successfully changed to {port}");
+                            byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"listenerPort\":{_qcc.LocalDiscoveryPort}}}");
+                            resp.ContentType = "application/json";
+                            resp.ContentLength64 = respBytes.Length;
+                            await resp.OutputStream.WriteAsync(respBytes);
+                        }
+                        else
+                        {
+                            resp.StatusCode = 400;
+                            byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Failed to bind port\"}");
+                            resp.ContentType = "application/json";
+                            resp.ContentLength64 = errBytes.Length;
+                            await resp.OutputStream.WriteAsync(errBytes);
+                        }
+                    }
+                    else
+                    {
+                        resp.StatusCode = 400;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Invalid port number\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
                 else if (path == "/api/connect-peer" && req.HttpMethod == "POST")
                 {
                     using var r = new StreamReader(req.InputStream, req.ContentEncoding);
@@ -436,8 +597,26 @@ namespace QuicPunchTests
                             protoId = _lanHandler.ProtocolId;
                         }
 
-                        if (_qcc.ProtocolHandlers.TryGetValue(protoId, out var handler))
+                        // Check if there's already an active session for this peer+protocol
+                        bool alreadyConnected = false;
+                        if (protoId == _chatHandler.ProtocolId && ChatHandler.ActiveChats.ContainsKey(pid))
                         {
+                            alreadyConnected = true;
+                        }
+
+                        if (alreadyConnected)
+                        {
+                            LogEvent($"Already connected to {peer.Name} ({peer.Id}), reusing existing session.");
+                            byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true,\"reused\":true}");
+                            resp.ContentType = "application/json";
+                            resp.ContentLength64 = respBytes.Length;
+                            await resp.OutputStream.WriteAsync(respBytes);
+                        }
+                        else if (_qcc.ProtocolHandlers.TryGetValue(protoId, out var handler))
+                        {
+                            var keys = PendingPetitions.Where(kv => kv.Value.PeerId == peer.Id).Select(kv => kv.Key).ToList();
+                            foreach (var k in keys) PendingPetitions.TryRemove(k, out _);
+
                             LogEvent($"Initiating {handler.ProtocolName} connection with {peer.Name} ({peer.Id})...");
                             ushort localPort = (ushort)Random.Shared.Next(1024, 65535);
                             _ = Task.Run(async () => await _qcc.InitQuicConnection(protoId, peer, localPort, _cts));
@@ -551,6 +730,7 @@ namespace QuicPunchTests
                 string nodeId = _qcc.CurrentPeer?.Id.ToString() ?? "";
                 int minPort = _qcc.CurrentPeer?.MinPort ?? 0;
                 int maxPort = _qcc.CurrentPeer?.MaxPort ?? 0;
+                int listenerPort = _qcc.LocalDiscoveryPort;
                 string networkType = _qcc.CurrentPeer?.NetworkType.ToString() ?? "Unknown";
 
                 var allAddrs = new List<string>();
@@ -565,14 +745,10 @@ namespace QuicPunchTests
 
                 try
                 {
-                    var host = Dns.GetHostEntry(Dns.GetHostName());
-                    foreach (var ip in host.AddressList)
+                    foreach (var ip in Helpers.GetValidLocalIPAddresses())
                     {
-                        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
-                        {
-                            string s = ip.ToString();
-                            if (!allAddrs.Contains(s)) allAddrs.Add(s);
-                        }
+                        string s = ip.ToString();
+                        if (!allAddrs.Contains(s)) allAddrs.Add(s);
                     }
                 }
                 catch { }
@@ -581,12 +757,14 @@ namespace QuicPunchTests
                 {
                     id = p.Id.ToString(),
                     name = p.Name ?? "",
-                    ping = p.Ping.HasValue ? (int)p.Ping.Value.TotalMilliseconds : 0,
+                    ping = p.Ping.HasValue ? Math.Round(p.Ping.Value.TotalMilliseconds, 1) : -1,
+                    hasPing = p.Ping.HasValue,
                     activeEndPoint = p.ActiveEndPoint?.ToString() ?? "Unknown",
                     minPort = p.MinPort,
                     maxPort = p.MaxPort,
                     addresses = p.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
-                    lastSeen = p.LastSeen.ToString("HH:mm:ss")
+                    lastSeenSecondsAgo = p.LastSeen > DateTime.MinValue ? (int)Math.Max(0, (DateTime.Now - p.LastSeen).TotalSeconds) : 99999,
+                    lastSeenFormatted = p.LastSeen > DateTime.MinValue ? p.LastSeen.ToString("HH:mm:ss") : "Never"
                 }).ToList();
 
                 var activeChatsList = ChatHandler.ActiveChats.Values.Select(c => new
@@ -635,6 +813,17 @@ namespace QuicPunchTests
                     peerName = c.Peer.Name ?? ""
                 }).ToList();
 
+                var activeInterrogationsList = _qcc.ActiveInterrogations.Values.Select(s => new
+                {
+                    id = s.Id,
+                    peerName = s.Peer.Name ?? "Unknown",
+                    addresses = s.Peer.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
+                    minPort = s.Peer.MinPort,
+                    maxPort = s.Peer.MaxPort,
+                    certHash = s.Peer.CertHash != null ? Convert.ToBase64String(s.Peer.CertHash) : "",
+                    startTime = s.StartTime.ToString("HH:mm:ss")
+                }).ToList();
+
                 var logsList = EventLogs.TakeLast(50).ToList();
 
                 var statusObj = new
@@ -643,6 +832,7 @@ namespace QuicPunchTests
                     nodeId,
                     minPort,
                     maxPort,
+                    listenerPort,
                     networkType,
                     token = myToken,
                     quickUri,
@@ -652,6 +842,7 @@ namespace QuicPunchTests
                     registeredProtocols,
                     activeChats = activeChatsList,
                     activeVoiceCalls = activeVoiceList,
+                    activeInterrogations = activeInterrogationsList,
                     chatMessages = msgsList,
                     pendingPetitions = pendingPetitionsList,
                     logs = logsList
@@ -686,5 +877,14 @@ namespace QuicPunchTests
         private string GetHtmlContent() => LoadEmbeddedResourceInMemory("index.html");
         private string GetCallHtmlContent() => LoadEmbeddedResourceInMemory("call.html");
         private string GetChatHtmlContent() => LoadEmbeddedResourceInMemory("chat.html");
+    }
+
+    public class WindowStateConfig
+    {
+        public int Width { get; set; } = 1280;
+        public int Height { get; set; } = 820;
+        public int Left { get; set; } = -1;
+        public int Top { get; set; } = -1;
+        public bool IsMaximized { get; set; } = false;
     }
 }
