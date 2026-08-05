@@ -34,17 +34,13 @@ public static class PreciseTime
         _offset = ntpTime - DateTime.UtcNow;
     }
 
+    private static bool _syncTriggered;
     public static DateTime GetCorrectTime()
     {
-        if (_offset == TimeSpan.Zero)
+        if (!_syncTriggered)
         {
-            try
-            {
-                SyncWithNtpAsync().GetAwaiter().GetResult();
-            }
-            catch
-            {
-            }
+            _syncTriggered = true;
+            _ = Task.Run(SyncWithNtpAsync);
         }
 
         return DateTime.UtcNow.Add(_offset);

@@ -14,6 +14,7 @@ namespace QuicPunch
         internal CertManager(string configPath) 
         {
             CertPath = Path.Combine(configPath, "peerCert.pfx");
+            EcdhKeyPath = Path.Combine(configPath, "ecdhKey.key");
 
             if (!Directory.Exists(configPath))
             {
@@ -21,6 +22,7 @@ namespace QuicPunch
             }
         }
         public string CertPath {  get; private set; }
+        public string EcdhKeyPath { get; private set; }
         public X509Certificate2? PeerCertificate { 
             get
             {
@@ -58,6 +60,44 @@ namespace QuicPunch
             }
         }
         public byte[] _peerCertPublicHash;
+
+        public ECDiffieHellman EcdhKey
+        {
+            get
+            {
+                if (_ecdhKey != null)
+                    return _ecdhKey;
+
+                if (File.Exists(EcdhKeyPath))
+                {
+                    var ecdh = ECDiffieHellman.Create();
+                    ecdh.ImportPkcs8PrivateKey(File.ReadAllBytes(EcdhKeyPath), out _);
+                    return _ecdhKey = ecdh;
+                }
+                else
+                {
+                    var ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.brainpoolP160r1);
+                    File.WriteAllBytes(EcdhKeyPath, ecdh.ExportPkcs8PrivateKey());
+                    return _ecdhKey = ecdh;
+                }
+            }
+        }
+        private ECDiffieHellman? _ecdhKey;
+
+        public byte[] EcdhPublicKeyRaw
+        {
+            get
+            {
+                if (_ecdhPublicKeyRaw != null)
+                    return _ecdhPublicKeyRaw;
+
+                return _ecdhPublicKeyRaw = EcdhKey.ExportSubjectPublicKeyInfo();
+            }
+        }
+        private byte[]? _ecdhPublicKeyRaw;
+
+
+
 
         public ECDsa Curve { 
             get

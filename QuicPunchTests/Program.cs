@@ -22,6 +22,8 @@ internal static class Program
     static extern uint GetModuleFileName(IntPtr hModule, System.Text.StringBuilder lpFilename, uint nSize);
 
     private static VirtualLanHandler _friendsLanHandler;
+
+    [STAThread]
     private static async Task Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
@@ -101,18 +103,23 @@ internal static class Program
         }
 
         Console.Write("Emter the password for auto conections:");
-        string password = Console.ReadLine();
+        string password = "sdasd";//Console.ReadLine();
 
         var cts = new CancellationTokenSource();
-        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 2000 : 4002)) { AutoAcceptConnections = true, SharePeers = true};
+        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true, (ushort)(Debugger.IsAttached ? 2000 : 4002)) { AutoAcceptConnections = false, SharePeers = true };
 
         _friendsLanHandler = new VirtualLanHandler();
         var chatHandler = new ChatHandler();
+        var voiceCallHandler = new VoiceCallHandler();
 
         qcc.RegisterProtocol(_friendsLanHandler);
         qcc.RegisterProtocol(chatHandler);
+        qcc.RegisterProtocol(voiceCallHandler);
 
         _friendsLanHandler.SetupTun();
+
+        var webUi = new WebUiServer(qcc, chatHandler, _friendsLanHandler, voiceCallHandler, cts);
+        webUi.Start();
 
         string myToken = qcc.GetToken();
         Console.WriteLine($"Your public endpoints: {string.Join(", ", qcc.CurrentPeer.Addresses)}\n");
@@ -137,34 +144,13 @@ internal static class Program
             Console.WriteLine($"New Peer Available:  {peer.Name}");
         };
 
-        qcc.Manager.HandshakeRequested += async (request, ct) =>
-        {
-            Console.WriteLine("Incoming connection request");
-
-            var protocol = qcc.ProtocolHandlers[request.ProtocolId];
-
-            Console.WriteLine($"Id: {request.Id}");
-            Console.WriteLine($"ProtocolId: {request.ProtocolId}");
-            Console.WriteLine($"Remote: {request.RemoteEndPoint}");
-
-            Console.Write($"New connection request from {request.RemoteEndPoint} for type {request.ProtocolId}.");
-
-            var res = MessageBox.Show("New connection request", $"Id: {request.Id}\nType: {request.ProtocolId}\nName: {protocol.ProtocolName}\nRemote: {request.RemoteEndPoint}\n\nAccept?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-
-            bool accepted = res == DialogResult.Yes;
-
-            if (!accepted)
-                return new HandshakeDecision(false, null, null);
-
-            return new HandshakeDecision(true, (ushort)Random.Shared.Next(1024, 65535), cts.Token);
-        };
+        // WebUiServer handles HandshakeRequested petitions for the UI
 
         while (true)
         {
             try
             {
-                Console.WriteLine("Press enter to connect to someone");
+                Console.WriteLine("\nPress enter to connect to someone");
                 Console.WriteLine("Select a peer to connect:\n");
 
                 Console.WriteLine("0: Enter token manualy");
@@ -179,31 +165,48 @@ internal static class Program
 
                 if (input.KeyChar.ToString().ToLower() == "r")
                     continue;
-                
 
                 if (input.KeyChar == '0')
                 {
                     Console.Write("Enter the tokent to connect: ");
-                    _ = qcc.PeerInterogation(Console.ReadLine(), cts);
+                    string? token = Console.ReadLine();
+                    if (!string.IsNullOrWhiteSpace(token))
+                    {
+                        _ = qcc.PeerInterrogation(token, cts);
+                    }
                     continue;
                 }
 
-                var peer = qcc.AvailablePeers.ElementAt(input.KeyChar - '1').Value;
-
-                Console.WriteLine("\nSelect a protocol to use:\n");
-
-                for (int i = 0; i < qcc.ProtocolHandlers.Count; i++)
+                int index = input.KeyChar - '1';
+                if (index >= 0 && index < qcc.AvailablePeers.Count)
                 {
-                    Console.WriteLine($"{i}: {qcc.ProtocolHandlers.ElementAt(i).Value.ProtocolName} - {qcc.ProtocolHandlers.ElementAt(i).Key}");
+                    var peer = qcc.AvailablePeers.ElementAt(index).Value;
+
+                    Console.WriteLine("\nSelect a protocol to use:\n");
+
+                    for (int i = 0; i < qcc.ProtocolHandlers.Count; i++)
+                    {
+                        Console.WriteLine($"{i}: {qcc.ProtocolHandlers.ElementAt(i).Value.ProtocolName} - {qcc.ProtocolHandlers.ElementAt(i).Key}");
+                    }
+
+                    var protocolInput = Console.ReadKey();
+                    int protoIndex = protocolInput.KeyChar - '0';
+                    if (protoIndex >= 0 && protoIndex < qcc.ProtocolHandlers.Count)
+                    {
+                        var protocolId = qcc.ProtocolHandlers.ElementAt(protoIndex).Key;
+                        _ = Task.Run(async () => await qcc.InitQuicConnection(protocolId, peer, (ushort)Random.Shared.Next(1024, 65535), cts));
+                    }
                 }
-
-                var protocolInput = Console.ReadKey();
-                var protocolId = qcc.ProtocolHandlers.ElementAt(protocolInput.KeyChar - '0').Key;
-
-                _ = Task.Run(async () => await qcc.InitQuicConnection(protocolId, peer, (ushort)Random.Shared.Next(1024, 65535), cts));
             }
-            catch { }
-
+            catch (InvalidOperationException)
+            {
+                await Task.Delay(5000, cts.Token);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Console loop error: {ex.Message}");
+                await Task.Delay(1000, cts.Token);
+            }
         }
         await Task.Delay(-1);
     }

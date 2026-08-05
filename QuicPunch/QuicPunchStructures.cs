@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -10,17 +10,18 @@ namespace QuicPunch
         {
             Hello = (byte)('H'),
             Ping = (byte)('P'),
-            Interogation = (byte)('I'),
+            Interrogation = (byte)('I'),
             Ack = (byte)('K'),
             Handshake = (byte)('S'),
-            FinalHandshake = (byte)('F')
+            FinalHandshake = (byte)('F'),
+            Data = (byte)('D')
         }
         public enum HandShakeType : byte
         {
             Request = (byte)('R'),
             Accept = (byte)('A'),
             Decline = (byte)('D'),
-            Unsuported = (byte)('U') //Peer doesnt support the requested protocol
+            Unsupported = (byte)('U') //Peer doesnt support the requested protocol
         }
 
     }

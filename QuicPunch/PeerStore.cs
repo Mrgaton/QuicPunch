@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 
 using System.Net;
 using System.Net.Sockets;
@@ -16,11 +16,12 @@ public sealed class PeerStore : IDisposable
         public int MinPort { get; init; }
         public int MaxPort { get; init; }
         public byte[] CertHash { get; init; }
+        public byte[]? EcdhPublicKey { get; init; }
 
         // Certificate hash is the stable peer identity. Addresses and ports can change with NAT.
         internal string Key => PeerStore.Key(CertHash);
 
-        public SavedPeer(IPAddress[] addresses, int minPort, int maxPort, byte[] certHash)
+        public SavedPeer(IPAddress[] addresses, int minPort, int maxPort, byte[] certHash, byte[]? ecdhPublicKey = null)
         {
             Addresses = NormalizeAddresses(addresses);
             ValidatePorts(minPort, maxPort);
@@ -31,14 +32,15 @@ public sealed class PeerStore : IDisposable
             MinPort = minPort;
             MaxPort = maxPort;
             CertHash = certHash.ToArray();
+            EcdhPublicKey = ecdhPublicKey?.ToArray();
         }
 
-        public SavedPeer(IEnumerable<IPAddress> addresses, int minPort, int maxPort, byte[] certHash)
-            : this(NormalizeAddresses(addresses), minPort, maxPort, certHash)
+        public SavedPeer(IEnumerable<IPAddress> addresses, int minPort, int maxPort, byte[] certHash, byte[]? ecdhPublicKey = null)
+            : this(NormalizeAddresses(addresses), minPort, maxPort, certHash, ecdhPublicKey)
         {
         }
 
-        internal SavedPeer Copy() => new(Addresses.Select(CloneAddress).ToArray(), MinPort, MaxPort, CertHash.ToArray());
+        internal SavedPeer Copy() => new(Addresses.Select(CloneAddress).ToArray(), MinPort, MaxPort, CertHash.ToArray(), EcdhPublicKey?.ToArray());
 
         internal bool SameCertificate(SavedPeer other) =>
             CertHash.AsSpan().SequenceEqual(other.CertHash);
@@ -47,7 +49,8 @@ public sealed class PeerStore : IDisposable
             SameCertificate(other) &&
             MinPort == other.MinPort &&
             MaxPort == other.MaxPort &&
-            Addresses.Select(a => a.ToString()).SequenceEqual(other.Addresses.Select(a => a.ToString()), StringComparer.Ordinal);
+            Addresses.Select(a => a.ToString()).SequenceEqual(other.Addresses.Select(a => a.ToString()), StringComparer.Ordinal) &&
+            ((EcdhPublicKey == null && other.EcdhPublicKey == null) || (EcdhPublicKey != null && other.EcdhPublicKey != null && EcdhPublicKey.AsSpan().SequenceEqual(other.EcdhPublicKey)));
 
         internal bool Contains(IPEndPoint endPoint) =>
             endPoint.Port >= MinPort &&
@@ -67,6 +70,9 @@ public sealed class PeerStore : IDisposable
         public int MinPort { get; set; }
         public int MaxPort { get; set; }
         public string CertHash { get; set; } = "";
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? EcdhPublicKey { get; set; }
 
         // Legacy-read support for older files that used { Ip, Port, CertHash }.
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -192,24 +198,30 @@ public sealed class PeerStore : IDisposable
     {            var decodedPeer = Helpers.DecodeEndpointToken(token);
         
         ArgumentNullException.ThrowIfNull(decodedPeer.Addresses);
-        return AddOrUpdate(decodedPeer.Addresses, decodedPeer.MinPort, decodedPeer.MaxPort, decodedPeer.CertHash, save);
+        return AddOrUpdate(decodedPeer.Addresses, decodedPeer.MinPort, decodedPeer.MaxPort, decodedPeer.CertHash, ecdhPublicKey: null, save: save);
     }   
     
     public bool AddOrUpdate(PeerInfo peer, bool save = true)
     {
         ArgumentNullException.ThrowIfNull(peer.Addresses);
         
-        return AddOrUpdate(peer.Addresses, peer.MinPort, peer.MaxPort, peer.CertHash, save);
+        return AddOrUpdate(peer.Addresses, peer.MinPort, peer.MaxPort, peer.CertHash, peer.EcdhPublicKey, save);
     }
 
-    public bool AddOrUpdate(IPAddress[] addresses, int minPort, int maxPort, byte[] certificate, bool save = true) =>
-        AddOrUpdate((IEnumerable<IPAddress>)addresses, minPort, maxPort, certificate, save);
+    public bool AddOrUpdate(IPAddress[] addresses, int minPort, int maxPort, byte[] certificate, bool save) =>
+        AddOrUpdate((IEnumerable<IPAddress>)addresses, minPort, maxPort, certificate, null, save);
 
-    public bool AddOrUpdate(IEnumerable<IPAddress> addresses, int minPort, int maxPort, byte[] certificate, bool save = true)
+    public bool AddOrUpdate(IPAddress[] addresses, int minPort, int maxPort, byte[] certificate, byte[]? ecdhPublicKey = null, bool save = true) =>
+        AddOrUpdate((IEnumerable<IPAddress>)addresses, minPort, maxPort, certificate, ecdhPublicKey, save);
+
+    public bool AddOrUpdate(IEnumerable<IPAddress> addresses, int minPort, int maxPort, byte[] certificate, bool save) =>
+        AddOrUpdate(addresses, minPort, maxPort, certificate, null, save);
+
+    public bool AddOrUpdate(IEnumerable<IPAddress> addresses, int minPort, int maxPort, byte[] certificate, byte[]? ecdhPublicKey = null, bool save = true)
     {
         ThrowIfDisposed();
 
-        var peer = new SavedPeer(addresses, minPort, maxPort, certificate);
+        var peer = new SavedPeer(addresses, minPort, maxPort, certificate, ecdhPublicKey);
 
         bool added;
         bool modified;
@@ -484,8 +496,9 @@ public sealed class PeerStore : IDisposable
             var minPort = r.Port is not null && r.Ips is not { Length: > 0 } ? r.Port.Value : r.MinPort;
             var maxPort = r.Port is not null && r.Ips is not { Length: > 0 } ? r.Port.Value : r.MaxPort;
             var certHash = Convert.FromBase64String(r.CertHash);
+            var ecdhPublicKey = !string.IsNullOrWhiteSpace(r.EcdhPublicKey) ? Convert.FromBase64String(r.EcdhPublicKey) : null;
             var addresses = ParseAddresses(ips);
-            var p = new SavedPeer(addresses, minPort, maxPort, certHash);
+            var p = new SavedPeer(addresses, minPort, maxPort, certHash, ecdhPublicKey);
 
             result[p.Key] = p;
         }
@@ -509,7 +522,8 @@ public sealed class PeerStore : IDisposable
                     Ips = p.Addresses.Select(a => a.ToString()).ToArray(),
                     MinPort = p.MinPort,
                     MaxPort = p.MaxPort,
-                    CertHash = Convert.ToBase64String(p.CertHash)
+                    CertHash = Convert.ToBase64String(p.CertHash),
+                    EcdhPublicKey = p.EcdhPublicKey is not null ? Convert.ToBase64String(p.EcdhPublicKey) : null
                 })
                 .ToList()
         };

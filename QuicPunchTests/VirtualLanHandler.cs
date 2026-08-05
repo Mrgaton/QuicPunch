@@ -28,7 +28,7 @@ namespace QuicPunchTests
         public void SetupTun()
         {
             Console.Write("Write your last ip digit 10.0.0.x:");
-            string ipDigit = Console.ReadLine();
+            string ipDigit = "2"; //Console.ReadLine();
 
             string ip = $"10.0.0.{ipDigit}";
 
