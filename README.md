@@ -68,26 +68,39 @@ When a peer is found on the tracker, initiate the connection.
 qcc.TrackerScanner.OnPeerFound += (peerEndpoint) =>
 {
     // Start UDP hole punching
-    _ = qcc.PeerInterogation(peerEndpoint, new CancellationTokenSource());
+    _ = qcc.PeerInterrogation(peerEndpoint, cts.Token);
 };
 
-qcc.OnPeerAvilable += async (peer) =>
+qcc.OnPeerAvailable += async (peer) =>
 {
     // Once the peer responds to hole punching, establish QUIC
-    await qcc.InitPeerConection(
+    await qcc.InitQuicConnection(
         chatHandler.ProtocolId, 
         peer, 
         localPort: (ushort)Random.Shared.Next(1024, 65535), 
-        mainCts: cts
+        cancellationToken: cts.Token
     );
 };
 ```
 
-## Security Model
+## Security Model & Trust Architecture
 
-QuicPunch does not rely on the trackers for security. The trackers only facilitate IP discovery. 
-Security is achieved by sharing the "Token" (which contains the `CertHash`) out-of-band. 
-When the QUIC connection is established, the `RemoteCertificateValidationCallback` strictly enforces that the remote peer's TLS certificate hash matches the hash from the token, making active Man-in-the-Middle attacks cryptographically impossible.
+QuicPunch cleanly separates **Discovery** from **Authorization**:
+
+1. **Discovery ≠ Trust**:
+   - Trackers, LAN multicast, and Tor discovery only facilitate IP reachability and cryptographic session negotiation.
+   - When a peer is discovered, its self-signed certificate and ECDSA signatures are cryptographically verified to establish secure, encrypted UDP signaling (`AvailablePeers`).
+   - However, **discovery does not grant trust or protocol access**. An unknown peer discovered on a public tracker is considered an untrusted stranger.
+
+2. **Authorization via Out-of-Band Tokens**:
+   - High security is achieved by exchanging a **Token** out-of-band (e.g. via QR code, encrypted messenger, or direct configuration).
+   - The token contains the peer's pinned `CertHash`. Importing a token (`SavePeer`, `PeerInterrogation`) registers the hash in `ExpectedPeerCerts` and designates the peer as **Trusted**.
+
+3. **Trust-Gated Protocol Authorization**:
+   - When a peer attempts to open an application protocol (e.g. Virtual LAN, Chat, File Share), incoming handshakes are gated:
+     - **Trusted Peers** (those matching an expected token or saved record) are automatically accepted (`AutoAcceptConnections = true`).
+     - **Untrusted Strangers** (discovered via trackers or LAN without a token) are **not** auto-accepted. Their connection requests trigger the `HandshakeRequested` event, requiring explicit user/application approval.
+   - During TLS 1.3 QUIC connection establishment, `RemoteCertificateValidationCallback` strictly enforces certificate pinning against the expected hash, preventing Man-in-the-Middle (MitM) attacks.
 
 ## License
 MIT License.

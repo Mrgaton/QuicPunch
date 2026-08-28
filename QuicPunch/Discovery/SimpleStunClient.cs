@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using QuicPunch.Helpers;
 
 namespace QuicPunch
 {
@@ -20,6 +21,18 @@ namespace QuicPunch
         }
     }
 
+    public sealed class StunEndpointHit
+    {
+        public int Count { get; set; }
+        public long LastSeenTicks { get; set; }
+
+        public StunEndpointHit(int count, long lastSeenTicks)
+        {
+            Count = count;
+            LastSeenTicks = lastSeenTicks;
+        }
+    }
+
     public sealed class SimpleStunClient
     {
         private const uint MagicCookie = 0x2112A442;
@@ -30,16 +43,45 @@ namespace QuicPunch
 
         private readonly UdpClient _udp;
         private readonly IReadOnlyList<IPEndPoint> _servers;
+        private readonly IPEndPoint[] _shuffledServers;
+        private int _serverCursor = 0;
         private readonly Dictionary<TxId, PendingRequest> _pending = new();
         private readonly List<TxId> _expiredKeysBuffer = new();
         private readonly object _lock = new();
 
-        public ConcurrentDictionary<IPEndPoint, int> StunResponseEndpointHits = new ConcurrentDictionary<IPEndPoint, int>();
+        public ConcurrentDictionary<IPEndPoint, StunEndpointHit> StunResponseEndpointHits = new();
+
+        public void PruneExpiredHits(TimeSpan maxAge)
+        {
+            long cutoff = Environment.TickCount64 - (long)maxAge.TotalMilliseconds;
+            foreach (var kv in StunResponseEndpointHits)
+            {
+                if (kv.Value.LastSeenTicks < cutoff)
+                {
+                    StunResponseEndpointHits.TryRemove(kv.Key, out _);
+                }
+            }
+        }
+
+        public Dictionary<IPEndPoint, int> GetActiveHitsSnapshot(TimeSpan? maxAge = null)
+        {
+            long cutoff = maxAge.HasValue ? Environment.TickCount64 - (long)maxAge.Value.TotalMilliseconds : long.MinValue;
+            var result = new Dictionary<IPEndPoint, int>();
+            foreach (var kv in StunResponseEndpointHits)
+            {
+                if (kv.Value.LastSeenTicks >= cutoff)
+                {
+                    result[kv.Key] = kv.Value.Count;
+                }
+            }
+            return result;
+        }
 
         public event EventHandler<StunResultEventArgs>? MappedAddressResolved;
 
         public TimeSpan Interval { get; set; } = TimeSpan.FromSeconds(5);
         public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(2);
+        public int DefaultBatchSize { get; set; } = 50;
 
         public SimpleStunClient(UdpClient udp, IReadOnlyList<IPEndPoint> servers)
         {
@@ -48,17 +90,35 @@ namespace QuicPunch
 
             _udp = udp;
             _servers = servers;
+            _shuffledServers = servers.OrderBy(_ => Random.Shared.Next()).ToArray();
+        }
+
+        private IReadOnlyList<IPEndPoint> GetNextBatch(int batchSize)
+        {
+            if (_shuffledServers.Length == 0) return Array.Empty<IPEndPoint>();
+            if (_shuffledServers.Length <= batchSize) return _shuffledServers;
+
+            lock (_lock)
+            {
+                var batch = new IPEndPoint[batchSize];
+                for (int i = 0; i < batchSize; i++)
+                {
+                    batch[i] = _shuffledServers[(_serverCursor + i) % _shuffledServers.Length];
+                }
+                _serverCursor = (_serverCursor + batchSize) % _shuffledServers.Length;
+                if (_serverCursor == 0)
+                {
+                    Random.Shared.Shuffle(_shuffledServers);
+                }
+                return batch;
+            }
         }
 
         public async Task RunAsync(CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                CleanupTimeouts();
-
-                var sendTasks = _servers.Select(server => SendRequestSafeAsync(server, cancellationToken));
-                
-                await Task.WhenAll(sendTasks);
+                await SendRequest(cancellationToken);
 
                 try
                 {
@@ -67,12 +127,13 @@ namespace QuicPunch
                 catch (TaskCanceledException) { break; }
             }
         }  
-        
-        public async Task SendRequest(CancellationToken cancellationToken)
+
+        public async Task SendRequest(CancellationToken cancellationToken, int? batchSize = null)
         {
             CleanupTimeouts();
 
-            await Task.WhenAll(_servers.Select(server => SendRequestSafeAsync(server, cancellationToken)));
+            var targets = GetNextBatch(batchSize ?? DefaultBatchSize);
+            await Task.WhenAll(targets.Select(server => SendRequestSafeAsync(server, cancellationToken)));
         }
 
         public bool TryProcessIncoming(byte[] buffer, IPEndPoint remoteEndPoint)
@@ -108,7 +169,16 @@ namespace QuicPunch
 
                 var rtt = TimeSpan.FromMilliseconds(Environment.TickCount64 - req.SentTicks);
 
-                StunResponseEndpointHits.AddOrUpdate(mapped, 1, (_, count) => count + 1);
+                long now = Environment.TickCount64;
+                StunResponseEndpointHits.AddOrUpdate(
+                    mapped,
+                    _ => new StunEndpointHit(1, now),
+                    (_, existing) =>
+                    {
+                        existing.Count++;
+                        existing.LastSeenTicks = now;
+                        return existing;
+                    });
 
                 MappedAddressResolved?.Invoke(
                     this,
@@ -285,13 +355,97 @@ namespace QuicPunch
         {
             try
             {
-                foreach (var localIp in Helpers.GetValidLocalIPAddresses())
+                foreach (var localIp in Utilities.GetValidLocalIPAddresses())
                 {
                     if (localIp.Equals(address)) return true;
                 }
             }
             catch { }
             return false;
+        }
+
+        public static readonly IReadOnlyList<IPEndPoint> DefaultStunServers = new List<IPEndPoint>
+        {
+            new IPEndPoint(IPAddress.Parse("74.125.250.129"), 19302), // stun.l.google.com
+            new IPEndPoint(IPAddress.Parse("142.250.31.127"), 19302), // stun1.l.google.com
+            new IPEndPoint(IPAddress.Parse("142.250.218.127"), 19302), // stun2.l.google.com
+            new IPEndPoint(IPAddress.Parse("64.233.161.127"), 19302), // stun3.l.google.com
+            new IPEndPoint(IPAddress.Parse("108.177.14.127"), 19302), // stun4.l.google.com
+            new IPEndPoint(IPAddress.Parse("18.192.32.170"), 3478),
+            new IPEndPoint(IPAddress.Parse("34.221.255.43"), 3478)
+        };
+
+        public static async Task<List<CandidateEndpoint>> GatherCandidatesAsync(
+            UdpClient udp, ushort localPort, IReadOnlyList<IPEndPoint>? servers = null, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+        {
+            var candidates = new List<CandidateEndpoint>();
+            var seen = new HashSet<IPEndPoint>();
+
+            try
+            {
+                var localIps = Utilities.GetValidLocalIPAddresses();
+                foreach (var ip in localIps)
+                {
+                    if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
+                    {
+                        var hostEp = new IPEndPoint(ip, localPort);
+                        if (seen.Add(hostEp))
+                        {
+                            candidates.Add(new CandidateEndpoint(hostEp, CandidateType.Host, 2130706431));
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                var stunServers = (servers != null && servers.Count > 0) ? servers : DefaultStunServers;
+                if (stunServers != null && stunServers.Count > 0)
+                {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    cts.CancelAfter(timeout ?? TimeSpan.FromMilliseconds(800));
+                    byte[] reqBytes = new byte[20];
+                    BinaryPrimitives.WriteUInt16BigEndian(reqBytes.AsSpan(0, 2), BindingRequest);
+                    BinaryPrimitives.WriteUInt16BigEndian(reqBytes.AsSpan(2, 2), 0);
+                    BinaryPrimitives.WriteUInt32BigEndian(reqBytes.AsSpan(4, 4), MagicCookie);
+                    RandomNumberGenerator.Fill(reqBytes.AsSpan(8, 12));
+
+                    int count = Math.Min(stunServers.Count, 8);
+                    for (int i = 0; i < count; i++)
+                    {
+                        try { await udp.SendAsync(reqBytes, stunServers[i], cts.Token).ConfigureAwait(false); } catch { }
+                    }
+
+                    while (!cts.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            var res = await udp.ReceiveAsync(cts.Token).ConfigureAwait(false);
+                            if (res.Buffer.Length >= 20)
+                            {
+                                var mapped = ParseMappedAddress(res.Buffer);
+                                if (mapped != null && !IsBogonOrLocalhost(mapped.Address))
+                                {
+                                    if (seen.Add(mapped))
+                                    {
+                                        candidates.Add(new CandidateEndpoint(mapped, CandidateType.ServerReflexive, 1694498815));
+                                    }
+                                }
+                            }
+                        }
+                        catch { break; }
+                    }
+                }
+            }
+            catch { }
+
+            if (candidates.Count == 0)
+            {
+                candidates.Add(new CandidateEndpoint(new IPEndPoint(IPAddress.Loopback, localPort), CandidateType.Host, 0));
+            }
+
+            return candidates;
         }
 
         private readonly record struct TxId(ulong Part1, uint Part2);

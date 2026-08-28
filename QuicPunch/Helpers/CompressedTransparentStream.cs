@@ -1,6 +1,6 @@
-﻿using System.IO.Compression;
+using System.IO.Compression;
 
-namespace QuicPunch;
+namespace QuicPunch.Helpers;
 
 public class CompressedTransparentStream : Stream
 {
@@ -8,11 +8,6 @@ public class CompressedTransparentStream : Stream
     private readonly ZstandardStream _compressor;
     private readonly ZstandardStream _decompressor;
 
-    /// <summary>
-    /// Initializes a new instance of the CompressedTransparentStream.
-    /// </summary>
-    /// <param name="innerStream">The underlying bidirectional stream (e.g., QUIC or TCP stream).</param>
-    /// <param name="compressionLevel">The level of compression to apply to outgoing data.</param>
     public CompressedTransparentStream(Stream innerStream, ZstandardCompressionOptions compressionOptions)
     {
         if (innerStream == null)
@@ -61,7 +56,6 @@ public class CompressedTransparentStream : Stream
         await _compressor.FlushAsync(cancellationToken).ConfigureAwait(false);
         await _innerStream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
-
 
     public override int Read(byte[] buffer, int offset, int count)
     {

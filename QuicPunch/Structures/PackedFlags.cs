@@ -11,10 +11,10 @@ public class PackedFlags
 
     public QuicPunch.NetworkType NetworkType
     {
-        get => (QuicPunch.NetworkType)(_data & 0b11);
+        get => (QuicPunch.NetworkType)(_data & 0b111);
         set
         {
-            _data = (byte)((_data & ~0b11) | (byte)value);
+            _data = (byte)((_data & ~0b111) | ((byte)value & 0b111));
         }
     }
     public bool UnusedFlag2
@@ -52,7 +52,7 @@ public class PackedFlags
         get => GetBit(7);
         set => SetBit(7, value);
     }
-    
+
     /*public int SmallNumber
     {
         get => _data & 0b11;

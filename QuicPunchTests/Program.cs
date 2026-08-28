@@ -5,7 +5,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Web;
 using Microsoft.Win32;
-using QuicPunch;
+using QuicPunch.Helpers;
 
 namespace QuicPunchTests;
 
@@ -13,26 +13,48 @@ internal static class Program
 {
 
     public static Process CurrentProcess = Process.GetCurrentProcess();
-    
-    public static string FileName = CurrentProcess.MainModule.FileName;
-    
-    private static readonly byte[] PoolId = Encoding.UTF8.GetBytes("QuicPunch🔥V1.2");//File.ReadAllBytes(FileName);
 
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    static extern uint GetModuleFileName(IntPtr hModule, System.Text.StringBuilder lpFilename, uint nSize);
-
-    private static VirtualLanHandler _friendsLanHandler;
+    public static string FileName = CurrentProcess.MainModule?.FileName ?? "";
 
     [STAThread]
     private static async Task Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
+        if (args.Length > 0 && args[0] == "--test-antireplay")
+        {
+            await AntiReplayTests.RunAsync();
+            return;
+        }
+
+        if (args.Length > 0 && args[0] == "--test-security")
+        {
+            await SecurityDiscoveryTests.RunAsync();
+            return;
+        }
+
+        if (args.Length > 0 && args[0] == "--test-singleflight")
+        {
+            await SecurityDiscoveryTests.RunSingleFlightTestAsync();
+            return;
+        }
+
+        if (args.Length > 0 && args[0] == "--test-handshake-cancellation")
+        {
+            await HandshakeCancellationLifecycleTests.RunAsync();
+            return;
+        }
+
+        if (args.Length > 0 && args[0] == "--test-tor")
+        {
+            await TestTorFileShare.RunAsync(args);
+            return;
+        }
+
         if (args.Length > 0 && args[0].Contains("://"))
         {
             args = args[0].Split("/").Skip(2).Select(e => HttpUtility.UrlDecode(e)).ToArray();
         }
-        // args = ["vgjnSaIPkdhdVT3GVATmCT4u/6nX7E0JZx582cDqA8vUu0CGd0BfzfO7/7bAgoOb9kOlvS9H"];
-        
+
         if (args.Length > 0)
         {
             PeerStore ps = new PeerStore(Path.Combine(QuicPunch.QuicPunch.AppDataPath, "peers.db"));
@@ -41,11 +63,9 @@ internal static class Program
             return;
         }
 
-        const string scheme = "QPHP";
-        const string appId = "1504191031804035112";
+        const string scheme = "QP";
 
         string exe = Environment.ProcessPath ?? Assembly.GetExecutingAssembly().Location;
-        string prefix = $"{scheme}://join/";
 
         bool IsAdmin()
         {
@@ -102,30 +122,43 @@ internal static class Program
             Console.Error.WriteLine($"Protocol setup failed: {ex.Message}");
         }
 
-        Console.Write("Emter the password for auto conections:");
-        string password = "sdasd";//Console.ReadLine();
+        Console.Write("Enter the password for auto connections (leave empty for none): ");
+        string? inputPwd = Console.ReadLine();
+        byte[]? pwdBytes = string.IsNullOrEmpty(inputPwd) ? null : Encoding.UTF8.GetBytes(inputPwd);
 
         var cts = new CancellationTokenSource();
-        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, Encoding.UTF8.GetBytes(password), true) { AutoAcceptConnections = false, SharePeers = true };
+        QuicPunch.QuicPunch qcc = new QuicPunch.QuicPunch(cts, null, pwdBytes, true) { AutoAcceptConnections = true, SharePeers = true };
+        await qcc.StartAsync(cts.Token);
 
-        _friendsLanHandler = new VirtualLanHandler();
+        var friendsLanHandler = new VirtualLanHandler();
         var chatHandler = new ChatHandler();
         var voiceCallHandler = new VoiceCallHandler();
 
-        qcc.RegisterProtocol(_friendsLanHandler);
+        qcc.RegisterProtocol(friendsLanHandler);
         qcc.RegisterProtocol(chatHandler);
         qcc.RegisterProtocol(voiceCallHandler);
 
-        _friendsLanHandler.SetupTun();
+        friendsLanHandler.SetupTun();
 
-        var webUi = new WebUiServer(qcc, chatHandler, _friendsLanHandler, voiceCallHandler, cts);
+        var webUi = new WebUiServer(qcc, chatHandler, friendsLanHandler, voiceCallHandler, cts);
         webUi.Start();
+
+        QuicPunch.QuicPunch.LogHandler = (msg) =>
+        {
+            Console.WriteLine(msg);
+            WebUiServer.LogEvent(msg);
+        };
+        QuicPunch.QuicPunch.ErrorHandler = (msg) =>
+        {
+            Console.Error.WriteLine(msg);
+            WebUiServer.LogEvent(msg);
+        };
 
         string myToken = qcc.GetToken();
         Console.WriteLine($"Your public endpoints: {string.Join(", ", qcc.CurrentPeer.Addresses)}\n");
         Console.WriteLine($"Your token: {myToken}\n");
 
-        string quickUri = $"https://gato.ovh/protred?uri=QPHP://{HttpUtility.UrlEncode(HttpUtility.UrlEncode(myToken))}";
+        string quickUri = $"https://gato.ovh/protred?uri=QP://{HttpUtility.UrlEncode(HttpUtility.UrlEncode(myToken))}";
         Console.WriteLine($"Share this url for quick connection: {quickUri}\n");
         DiyClipper.SetText(quickUri);
 
@@ -138,13 +171,11 @@ internal static class Program
                 //_ = qcc.PeerInterogation(peer, new CancellationTokenSource());
             };
         }
-                
+
         qcc.OnPeerAvailable += (peer) =>
         {
             Console.WriteLine($"New Peer Available:  {peer.Name}");
         };
-
-        // WebUiServer handles HandshakeRequested petitions for the UI
 
         while (true)
         {
@@ -172,7 +203,7 @@ internal static class Program
                     string? token = Console.ReadLine();
                     if (!string.IsNullOrWhiteSpace(token))
                     {
-                        _ = qcc.PeerInterrogation(token, cts);
+                        _ = qcc.PeerInterrogation(token, cts.Token);
                     }
                     continue;
                 }
@@ -194,7 +225,7 @@ internal static class Program
                     if (protoIndex >= 0 && protoIndex < qcc.ProtocolHandlers.Count)
                     {
                         var protocolId = qcc.ProtocolHandlers.ElementAt(protoIndex).Key;
-                        _ = Task.Run(async () => await qcc.InitQuicConnection(protocolId, peer, (ushort)Random.Shared.Next(1024, 65535), cts));
+                        _ = Task.Run(async () => await qcc.InitQuicConnection(protocolId, peer, 0, cts.Token));
                     }
                 }
             }
@@ -208,6 +239,5 @@ internal static class Program
                 await Task.Delay(1000, cts.Token);
             }
         }
-        await Task.Delay(-1);
     }
 }

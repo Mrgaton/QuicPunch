@@ -1,80 +1,203 @@
+using System;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Quic;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using QuicPunch;
+using QuicConnection = QuicPunch.QuicConnection;
 using Wintun;
 
 namespace QuicPunchTests
 {
+    public class PeerLanSession : IDisposable
+    {
+        public uint RemoteIpUint { get; }
+        public IPAddress RemoteIp { get; }
+        public PeerInfo Peer { get; }
+        public Stream Stream { get; }
+        public DateTime ConnectedAt { get; } = DateTime.Now;
+        public long RxPackets;
+        public long TxPackets;
+        public long RxBytes;
+        public long TxBytes;
+
+        private readonly System.Threading.Channels.Channel<byte[]> _outQueue = System.Threading.Channels.Channel.CreateBounded<byte[]>(
+            new System.Threading.Channels.BoundedChannelOptions(512)
+            {
+                FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false
+            });
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task _sendTask;
+
+        public PeerLanSession(uint remoteIpUint, IPAddress remoteIp, PeerInfo peer, Stream stream)
+        {
+            RemoteIpUint = remoteIpUint;
+            RemoteIp = remoteIp;
+            Peer = peer;
+            Stream = stream;
+            _sendTask = Task.Run(SendLoopAsync);
+        }
+
+        public void EnqueuePacket(byte[] packetData)
+        {
+            _outQueue.Writer.TryWrite(packetData);
+        }
+
+        private async Task SendLoopAsync()
+        {
+            byte[] sizeBuffer = new byte[2];
+            try
+            {
+                while (!_cts.Token.IsCancellationRequested)
+                {
+                    var packet = await _outQueue.Reader.ReadAsync(_cts.Token).ConfigureAwait(false);
+                    BinaryPrimitives.WriteUInt16LittleEndian(sizeBuffer, (ushort)packet.Length);
+                    await Stream.WriteAsync(sizeBuffer, _cts.Token).ConfigureAwait(false);
+                    await Stream.WriteAsync(packet, _cts.Token).ConfigureAwait(false);
+                    await Stream.FlushAsync(_cts.Token).ConfigureAwait(false);
+
+                    Interlocked.Increment(ref TxPackets);
+                    Interlocked.Add(ref TxBytes, packet.Length);
+                }
+            }
+            catch {}
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            _outQueue.Writer.TryComplete();
+        }
+    }
+
     internal class VirtualLanHandler : QuicPunch.QuicPunch.IProtocolHandler
     {
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000002");
         public ushort PreferredPort => 0; 
         public string ProtocolName => "FriendsLAN";
 
-        public ZstandardCompressionOptions? CompressionOptions => null; //new ZstandardCompressionOptions() { AppendChecksum = false, EnableLongDistanceMatching = false, Quality = 6};
+        public ZstandardCompressionOptions? CompressionOptions => null;
 
-        private IPAddress _localIp;
+        private IPAddress _localIp = IPAddress.Parse("10.0.0.2");
+        private uint _localIpUint = BinaryPrimitives.ReadUInt32BigEndian(IPAddress.Parse("10.0.0.2").GetAddressBytes());
+        private string _subnetMask = "255.0.0.0";
+        private int _mtu = 9000;
 
-        public ConcurrentDictionary<uint, Stream> ActivePeers { get; } = new();
+        public string AdapterName { get; } = "QuicPunchAdapter";
+        public string AdapterStatus { get; private set; } = "Not Started";
+        public string? LastError { get; private set; }
 
-        private WintunSession _session;
+        public IPAddress LocalIp => _localIp;
+        public string SubnetMask => _subnetMask;
+        public int Mtu => _mtu;
 
-        public void SetupTun()
+        public long TotalRxPackets;
+        public long TotalTxPackets;
+        public long TotalRxBytes;
+        public long TotalTxBytes;
+
+        public ConcurrentDictionary<uint, PeerLanSession> ActivePeers { get; } = new();
+
+        private WintunAdapter? _adapter;
+        private WintunSession? _session;
+        private CancellationTokenSource? _captureCts;
+
+        public VirtualLanHandler()
         {
-            Console.Write("Write your last ip digit 10.0.0.x:");
-            string ipDigit = "2"; //Console.ReadLine();
+        }
 
-            string ip = $"10.0.0.{ipDigit}";
-
-            _localIp = IPAddress.Parse(ip);
+        public void SetupTun(string initialIp = "10.0.0.2", string subnetMask = "255.0.0.0")
+        {
+            if (IPAddress.TryParse(initialIp, out var parsedIp))
+            {
+                _localIp = parsedIp;
+                _localIpUint = BinaryPrimitives.ReadUInt32BigEndian(parsedIp.GetAddressBytes());
+            }
+            _subnetMask = subnetMask;
 
             try
             {
-                Console.WriteLine("\nTrying to create QuicPunch adapter...");
-                var adapter = WintunAdapter.Create("QuicPunchAdapter", "QuicPunchTunnel");
-                Console.WriteLine($"Adapter created LUID: {adapter.Luid}");
+                Console.WriteLine("\n[FriendsLAN] Initializing Wintun adapter...");
+                _adapter = WintunAdapter.Create(AdapterName, "QuicPunchTunnel");
+                Console.WriteLine($"[FriendsLAN] Adapter created with LUID: {_adapter.Luid}");
 
-                SetAdapterIP("QuicPunchAdapter", ip, "255.0.0.0");
-                SetAdapterMTU("QuicPunchAdapter", 9000);
+                SetAdapterIP(AdapterName, _localIp.ToString(), _subnetMask);
+                SetAdapterMTU(AdapterName, _mtu);
 
-                _session = adapter.StartSession();
+                _session = _adapter.StartSession();
+                AdapterStatus = "Active";
+                LastError = null;
+
+                _captureCts?.Cancel();
+                _captureCts = new CancellationTokenSource();
+                Task.Run(() => CaptureWintunAndSendToInternet(_captureCts.Token));
             }
             catch (Win32Exception ex)
             {
-                Console.WriteLine($"Failed to create adapter (requires Administrator privileges): {ex.Message} (Error code: {ex.NativeErrorCode})");
-
+                LastError = ex.Message;
                 if (ex.NativeErrorCode == 5) // ERROR_ACCESS_DENIED
                 {
-                    Console.WriteLine("Verification result: The library successfully called wintun.dll! Access Denied is the expected outcome without Administrator privileges.");
+                    AdapterStatus = "Administrator Privileges Required";
+                    Console.WriteLine("[FriendsLAN] Administrator privileges required to create Wintun adapter.");
+                }
+                else
+                {
+                    AdapterStatus = "Error";
+                    Console.WriteLine($"[FriendsLAN] Failed to create adapter: {ex.Message} (Error code: {ex.NativeErrorCode})");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unexpected error during creation: {ex}");
+                AdapterStatus = "Error";
+                LastError = ex.Message;
+                Console.WriteLine($"[FriendsLAN] Unexpected error initializing Wintun: {ex}");
             }
+        }
+
+        public bool SetVirtualIp(string newIpStr, string subnetMask = "255.0.0.0")
+        {
+            if (!IPAddress.TryParse(newIpStr, out var newIp))
+            {
+                return false;
+            }
+
+            _localIp = newIp;
+            _localIpUint = BinaryPrimitives.ReadUInt32BigEndian(newIp.GetAddressBytes());
+            _subnetMask = subnetMask;
 
             if (_session != null)
             {
-                Task.Run(() => CaptureWintunAndSendToInternet(10));
+                try
+                {
+                    SetAdapterIP(AdapterName, _localIp.ToString(), _subnetMask);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    LastError = ex.Message;
+                    return false;
+                }
             }
+
+            return true;
         }
 
-        public VirtualLanHandler()
-        {
-
-        }
         public async Task DeniedAsync(PeerInfo peer, CancellationToken ct)
         {
-            Console.WriteLine($"\n[FriendsLAN] Peer: {peer.Name} ({peer.ActiveEndPoint}) failed or denied the conection.");
+            Console.WriteLine($"\n[FriendsLAN] Connection request denied or failed for peer: {peer.Name} ({peer.ActiveEndPoint})");
+            await Task.CompletedTask;
         }
 
-        public  async Task HandleAsync(
+        public async Task HandleAsync(
             QuicConnection connection,
             Stream stream,
             PeerInfo peer,
@@ -85,79 +208,105 @@ namespace QuicPunchTests
 
             Console.WriteLine($"\n[FriendsLAN] Secure tunnel established with peer: {peer.Name} ({peer.ActiveEndPoint})");
 
-            uint remoteIp;
-
-            byte[] localIpBytes = _localIp.GetAddressBytes();
-            await stream.WriteAsync(localIpBytes, ct);
-            await stream.FlushAsync(ct);
-
-            byte[] remoteIpBytes = new byte[4];
-            await ReadExactlyAsync(stream, remoteIpBytes, 4, ct);
-            remoteIp = BinaryPrimitives.ReadUInt32BigEndian(remoteIpBytes);
-            Console.WriteLine($"[FriendsLAN] Peer virtual IP: {remoteIp}");
+            uint remoteIpUint = 0;
+            IPAddress? remoteIp = null;
 
             try
             {
-                ActivePeers[remoteIp] = stream;
+                byte[] localIpBytes = _localIp.GetAddressBytes();
+                await stream.WriteAsync(localIpBytes, ct);
+                await stream.FlushAsync(ct);
 
-            
+                byte[] remoteIpBytes = new byte[4];
+                await ReadExactlyAsync(stream, remoteIpBytes, 4, ct);
+                remoteIpUint = BinaryPrimitives.ReadUInt32BigEndian(remoteIpBytes);
+                remoteIp = new IPAddress(remoteIpBytes);
+
+                Console.WriteLine($"[FriendsLAN] Connected peer '{peer.Name}' with Virtual IP: {remoteIp}");
+
+                var peerSession = new PeerLanSession(remoteIpUint, remoteIp, peer, stream);
+                ActivePeers[remoteIpUint] = peerSession;
+
                 byte[] lenBuffer = new byte[2];
 
-                while (true) //(!ct.IsCancellationRequested)
+                while (!ct.IsCancellationRequested)
                 {
                     try
                     {
                         await ReadExactlyAsync(stream, lenBuffer, 2, ct);
-                        ushort len = BitConverter.ToUInt16(lenBuffer, 0);
+                        ushort len = BinaryPrimitives.ReadUInt16LittleEndian(lenBuffer);
 
-                        if (len == 0 || len > ushort.MaxValue)
+                        if (len == 0 || len > 65535)
                             continue;
 
                         byte[] packet = new byte[len];
+                        await ReadExactlyAsync(stream, packet, len, ct);
 
-                        await ReadExactlyAsync(stream, packet, (int)len, ct);
+                        Interlocked.Increment(ref TotalRxPackets);
+                        Interlocked.Add(ref TotalRxBytes, len);
+                        Interlocked.Increment(ref peerSession.RxPackets);
+                        Interlocked.Add(ref peerSession.RxBytes, len);
 
-                        unsafe
+                        if (packet.Length >= 20 && (packet[0] >> 4) == 4)
                         {
-                            fixed (byte* p = packet)
+                            uint destIp = BinaryPrimitives.ReadUInt32BigEndian(new ReadOnlySpan<byte>(packet, 16, 4));
+                            bool isBroadcast = IsBroadcastOrMulticast(destIp);
+
+                            if ((destIp == _localIpUint || isBroadcast) && _session != null)
                             {
-                                LogPacket(p, (uint)len);
+                                try
+                                {
+                                    _session.SendPacket(packet);
+                                }
+                                catch { }
+                            }
+
+                            if (isBroadcast)
+                            {
+                                RelayBroadcastToOtherPeers(packet, remoteIpUint);
+                            }
+                            else if (destIp != _localIpUint && ActivePeers.TryGetValue(destIp, out var targetPeerSession))
+                            {
+                                SendPacketToPeerStream(targetPeerSession, packet);
                             }
                         }
-
-                        if (_session != null)
-                        {
-                            _session.SendPacket(packet);
-                        }
                     }
-                    catch (QuicException quicex)
+                    catch (QuicException quicEx)
                     {
-                        Console.WriteLine($"[FriendsLAN] QUIC error with peer {(remoteIp.ToString() ?? peer.Name)}: {quicex.Message}");
-                        return;
+                        Console.WriteLine($"[FriendsLAN] QUIC stream ended with peer {peer.Name}: {quicEx.Message}");
+                        break;
+                    }
+                    catch (EndOfStreamException)
+                    {
+                        Console.WriteLine($"[FriendsLAN] Connection closed by peer {peer.Name}.");
+                        break;
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine(ex.ToString());
+                        Console.WriteLine($"[FriendsLAN] Packet error from peer {peer.Name}: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[FriendsLAN] Tunnel error with peer {(peer.ActiveEndPoint.ToString() ?? peer.Name)}: {ex.Message}");
+                Console.WriteLine($"[FriendsLAN] Tunnel setup error with peer {peer.Name}: {ex.Message}");
             }
             finally
             {
-                if (remoteIp != null)
+                if (remoteIpUint != 0)
                 {
-                    ActivePeers.TryRemove(remoteIp, out _);
+                    if (ActivePeers.TryRemove(remoteIpUint, out var s))
+                    {
+                        s.Dispose();
+                    }
                 }
                 Console.WriteLine($"[FriendsLAN] Secure tunnel closed with peer: {peer.Name}");
             }
         }
+
         private static async Task ReadExactlyAsync(Stream stream, byte[] buffer, int count, CancellationToken ct)
         {
             int totalRead = 0;
-
             while (totalRead < count)
             {
                 int read = await stream.ReadAsync(buffer.AsMemory(totalRead, count - totalRead), ct);
@@ -169,124 +318,106 @@ namespace QuicPunchTests
             }
         }
 
-        private unsafe void CaptureWintunAndSendToInternet(byte ipFirstDigit)
+        private unsafe void CaptureWintunAndSendToInternet(CancellationToken ct)
         {
             const int ERROR_NO_MORE_ITEMS = 259;
 
-            Span<byte> sizeBuffer = stackalloc byte[2];
-
-            while (true)
+            while (!ct.IsCancellationRequested && _session != null)
             {
-                _session.ReadWaitEvent.WaitOne();
-
-                while (true)
+                try
                 {
-                    byte* packetPointer =
-                        WintunApi.WintunReceivePacket(_session.Handle, out uint packetSize);
+                    _session.ReadWaitEvent.WaitOne(100);
 
-                    if (packetPointer == null)
+                    while (!ct.IsCancellationRequested && _session != null)
                     {
-                        int error = Marshal.GetLastWin32Error();
+                        byte* packetPointer = WintunApi.WintunReceivePacket(_session.Handle, out uint packetSize);
 
-                        if (error == ERROR_NO_MORE_ITEMS)
-                            break;
-
-                        throw new Win32Exception(error);
-                    }
-
-                    try
-                    {
-                        if (packetSize < 20) // minimum ipv4 header size
-                            continue;
-
-                        if (packetPointer[0] >> 4 != 4) // not IPv4
-                            continue;
-
-                        uint destIp =
-                            BinaryPrimitives.ReverseEndianness(
-                                *(uint*)(packetPointer + 16));
-
-                        if (packetPointer[16] < 200)
+                        if (packetPointer == null)
                         {
-                            LogPacket(packetPointer, packetSize);
+                            int error = Marshal.GetLastWin32Error();
+                            if (error == ERROR_NO_MORE_ITEMS)
+                                break;
+                            throw new Win32Exception(error);
                         }
 
-                        if (destIp == 0)
+                        try
                         {
-                            WintunApi.WintunSendPacket(_session.Handle, packetPointer);
-                        }
+                            if (packetSize < 20) continue;
+                            if ((packetPointer[0] >> 4) != 4) continue; // Must be IPv4
 
-                        if (packetPointer[16] != ipFirstDigit)
-                            continue;
+                            uint destIp = BinaryPrimitives.ReadUInt32BigEndian(new ReadOnlySpan<byte>(packetPointer + 16, 4));
+                            byte[] packetData = new byte[packetSize];
+                            Marshal.Copy((IntPtr)packetPointer, packetData, 0, (int)packetSize);
 
-                        if (packetPointer[16 + 3] == 255 || packetPointer[16] > 224)
-                        {
-                            foreach (var stream in ActivePeers.Values)
+                            bool isBroadcast = IsBroadcastOrMulticast(destIp);
+
+                            if (isBroadcast)
                             {
-                                BinaryPrimitives.WriteUInt16LittleEndian(sizeBuffer, (ushort)packetSize);
-                                stream.Write(sizeBuffer);
-                                stream.Write(new ReadOnlySpan<byte>(packetPointer, (int)packetSize));
+                                foreach (var peerSession in ActivePeers.Values)
+                                {
+                                    SendPacketToPeerStream(peerSession, packetData);
+                                }
+                            }
+                            else if (ActivePeers.TryGetValue(destIp, out var targetPeerSession))
+                            {
+                                SendPacketToPeerStream(targetPeerSession, packetData);
                             }
                         }
-                        else if (ActivePeers.TryGetValue(destIp, out var stream))
-                        //if (_friendsLanHandler.ActivePeers.Count > 0)
+                        finally
                         {
-                            //var stream = _friendsLanHandler.ActivePeers.ElementAt(0).Value;
-
-                            BinaryPrimitives.WriteUInt16LittleEndian(sizeBuffer, (ushort)packetSize);
-                            stream.Write(sizeBuffer);
-                            stream.Write(new ReadOnlySpan<byte>(packetPointer, (int)packetSize));
+                            WintunApi.WintunReleaseReceivePacket(_session.Handle, packetPointer);
                         }
                     }
-                    finally
-                    {
-                        WintunApi.WintunReleaseReceivePacket(
-                            _session.Handle,
-                            packetPointer);
-                    }
+                }
+                catch (ObjectDisposedException) { break; }
+                catch (Exception ex)
+                {
+                    if (ct.IsCancellationRequested) break;
+                    Console.WriteLine($"[FriendsLAN] Wintun capture error: {ex.Message}");
+                    Thread.Sleep(500);
                 }
             }
         }
-        public static unsafe void LogPacket(byte* packetPointer, uint packetSize)
+
+        private void SendPacketToPeerStream(PeerLanSession session, byte[] packetData)
         {
-            byte versionAndIhl = packetPointer[0];
-            int version = versionAndIhl >> 4;
-            int ihl = (versionAndIhl & 0x0F) * 4;
-
-            byte protocol = packetPointer[9];
-            byte ttl = packetPointer[8];
-
-            ushort identification =
-                BinaryPrimitives.ReadUInt16BigEndian(
-                    new ReadOnlySpan<byte>(packetPointer + 4, 2));
-
-            ushort totalLength =
-                BinaryPrimitives.ReadUInt16BigEndian(
-                    new ReadOnlySpan<byte>(packetPointer + 2, 2));
-
-            var srcIp = new IPAddress(
-                new ReadOnlySpan<byte>(packetPointer + 12, 4));
-
-            var dstIp = new IPAddress(
-                new ReadOnlySpan<byte>(packetPointer + 16, 4));
-
-            string protocolName = protocol switch
+            try
             {
-                1 => "ICMP",
-                6 => "TCP",
-                17 => "UDP",
-                _ => $"UNKNOWN({protocol})"
-            };
-
-            Console.WriteLine(
-                $"IPv{version} {protocolName} " +
-                $"{srcIp} -> {dstIp} " +
-                $"TTL={ttl} " +
-                $"LEN={totalLength} " +
-                $"ID={identification} " +
-                $"HDR={ihl} " +
-                $"PKT={packetSize}");
+                session.EnqueuePacket(packetData);
+                Interlocked.Increment(ref TotalTxPackets);
+                Interlocked.Add(ref TotalTxBytes, packetData.Length);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[FriendsLAN] Error sending packet to peer {session.Peer.Name}: {ex.Message}");
+            }
         }
+
+        private void RelayBroadcastToOtherPeers(byte[] packetData, uint sourceIpUint)
+        {
+            foreach (var peerSession in ActivePeers.Values)
+            {
+                if (peerSession.RemoteIpUint != sourceIpUint)
+                {
+                    SendPacketToPeerStream(peerSession, packetData);
+                }
+            }
+        }
+
+        private static bool IsBroadcastOrMulticast(uint destIp)
+        {
+            // 255.255.255.255 (0xFFFFFFFF)
+            if (destIp == 0xFFFFFFFF) return true;
+
+            // Multicast: 224.0.0.0 - 239.255.255.255 (0xE0000000 - 0xEFFFFFFF)
+            if (destIp >= 0xE0000000 && destIp <= 0xEFFFFFFF) return true;
+
+            // Subnet broadcast ending in .255 (e.g. 10.255.255.255 or 10.0.0.255)
+            if ((destIp & 0x000000FF) == 0x000000FF) return true;
+
+            return false;
+        }
+
         public static void SetAdapterIP(string adapterName, string ipAddress, string subnetMask)
         {
             var process = new Process
@@ -302,6 +433,7 @@ namespace QuicPunchTests
             process.Start();
             process.WaitForExit();
         }
+
         public static void SetAdapterMTU(string adapterName, int mtu)
         {
             var process = new Process
@@ -319,3 +451,4 @@ namespace QuicPunchTests
         }
     }
 }
+

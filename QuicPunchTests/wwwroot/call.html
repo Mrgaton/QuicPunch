@@ -7,20 +7,54 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #090d16;
-            --card-bg: rgba(20, 26, 42, 0.75);
-            --card-border: rgba(255, 255, 255, 0.08);
+            --bg: #0b0f17;
+            --header-bg: #0f1624;
+            --card-bg: #111827;
+            --card-border: #1e293b;
+            --card-hover: #334155;
+            --item-bg: #090e18;
             --accent: #38bdf8;
-            --accent-glow: rgba(56, 189, 248, 0.3);
+            --accent-btn: #0284c7;
             --emerald: #10b981;
+            --emerald-btn: #059669;
             --rose: #f43f5e;
+            --rose-btn: #e11d48;
             --indigo: #818cf8;
-            --text-primary: #f8fafc;
+            --text-primary: #f1f5f9;
             --text-secondary: #94a3b8;
             --text-muted: #64748b;
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+        * { 
+            box-sizing: border-box; 
+            margin: 0; 
+            padding: 0; 
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 2px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+
+        ::-webkit-scrollbar-corner {
+            background: transparent;
+        }
 
         body {
             background-color: var(--bg);
@@ -28,104 +62,113 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            background-image: 
-                radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.12) 0%, transparent 45%),
-                radial-gradient(circle at 80% 80%, rgba(16, 185, 129, 0.12) 0%, transparent 45%);
         }
 
         header {
-            background: rgba(15, 23, 42, 0.85);
-            backdrop-filter: blur(12px);
+            background: var(--header-bg);
             border-bottom: 1px solid var(--card-border);
-            padding: 16px 32px;
+            padding: 8px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            height: 48px;
         }
 
-        .logo-box { display: flex; align-items: center; gap: 12px; }
-        .logo-icon { width: 36px; height: 36px; background: linear-gradient(135deg, var(--emerald), var(--accent)); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; box-shadow: 0 0 15px rgba(16, 185, 129, 0.3); }
-        .logo-title { font-size: 20px; font-weight: 700; }
+        .logo-box { display: flex; align-items: center; gap: 8px; }
+        .logo-icon { width: 26px; height: 26px; background: var(--accent-btn); border: 1px solid #0369a1; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #fff; }
+        .logo-title { font-size: 15px; font-weight: 700; }
 
-        .nav-links { display: flex; gap: 12px; }
-        .nav-link { color: var(--text-secondary); text-decoration: none; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; transition: all 0.2s ease; border: 1px solid transparent; }
-        .nav-link:hover, .nav-link.active { color: var(--text-primary); background: rgba(255, 255, 255, 0.06); border-color: var(--card-border); }
+        .nav-links { display: flex; gap: 8px; }
+        .nav-link { color: var(--text-secondary); text-decoration: none; padding: 4px 10px; border-radius: 3px; font-size: 12px; font-weight: 500; transition: all 0.15s ease; border: 1px solid transparent; }
+        .nav-link:hover, .nav-link.active { color: var(--text-primary); background: #1e293b; border-color: #334155; }
 
-        main { flex: 1; padding: 32px; max-width: 1300px; margin: 0 auto; width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        main { flex: 1; padding: 20px 24px; max-width: 1300px; margin: 0 auto; width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         .full-width { grid-column: span 2; }
 
         .card {
             background: var(--card-bg);
-            backdrop-filter: blur(16px);
             border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            border-radius: 4px;
+            padding: 16px 20px;
+            transition: border-color 0.15s ease;
         }
+        .card:hover { border-color: var(--card-hover); }
 
-        .card-title { font-size: 15px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+        .card-title { font-size: 13.5px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.2px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
 
-        .config-badge-group { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
-        .config-badge { background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.2); color: var(--accent); padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 500; }
+        .config-badge-group { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+        .config-badge { background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); color: var(--accent); padding: 4px 8px; border-radius: 3px; font-size: 11px; font-weight: 500; font-family: 'JetBrains Mono', monospace; }
 
-        .input-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
-        .input-label { font-size: 12px; color: var(--text-muted); }
+        .input-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+        .input-label { font-size: 10.5px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
         .input-text {
-            background: rgba(0, 0, 0, 0.4);
+            background: var(--item-bg);
             border: 1px solid var(--card-border);
-            border-radius: 10px;
-            padding: 10px 16px;
+            border-radius: 3px;
+            padding: 7px 10px;
             color: #fff;
-            font-size: 14px;
+            font-size: 12.5px;
+            font-family: 'JetBrains Mono', monospace;
             outline: none;
+            transition: border-color 0.15s ease;
         }
+        .input-text:focus { border-color: var(--accent); }
 
         .btn {
-            background: linear-gradient(135deg, var(--accent), #0284c7);
+            background: var(--accent-btn);
             color: #fff;
-            border: none;
-            padding: 10px 18px;
-            border-radius: 10px;
-            font-weight: 600;
-            font-size: 14px;
+            border: 1px solid #0369a1;
+            padding: 6px 14px;
+            border-radius: 3px;
+            font-weight: 500;
+            font-size: 12.5px;
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: background-color 0.15s ease, border-color 0.15s ease;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 6px;
+            outline: none;
         }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 16px var(--accent-glow); }
-        .btn-emerald { background: linear-gradient(135deg, var(--emerald), #059669); }
-        .btn-emerald:hover { box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3); }
-        .btn-rose { background: linear-gradient(135deg, var(--rose), #e11d48); }
-        .btn-rose:hover { box-shadow: 0 4px 16px rgba(244, 63, 94, 0.3); }
-        .btn-secondary { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); border: 1px solid var(--card-border); }
+        .btn:hover { background: #0369a1; }
+        .btn:active { background: #075985; }
 
-        .peers-list { display: flex; flex-direction: column; gap: 12px; }
+        .btn-emerald { background: var(--emerald-btn); border: 1px solid #047857; }
+        .btn-emerald:hover { background: #047857; }
+        .btn-emerald:active { background: #065f46; }
+
+        .btn-rose { background: var(--rose-btn); border: 1px solid #be123c; }
+        .btn-rose:hover { background: #be123c; }
+        .btn-rose:active { background: #9f1239; }
+
+        .btn-secondary { background: #1e293b; color: var(--text-primary); border: 1px solid #334155; }
+        .btn-secondary:hover { background: #334155; border-color: #475569; }
+        .btn-secondary:active { background: #0f172a; }
+
+        .peers-list { display: flex; flex-direction: column; gap: 8px; }
         .peer-card {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 12px;
-            padding: 16px;
+            background: var(--item-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 3px;
+            padding: 12px 14px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
-        .visualizer-canvas { width: 100%; height: 120px; background: rgba(0, 0, 0, 0.5); border-radius: 12px; border: 1px solid var(--card-border); margin-bottom: 16px; }
+        .visualizer-canvas { width: 100%; height: 90px; background: #050811; border-radius: 3px; border: 1px solid var(--card-border); margin-bottom: 12px; }
 
         .modal-overlay {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(8px);
+            background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px);
             display: flex; align-items: center; justify-content: center;
-            z-index: 1000; opacity: 0; pointer-events: none; transition: opacity 0.3s ease;
+            z-index: 1000; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
         }
         .modal-overlay.active { opacity: 1; pointer-events: auto; }
-        .modal-card { background: #151c2e; border: 1px solid var(--accent); border-radius: 20px; padding: 32px; width: 420px; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,0.8); }
+        .modal-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 5px; padding: 24px; width: 400px; text-align: center; }
 
         .toast {
-            position: fixed; bottom: 24px; right: 24px; background: var(--emerald); color: #fff; padding: 12px 24px; border-radius: 10px; font-weight: 600; font-size: 14px; transform: translateY(100px); opacity: 0; transition: all 0.3s ease;
+            position: fixed; bottom: 20px; right: 20px; background: var(--card-bg); color: #fff; padding: 10px 16px; border-radius: 3px; border: 1px solid var(--card-border); font-size: 12px; font-weight: 500; transform: translateY(10px); opacity: 0; transition: all 0.2s ease;
         }
         .toast.show { transform: translateY(0); opacity: 1; }
     </style>
@@ -137,13 +180,17 @@
             <div class="logo-title">Voice Studio</div>
         </div>
         <div class="nav-links">
-            <a href="/" class="nav-link">🏠 Dashboard</a>
-            <a href="/call.html" class="nav-link active">📞 Voice Studio</a>
+            <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:500; color:var(--text-secondary); cursor:pointer; background:#1e293b; padding:4px 8px; border-radius:3px; border:1px solid #334155;" title="Automatically accept all incoming protocol connections">
+                <input type="checkbox" id="globalAutoAcceptToggle" onchange="toggleGlobalAutoAccept(this.checked)" style="cursor:pointer; accent-color:var(--emerald);">
+                <span>⚡ Auto-Accept All</span>
+            </label>
+            <a href="/" class="nav-link">🏠 Library Manager</a>
+            <a href="/chat.html" class="nav-link">💬 Direct Chat</a>
+            <a href="/call.html" class="nav-link active">🎙️ Voice Studio</a>
         </div>
     </header>
 
     <main>
-        <!-- Audio Hardware & Settings -->
         <div class="card">
             <div class="card-title">Audio Settings</div>
 
@@ -158,7 +205,7 @@
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                     <div class="input-label" style="margin:0;">Opus Target Bitrate</div>
                     <span id="bitrateValueBadge" class="badge" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: var(--accent); font-weight: 600; font-size: 11px; padding: 2px 8px; border-radius: 6px;">
-                        64 kbps (High Quality Voice)
+                        64 kbps - High Quality Voice
                     </span>
                 </div>
                 
@@ -173,22 +220,33 @@
                 </div>
 
                 <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-                    <span>6 kbps (Min)</span>
-                    <span>64 kbps (Voice)</span>
-                    <span>128 kbps (Music)</span>
-                    <span>320 kbps (Max)</span>
+                    <span>6 kbps - Min</span>
+                    <span>64 kbps - Voice</span>
+                    <span>128 kbps - Music</span>
+                    <span>320 kbps - Max</span>
                 </div>
             </div>
 
             <button id="testMicBtn" class="btn btn-secondary" style="width: 100%; margin-top: 8px;" onclick="initAudioPreview()">🎙️ Test Microphone Preview</button>
+            
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--card-border);">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: var(--text-primary);">
+                    <input type="checkbox" id="audioProcessingToggle" checked style="accent-color: var(--accent); cursor: pointer;">
+                    <span>🎧 Echo Cancellation & Noise Suppression</span>
+                </label>
+            </div>
         </div>
 
-        <!-- Active Call Control Center -->
         <div class="card">
             <div class="card-title">
-                <span>Active Call Participants (<span id="activeCallCount">0</span>)</span>
-                <span id="callStatusTag" style="font-size:12px; color: var(--text-muted);">Idle</span>
+                <span>Active Call Participants <span id="activeCallCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <span id="callTimerTag" style="font-size:12px; color: var(--accent); font-family: 'JetBrains Mono', monospace; display: none;">00:00:00</span>
+                    <span id="callStatusTag" style="font-size:12px; color: var(--text-muted);">Idle</span>
+                </div>
             </div>
+
+            <div id="activePeerBanner" style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;">No active voice call</div>
 
             <canvas id="visualizer" class="visualizer-canvas"></canvas>
 
@@ -202,10 +260,9 @@
             </div>
         </div>
 
-        <!-- Available Peers for Calling -->
         <div class="card full-width">
             <div class="card-title">
-                <span>Call Available Peers (<span id="peerCount">0</span>)</span>
+                <span>Available Peers <span id="peerCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
                 <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="fetchStatus()">🔄 Refresh List</button>
             </div>
 
@@ -215,7 +272,6 @@
         </div>
     </main>
 
-    <!-- Incoming Call Modal -->
     <div id="incomingModal" class="modal-overlay">
         <div class="modal-card">
             <div style="font-size: 48px; margin-bottom: 12px; animation: pulse 1.5s infinite;">📞</div>
@@ -244,6 +300,7 @@
 
         let peerCallStartTimes = new Map();
         let callTimerInterval = null;
+        let callStartTime = null;
         let mutedRemotePeers = new Set();
 
         let isTestingMic = false;
@@ -270,13 +327,15 @@
                 analyser.fftSize = 64;
                 
                 source.connect(analyser);
-                analyser.connect(audioCtx.destination);
+                // Note: Do NOT connect analyser to audioCtx.destination to prevent acoustic feedback loop!
                 
                 isTestingMic = true;
                 const btn = document.getElementById('testMicBtn');
                 btn.innerText = '🔴 Stop Preview';
                 btn.classList.replace('btn-secondary', 'btn-rose');
                 drawVisualizer();
+                showToast('Microphone preview active.');
+            } catch (err) {
                 showToast('Microphone test failed: ' + (err.message || err.name));
             }
         }
@@ -305,11 +364,11 @@
         let currentConfiguredBitrate = 64;
 
         function getBitrateDescription(kbps) {
-            if (kbps <= 15) return `${kbps} kbps (Ultra Low Bandwidth)`;
-            if (kbps <= 32) return `${kbps} kbps (Speech / VoIP)`;
-            if (kbps <= 96) return `${kbps} kbps (High Quality Voice)`;
-            if (kbps <= 192) return `${kbps} kbps (Opus Music)`;
-            return `${kbps} kbps (Studio / Max Opus)`;
+            if (kbps <= 15) return `${kbps} kbps - Low Bandwidth`;
+            if (kbps <= 32) return `${kbps} kbps - Speech VoIP`;
+            if (kbps <= 96) return `${kbps} kbps - High Quality Voice`;
+            if (kbps <= 192) return `${kbps} kbps - Opus Music`;
+            return `${kbps} kbps - Studio Opus`;
         }
 
         function onBitrateInput(val) {
@@ -383,6 +442,12 @@
                 const res = await fetch('/api/status');
                 const data = await res.json();
                 currentStatus = data;
+
+                const autoAcceptToggle = document.getElementById('globalAutoAcceptToggle');
+                if (autoAcceptToggle && data.autoAcceptAll !== undefined) {
+                    autoAcceptToggle.checked = !!data.autoAcceptAll;
+                }
+
                 renderPeers(data);
                 checkAutoCall(data);
                 checkPendingPetitions(data);
@@ -390,30 +455,56 @@
             } catch (err) {}
         }
 
+        let autoCallInitiated = false;
+        function checkAutoCall(data) {
+            if (autoCallInitiated || isCallActive) return;
+            const urlParams = new URLSearchParams(window.location.search);
+            const peerIdParam = urlParams.get('peerId') || urlParams.get('peer');
+            if (!peerIdParam) return;
+
+            const availablePeers = data.availablePeers || [];
+            const activeCalls = data.activeVoiceCalls || [];
+            const isAlreadyInCall = activeCalls.some(c => c.peerId === peerIdParam);
+
+            if (isAlreadyInCall) {
+                autoCallInitiated = true;
+                activeCallPeerId = peerIdParam;
+                if (!mediaStream) {
+                    startAudioEngine();
+                }
+                return;
+            }
+
+            const peerObj = availablePeers.find(p => p.id === peerIdParam);
+            if (peerObj) {
+                autoCallInitiated = true;
+                initiateCall(peerObj.id, peerObj.name || 'Peer');
+            }
+        }
+
         function checkPendingPetitions(data) {
             const petitions = data.pendingPetitions || [];
             const modal = document.getElementById('incomingModal');
-            if (petitions.length > 0) {
-                const p = petitions[0];
-                if (p.protocolId === '00000000-0000-0000-0000-000000000003' || p.protocolName === 'VoiceCall') {
-                    currentPetitionId = p.requestId;
-                    pendingIncomingPeerId = p.peerId;
-                    document.getElementById('incomingCallerName').innerText = p.peerName + ' (Voice Call)';
-                    modal.classList.add('active');
-                }
+            const voicePetition = petitions.find(p => p.protocolId === '00000000-0000-0000-0000-000000000003' || p.protocolName === 'VoiceCall');
+            if (voicePetition) {
+                currentPetitionId = voicePetition.requestId;
+                pendingIncomingPeerId = voicePetition.peerId;
+                document.getElementById('incomingCallerName').innerText = voicePetition.peerName + ' (Voice Call)';
+                modal.classList.add('active');
             } else {
                 modal.classList.remove('active');
                 currentPetitionId = null;
+                pendingIncomingPeerId = null;
             }
         }
 
         async function acceptCall() {
             if (!currentPetitionId) return;
             try {
-                await fetch('/api/accept-petition', {
+                await fetch('/api/respond-petition', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId: currentPetitionId })
+                    body: JSON.stringify({ requestId: currentPetitionId, accept: true })
                 });
                 document.getElementById('incomingModal').classList.remove('active');
                 if (pendingIncomingPeerId && pendingIncomingPeerId !== '00000000-0000-0000-0000-000000000000') {
@@ -421,6 +512,7 @@
                 }
                 showToast('Accepted voice call!');
                 startAudioEngine();
+                fetchStatus();
             } catch (err) {
                 showToast('Error accepting call.');
             }
@@ -429,15 +521,49 @@
         async function declineCall() {
             if (!currentPetitionId) return;
             try {
-                await fetch('/api/decline-petition', {
+                await fetch('/api/respond-petition', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId: currentPetitionId })
+                    body: JSON.stringify({ requestId: currentPetitionId, accept: false })
                 });
                 document.getElementById('incomingModal').classList.remove('active');
                 showToast('Declined voice call.');
+                fetchStatus();
             } catch (err) {
                 showToast('Error declining call.');
+            }
+        }
+
+        async function toggleGlobalAutoAccept(checked) {
+            try {
+                await fetch('/api/settings/auto-accept', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ autoAcceptAll: checked })
+                });
+                showToast(checked ? '✅ Auto-accept enabled for all connections' : 'ℹ️ Auto-accept disabled (manual approval required)');
+                fetchStatus();
+            } catch (err) {
+                showToast('Failed to update setting');
+            }
+        }
+
+        async function togglePeerAutoAccept(peerId, autoAccept) {
+            try {
+                const res = await fetch('/api/peer/auto-accept', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId, autoAccept })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(autoAccept ? '🛡️ Peer added to auto-accept' : 'ℹ️ Peer removed from auto-accept');
+                    fetchStatus();
+                } else {
+                    showToast('Failed to update peer auto-accept: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                showToast('Error updating peer auto-accept');
             }
         }
 
@@ -445,26 +571,54 @@
             const banner = document.getElementById('activePeerBanner');
             const statusTag = document.getElementById('callStatusTag');
             const timerTag = document.getElementById('callTimerTag');
+            const countTag = document.getElementById('activeCallCount');
+            const container = document.getElementById('activeCallsContainer');
             const calls = data.activeVoiceCalls || [];
+
+            if (countTag) countTag.innerText = calls.length;
+
             if (calls.length > 0) {
                 isCallActive = true;
                 const peerNames = calls.map(c => c.peerName).join(', ');
-                banner.innerText = 'Connected: ' + peerNames;
-                statusTag.innerText = `Conference (${calls.length})`;
-                statusTag.style.color = '#10b981';
-                timerTag.style.display = 'block';
+                if (banner) banner.innerText = 'Connected: ' + peerNames;
+                if (statusTag) {
+                    statusTag.innerText = `Active Call (${calls.length})`;
+                    statusTag.style.color = '#10b981';
+                }
+                if (timerTag) timerTag.style.display = 'inline-block';
                 if (!callStartTime) {
                     callStartTime = Date.now();
                     callTimerInterval = setInterval(updateCallTimer, 1000);
                 }
                 document.getElementById('muteBtn').disabled = false;
                 document.getElementById('endCallBtn').disabled = false;
+
+                if (container) {
+                    container.innerHTML = calls.map(c => `
+                        <div class="peer-card" style="padding: 10px 14px; border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.06);">
+                            <div class="peer-info-main">
+                                <div style="font-weight: 600; font-size: 13px; color: var(--text-primary);">🎙️ ${escapeHtml(c.peerName)}</div>
+                            </div>
+                            <div style="display: flex; gap: 6px;">
+                                <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="toggleMuteRemotePeer('${c.peerId}')">
+                                    ${mutedRemotePeers.has(c.peerId) ? '🔊 Unmute' : '🔇 Mute'}
+                                </button>
+                                <button class="btn btn-rose" style="padding: 4px 8px; font-size: 11px;" onclick="hangupPeerCall('${c.peerId}')">🔴 End</button>
+                            </div>
+                        </div>
+                    `).join('');
+                }
             } else if (!isTestingMic) {
-                banner.innerText = 'No active voice call';
-                statusTag.innerText = 'Idle';
-                statusTag.style.color = 'var(--text-muted)';
-                timerTag.style.display = 'none';
+                if (banner) banner.innerText = 'No active voice call';
+                if (statusTag) {
+                    statusTag.innerText = 'Idle';
+                    statusTag.style.color = 'var(--text-muted)';
+                }
+                if (timerTag) timerTag.style.display = 'none';
                 stopCallTimer();
+                if (container) {
+                    container.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 16px;">No active voice calls.</div>';
+                }
             }
         }
 
@@ -490,7 +644,7 @@
         function checkAutoCall(data) {
             if (autoCallHandled) return;
             const urlParams = new URLSearchParams(window.location.search);
-            const peerIdParam = urlParams.get('peerId');
+            const peerIdParam = urlParams.get('peerId') || urlParams.get('peer');
             if (peerIdParam && data.availablePeers) {
                 const peerObj = data.availablePeers.find(p => p.id === peerIdParam);
                 if (peerObj) {
@@ -500,8 +654,6 @@
             }
         }
 
-        const mutedRemotePeers = new Set();
-
         function renderPeers(data) {
             const peersContainer = document.getElementById('peersContainer');
             const availablePeers = data.availablePeers || [];
@@ -509,10 +661,17 @@
             const activeIds = new Set(activeCalls.map(c => c.peerId));
 
             const allPeerMap = new Map();
-            availablePeers.forEach(p => allPeerMap.set(p.id, { id: p.id, name: p.name, ping: p.ping, activeEndPoint: p.activeEndPoint, isConnected: activeIds.has(p.id) }));
+            availablePeers.forEach(p => allPeerMap.set(p.id, { 
+                id: p.id, 
+                name: p.name, 
+                ping: p.ping, 
+                activeEndPoint: p.isTor ? (p.onionAddress || 'Tor Onion') : p.activeEndPoint, 
+                isTor: p.isTor,
+                isConnected: activeIds.has(p.id) 
+            }));
             activeCalls.forEach(c => {
                 if (!allPeerMap.has(c.peerId)) {
-                    allPeerMap.set(c.peerId, { id: c.peerId, name: c.peerName, ping: 0, activeEndPoint: 'Active Stream', isConnected: true });
+                    allPeerMap.set(c.peerId, { id: c.peerId, name: c.peerName, ping: 0, activeEndPoint: 'Active Stream', isTor: false, isConnected: true });
                 } else {
                     allPeerMap.get(c.peerId).isConnected = true;
                 }
@@ -521,28 +680,45 @@
             const sortedPeers = Array.from(allPeerMap.values());
             sortedPeers.sort((a, b) => (b.isConnected ? 1 : 0) - (a.isConnected ? 1 : 0));
 
-            document.getElementById('peerCount').innerText = sortedPeers.length;
+            const peerCountEl = document.getElementById('peerCount');
+            if (peerCountEl) peerCountEl.innerText = sortedPeers.length;
 
             if (sortedPeers.length === 0) {
                 peersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 24px;">No peers available to call.</div>';
             } else {
                 peersContainer.innerHTML = sortedPeers.map(p => {
                     const isMutedPeer = mutedRemotePeers.has(p.id);
+                    const transportBadge = p.isTor
+                        ? `<span style="font-size:9.5px; padding:1px 5px; border-radius:2px; font-weight:600; font-family:'JetBrains Mono',monospace; background:rgba(168,85,247,0.1); color:#c084fc; border:1px solid rgba(168,85,247,0.25);">🧅 Tor</span>`
+                        : `<span style="font-size:9.5px; padding:1px 5px; border-radius:2px; font-weight:600; font-family:'JetBrains Mono',monospace; background:rgba(56,189,248,0.1); color:#38bdf8; border:1px solid rgba(56,189,248,0.25);">🌐 WAN</span>`;
+
+                    const isAutoAccepted = (currentStatus && currentStatus.autoAcceptedPeers && currentStatus.autoAcceptedPeers.includes(p.id));
+                    const trustBtnHtml = `<button class="btn ${isAutoAccepted ? 'btn-emerald' : 'btn-secondary'}" style="padding: 5px 10px; font-size: 11.5px;" onclick="togglePeerAutoAccept('${p.id}', ${!isAutoAccepted})" title="${isAutoAccepted ? 'Peer is trusted and auto-accepted' : 'Auto-accept connections from this peer'}">${isAutoAccepted ? '🛡️ Trusted' : '🛡️ Trust'}</button>`;
+
+                    const peerRaw = (currentStatus && currentStatus.availablePeers) ? currentStatus.availablePeers.find(x => x.id === p.id) : null;
+                    const isSaved = peerRaw && peerRaw.isSaved;
+                    const saveBtnHtml = `<button class="btn ${isSaved ? 'btn-emerald' : 'btn-secondary'}" style="padding: 5px 10px; font-size: 11.5px;" onclick="toggleSavePeer('${p.id}', ${!isSaved})" title="${isSaved ? 'Remove peer from saved database' : 'Save peer to database'}">${isSaved ? '💾 Saved' : '💾 Save'}</button>`;
+
                     if (p.isConnected) {
                         return `
                             <div class="peer-card" style="border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.05);">
                                 <div class="peer-info-main">
-                                    <div class="peer-name">
+                                    <div class="peer-name" style="display:flex; align-items:center; gap:6px;">
                                         ${escapeHtml(p.name)} 
-                                        <span style="font-size:11px; background: rgba(16, 185, 129, 0.2); color: var(--emerald); padding: 2px 8px; border-radius: 12px; font-weight:600;">🟢 Connected</span>
+                                        ${isSaved ? '<span title="Saved in database" style="font-size:11px;">💾</span>' : ''}
+                                        ${isAutoAccepted ? '<span title="Auto-accepted peer" style="font-size:11px;">🛡️</span>' : ''}
+                                        ${transportBadge}
+                                        <span style="font-size:10px; background: rgba(16, 185, 129, 0.15); color: var(--emerald); padding: 2px 6px; border-radius: 2px; font-weight:600; font-family:'JetBrains Mono',monospace;">🟢 Connected</span>
                                     </div>
                                     <div class="peer-meta">Endpoint: ${escapeHtml(p.activeEndPoint)}</div>
                                 </div>
-                                <div style="display:flex; gap:8px;">
-                                    <button class="btn ${isMutedPeer ? 'btn-secondary' : 'btn-secondary'}" style="padding: 6px 12px; font-size:12px;" onclick="toggleMuteRemotePeer('${p.id}')">
-                                        ${isMutedPeer ? '🔊 Unmute Peer' : '🔇 Mute Peer'}
+                                <div style="display:flex; gap:6px; align-items: center; flex-wrap: wrap;">
+                                    ${saveBtnHtml}
+                                    ${trustBtnHtml}
+                                    <button class="btn btn-secondary" style="padding: 5px 10px; font-size:11.5px;" onclick="toggleMuteRemotePeer('${p.id}')">
+                                        ${isMutedPeer ? '🔊 Unmute' : '🔇 Mute'}
                                     </button>
-                                    <button class="btn btn-rose" style="padding: 6px 12px; font-size:12px;" onclick="hangupPeerCall('${p.id}')">🔴 Hangup</button>
+                                    <button class="btn btn-rose" style="padding: 5px 10px; font-size:11.5px;" onclick="hangupPeerCall('${p.id}')">🔴 Hangup</button>
                                 </div>
                             </div>
                         `;
@@ -550,15 +726,48 @@
                         return `
                             <div class="peer-card">
                                 <div class="peer-info-main">
-                                    <div class="peer-name">${escapeHtml(p.name)} <span style="font-size:12px; color: var(--emerald);">(${p.ping}ms)</span></div>
+                                    <div class="peer-name" style="display:flex; align-items:center; gap:6px;">
+                                        ${escapeHtml(p.name)} 
+                                        ${isSaved ? '<span title="Saved in database" style="font-size:11px;">💾</span>' : ''}
+                                        ${isAutoAccepted ? '<span title="Auto-accepted peer" style="font-size:11px;">🛡️</span>' : ''}
+                                        ${transportBadge}
+                                        ${p.ping >= 0 ? `<span style="font-size:12px; color: var(--emerald);">⚡ ${p.ping} ms</span>` : ''}
+                                    </div>
                                     <div class="peer-meta">Endpoint: ${escapeHtml(p.activeEndPoint)}</div>
                                 </div>
-                                <button class="btn btn-emerald" onclick="initiateCall('${p.id}', '${escapeHtml(p.name)}')">📞 Call Peer</button>
+                                <div style="display:flex; gap:6px; align-items: center; flex-wrap: wrap;">
+                                    ${saveBtnHtml}
+                                    ${trustBtnHtml}
+                                    <button class="btn btn-emerald" onclick="initiateCall('${p.id}', '${escapeHtml(p.name)}')">📞 Call Peer</button>
+                                </div>
                             </div>
                         `;
                     }
                 }).join('');
             }
+        }
+
+        async function toggleSavePeer(peerId, shouldSave) {
+            try {
+                const res = await fetch('/api/save-peer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId, save: shouldSave, autoConnect: true })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(shouldSave ? '💾 Peer saved to database' : '🗑️ Peer removed from saved database');
+                    fetchStatus();
+                } else {
+                    showToast('Failed to update saved peer: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                showToast('Error updating saved peer');
+            }
+        }
+
+        async function saveConnectedPeer(peerId, shouldSave) {
+            await toggleSavePeer(peerId, shouldSave);
         }
 
         function toggleMuteRemotePeer(peerId) {
@@ -617,19 +826,63 @@
             fetchStatus();
         }
 
+        class AudioRingBuffer {
+            constructor(capacity = 32768) {
+                this.buffer = new Float32Array(capacity);
+                this.capacity = capacity;
+                this.readIndex = 0;
+                this.writeIndex = 0;
+                this.available = 0;
+            }
+
+            push(samples) {
+                for (let i = 0; i < samples.length; i++) {
+                    this.buffer[this.writeIndex] = samples[i];
+                    this.writeIndex = (this.writeIndex + 1) % this.capacity;
+                    if (this.available < this.capacity) {
+                        this.available++;
+                    } else {
+                        this.readIndex = (this.readIndex + 1) % this.capacity;
+                    }
+                }
+            }
+
+            read(outputArray) {
+                const count = outputArray.length;
+                for (let i = 0; i < count; i++) {
+                    if (this.available > 0) {
+                        outputArray[i] = this.buffer[this.readIndex];
+                        this.readIndex = (this.readIndex + 1) % this.capacity;
+                        this.available--;
+                    } else {
+                        outputArray[i] = 0.0;
+                    }
+                }
+            }
+
+            clear() {
+                this.readIndex = 0;
+                this.writeIndex = 0;
+                this.available = 0;
+            }
+        }
+
+        const ringBuffer = new AudioRingBuffer(65536);
+
         async function startAudioEngine() {
             if (isTestingMic) stopAudioPreview();
             if (isCallActive && mediaStream) return;
 
             try {
                 const deviceId = document.getElementById('micSelect').value;
+                const useProcessing = document.getElementById('audioProcessingToggle') ? document.getElementById('audioProcessingToggle').checked : true;
 
                 const constraints = {
                     audio: {
                         ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-                        echoCancellation: false,
-                        noiseSuppression: false,
-                        autoGainControl: false
+                        echoCancellation: useProcessing,
+                        noiseSuppression: useProcessing,
+                        autoGainControl: useProcessing
                     }
                 };
 
@@ -703,7 +956,6 @@
             } catch (err) {}
         }
 
-        let audioJitterBuffer = [];
         let outputScriptNode = null;
 
         function initOutputAudioEngine() {
@@ -717,13 +969,7 @@
             outputScriptNode = outputAudioCtx.createScriptProcessor(2048, 1, 1);
             outputScriptNode.onaudioprocess = (e) => {
                 const output = e.outputBuffer.getChannelData(0);
-                for (let i = 0; i < output.length; i++) {
-                    if (audioJitterBuffer.length > 0) {
-                        output[i] = audioJitterBuffer.shift();
-                    } else {
-                        output[i] = 0.0;
-                    }
-                }
+                ringBuffer.read(output);
             };
             outputScriptNode.connect(outputAudioCtx.destination);
         }
@@ -739,14 +985,13 @@
                 const bytes = new Uint8Array(binary.length);
                 for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
                 const int16Samples = new Int16Array(bytes.buffer);
-
-                if (audioJitterBuffer.length > 8000) {
-                    audioJitterBuffer = audioJitterBuffer.slice(-4000);
-                }
+                const float32Samples = new Float32Array(int16Samples.length);
 
                 for (let i = 0; i < int16Samples.length; i++) {
-                    audioJitterBuffer.push(int16Samples[i] / 32768.0);
+                    float32Samples[i] = int16Samples[i] / 32768.0;
                 }
+
+                ringBuffer.push(float32Samples);
             } catch (err) {
                 console.error('Error playing remote audio chunk:', err);
             }
@@ -760,6 +1005,7 @@
         }
 
         function endVoiceCall() {
+            ringBuffer.clear();
             if (scriptProcessor) {
                 try { scriptProcessor.disconnect(); } catch (e) {}
                 scriptProcessor = null;
