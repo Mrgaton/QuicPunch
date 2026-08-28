@@ -50,6 +50,12 @@ namespace QuicPunch
             return this;
         }
 
+        public QuicPunchBuilder WithCustomTrackers(string[]? trackers)
+        {
+            _customTrackers = trackers;
+            return this;
+        }
+
         public QuicPunchBuilder WithPort(ushort port)
         {
             _discoveryPort = port;
@@ -74,32 +80,53 @@ namespace QuicPunch
             return this;
         }
 
-        public QuicPunchBuilder WithCancellationTokenSource(CancellationTokenSource cts)
+        private CancellationToken _cancellationToken;
+
+        public QuicPunchBuilder WithCancellationToken(CancellationToken cancellationToken)
         {
-            _cts = cts;
+            _cancellationToken = cancellationToken;
             return this;
         }
 
-        public async Task<QuicPunchNode> BuildAndStartAsync(CancellationToken cancellationToken = default)
+        public QuicPunchBuilder WithCancellationTokenSource(CancellationTokenSource cts)
         {
-            var cts = _cts ?? new CancellationTokenSource();
+            _cts = cts;
+            _cancellationToken = cts?.Token ?? default;
+            return this;
+        }
 
+        private string? _appDataPath;
+        public QuicPunchBuilder WithAppDataPath(string appDataPath)
+        {
+            _appDataPath = appDataPath;
+            return this;
+        }
+
+        public QuicPunch Build(CancellationToken cancellationToken = default)
+        {
             var discoveryId = _autoDiscovery ? _poolId : null;
-
-            var quicPunch = new QuicPunch(cts, discoveryId, _connectionPassword, _autoAcceptConnections, _discoveryPort);
+            var quicPunch = new QuicPunch(cancellationToken.CanBeCanceled ? cancellationToken : _cancellationToken, discoveryId, _connectionPassword, _autoAcceptConnections, _discoveryPort, appDataPath: _appDataPath);
 
             if (_poolId != null)
             {
                 quicPunch.PoolId = _poolId;
             }
 
-            if (_autoDiscovery && quicPunch.TrackerScanner != null && _customTrackers != null && _customTrackers.Length > 0)
+            if (_customTrackers != null && _customTrackers.Length > 0)
             {
-                await quicPunch.TrackerScanner.Start(_customTrackers);
+                quicPunch.CustomTrackers = _customTrackers;
             }
 
-            var node = new QuicPunchNode(quicPunch);
-            return node;
+            return quicPunch;
+        }
+
+        public async Task<QuicPunch> BuildAndStartAsync(CancellationToken cancellationToken = default)
+        {
+            var quicPunch = Build(cancellationToken);
+
+            await quicPunch.StartAsync(cancellationToken).ConfigureAwait(false);
+
+            return quicPunch;
         }
 
         private static bool IsHexString(string input)

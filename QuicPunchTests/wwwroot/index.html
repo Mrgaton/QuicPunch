@@ -3,23 +3,60 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QuicPunch Network Console</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <title>QuicPunch Node Manager</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #0b0f19;
-            --card-bg: rgba(21, 28, 46, 0.7);
-            --card-border: rgba(255, 255, 255, 0.08);
+            --bg: #0b0f17;
+            --header-bg: #0f1624;
+            --card-bg: #111827;
+            --card-border: #1e293b;
+            --card-hover: #334155;
+            --item-bg: #090e18;
             --accent: #38bdf8;
-            --accent-glow: rgba(56, 189, 248, 0.25);
+            --accent-btn: #0284c7;
             --emerald: #10b981;
-            --indigo: #818cf8;
-            --text-primary: #f8fafc;
+            --emerald-btn: #059669;
+            --amber: #f59e0b;
+            --purple: #a855f7;
+            --purple-btn: #7c3aed;
+            --rose: #f43f5e;
+            --rose-btn: #e11d48;
+            --text-primary: #f1f5f9;
             --text-secondary: #94a3b8;
             --text-muted: #64748b;
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+        * { 
+            box-sizing: border-box; 
+            margin: 0; 
+            padding: 0; 
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 2px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+
+        ::-webkit-scrollbar-corner {
+            background: transparent;
+        }
 
         body {
             background-color: var(--bg);
@@ -27,357 +64,597 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            background-image: 
-                radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.1) 0%, transparent 40%),
-                radial-gradient(circle at 85% 85%, rgba(129, 140, 248, 0.1) 0%, transparent 40%);
         }
 
         header {
-            background: rgba(15, 23, 42, 0.8);
-            backdrop-filter: blur(12px);
+            background: var(--header-bg);
             border-bottom: 1px solid var(--card-border);
-            padding: 16px 32px;
+            padding: 10px 24px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             position: sticky;
             top: 0;
             z-index: 100;
+            gap: 16px;
         }
 
-        .logo-box { display: flex; align-items: center; gap: 12px; }
-        .logo-icon { width: 36px; height: 36px; background: linear-gradient(135deg, var(--accent), var(--indigo)); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; box-shadow: 0 0 15px var(--accent-glow); }
-        .logo-title { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+        .logo-box { display: flex; align-items: center; gap: 10px; }
+        .logo-icon {
+            width: 28px; height: 28px;
+            background: var(--accent-btn);
+            border: 1px solid #0369a1;
+            border-radius: 3px;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 13px; color: #fff;
+        }
+        .logo-title { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; }
+        .logo-sub { font-size: 11px; color: var(--text-muted); font-weight: 400; font-family: 'JetBrains Mono', monospace; }
+
+        .header-actions { display: flex; align-items: center; gap: 8px; }
+
+        .app-link-btn {
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 11px;
+            font-size: 12px;
+            font-weight: 500;
+            border-radius: 3px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: var(--text-primary);
+            transition: background-color 0.15s ease, border-color 0.15s ease;
+        }
+        .app-link-chat { color: #34d399; }
+        .app-link-chat:hover { background: #334155; }
+        .app-link-voice { color: #38bdf8; }
+        .app-link-voice:hover { background: #334155; }
 
         .status-badge {
             display: inline-flex;
             align-items: center;
-            gap: 8px;
-            background: rgba(16, 185, 129, 0.15);
+            gap: 6px;
+            background: rgba(16, 185, 129, 0.1);
             border: 1px solid rgba(16, 185, 129, 0.3);
             color: var(--emerald);
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-size: 13px;
-            font-weight: 500;
+            padding: 4px 10px;
+            border-radius: 3px;
+            font-size: 11.5px;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
         }
-        .pulse-dot { width: 8px; height: 8px; background: var(--emerald); border-radius: 50%; animation: pulse 2s infinite; }
-
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
-            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-        }
+        .pulse-dot { width: 6px; height: 6px; background: var(--emerald); border-radius: 50%; }
 
         main {
             flex: 1;
-            padding: 32px;
-            max-width: 1400px;
+            padding: 20px 24px;
+            max-width: 1440px;
             margin: 0 auto;
             width: 100%;
             display: flex;
             flex-direction: column;
-            gap: 24px;
+            gap: 16px;
         }
 
         .dashboard-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 24px;
+            gap: 16px;
             align-items: stretch;
         }
 
-        @media (max-width: 900px) {
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
+        @media (max-width: 950px) {
+            .dashboard-grid { grid-template-columns: 1fr; }
+            header { flex-direction: column; gap: 10px; align-items: stretch; }
+            .header-actions { justify-content: space-between; }
         }
 
-        .col {
-            display: flex;
-            flex-direction: column;
-            gap: 24px;
-        }
-
+        .col { display: flex; flex-direction: column; gap: 16px; }
         .full-width { width: 100%; }
 
         .card {
             background: var(--card-bg);
-            backdrop-filter: blur(16px);
             border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            transition: border-color 0.3s ease;
+            border-radius: 4px;
+            padding: 16px 18px;
+            transition: border-color 0.15s ease;
         }
-        .card:hover { border-color: rgba(255, 255, 255, 0.15); }
+        .card:hover { border-color: var(--card-hover); }
 
-        .card-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
-
-        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }
-        .info-item { background: rgba(255, 255, 255, 0.03); padding: 12px 16px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.04); }
-        .info-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
-        .info-value { font-size: 15px; font-weight: 600; word-break: break-all; }
-
-        .token-box {
-            background: rgba(0, 0, 0, 0.4);
-            border: 1px solid var(--card-border);
-            border-radius: 12px;
-            padding: 12px 16px;
-            font-family: monospace;
-            font-size: 13px;
-            color: var(--accent);
-            word-break: break-all;
-            position: relative;
+        .card-title {
+            font-size: 13.5px;
+            font-weight: 700;
             margin-bottom: 12px;
-        }
-
-        .btn {
-            background: linear-gradient(135deg, var(--accent), #0284c7);
-            color: #fff;
-            border: none;
-            padding: 10px 18px;
-            border-radius: 10px;
-            font-weight: 600;
-            font-size: 14px;
-            cursor: pointer;
-            transition: filter 0.2s ease, box-shadow 0.2s ease;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .btn:hover { filter: brightness(1.15); box-shadow: 0 4px 16px var(--accent-glow); }
-        .btn:active { filter: brightness(0.95); box-shadow: none; }
-
-        .btn-secondary { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); border: 1px solid var(--card-border); }
-        .btn-secondary:hover { background: rgba(255, 255, 255, 0.15); box-shadow: none; filter: none; }
-
-        .btn-emerald { background: linear-gradient(135deg, var(--emerald), #059669); }
-        .btn-emerald:hover { box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3); }
-
-        .input-group { display: flex; gap: 12px; }
-        .input-text {
-            flex: 1;
-            background: rgba(0, 0, 0, 0.4);
-            border: 1px solid var(--card-border);
-            border-radius: 10px;
-            padding: 10px 16px;
-            color: #fff;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.2s ease;
-        }
-        .input-text:focus { border-color: var(--accent); }
-
-        .peers-list { display: flex; flex-direction: column; gap: 12px; }
-        .peer-card {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 12px;
-            padding: 16px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            color: var(--text-primary);
+            letter-spacing: -0.2px;
         }
-        .peer-info-main { display: flex; flex-direction: column; gap: 4px; }
-        .peer-name { font-weight: 600; font-size: 16px; color: var(--text-primary); }
-        .peer-meta { font-size: 12px; color: var(--text-muted); }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 8px;
+        }
+
+        .info-item {
+            background: var(--item-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 3px;
+            padding: 8px 12px;
+        }
+        .info-label { font-size: 10px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+        .info-value { font-size: 12px; font-weight: 600; color: var(--text-primary); word-break: break-all; font-family: 'JetBrains Mono', monospace; }
+
+        .token-box {
+            background: var(--item-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 3px;
+            padding: 10px 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--accent);
+            word-break: break-all;
+            user-select: all;
+            margin-bottom: 10px;
+            max-height: 85px;
+            overflow-y: auto;
+        }
+
+        .btn {
+            background: var(--accent-btn);
+            color: #fff;
+            border: 1px solid #0369a1;
+            padding: 6px 12px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.15s ease, border-color 0.15s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            outline: none;
+        }
+        .btn:hover { background: #0369a1; }
+        .btn:active { background: #075985; }
+
+        .btn-secondary {
+            background: #1e293b;
+            color: #e2e8f0;
+            border: 1px solid #334155;
+        }
+        .btn-secondary:hover { background: #334155; border-color: #475569; }
+        .btn-secondary:active { background: #0f172a; }
+
+        .btn-emerald {
+            background: var(--emerald-btn);
+            border: 1px solid #047857;
+            color: #fff;
+        }
+        .btn-emerald:hover { background: #047857; }
+        .btn-emerald:active { background: #065f46; }
+
+        .btn-purple {
+            background: var(--purple-btn);
+            border: 1px solid #6d28d9;
+            color: #fff;
+        }
+        .btn-purple:hover { background: #6d28d9; }
+        .btn-purple:active { background: #5b21b6; }
+
+        .btn-rose {
+            background: var(--rose-btn);
+            border: 1px solid #be123c;
+            color: #fff;
+        }
+        .btn-rose:hover { background: #be123c; }
+        .btn-rose:active { background: #9f1239; }
+
+        .input-group { display: flex; gap: 6px; }
+        .input-text {
+            flex: 1;
+            background: var(--item-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 3px;
+            padding: 6px 10px;
+            color: var(--text-primary);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            transition: border-color 0.15s ease;
+        }
+        .input-text:focus { border-color: var(--accent); }
+
+        .peers-list { display: flex; flex-direction: column; gap: 6px; }
+        .peer-card {
+            background: var(--item-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 3px;
+            padding: 10px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .peer-info-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 200px; }
+        .peer-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .peer-name { font-weight: 700; font-size: 13px; color: var(--text-primary); }
+        .peer-meta { font-size: 11px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
+
+        .transport-badge {
+            font-size: 9.5px;
+            font-weight: 600;
+            padding: 2px 5px;
+            border-radius: 2px;
+            text-transform: uppercase;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .transport-wan { background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25); }
+        .transport-tor { background: rgba(168, 85, 247, 0.1); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.25); }
+
+        .select-protocol {
+            background: var(--item-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-primary);
+            padding: 5px 8px;
+            border-radius: 3px;
+            font-size: 11.5px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+        }
 
         .terminal {
             background: #050811;
             border: 1px solid var(--card-border);
-            border-radius: 12px;
-            padding: 16px;
-            font-family: monospace;
-            font-size: 12px;
+            border-radius: 3px;
+            padding: 10px 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11.5px;
             color: #38bdf8;
-            height: 220px;
+            height: 200px;
+            max-height: 200px;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 6px;
+            gap: 3px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(56, 189, 248, 0.25) transparent;
         }
 
-        .chat-box {
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--card-border);
-            border-radius: 12px;
-            height: 250px;
-            overflow-y: auto;
-            padding: 16px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            margin-bottom: 12px;
-        }
-        .chat-msg {
-            max-width: 80%;
-            padding: 8px 14px;
-            border-radius: 12px;
-            font-size: 13px;
+        .terminal > div {
+            white-space: pre-wrap;
+            word-break: break-all;
             line-height: 1.4;
         }
-        .chat-msg.me {
-            align-self: flex-end;
-            background: linear-gradient(135deg, #0284c7, #0369a1);
-            color: #fff;
-            border-bottom-right-radius: 2px;
+
+        .terminal::-webkit-scrollbar {
+            width: 5px;
         }
-        .chat-msg.other {
-            align-self: flex-start;
-            background: rgba(255, 255, 255, 0.08);
-            color: var(--text-primary);
-            border-bottom-left-radius: 2px;
+
+        .terminal::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 2px;
         }
-        .chat-sender { font-size: 10px; opacity: 0.7; margin-bottom: 2px; }
+
+        .terminal::-webkit-scrollbar-thumb {
+            background: rgba(56, 189, 248, 0.25);
+            border-radius: 2px;
+        }
+
+        .terminal::-webkit-scrollbar-thumb:hover {
+            background: rgba(56, 189, 248, 0.5);
+        }
+
+        .petition-banner {
+            background: #1c1917;
+            border: 1px solid #78350f;
+            border-radius: 3px;
+            padding: 10px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-content {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 5px;
+            padding: 20px;
+            max-width: 480px;
+            width: 90%;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
 
         .toast {
             position: fixed;
-            bottom: 24px;
-            right: 24px;
-            background: var(--emerald);
+            bottom: 20px;
+            right: 20px;
+            background: var(--card-bg);
             color: #fff;
-            padding: 12px 24px;
-            border-radius: 10px;
-            font-weight: 600;
-            font-size: 14px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
-            transform: translateY(100px);
+            padding: 10px 16px;
+            border-radius: 3px;
+            border: 1px solid var(--card-border);
+            font-size: 12px;
+            font-weight: 500;
             opacity: 0;
-            transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+            transform: translateY(10px);
+            transition: all 0.2s ease;
+            z-index: 2000;
+            pointer-events: none;
         }
-        .toast.show { transform: translateY(0); opacity: 1; }
+        .toast.show { opacity: 1; transform: translateY(0); }
     </style>
 </head>
 <body>
     <header>
         <div class="logo-box">
             <div class="logo-icon">QP</div>
-            <div class="logo-title">QuicPunch Console</div>
+            <div>
+                <div class="logo-title">QuicPunch Node Manager</div>
+                <div class="logo-sub">P2P QUIC Transport & Mesh Console</div>
+            </div>
         </div>
-        <div style="display: flex; gap: 16px; align-items: center;">
-            <a href="/chat.html" class="btn btn-emerald" style="text-decoration: none; padding: 6px 14px; font-size: 13px;">💬 Direct Chat</a>
-            <a href="/call.html" class="btn btn-secondary" style="text-decoration: none; padding: 6px 14px; font-size: 13px;">🎙️ Voice Studio</a>
-            <div class="status-badge">
+
+        <div class="header-actions">
+            <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:500; color:var(--text-secondary); cursor:pointer; background:#1e293b; padding:5px 9px; border-radius:3px; border:1px solid #334155;" title="Automatically accept all incoming protocol connections">
+                <input type="checkbox" id="globalAutoAcceptToggle" onchange="toggleGlobalAutoAccept(this.checked)" style="cursor:pointer; accent-color:var(--emerald);">
+                <span>⚡ Auto-Accept All</span>
+            </label>
+            <a href="/chat.html" class="app-link-btn app-link-chat">💬 Direct Chat</a>
+            <a href="/call.html" class="app-link-btn app-link-voice">🎙️ Voice Studio</a>
+            <div id="topStatusBadge" class="status-badge">
                 <div class="pulse-dot"></div>
-                <span>Node Active</span>
+                <span id="topStatusText">Node Online</span>
             </div>
         </div>
     </header>
 
     <main>
-        <!-- Top Section: Symmetrical 2-Column Grid -->
+        <div id="petitionBannerContainer" style="display: none;"></div>
+
         <div class="dashboard-grid">
-            <!-- Left Column: Profile & Connect -->
             <div class="col">
-                <!-- My Node Profile -->
                 <div class="card">
                     <div class="card-title">
-                        <span>Node Identity & Settings</span>
-                        <span class="status-badge" style="font-size:11px; padding: 2px 8px;">Active</span>
+                        <span>Node Identity & Transports</span>
+                        <span id="torStateTag" class="transport-badge transport-wan">🌐 UDP WAN</span>
                     </div>
                     
                     <div class="info-grid">
                         <div class="info-item">
-                            <div class="info-label">Identity</div>
+                            <div class="info-label">Node Identifier</div>
                             <div class="info-value" id="nodeName">Loading...</div>
                         </div>
                         <div class="info-item">
-                            <div class="info-label">Network & STUN Port</div>
+                            <div class="info-label">NAT & STUN Range</div>
                             <div class="info-value"><span id="natType">...</span> (<span id="portRange">...</span>)</div>
                         </div>
                         <div class="info-item" style="grid-column: span 2;">
-                            <div class="info-label">IP Addresses</div>
+                            <div class="info-label">Public / LAN Endpoints</div>
                             <div class="info-value" id="publicEndpoints">Loading...</div>
                         </div>
                     </div>
 
-                    <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--card-border);">
-                        <div class="info-label" style="margin-bottom: 6px;">Listener Port (Local UDP)</div>
+                    <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--card-border);">
+                        <div class="info-label" style="margin-bottom: 6px;">Local UDP Listener Port</div>
                         <div class="input-group">
                             <input type="number" id="listenerPortInput" class="input-text" placeholder="Port (e.g. 49152)" min="1" max="65535">
                             <button class="btn btn-secondary" onclick="changeListenerPort()">⚙️ Change Port</button>
                         </div>
                     </div>
+
+                    <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--card-border);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div class="info-label" style="margin-bottom: 0;">Tor Hidden Service (.onion)</div>
+                            <span id="torStatusIndicator" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">Inactive</span>
+                        </div>
+                        <div class="info-value" id="torOnionDisplay" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c084fc; margin-bottom: 10px;">
+                            Tor Service Stopped
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button id="torToggleBtn" class="btn btn-purple" onclick="toggleTorRuntime()">🧅 Start Tor Service</button>
+                            <button id="torNewNymBtn" class="btn btn-secondary" style="display: none;" onclick="requestNewCircuits()">🔄 New Circuits (NEWNYM)</button>
+                        </div>
+                    </div>
                 </div>
 
-                <!-- Connection Token & Connect -->
                 <div class="card">
-                    <div class="card-title">Share Token & Connect</div>
-                    <div class="info-label" style="margin-bottom: 6px;">Your Connection Token</div>
-                    <div class="token-box" id="nodeToken">Loading...</div>
-
-                    <div style="display: flex; gap: 10px; margin-bottom: 16px;">
-                        <button class="btn" onclick="copyToken()">📋 Copy Token</button>
-                        <button class="btn btn-secondary" onclick="copyQuickLink()">🔗 Copy Link</button>
+                    <div class="card-title">
+                        <span>Connection Tokens</span>
                     </div>
 
-                    <div style="padding-top: 16px; border-top: 1px solid var(--card-border);">
-                        <div class="info-label" style="margin-bottom: 6px;">Connect via Remote Token</div>
+                    <div style="margin-bottom: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <div class="info-label" style="margin-bottom: 0;">🌐 WAN Connection Token (UDP/STUN)</div>
+                            <span class="transport-badge transport-wan">WAN</span>
+                        </div>
+                        <div class="token-box" id="wanTokenBox">Generating WAN token...</div>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn" style="padding: 6px 12px; font-size: 12px;" onclick="copyWanToken()">📋 Copy WAN Token</button>
+                            <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="copyQuickLink()">🔗 Copy Link</button>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 16px; padding-top: 12px; border-top: 1px solid var(--card-border);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <div class="info-label" style="margin-bottom: 0;">🧅 Tor Connection Token (Onion v3)</div>
+                            <span class="transport-badge transport-tor">Tor</span>
+                        </div>
+                        <div class="token-box" id="torTokenBox" style="border-color: rgba(168, 85, 247, 0.35); color: #c084fc;">Tor Service Inactive</div>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="copyTorTokenBtn" class="btn btn-purple" style="padding: 6px 12px; font-size: 12px;" onclick="copyTorToken()" disabled>📋 Copy Tor Token</button>
+                        </div>
+                    </div>
+
+                    <div style="padding-top: 14px; border-top: 1px solid var(--card-border);">
+                        <div class="info-label" style="margin-bottom: 6px;">Connect to Peer (WAN or Tor Token / URI)</div>
                         <div class="input-group">
-                            <input type="text" id="connectTokenInput" class="input-text" placeholder="Paste token or QPHP:// URI here...">
+                            <input type="text" id="connectTokenInput" class="input-text" placeholder="Paste QP:// token (WAN/Tor) or URI here...">
                             <button class="btn btn-emerald" onclick="connectByToken()">⚡ Connect</button>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Right Column: Active Punching & Terminal Logs -->
             <div class="col">
-                <!-- Active Hole Punching / Interrogations -->
-                <div class="card" id="interrogationCard">
+                <div class="card">
                     <div class="card-title">
-                        <span>Active Hole Punching (<span id="interrogationCount">0</span>)</span>
+                        <span>Active Hole Punching <span id="interrogationCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
                     </div>
                     <div id="interrogationsContainer" class="peers-list">
-                        <div style="color: var(--text-muted); text-align: center; padding: 16px;">No active hole punching attempts.</div>
+                        <div style="color: var(--text-muted); text-align: center; padding: 14px; font-size: 13px;">No active hole punching attempts in progress.</div>
                     </div>
                 </div>
 
-                <!-- Terminal Event Logs -->
-                <div class="card" style="flex: 1; display: flex; flex-direction: column;">
-                    <div class="card-title">Network Event Log</div>
-                    <div class="terminal" id="terminalLogs" style="flex: 1; min-height: 240px;">
-                        <div>[00:00:00] Dashboard connected. Waiting for network events...</div>
+                <div class="card" style="display: flex; flex-direction: column; min-height: 0;">
+                    <div class="card-title">
+                        <span>Real-Time Node Logs</span>
+                        <button class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px;" onclick="clearLogs()">Clear</button>
+                    </div>
+                    <div class="terminal" id="terminalLogs">
+                        <div>[00:00:00] Node logging initialized. Monitoring mesh network...</div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Incoming Connection Requests Banner -->
-        <div class="card full-width" id="petitionCard" style="display: none; border-color: var(--amber); background: rgba(245, 158, 11, 0.05);">
-            <div class="card-title" style="color: var(--amber);">⚡ Incoming Connection Request</div>
-            <div id="petitionsContainer"></div>
-        </div>
-
-        <!-- Discovered & Available Peers -->
         <div class="card full-width">
             <div class="card-title">
-                <span>Available Peers (<span id="peerCount">0</span>)</span>
-                <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="fetchStatus()">🔄 Refresh</button>
+                <span>Discovered & Connected Peers <span id="peerCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11.5px;" onclick="saveAllConnectedPeers()">💾 Save All Peers</button>
+                    <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="fetchStatus()">🔄 Refresh</button>
+                </div>
             </div>
             
             <div id="peersContainer" class="peers-list">
-                <div style="color: var(--text-muted); text-align: center; padding: 24px;">Scanning for available peers...</div>
+                <div style="color: var(--text-muted); text-align: center; padding: 24px;">Scanning for mesh peers...</div>
             </div>
         </div>
 
-        <!-- Saved Peers (peers.db) -->
+        <div class="card full-width" style="border-color: rgba(56, 189, 248, 0.25);">
+            <div class="card-title" style="color: var(--accent); font-size: 16px; margin-bottom: 18px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 20px;">🎮</span>
+                    <span>Shared Virtual LAN - FriendsLAN Wintun</span>
+                </div>
+                <div id="lanAdapterStatusBadge">
+                    <span class="status-badge" style="font-size:12px;">Checking Wintun Adapter...</span>
+                </div>
+            </div>
+
+            <div class="info-grid" style="grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));">
+                <div class="info-item" style="background: rgba(0, 0, 0, 0.35); border-color: rgba(56, 189, 248, 0.2);">
+                    <div class="info-label">Virtual IP Address</div>
+                    <div class="input-group" style="margin-top: 6px;">
+                        <input type="text" id="virtualIpInput" class="input-text" style="font-weight: 700; color: var(--accent);" placeholder="10.0.0.2">
+                        <button class="btn btn-emerald" style="padding: 6px 12px; font-size: 12px;" onclick="configureVirtualIp()">Apply</button>
+                    </div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Network Mask & MTU</div>
+                    <div class="info-value"><span id="lanSubnet">255.0.0.0</span> | MTU <span id="lanMtu">9000</span></div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">LAN Packets (RX / TX)</div>
+                    <div class="info-value"><span id="lanRxPkts">0</span> / <span id="lanTxPkts">0</span></div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Broadcast Relay</div>
+                    <div class="info-value" style="color: var(--emerald);">Active (Mesh Bridge)</div>
+                </div>
+            </div>
+
+            <div style="margin-top: 14px;">
+                <div class="info-label" style="margin-bottom: 8px;">
+                    Connected LAN Peers <span id="activeLanCount" style="font-size:11px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span>
+                </div>
+                <div id="activeLanPeersContainer" class="peers-list">
+                    <div style="color: var(--text-muted); text-align: center; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 10px; font-size: 13px;">
+                        No peers connected to Virtual LAN. Connect via FriendsLAN protocol above to join the mesh network!
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card full-width">
             <div class="card-title">
-                <span>Saved Peers Database (<span id="savedPeerCount">0</span>)</span>
+                <span>Saved Peers Database <span id="savedPeerCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
+                <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="openAddSavedPeerModal()">➕ Add Saved Peer</button>
             </div>
             <div id="savedPeersContainer" class="peers-list">
-                <div style="color: var(--text-muted); text-align: center; padding: 16px;">No saved peers in database.</div>
+                <div style="color: var(--text-muted); text-align: center; padding: 14px; font-size: 13px;">No saved peers in database.</div>
             </div>
         </div>
     </main>
 
-    <div id="toast" class="toast">Copied to clipboard!</div>
+    <div id="editPeerModal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 style="font-size: 16px; font-weight: 700; color: var(--text-primary);">Edit Saved Peer</h3>
+            <div>
+                <label class="info-label">Peer Name</label>
+                <input type="text" id="editName" class="input-text" placeholder="e.g. My Laptop, Desktop, Peer Node" style="width: 100%; margin-top: 4px;">
+            </div>
+            <div>
+                <label class="info-label">Certificate Hash (Base64)</label>
+                <input type="text" id="editCertHash" class="input-text" readonly style="opacity: 0.7; width: 100%; margin-top: 4px;">
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <div style="flex: 1;">
+                    <label class="info-label">Min Port</label>
+                    <input type="number" id="editMinPort" class="input-text" min="1" max="65535" style="width: 100%; margin-top: 4px;">
+                </div>
+                <div style="flex: 1;">
+                    <label class="info-label">Max Port</label>
+                    <input type="number" id="editMaxPort" class="input-text" min="1" max="65535" style="width: 100%; margin-top: 4px;">
+                </div>
+            </div>
+            <div>
+                <label class="info-label">IP Addresses (comma separated)</label>
+                <input type="text" id="editAddresses" class="input-text" placeholder="192.168.1.50, 85.12.34.56" style="width: 100%; margin-top: 4px;">
+            </div>
+            <div>
+                <label class="info-label">Tor Onion Address (optional)</label>
+                <input type="text" id="editOnionAddress" class="input-text" placeholder="abcdef...onion" style="width: 100%; margin-top: 4px;">
+            </div>
+            <div style="margin-top: 6px;">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; color: var(--text-primary);">
+                    <input type="checkbox" id="editAutoConnect" style="accent-color: var(--emerald);">
+                    <span>⚡ Auto-Connect on Startup (interrogate automatically when node starts)</span>
+                </label>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px;">
+                <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+                <button class="btn btn-emerald" onclick="savePeerUpdates()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast">Notification</div>
 
     <script>
         let currentStatus = null;
-        let selectedPeerId = null;
+        const selectedPeerProtocols = new Map(); // peerId -> protocolId
 
         async function fetchStatus() {
             try {
@@ -386,410 +663,727 @@
                 currentStatus = data;
                 renderStatus(data);
             } catch (err) {
-                console.error(err);
+                console.error("Status fetch error:", err);
+            }
+        }
+
+        function formatPortRange(minPort, maxPort) {
+            if (!minPort && !maxPort) return '0';
+            if (!maxPort || minPort === maxPort) return `${minPort || maxPort}`;
+            return `${minPort}-${maxPort}`;
+        }
+
+        function renderStatus(data) {
+            if (!data) return;
+
+            document.getElementById('nodeName').textContent = data.nodeName || 'LocalNode';
+            document.getElementById('natType').textContent = data.networkType || 'Unknown';
+            document.getElementById('portRange').textContent = formatPortRange(data.minPort, data.maxPort);
+
+            const autoAcceptToggle = document.getElementById('globalAutoAcceptToggle');
+            if (autoAcceptToggle && data.autoAcceptAll !== undefined) {
+                autoAcceptToggle.checked = !!data.autoAcceptAll;
+            }
+            
+            const addrs = data.publicEndpoints || [];
+            document.getElementById('publicEndpoints').textContent = addrs.length > 0 ? addrs.join(', ') : 'Discovering...';
+            
+            const wanToken = data.wanToken || data.token || '';
+            const wanTokenEl = document.getElementById('wanTokenBox');
+            if (wanTokenEl) wanTokenEl.textContent = wanToken ? `QP://${wanToken}` : 'Generating WAN token...';
+
+            const tor = data.torStatus || {};
+            const isTorStarted = tor.isStarted;
+            const onionAddr = tor.onionAddress || '';
+            
+            const torToken = data.torToken || '';
+            const torTokenEl = document.getElementById('torTokenBox');
+            const copyTorBtn = document.getElementById('copyTorTokenBtn');
+            if (torTokenEl) {
+                if (torToken) {
+                    torTokenEl.textContent = `QP://${torToken}`;
+                    if (copyTorBtn) copyTorBtn.removeAttribute('disabled');
+                } else {
+                    torTokenEl.textContent = isTorStarted ? 'Generating Tor token...' : 'Tor Service Inactive (Start Tor above)';
+                    if (copyTorBtn) copyTorBtn.setAttribute('disabled', 'true');
+                }
+            }
+            
+            const torIndicator = document.getElementById('torStatusIndicator');
+            const torOnionDisplay = document.getElementById('torOnionDisplay');
+            const torToggleBtn = document.getElementById('torToggleBtn');
+            const torNewNymBtn = document.getElementById('torNewNymBtn');
+            const torStateTag = document.getElementById('torStateTag');
+
+            if (isTorStarted) {
+                torIndicator.textContent = tor.bootstrapStatus || 'Active (100%)';
+                torIndicator.style.color = '#c084fc';
+                torOnionDisplay.textContent = onionAddr ? `${onionAddr}:${tor.virtualPort || 443}` : 'Publishing hidden service...';
+                torToggleBtn.textContent = '🛑 Stop Tor Service';
+                torToggleBtn.className = 'btn btn-rose';
+                torNewNymBtn.style.display = 'inline-flex';
+                torStateTag.textContent = '🧅 Tor + WAN Active';
+                torStateTag.className = 'transport-badge transport-tor';
+            } else {
+                torIndicator.textContent = 'Inactive';
+                torIndicator.style.color = 'var(--text-muted)';
+                torOnionDisplay.textContent = 'Tor Service Stopped';
+                torToggleBtn.textContent = '🧅 Start Tor Service';
+                torToggleBtn.className = 'btn btn-purple';
+                torNewNymBtn.style.display = 'none';
+                torStateTag.textContent = '🌐 UDP WAN';
+                torStateTag.className = 'transport-badge transport-wan';
+            }
+
+            const interContainer = document.getElementById('interrogationsContainer');
+            const interList = data.activeInterrogations || [];
+            document.getElementById('interrogationCount').textContent = interList.length;
+            if (interList.length === 0) {
+                interContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 14px; font-size: 13px;">No active hole punching attempts in progress.</div>';
+            } else {
+                interContainer.innerHTML = interList.map(item => `
+                    <div class="peer-card" style="border-left: 3px solid var(--amber);">
+                        <div class="peer-info-main">
+                            <div class="peer-name">🎯 ${escapeHtml(item.peerName)}</div>
+                            <div class="peer-meta">Endpoints: ${(item.addresses || []).join(', ')} (${formatPortRange(item.minPort, item.maxPort)})</div>
+                            <div class="peer-meta">Started at ${item.startTime}</div>
+                        </div>
+                        <div>
+                            <button class="btn btn-rose" style="padding: 4px 10px; font-size: 12px;" onclick="cancelInterrogation('${item.id}')">Cancel</button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            const petContainer = document.getElementById('petitionBannerContainer');
+            const petitions = data.pendingPetitions || [];
+            if (petitions.length > 0) {
+                petContainer.style.display = 'block';
+                petContainer.innerHTML = petitions.map(p => `
+                    <div class="petition-banner" style="margin-bottom: 12px;">
+                        <div>
+                            <div style="font-weight: 700; font-size: 15px; color: var(--amber);">⚡ Incoming ${escapeHtml(p.protocolName)} Connection</div>
+                            <div style="font-size: 13px; color: var(--text-primary); margin-top: 2px;">Peer <strong>${escapeHtml(p.peerName)}</strong> requests a direct ${escapeHtml(p.protocolName)} session.</div>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-emerald" onclick="respondPetition('${p.requestId}', true, '${p.protocolName}', '${p.peerId}')">✅ Accept & Open</button>
+                            <button class="btn btn-rose" onclick="respondPetition('${p.requestId}', false)">❌ Decline</button>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                petContainer.style.display = 'none';
+                petContainer.innerHTML = '';
+            }
+
+            const peers = data.availablePeers || [];
+            const peerCountEl = document.getElementById('peerCount');
+            if (peerCountEl) peerCountEl.textContent = peers.length;
+            const peersContainer = document.getElementById('peersContainer');
+            if (peers.length === 0) {
+                peersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 24px;">No mesh peers discovered. Share your token or connect to someone!</div>';
+            } else {
+                const initialPlaceholder = peersContainer.querySelector('div[style*="text-align: center"]');
+                if (initialPlaceholder && peersContainer.children.length === 1) {
+                    peersContainer.innerHTML = '';
+                }
+
+                const currentPeerIds = new Set(peers.map(p => p.id));
+
+                Array.from(peersContainer.children).forEach(cardEl => {
+                    if (cardEl.id && cardEl.id.startsWith('peer_card_')) {
+                        const pid = cardEl.id.replace('peer_card_', '');
+                        if (!currentPeerIds.has(pid)) {
+                            cardEl.remove();
+                        }
+                    }
+                });
+
+                peers.forEach(p => {
+                    let card = document.getElementById(`peer_card_${p.id}`);
+                    if (!card) {
+                        card = document.createElement('div');
+                        card.id = `peer_card_${p.id}`;
+                        card.className = 'peer-card';
+                        card.innerHTML = buildPeerCardInnerHtml(p, data.registeredProtocols || []);
+                        peersContainer.appendChild(card);
+                    } else {
+                        updatePeerCardInPlace(card, p);
+                    }
+                });
+            }
+
+            const lan = data.lanStatus || {};
+            const adapterBadge = document.getElementById('lanAdapterStatusBadge');
+            const isActive = lan.adapterStatus === 'Active';
+            adapterBadge.innerHTML = isActive 
+                ? `<span class="status-badge"><div class="pulse-dot"></div> Wintun Active (${lan.localVirtualIp})</span>`
+                : `<span class="status-badge" style="background:rgba(244,63,94,0.1); border-color:rgba(244,63,94,0.3); color:#f43f5e;">${escapeHtml(lan.adapterStatus || 'Not Started')}</span>`;
+
+            if (lan.localVirtualIp && !document.getElementById('virtualIpInput').value) {
+                document.getElementById('virtualIpInput').value = lan.localVirtualIp;
+            }
+            document.getElementById('lanSubnet').textContent = lan.subnetMask || '255.0.0.0';
+            document.getElementById('lanMtu').textContent = lan.mtu || 9000;
+            document.getElementById('lanRxPkts').textContent = `${lan.totalRxPackets || 0} (${formatBytes(lan.totalRxBytes || 0)})`;
+            document.getElementById('lanTxPkts').textContent = `${lan.totalTxPackets || 0} (${formatBytes(lan.totalTxBytes || 0)})`;
+
+            const lanPeersContainer = document.getElementById('activeLanPeersContainer');
+            const lanPeers = lan.activePeers || [];
+            const activeLanCountEl = document.getElementById('activeLanCount');
+            if (activeLanCountEl) activeLanCountEl.textContent = lanPeers.length;
+            if (lanPeers.length === 0) {
+                lanPeersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 12px; background: var(--item-bg); border: 1px solid var(--card-border); border-radius: 3px; font-size: 12px;">No peers connected to Virtual LAN. Connect via FriendsLAN protocol above to join the mesh network!</div>';
+            } else {
+                lanPeersContainer.innerHTML = lanPeers.map(p => `
+                    <div class="peer-card">
+                        <div class="peer-info-main">
+                            <div class="peer-name">🎮 ${escapeHtml(p.peerName)}</div>
+                            <div class="peer-meta">Virtual IP: <strong style="color:var(--accent);">${escapeHtml(p.virtualIp)}</strong> | Joined: ${p.connectedAt}</div>
+                        </div>
+                        <div style="font-size: 11.5px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace;">
+                            RX: ${p.rxPackets} (${formatBytes(p.rxBytes)}) | TX: ${p.txPackets} (${formatBytes(p.txBytes)})
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            const savedContainer = document.getElementById('savedPeersContainer');
+            const savedPeers = data.savedPeers || [];
+            const savedPeerCountEl = document.getElementById('savedPeerCount');
+            if (savedPeerCountEl) savedPeerCountEl.textContent = savedPeers.length;
+            if (savedPeers.length === 0) {
+                savedContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 12px; font-size: 12px;">No saved peers in database.</div>';
+            } else {
+                savedContainer.innerHTML = savedPeers.map(sp => {
+                    const isTorSaved = !stringIsNullOrEmpty(sp.onionAddress);
+                    const transportBadge = isTorSaved
+                        ? `<span class="transport-badge transport-tor">🧅 Tor</span>`
+                        : `<span class="transport-badge transport-wan">🌐 WAN</span>`;
+
+                    const epDisplay = isTorSaved
+                        ? (sp.onionAddress + (sp.minPort ? ':' + sp.minPort : ''))
+                        : (sp.addresses && sp.addresses.length > 0 ? `${sp.addresses.join(', ')} (${formatPortRange(sp.minPort, sp.maxPort)})` : 'No IP');
+
+                    return `
+                        <div class="peer-card">
+                            <div class="peer-info-main">
+                                <div class="peer-name-row">
+                                    <span class="peer-name">${escapeHtml(sp.name || 'Saved Peer')}</span>
+                                    ${transportBadge}
+                                    <label style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; background: var(--item-bg); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--card-border);" title="Toggle auto-connect on application start">
+                                        <input type="checkbox" ${sp.autoConnect ? 'checked' : ''} onchange="toggleSavedPeerAutoConnect('${sp.certHash}', this.checked)" style="cursor: pointer; accent-color: var(--emerald);">
+                                        <span style="color: ${sp.autoConnect ? 'var(--emerald)' : 'var(--text-muted)'}; font-weight: 600;">⚡ Auto-Connect</span>
+                                    </label>
+                                </div>
+                                <div class="peer-meta">Endpoints: <strong style="color:var(--text-primary);">${escapeHtml(epDisplay)}</strong></div>
+                                <div class="peer-meta">Cert: ${escapeHtml(sp.certHash.substring(0, 24))}...</div>
+                            </div>
+                            <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                                <button class="btn btn-emerald" style="padding: 4px 8px; font-size: 11.5px;" onclick="connectSavedPeer('${sp.certHash}', this)" title="Interrogate and connect right now">⚡ Reconnect</button>
+                                <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11.5px;" onclick='openEditModal(${JSON.stringify(sp)})'>✏️ Edit</button>
+                                <button class="btn btn-rose" style="padding: 4px 8px; font-size: 11.5px;" onclick="deleteSavedPeer('${sp.certHash}')">🗑️ Delete</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            const logs = data.logs || [];
+            const termEl = document.getElementById('terminalLogs');
+            if (termEl) {
+                termEl.innerHTML = logs.map(l => `<div>${escapeHtml(l)}</div>`).join('');
+                termEl.scrollTop = termEl.scrollHeight;
+            }
+        }
+
+        function stringIsNullOrEmpty(s) {
+            return !s || s.trim().length === 0;
+        }
+
+        function buildPingBadgeHtml(peer) {
+            return peer.hasPing && peer.ping >= 0
+                ? `<span style="font-size: 10px; padding: 2px 5px; border-radius: 2px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.25); color: #34d399; font-weight: 600; font-family: 'JetBrains Mono', monospace;">⚡ ${peer.ping} ms</span>`
+                : `<span style="font-size: 10px; padding: 2px 5px; border-radius: 2px; background: var(--item-bg); border: 1px solid var(--card-border); color: #94a3b8; font-family: 'JetBrains Mono', monospace;">no ping</span>`;
+        }
+
+        function buildTransportBadgeHtml(peer) {
+            return peer.isTor
+                ? `<span class="transport-badge transport-tor">🧅 Tor</span>`
+                : `<span class="transport-badge transport-wan">🌐 WAN</span>`;
+        }
+
+        function buildEndpointDisplay(peer) {
+            return peer.isTor 
+                ? (peer.onionAddress || peer.activeEndPoint)
+                : `${peer.activeEndPoint} (${(peer.addresses || []).join(', ')})`;
+        }
+
+        function buildPeerCardInnerHtml(peer, protocols) {
+            const pingBadge = buildPingBadgeHtml(peer);
+            const transportBadge = buildTransportBadgeHtml(peer);
+            const epDisplay = buildEndpointDisplay(peer);
+            const lastSeenBadge = formatLastSeenBadge(peer.lastSeenSecondsAgo, peer.lastSeenFormatted);
+            
+            const savedProto = selectedPeerProtocols.get(peer.id);
+            const defaultProto = protocols.length > 0 ? protocols[0].id : '';
+            const currentSelectedProto = savedProto || defaultProto;
+
+            const protoOptions = protocols.map(pr => 
+                `<option value="${pr.id}" ${pr.id === currentSelectedProto ? 'selected' : ''}>${escapeHtml(pr.name)}</option>`
+            ).join('');
+
+            const isAutoAccepted = !!peer.isAutoAccepted;
+            const trustBtnHtml = `<button id="peer_trust_btn_${peer.id}" class="btn ${isAutoAccepted ? 'btn-emerald' : 'btn-secondary'}" style="padding: 5px 8px; font-size: 11.5px;" onclick="togglePeerAutoAccept('${peer.id}', ${!isAutoAccepted})" title="${isAutoAccepted ? 'Peer is trusted and auto-accepted' : 'Auto-accept connections from this peer'}">${isAutoAccepted ? '🛡️ Trusted' : '🛡️ Trust'}</button>`;
+
+            const isSaved = !!peer.isSaved;
+            const saveBtnHtml = `<button id="peer_save_btn_${peer.id}" class="btn ${isSaved ? 'btn-emerald' : 'btn-secondary'}" style="padding: 5px 8px; font-size: 11.5px;" onclick="toggleSavePeer('${peer.id}', ${!isSaved})" title="${isSaved ? 'Remove peer from saved database' : 'Save peer to database'}">${isSaved ? '💾 Saved' : '💾 Save'}</button>`;
+
+            return `
+                <div class="peer-info-main">
+                    <div class="peer-name-row">
+                        <span class="peer-name">${escapeHtml(peer.name || 'Peer')}</span>
+                        <span id="peer_saved_badge_${peer.id}">${isSaved ? '<span title="Saved in database" style="font-size:11px;">💾</span>' : ''}</span>
+                        <span id="peer_trust_badge_${peer.id}">${isAutoAccepted ? '<span title="Auto-accepted peer" style="font-size:11px;">🛡️</span>' : ''}</span>
+                        <span id="peer_transport_${peer.id}">${transportBadge}</span>
+                        <span id="peer_ping_${peer.id}">${pingBadge}</span>
+                        <span id="peer_seen_${peer.id}">${lastSeenBadge}</span>
+                    </div>
+                    <div class="peer-meta">ID: ${peer.id}</div>
+                    <div class="peer-meta">Endpoint: <strong id="peer_ep_${peer.id}" style="color:var(--text-primary);">${escapeHtml(epDisplay)}</strong></div>
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                    <select id="proto_${peer.id}" class="select-protocol" onchange="selectedPeerProtocols.set('${peer.id}', this.value)">
+                        ${protoOptions}
+                    </select>
+                    <button class="btn btn-emerald" style="padding: 5px 10px; font-size: 11.5px;" onclick="connectPeerProtocol('${peer.id}', this)">⚡ Connect</button>
+                    ${saveBtnHtml}
+                    ${trustBtnHtml}
+                    <button class="btn btn-secondary" style="padding: 5px 8px; font-size: 11.5px;" onclick="disconnectPeer('${peer.id}')">🚫 Disconnect</button>
+                </div>
+            `;
+        }
+
+        function updatePeerCardInPlace(card, peer) {
+            const pingEl = document.getElementById(`peer_ping_${peer.id}`);
+            if (pingEl) pingEl.innerHTML = buildPingBadgeHtml(peer);
+
+            const seenEl = document.getElementById(`peer_seen_${peer.id}`);
+            if (seenEl) seenEl.innerHTML = formatLastSeenBadge(peer.lastSeenSecondsAgo, peer.lastSeenFormatted);
+
+            const transEl = document.getElementById(`peer_transport_${peer.id}`);
+            if (transEl) transEl.innerHTML = buildTransportBadgeHtml(peer);
+
+            const saveBadgeEl = document.getElementById(`peer_saved_badge_${peer.id}`);
+            if (saveBadgeEl) saveBadgeEl.innerHTML = peer.isSaved ? '<span title="Saved in database" style="font-size:11px;">💾</span>' : '';
+
+            const trustBadgeEl = document.getElementById(`peer_trust_badge_${peer.id}`);
+            if (trustBadgeEl) trustBadgeEl.innerHTML = peer.isAutoAccepted ? '<span title="Auto-accepted peer" style="font-size:11px;">🛡️</span>' : '';
+
+            const epEl = document.getElementById(`peer_ep_${peer.id}`);
+            if (epEl) epEl.innerText = buildEndpointDisplay(peer);
+
+            const saveBtn = document.getElementById(`peer_save_btn_${peer.id}`);
+            if (saveBtn) {
+                saveBtn.className = `btn ${peer.isSaved ? 'btn-emerald' : 'btn-secondary'}`;
+                saveBtn.innerText = peer.isSaved ? '💾 Saved' : '💾 Save';
+                saveBtn.title = peer.isSaved ? 'Remove peer from saved database' : 'Save peer to database';
+                saveBtn.onclick = () => toggleSavePeer(peer.id, !peer.isSaved);
+            }
+
+            const trustBtn = document.getElementById(`peer_trust_btn_${peer.id}`);
+            if (trustBtn) {
+                trustBtn.className = `btn ${peer.isAutoAccepted ? 'btn-emerald' : 'btn-secondary'}`;
+                trustBtn.innerText = peer.isAutoAccepted ? '🛡️ Trusted' : '🛡️ Trust';
+                trustBtn.title = peer.isAutoAccepted ? 'Peer is trusted and auto-accepted' : 'Auto-accept connections from this peer';
+                trustBtn.onclick = () => togglePeerAutoAccept(peer.id, !peer.isAutoAccepted);
             }
         }
 
         function formatLastSeenBadge(secAgo, formattedTime) {
             if (secAgo < 6) {
-                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:12px; background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.4); color:#10b981; font-weight:600;"><span style="width:6px; height:6px; border-radius:50%; background:#10b981; display:inline-block;"></span> Active now</span>`;
-            } else if (secAgo < 30) {
-                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:12px; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.4); color:#f59e0b; font-weight:600;"><span style="width:6px; height:6px; border-radius:50%; background:#f59e0b; display:inline-block;"></span> Active ${secAgo}s ago</span>`;
-            } else if (secAgo < 3600) {
-                const mins = Math.floor(secAgo / 60);
-                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:12px; background:rgba(244,63,94,0.15); border:1px solid rgba(244,63,94,0.4); color:#f43f5e; font-weight:500;">Idle ${mins}m ago (${formattedTime})</span>`;
+                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 5px; border-radius:2px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); color:#10b981; font-weight:600; font-family: 'JetBrains Mono', monospace;"><span style="width:4px; height:4px; border-radius:50%; background:#10b981; display:inline-block;"></span> Active</span>`;
+            } else if (secAgo < 45) {
+                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 5px; border-radius:2px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); color:#f59e0b; font-weight:600; font-family: 'JetBrains Mono', monospace;">Active ${secAgo}s ago</span>`;
             } else {
-                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px; border-radius:12px; background:rgba(148,163,184,0.15); border:1px solid rgba(148,163,184,0.3); color:#94a3b8; font-weight:400;">Offline (${formattedTime})</span>`;
+                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 5px; border-radius:2px; background:var(--item-bg); border:1px solid var(--card-border); color:#94a3b8; font-weight:400; font-family: 'JetBrains Mono', monospace;">Seen ${formattedTime}</span>`;
             }
         }
 
-        function formatPingBadge(hasPing, ping) {
-            if (!hasPing || ping < 0) return `<span style="font-size:11px; color:var(--text-muted); background:rgba(255,255,255,0.05); padding:2px 6px; border-radius:4px;">⚡ Measuring...</span>`;
-            const pingStr = ping < 10 ? ping.toFixed(1) : Math.round(ping);
-            return `<span style="font-size:12px; color:var(--emerald); font-weight:600; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); padding:2px 7px; border-radius:6px;">⚡ ${pingStr}ms</span>`;
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
         }
 
-        function renderStatus(data) {
-            const elName = document.getElementById('nodeName'); if (elName) elName.innerText = data.nodeName || 'LocalNode';
-            const elNat = document.getElementById('natType'); if (elNat) elNat.innerText = data.networkType || 'Unknown';
-            const elPorts = document.getElementById('portRange'); if (elPorts) elPorts.innerText = (data.minPort && data.maxPort) ? (data.minPort === data.maxPort ? `${data.minPort}` : `${data.minPort}-${data.maxPort}`) : 'Auto';
-            const elListenerPort = document.getElementById('listenerPortInput');
-            if (elListenerPort && !isEditingListenerPort && document.activeElement !== elListenerPort) {
-                elListenerPort.value = data.listenerPort || '';
-            }
-            const elEps = document.getElementById('publicEndpoints'); if (elEps) elEps.innerText = (data.publicEndpoints && data.publicEndpoints.length > 0) ? data.publicEndpoints.join(', ') : 'Discovering...';
-            const elToken = document.getElementById('nodeToken'); if (elToken) elToken.innerText = data.token || 'Generating...';
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
 
-            let protoOptionsHtml = '';
-            if (data.registeredProtocols && data.registeredProtocols.length > 0) {
-                protoOptionsHtml = data.registeredProtocols.map(pr => '<option value="' + pr.id + '">' + pr.name + '</option>').join('');
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        function copyWanToken() {
+            const token = currentStatus?.wanToken || currentStatus?.token;
+            if (token) {
+                navigator.clipboard.writeText(`QP://${token}`);
+                showToast("WAN Token (QP://) copied to clipboard!");
+            }
+        }
+
+        function copyTorToken() {
+            const token = currentStatus?.torToken;
+            if (token) {
+                navigator.clipboard.writeText(`QP://${token}`);
+                showToast("Tor Token (QP://) copied to clipboard!");
             } else {
-                protoOptionsHtml = '<option value="chat">Chat</option><option value="lan">FriendsLAN</option>';
-            }
-
-            const peersContainer = document.getElementById('peersContainer');
-            document.getElementById('peerCount').innerText = data.availablePeers ? data.availablePeers.length : 0;
-
-            if (!data.availablePeers || data.availablePeers.length === 0) {
-                peersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 24px;">No peers available yet. Share your token to connect!</div>';
-            } else {
-                peersContainer.innerHTML = data.availablePeers.map(p => `
-                    <div class="peer-card">
-                        <div class="peer-info-main">
-                            <div class="peer-name" style="display:flex; align-items:center; gap:10px;">
-                                <strong style="font-size:15px; color:var(--text-main);">${escapeHtml(p.name)}</strong>
-                                ${formatLastSeenBadge(p.lastSeenSecondsAgo, p.lastSeenFormatted)}
-                                ${formatPingBadge(p.hasPing, p.ping)}
-                            </div>
-                            <div class="peer-meta" style="margin-top:4px;">ID: ${p.id} | Endpoint: <code style="color:var(--text-muted);">${escapeHtml(p.activeEndPoint)}</code></div>
-                        </div>
-                        <div style="display: flex; gap: 8px; align-items: center;">
-                            <select id="proto-select-${p.id}" class="input-text" style="padding: 6px 10px; font-size: 13px;">
-                                ${protoOptionsHtml}
-                            </select>
-                            <button class="btn btn-emerald" style="padding: 6px 12px; font-size: 13px;" onclick="connectPeerSelected('${p.id}')">⚡ Connect</button>
-                            <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px; background: rgba(244,63,94,0.15); border-color: rgba(244,63,94,0.4); color: #f43f5e;" onclick="disconnectPeer('${p.id}')">🔌 Disconnect</button>
-                        </div>
-                    </div>
-                `).join('');
-            }
-
-            const savedPeersContainer = document.getElementById('savedPeersContainer');
-            document.getElementById('savedPeerCount').innerText = data.savedPeers ? data.savedPeers.length : 0;
-            if (data.savedPeers && data.savedPeers.length > 0) {
-                savedPeersContainer.innerHTML = data.savedPeers.map(sp => `
-                    <div class="peer-card">
-                        <div class="peer-info-main">
-                            <div class="peer-name">Saved Peer <span style="font-size:12px; color: var(--accent); font-family:monospace;">(Cert: ${sp.certHash.substring(0,12)}...)</span></div>
-                            <div class="peer-meta">Ports: ${sp.minPort === sp.maxPort ? `${sp.minPort}` : `${sp.minPort}-${sp.maxPort}`} | IPs: ${(sp.addresses || []).join(', ')}</div>
-                        </div>
-                        <div style="display:flex; gap: 8px;">
-                            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="promptEditSavedPeer('${sp.certHash}', ${sp.minPort}, ${sp.maxPort}, '${(sp.addresses || []).join(', ')}')">✏️ Edit</button>
-                            <button class="btn btn-rose" style="padding: 4px 10px; font-size: 12px; background: rgba(244,63,94,0.2); border:1px solid rgba(244,63,94,0.4);" onclick="deleteSavedPeer('${sp.certHash}')">🗑️ Remove</button>
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                savedPeersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 16px;">No saved peers in database.</div>';
-            }
-
-            const petitionCard = document.getElementById('petitionCard');
-            const petitionsContainer = document.getElementById('petitionsContainer');
-            if (data.pendingPetitions && data.pendingPetitions.length > 0) {
-                petitionCard.style.display = 'block';
-                petitionsContainer.innerHTML = data.pendingPetitions.map(p => `
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; margin-bottom: 10px; gap: 16px;">
-                        <div style="display: flex; align-items: center; gap: 12px;">
-                            <span style="font-size: 24px;">⚡</span>
-                            <div>
-                                <div style="font-size: 15px; font-weight: 700; color: #f8fafc;">
-                                    ${escapeHtml(p.peerName)}
-                                </div>
-                                <div style="font-size: 13px; color: #f59e0b; margin-top: 2px;">
-                                    Wants to establish a <b>${escapeHtml(p.protocolName)}</b> session
-                                </div>
-                            </div>
-                        </div>
-                        <div style="display: flex; gap: 10px; flex-shrink: 0;">
-                            <button class="btn btn-emerald" style="padding: 8px 18px; font-size: 13px;" onclick="acceptPetition('${p.requestId}', '${p.protocolId}', '${p.peerId}')">✅ Accept</button>
-                            <button class="btn btn-secondary" style="padding: 8px 18px; font-size: 13px; background: rgba(244,63,94,0.15); border-color: rgba(244,63,94,0.4); color: #f43f5e;" onclick="declinePetition('${p.requestId}')">❌ Decline</button>
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                petitionCard.style.display = 'none';
-            }
-
-            const interrogationContainer = document.getElementById('interrogationsContainer');
-            const elIntCount = document.getElementById('interrogationCount');
-            if (elIntCount) elIntCount.innerText = data.activeInterrogations ? data.activeInterrogations.length : 0;
-
-            if (data.activeInterrogations && data.activeInterrogations.length > 0) {
-                interrogationContainer.innerHTML = data.activeInterrogations.map(item => `
-                    <div class="peer-card" style="border-color: rgba(56, 189, 248, 0.3);">
-                        <div class="peer-info-main">
-                            <div class="peer-name">
-                                ⚡ ${escapeHtml(item.peerName || 'Remote Target')}
-                                <span style="font-size:12px; color: var(--accent); font-weight:normal;">(Started: ${item.startTime})</span>
-                            </div>
-                            <div class="peer-meta">
-                                IPs: ${(item.addresses || []).join(', ') || 'Discovering...'} |
-                                Ports: ${item.minPort === item.maxPort ? `${item.minPort}` : `${item.minPort}-${item.maxPort}`}
-                            </div>
-                        </div>
-                        <div>
-                            <button class="btn btn-rose" style="padding: 6px 14px; font-size: 13px; background: rgba(244,63,94,0.2); border:1px solid rgba(244,63,94,0.4);" onclick="cancelInterrogation('${item.id}')">❌ Cancel</button>
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                interrogationContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 16px;">No active hole punching attempts.</div>';
-            }
-
-            const terminal = document.getElementById('terminalLogs');
-            if (data.logs && data.logs.length > 0) {
-                terminal.innerHTML = data.logs.map(l => `<div>${escapeHtml(l)}</div>`).join('');
-                terminal.scrollTop = terminal.scrollHeight;
+                showToast("Tor service is not active. Start Tor first.");
             }
         }
 
-        async function acceptPetition(requestId, protocolId, peerId) {
-            try {
-                await fetch('/api/accept-petition', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId })
-                });
-                showToast('Accepted connection request!');
-                if (protocolId === '00000000-0000-0000-0000-000000000003' && peerId && peerId !== '00000000-0000-0000-0000-000000000000') {
-                    window.location.href = `/call.html?peerId=${encodeURIComponent(peerId)}`;
-                } else {
-                    fetchStatus();
-                }
-            } catch (err) { showToast('Error accepting request.'); }
+        function copyToken() {
+            copyWanToken();
         }
 
-        async function declinePetition(requestId) {
-            try {
-                await fetch('/api/decline-petition', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId })
-                });
-                showToast('Declined connection request.');
-                fetchStatus();
-            } catch (err) { showToast('Error declining request.'); }
-        }
-
-        async function deleteSavedPeer(certHash) {
-            if (!confirm('Are you sure you want to remove this peer record from peers.db?')) return;
-            try {
-                await fetch('/api/saved-peer-delete', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ certHash })
-                });
-                showToast('Removed peer from database.');
-                fetchStatus();
-            } catch (err) { showToast('Error removing peer.'); }
-        }
-
-        async function disconnectPeer(peerId) {
-            try {
-                const res = await fetch('/api/disconnect-peer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId })
-                });
-                if (res.ok) {
-                    showToast('Disconnected peer.');
-                    fetchStatus();
-                } else {
-                    showToast('Failed to disconnect peer.');
-                }
-            } catch (err) {
-                showToast('Error disconnecting peer.');
-            }
-        }
-
-        async function promptEditSavedPeer(certHash, oldMinPort, oldMaxPort, oldAddrs) {
-            const minPort = parseInt(prompt('Min Port:', oldMinPort));
-            if (isNaN(minPort)) return;
-            const maxPort = parseInt(prompt('Max Port:', oldMaxPort));
-            if (isNaN(maxPort)) return;
-            const addresses = prompt('IP Addresses (comma separated):', oldAddrs);
-            if (addresses === null) return;
-
-            try {
-                await fetch('/api/saved-peer-update', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ certHash, minPort, maxPort, addresses })
-                });
-                showToast('Updated saved peer settings!');
-                fetchStatus();
-            } catch (err) { showToast('Error updating peer settings.'); }
-        }
-
-        function connectPeerSelected(peerId) {
-            const sel = document.getElementById('proto-select-' + peerId);
-            const protocolId = sel ? sel.value : 'chat';
-            
-            if (protocolId === '00000000-0000-0000-0000-000000000003') {
-                window.location.href = `/call.html?peerId=${encodeURIComponent(peerId)}`;
-                return;
-            }
-            if (protocolId === '00000000-0000-0000-0000-000000000001') {
-                window.location.href = `/chat.html?peerId=${encodeURIComponent(peerId)}`;
-                return;
-            }
-
-            const peerObj = currentStatus ? currentStatus.availablePeers.find(p => p.id === peerId) : null;
-            if (peerObj) {
-                selectedPeerId = peerId;
-            }
-            connectProtocol(peerId, protocolId);
-        }
-
-        function selectPeerForChat(peerId, peerName) {
-            selectedPeerId = peerId;
-            showToast(`Selected ${peerName} for Chat.`);
-        }
-
-        async function connectProtocol(peerId, protocol) {
-            try {
-                const res = await fetch('/api/connect-peer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId, protocol })
-                });
-                if (res.ok) {
-                    showToast(`Initiating connection...`);
-                }
-            } catch (err) {
-                showToast('Failed to connect.');
+        function copyQuickLink() {
+            if (currentStatus?.quickUri) {
+                navigator.clipboard.writeText(currentStatus.quickUri);
+                showToast("Quick share link copied!");
             }
         }
 
         async function connectByToken() {
-            const token = document.getElementById('connectTokenInput').value.trim();
+            const input = document.getElementById('connectTokenInput');
+            const token = input.value.trim();
             if (!token) return;
+
             try {
                 const res = await fetch('/api/connect-token', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ token })
                 });
-                if (res.ok) {
-                    showToast('Token sent for interrogation!');
-                    document.getElementById('connectTokenInput').value = '';
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast("Connection initiated!");
+                    input.value = '';
+                    setTimeout(fetchStatus, 600);
+                } else {
+                    showToast(data.error || "Connection error");
                 }
             } catch (err) {
-                showToast('Error sending token.');
+                console.error(err);
+                showToast("Connection error: " + err.message);
+            }
+        }
+
+        async function toggleTorRuntime() {
+            const isStarted = currentStatus?.torStatus?.isStarted;
+            try {
+                if (isStarted) {
+                    showToast("Stopping Tor runtime...");
+                    await fetch('/api/tor-stop', { method: 'POST' });
+                } else {
+                    showToast("Starting Tor runtime & hidden service...");
+                    await fetch('/api/tor-start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: 0 }) });
+                }
+                setTimeout(fetchStatus, 800);
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function requestNewCircuits() {
+            try {
+                showToast("Requesting new Tor circuits (NEWNYM)...");
+                const res = await fetch('/api/tor-newnym', { method: 'POST' });
+                const json = await res.json();
+                if (json.success) showToast("New Tor circuits assigned!");
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function connectPeerProtocol(peerId, btnEl) {
+            const sel = document.getElementById(`proto_${peerId}`);
+            const protocolId = sel ? sel.value : selectedPeerProtocols.get(peerId);
+            if (!protocolId) return;
+
+            const originalText = btnEl ? btnEl.innerText : '⚡ Connect';
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.innerText = '⏳ Connecting...';
+            }
+
+            try {
+                showToast("Negotiating QUIC connection...");
+                const res = await fetch('/api/connect-peer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId, protocolId, protocol: protocolId })
+                });
+                const data = await res.json();
+
+                const selText = (sel && sel.selectedIndex >= 0) ? sel.options[sel.selectedIndex].text.toLowerCase() : '';
+                if (selText.includes('chat') || protocolId === '00000000-0000-0000-0000-000000000001') {
+                    window.location.href = `/chat.html?peerId=${peerId}`;
+                } else if (selText.includes('voice') || selText.includes('call') || protocolId === '00000000-0000-0000-0000-000000000003') {
+                    window.location.href = `/call.html?peerId=${peerId}`;
+                } else {
+                    showToast("Connected via " + (selText || "protocol") + "!");
+                    fetchStatus();
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Connection negotiation failed.");
+            } finally {
+                if (btnEl) {
+                    setTimeout(() => {
+                        btnEl.disabled = false;
+                        btnEl.innerText = originalText;
+                    }, 4000);
+                }
+            }
+        }
+
+        async function respondPetition(requestId, accept, protocolName, peerId) {
+            try {
+                await fetch('/api/respond-petition', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requestId, accept })
+                });
+                showToast(accept ? "Connection accepted!" : "Connection declined.");
+                setTimeout(fetchStatus, 500);
+
+                if (accept && protocolName) {
+                    if (protocolName.toLowerCase().includes('chat')) {
+                        window.location.href = `/chat.html?peerId=${peerId}`;
+                    } else if (protocolName.toLowerCase().includes('voice') || protocolName.toLowerCase().includes('call')) {
+                        window.location.href = `/call.html?peerId=${peerId}`;
+                    }
+                }
+            } catch (err) {
+                console.error(err);
             }
         }
 
         async function cancelInterrogation(id) {
             try {
-                const res = await fetch('/api/cancel-interrogation', {
+                await fetch('/api/cancel-interrogation', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id })
                 });
-                if (res.ok) {
-                    showToast('Canceled hole punching attempt.');
-                    fetchStatus();
-                } else {
-                    showToast('Failed to cancel attempt.');
-                }
+                showToast("Hole punching attempt canceled.");
+                fetchStatus();
             } catch (err) {
-                showToast('Error canceling attempt.');
+                console.error(err);
             }
         }
 
-        let isEditingListenerPort = false;
-
-        async function changeListenerPort() {
-            const elInput = document.getElementById('listenerPortInput');
-            if (!elInput) return;
-            const port = parseInt(elInput.value.trim());
-            if (isNaN(port) || port < 1 || port > 65535) {
-                showToast('Please enter a valid port between 1 and 65535.');
-                return;
-            }
-
+        async function toggleGlobalAutoAccept(checked) {
             try {
-                const res = await fetch('/api/change-listener-port', {
+                await fetch('/api/settings/auto-accept', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ port })
+                    body: JSON.stringify({ autoAcceptAll: checked })
+                });
+                showToast(checked ? '✅ Auto-accept enabled for all connections' : 'ℹ️ Auto-accept disabled (manual approval required)');
+                fetchStatus();
+            } catch (err) {
+                showToast('Failed to update auto-accept setting');
+            }
+        }
+
+        async function togglePeerAutoAccept(peerId, autoAccept) {
+            try {
+                const res = await fetch('/api/peer/auto-accept', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId, autoAccept })
                 });
                 const data = await res.json();
-                if (res.ok && data.success) {
-                    showToast(`Listener port changed to ${data.listenerPort}!`);
+                if (data.success) {
+                    showToast(autoAccept ? '🛡️ Peer added to auto-accept' : 'ℹ️ Peer removed from auto-accept');
                     fetchStatus();
                 } else {
-                    showToast(`Failed to change port: ${data.error || 'Unknown error'}`);
+                    showToast('Failed to update peer auto-accept: ' + (data.error || 'Unknown error'));
                 }
             } catch (err) {
-                showToast('Error changing listener port.');
+                showToast('Error updating peer auto-accept');
             }
         }
 
-        function copyToken() {
-            if (!currentStatus) return;
-            navigator.clipboard.writeText(currentStatus.token);
-            showToast('Token copied to clipboard!');
-        }
-
-        function copyQuickLink() {
-            if (!currentStatus) return;
-            navigator.clipboard.writeText(currentStatus.quickUri);
-            showToast('Quick Link copied to clipboard!');
-        }
-
-        function showToast(msg) {
-            const t = document.getElementById('toast');
-            t.innerText = msg;
-            t.classList.add('show');
-            setTimeout(() => t.classList.remove('show'), 2500);
-        }
-
-        function escapeHtml(str) {
-            return (str || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        }
-
-        let lastClipboardText = '';
-
-        function isValidTokenFormat(text) {
-            if (!text || typeof text !== 'string') return false;
-            text = text.trim();
-
-            if (/^qphp:\/\//i.test(text)) {
-                return text.length > 15;
-            }
-
-            if (text.length >= 30 && /^[A-Za-z0-9+/=_-]+$/.test(text)) {
-                if (currentStatus && currentStatus.token && text === currentStatus.token.trim()) return false;
-                return true;
-            }
-
-            return false;
-        }
-
-        async function checkClipboardForToken() {
-            if (!navigator.clipboard || !navigator.clipboard.readText) return;
+        async function toggleSavePeer(peerId, shouldSave) {
             try {
-                const text = (await navigator.clipboard.readText()).trim();
-                if (text && text !== lastClipboardText) {
-                    lastClipboardText = text;
-                    if (isValidTokenFormat(text)) {
-                        const input = document.getElementById('connectTokenInput');
-                        if (input && input.value.trim() !== text) {
-                            input.value = text;
-                            showToast('📋 Auto-detected valid token from clipboard!');
-                        }
-                    }
+                const res = await fetch('/api/save-peer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peerId, save: shouldSave, autoConnect: true })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(shouldSave ? '💾 Peer saved to database' : '🗑️ Peer removed from saved database');
+                    fetchStatus();
+                } else {
+                    showToast('Failed to update saved peer: ' + (data.error || 'Unknown error'));
                 }
-            } catch (err) {}
+            } catch (err) {
+                showToast('Error updating saved peer');
+            }
         }
 
-        window.addEventListener('focus', checkClipboardForToken);
-        setInterval(checkClipboardForToken, 1500);
+        async function saveConnectedPeer(peerId, shouldSave) {
+            await toggleSavePeer(peerId, shouldSave);
+        }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            const elInput = document.getElementById('listenerPortInput');
-            if (elInput) {
-                elInput.addEventListener('focus', () => { isEditingListenerPort = true; });
-                elInput.addEventListener('blur', () => { isEditingListenerPort = false; });
-                elInput.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') changeListenerPort();
+        async function saveAllConnectedPeers() {
+            try {
+                const res = await fetch('/api/save-all-peers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`💾 Saved ${data.savedCount} peer(s) to database`);
+                    fetchStatus();
+                }
+            } catch (err) {
+                showToast('Error saving all peers');
+            }
+        }
+
+        async function toggleSavedPeerAutoConnect(certHash, autoConnect) {
+            try {
+                const res = await fetch('/api/toggle-saved-peer-autoconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ certHash, autoConnect })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(autoConnect ? '⚡ Auto-connect on startup enabled' : 'ℹ️ Auto-connect on startup disabled');
+                    fetchStatus();
+                }
+            } catch (err) {
+                showToast('Error toggling auto-connect');
+            }
+        }
+
+        async function connectSavedPeer(certHash, btnEl) {
+            const originalText = btnEl ? btnEl.innerText : '⚡ Reconnect';
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.innerText = '⏳ Connecting...';
+            }
+
+            try {
+                const res = await fetch('/api/connect-saved-peer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ certHash })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('⚡ Initiated connection to saved peer!');
+                    fetchStatus();
+                } else {
+                    showToast('Failed to connect: ' + (data.error || 'Unknown'));
+                }
+            } catch (err) {
+                showToast('Error connecting to saved peer');
+            } finally {
+                if (btnEl) {
+                    setTimeout(() => {
+                        btnEl.disabled = false;
+                        btnEl.innerText = originalText;
+                    }, 4000);
+                }
+            }
+        }
+
+        function openEditModal(peer) {
+            document.getElementById('editName').value = peer.name || '';
+            document.getElementById('editCertHash').value = peer.certHash;
+            document.getElementById('editMinPort').value = peer.minPort || 1024;
+            document.getElementById('editMaxPort').value = peer.maxPort || 65535;
+            document.getElementById('editAddresses').value = (peer.addresses || []).join(', ');
+            document.getElementById('editOnionAddress').value = peer.onionAddress || '';
+            document.getElementById('editAutoConnect').checked = peer.autoConnect !== false;
+            document.getElementById('editPeerModal').classList.add('active');
+        }
+
+        function closeEditModal() {
+            document.getElementById('editPeerModal').classList.remove('active');
+        }
+
+        async function savePeerUpdates() {
+            const name = document.getElementById('editName').value.trim();
+            const certHash = document.getElementById('editCertHash').value;
+            const minPort = parseInt(document.getElementById('editMinPort').value);
+            const maxPort = parseInt(document.getElementById('editMaxPort').value);
+            const addresses = document.getElementById('editAddresses').value;
+            const onionAddress = document.getElementById('editOnionAddress').value.trim();
+            const autoConnect = document.getElementById('editAutoConnect').checked;
+
+            try {
+                await fetch('/api/saved-peer-update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ certHash, name, onionAddress, autoConnect, minPort, maxPort, addresses })
+                });
+                showToast("Saved peer updated in peers.db!");
+                closeEditModal();
+                fetchStatus();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function deleteSavedPeer(certHash) {
+            if (!confirm("Are you sure you want to remove this peer from the database?")) return;
+            try {
+                await fetch('/api/saved-peer-delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ certHash })
+                });
+                showToast("Saved peer removed.");
+                fetchStatus();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function openAddSavedPeerModal() {
+            const token = prompt("Enter peer token or URI to store in peers.db:");
+            if (token) {
+                fetch('/api/connect-token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                }).then(() => {
+                    showToast("Peer registered!");
+                    setTimeout(fetchStatus, 800);
                 });
             }
-        });
+        }
 
-        setInterval(fetchStatus, 250);
+        function clearLogs() {
+            const term = document.getElementById('terminalLogs');
+            if (term) term.innerHTML = '<div>Logs cleared.</div>';
+        }
+
         fetchStatus();
+        setInterval(fetchStatus, 1500);
     </script>
 </body>
 </html>

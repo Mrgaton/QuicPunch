@@ -1,17 +1,13 @@
-
-using QuicPunch;
+using QuicPunch.Helpers;
 using QuicPunch.PacketHandler;
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Compression;
-using System.IO.Pipes;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -20,13 +16,15 @@ using static QuicPunch.QuicPunchStructures;
 
 namespace QuicPunch
 {
-    public class QuicPunch : IDisposable
+    public class QuicPunch : IDisposable, IAsyncDisposable
     {
         public const int SioUdpConnReset = unchecked((int)0x9800000C);
         public const int SioUdpNetReset = unchecked((int)0x9800000F);
 
         public static void ConfigureUdpSocket(UdpClient client)
         {
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ExclusiveAddressUse, false);
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             if (OperatingSystem.IsWindows())
             {
                 byte[] optionInValue = new byte[] { 0 };
@@ -35,23 +33,82 @@ namespace QuicPunch
             }
         }
 
-        private static bool DebugMode = Debugger.IsAttached;
-        public static void WriteLine(string m)
+        public static bool EnableLogging
         {
-            if (DebugMode)
-                Console.WriteLine(m);
+            get => QuicPunchLog.EnableLogging;
+            set => QuicPunchLog.EnableLogging = value;
         }
 
-        private HttpClient client = new HttpClient();
-        
+        public static bool EnableErrorLogging
+        {
+            get => QuicPunchLog.EnableErrorLogging;
+            set => QuicPunchLog.EnableErrorLogging = value;
+        }
+
+        public static Action<string>? LogHandler
+        {
+            get => QuicPunchLog.LogHandler;
+            set => QuicPunchLog.LogHandler = value;
+        }
+
+        public static Action<string>? ErrorHandler
+        {
+            get => QuicPunchLog.ErrorHandler;
+            set => QuicPunchLog.ErrorHandler = value;
+        }
+
+        public static void WriteLine(string m) => QuicPunchLog.Info(m);
+        public static void WriteError(string m, Exception? ex = null) => QuicPunchLog.Error(m, ex);
+
+        public enum QuicPunchLifecycleState
+        {
+            Created = 0,
+            Starting = 1,
+            Started = 2,
+            Stopping = 3,
+            Stopped = 4,
+            Disposed = 5
+        }
+
+        private int _isDisposed = 0;
+        private long _lifecycleGeneration = 0;
+        public long LifecycleGeneration => Interlocked.Read(ref _lifecycleGeneration);
+        public CancellationToken LifecycleToken => CancellationSource?.Token ?? new CancellationToken(true);
+        public QuicPunchLifecycleState LifecycleState { get; private set; } = QuicPunchLifecycleState.Created;
+        public bool IsStarted => LifecycleState == QuicPunchLifecycleState.Started;
+        public bool IsDisposed => _isDisposed != 0 || LifecycleState == QuicPunchLifecycleState.Disposed;
+
+        private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+        private readonly CancellationToken _parentCancellationToken;
+
+        public void EnsureStarted()
+        {
+            if (LifecycleState != QuicPunchLifecycleState.Started)
+            {
+                throw new InvalidOperationException("QuicPunch has not been started.");
+            }
+        }
+
         public UdpClient? udp = null;
 
+        public const int DefaultLanDiscoveryPort = 7227;
+        public const string DefaultLanDiscoveryMulticast = "239.255.72.27";
+        public int LanDiscoveryPort { get; set; } = DefaultLanDiscoveryPort;
+        private UdpClient? _lanDiscoveryUdp = null;
+        private Task? _lanDiscoveryLoopTask = null;
+
         public int LocalDiscoveryPort { get; private set; } //Random.Shared.Next(1, 1024);
+        public int LocalBoundPort => udp != null && udp.Client.LocalEndPoint is IPEndPoint ip ? ip.Port : LocalPort;
 
         public bool RebindListenerPort(ushort newPort)
         {
+            EnsureStarted();
+            _lifecycleLock.Wait();
             try
             {
+                if (LifecycleState != QuicPunchLifecycleState.Started)
+                    return false;
+
                 var oldUdp = udp;
                 var newUdp = new UdpClient();
                 ConfigureUdpSocket(newUdp);
@@ -61,163 +118,152 @@ namespace QuicPunch
 
                 udp = newUdp;
                 LocalDiscoveryPort = ((IPEndPoint)newUdp.Client.LocalEndPoint!).Port;
+                LocalPort = LocalDiscoveryPort;
 
-                _StunClient = new SimpleStunClient(newUdp, _StunServerEndpoints);
+                ResetNatMapping();
+                TrackerScanner?.UpdateAnnouncement(CurrentPeer.Addresses, LocalDiscoveryPort);
 
-                if (TrackerScanner != null)
+                if (_StunServerEndpoints != null && _StunServerEndpoints.Length > 0)
                 {
-                    TrackerScanner.Stop();
-                    TrackerScanner = new TrackerScanner(PoolId, LocalDiscoveryPort);
-                    _ = TrackerScanner.Start();
+                    _StunClient = new SimpleStunClient(newUdp, _StunServerEndpoints);
                 }
 
                 try { oldUdp?.Close(); oldUdp?.Dispose(); } catch { }
 
-                _ = Task.Run(async () => await StunRequest());
+                _receiveLoopTask = Task.Run(() => ReceiveUdpLoopAsync(newUdp, CancellationSource.Token), CancellationSource.Token);
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await StunRequest(resetOnFailure: true).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        QuicPunchLog.Info($"[QuicPunch] STUN request after rebind warning: {ex.Message}");
+                    }
+
+                    int announcedPort = MostUsedPort > 0 ? MostUsedPort : (CurrentPeer.MinPort > 0 ? CurrentPeer.MinPort : LocalDiscoveryPort);
+                    if (TrackerScanner != null)
+                    {
+                        TrackerScanner.UpdateAnnouncement(CurrentPeer.Addresses, announcedPort);
+                    }
+                    else if (PoolId != null && PoolId.Length == 20)
+                    {
+                        TrackerScanner = new TrackerScanner(PoolId, announcedPort);
+                        TrackerScanner.SetPublicAddresses(CurrentPeer.Addresses);
+                        TrackerScanner.OnPeerFound += OnTrackerPeerDiscovered;
+                        _ = TrackerScanner.Start(CustomTrackers);
+                    }
+                });
+
                 return true;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[QuicPunch] Failed to rebind listener port to {newPort}: {ex.Message}");
+                QuicPunchLog.Error($"[QuicPunch] Failed to rebind listener port to {newPort}", ex);
                 return false;
+            }
+            finally
+            {
+                _lifecycleLock.Release();
             }
         }
 
-        public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QuicPunchV16");
+        public static string AppDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QuicPunchV17");
+        public string NodeAppDataPath { get; set; }
 
-        public PeerInfo CurrentPeer { get; private set; }
+        public PeerInfo CurrentPeer { get; private set; } = null!;
 
-        private IPEndPoint _IPEndpoint;
-        
-        private IPEndPoint[] _StunServerEndpoints;
-        
-        private SimpleStunClient _StunClient;
+        private IPEndPoint[] _StunServerEndpoints = Array.Empty<IPEndPoint>();
+        public IReadOnlyList<IPEndPoint> StunServerEndpoints
+        {
+            get => _StunServerEndpoints;
+            set => _StunServerEndpoints = value != null ? System.Linq.Enumerable.ToArray(value) : Array.Empty<IPEndPoint>();
+        }
 
-        public PeerStore PeerStore { get; private set; }
+        private SimpleStunClient? _StunClient;
 
-        public HandshakeManager Manager = new HandshakeManager();
+        public PeerStore PeerStore { get; private set; } = null!;
+
+        public readonly HandshakeManager _manager = new HandshakeManager();
+        public HandshakeManager Manager => _manager;
 
         private readonly IpRateLimiter _rateLimiter = new IpRateLimiter(500);
 
         public readonly ConcurrentDictionary<Guid, IProtocolHandler> ProtocolHandlers = new();
-        
-        private int MostUsedPort;
-     
-        private (int minPort, int maxPort) StunPortRange;              
 
-        internal CertManager CertManager { get; } = new CertManager(AppDataPath);
+        private int LocalPort;
+        private int MostUsedPort;
+
+        private (int minPort, int maxPort) StunPortRange;
+        private void ResetNatMapping()
+        {
+            MostUsedPort = 0;
+            if (CurrentPeer != null)
+            {
+                CurrentPeer.MinPort = LocalDiscoveryPort;
+                CurrentPeer.MaxPort = LocalDiscoveryPort;
+            }
+            StunPortRange = (LocalDiscoveryPort, LocalDiscoveryPort);
+        }
+
+        public CertManager CertManager { get; private set; } = null!;
+        public CertManager TorCertManager { get; private set; } = null!;
 
         private int CertPublicKey { get; set; }
 
-        public static ushort GetDeterministicPortFromCertHash(byte[] certHash, int minPort = 49152, int maxPort = 65535)
-        {
-            if (certHash == null || certHash.Length < 4)
-                return (ushort)Random.Shared.Next(minPort, maxPort + 1);
+        public string? TorOnionAddress { get; private set; }
+        public TorIdentity? TorIdentity { get; private set; }
+        public TorPeerTransportHub? TorHub { get; private set; }
+        public TorManager? TorManager { get; private set; }
+        public bool IsTorStarted => TorManager != null && TorHub != null;
+        public string TorBootstrapStatus { get; private set; } = "Not initialized";
+        public int TorBootstrapProgress { get; private set; } = 0;
+        public string? TorLastError { get; private set; }
 
-            uint val = BinaryPrimitives.ReadUInt32LittleEndian(certHash);
-            int range = maxPort - minPort + 1;
-            return (ushort)(minPort + (val % range));
+        public enum TransportType
+        {
+            Wan = 0,
+            Tor = 1
         }
 
-        //TODO: implement auto connect and password that must use hmac to make proof of ownership of the password and not just as a shared secret for encrypting the connection (which tbh is not that bad but still) and also add some way to manually add peers for first time connections without needing to capture the token from the interogation packets
-        public QuicPunch(CancellationTokenSource cts, byte[]? discoveryId, byte[]? connectionPassword, bool autoAcceptConnections, ushort discoveryPort = 0)
+        private Task? _receiveLoopTask;
+        private Task? _stunLoopTask;
+        private Task? _maintenanceLoopTask;
+
+        public QuicPunch(CancellationTokenSource? cts, byte[]? discoveryId, byte[]? connectionPassword, bool autoAcceptConnections, ushort listeningPort = 0, string? appDataPath = null)
+            : this(cts?.Token ?? default, discoveryId, connectionPassword, autoAcceptConnections, listeningPort, appDataPath)
+        {
+        }
+
+        public QuicPunch(CancellationToken cancellationToken = default, byte[]? discoveryId = null, byte[]? connectionPassword = null, bool autoAcceptConnections = true, ushort listeningPort = 0, string? appDataPath = null)
         {
             if (!QuicListener.IsSupported || !QuicConnection.IsSupported)
             {
                 throw new NotSupportedException("QUIC is not supported on this machine.");
             }
 
-            string stunEndpointsCachePath = Path.Combine(Path.GetTempPath(), "stunServersCache.epl");
+            NodeAppDataPath = appDataPath ?? AppDataPath;
+            _parentCancellationToken = cancellationToken;
+            CancellationSource = cancellationToken.CanBeCanceled 
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken) 
+                : new CancellationTokenSource();
+            CertManager = new CertManager(NodeAppDataPath, "wan");
 
-            var servers = new ConcurrentBag<IPEndPoint>();
-            
-            if (File.Exists(stunEndpointsCachePath))
+            if (discoveryId != null)
             {
-                foreach (var parsedLine in File.ReadAllLines(stunEndpointsCachePath))
-                {
-                    if (IPEndPoint.TryParse(parsedLine, out var ep))
-                    {
-                        servers.Add(ep);
-                    }
-                }
-            }
-            else
-            {
-                var urls = new string[]
-                {
-                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_nat_testing_hosts.txt",
-                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_nat_testing_ipv4s.txt",
-                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/candidates.txt",
-                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_ipv4s.txt",
-                    "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_hosts.txt",
-
-                    "https://gist.githubusercontent.com/mondain/b0ec1cf5f60ae726202e/raw/2d2b96b4508a38d342e0228d46eab84dad2398a3/public-stun-list.txt",
-                    "https://gist.githubusercontent.com/zziuni/3741933/raw/212e4b6316110dc5c128d08f65ff8f174d7ae383/stuns",
-                };
-
-                _ = Task.Run(async () =>
-                {
-                    var parsedEndpoints = new List<string>();
-
-                    foreach (var url in urls) 
-                    {
-                        try
-                        {
-                            var data = await client.GetStringAsync(url);
-                    
-                            foreach(var line in data.Split("\n").Select(l => l.Trim()).Where(l => !string.IsNullOrEmpty(l) && !l.StartsWith("#")))
-                            {
-                                parsedEndpoints.Add(line);
-                            }
-                        }
-                        catch { }
-                    }
-
-                    var uniqueList = parsedEndpoints
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToArray();
-                    
-                    Parallel.ForEach(uniqueList, new ParallelOptions() { MaxDegreeOfParallelism = 64 * 5}, line =>
-                    {
-                        try
-                        {
-                            var ep = Helpers.ResolveEndpoint(line);
-
-                            if (ep is not null)
-                            {
-                                foreach (var e in ep)
-                                {
-                                    servers.Add(e);
-                                }
-                            }
-                        }
-                        catch { }
-                    });
-                    
-                    try
-                    {
-                        File.WriteAllText(stunEndpointsCachePath, string.Join('\n', servers.Select(e => e.ToString())));
-                    }
-                    catch { }
-                });
+                _poolId = discoveryId.Length == 20 ? discoveryId : SHA1.HashData(discoveryId);
             }
 
-            if (discoveryPort == 0)
+            _connectionPassword = connectionPassword;
+            if (_connectionPassword != null)
             {
-                discoveryPort = GetDeterministicPortFromCertHash(CertManager.CertPublicHash);
+                DerivePasswordHash();
             }
 
-            udp = new UdpClient();
-            ConfigureUdpSocket(udp);
-
-            udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            udp.Client.Bind(new IPEndPoint(IPAddress.Any, discoveryPort));
-            udp.Client.DontFragment = true;
-
-            LocalDiscoveryPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
-            
-            _StunServerEndpoints = servers.ToArray();
-            _StunClient = new SimpleStunClient(udp, _StunServerEndpoints);
+            AutoAcceptConnections = autoAcceptConnections;
+            LocalPort = listeningPort == 0 ? Utilities.GetDeterministicPortFromCertHash(CertManager.CertPublicHash) : listeningPort;
 
             CurrentPeer = new PeerInfo(CertManager.PeerCertificate, CertManager.EcdhPublicKeyRaw)
             {
@@ -225,63 +271,470 @@ namespace QuicPunch
                 Addresses = Array.Empty<IPAddress>(),
             };
 
-            CancellationSource = cts ?? new CancellationTokenSource();
-
-            if (discoveryId != null)
+            TorCertManager = new CertManager(NodeAppDataPath, "tor");
+            TorCurrentPeer = new PeerInfo(TorCertManager.PeerCertificate, TorCertManager.EcdhPublicKeyRaw)
             {
-                PoolId = discoveryId.Length == 20 ? discoveryId : SHA1.HashData(discoveryId);
+                Name = $"{Environment.UserName}@{Environment.MachineName}",
+                Addresses = Array.Empty<IPAddress>(),
+                NetworkType = NetworkType.Tor
+            };
+        }
 
-                TrackerScanner = new TrackerScanner(PoolId, LocalDiscoveryPort);
-                TrackerScanner.OnPeerFound += OnTrackerPeerDiscovered;
-                _ = TrackerScanner.Start();
-            }
+        public PeerInfo TorCurrentPeer { get; private set; } = null!;
 
-            if (connectionPassword != null)
+        public CertManager GetCertManager(TransportType transport = TransportType.Wan) =>
+            transport == TransportType.Tor ? TorCertManager : CertManager;
+
+        public PeerInfo GetCurrentPeer(TransportType transport = TransportType.Wan) =>
+            (transport == TransportType.Tor && TorCurrentPeer != null) ? TorCurrentPeer : CurrentPeer;
+
+        public async Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+            try
             {
-                PasswordHash = Rfc2898DeriveBytes.Pbkdf2(connectionPassword, PoolId, 100_000, HashAlgorithmName.SHA3_512, 64);
-            }
+                if (LifecycleState == QuicPunchLifecycleState.Disposed)
+                    throw new ObjectDisposedException(nameof(QuicPunch));
 
-            AutoAcceptConnections = autoAcceptConnections;
+                if (LifecycleState == QuicPunchLifecycleState.Started)
+                    return;
 
-            CertPublicKey = CertManager.PeerCertificate!.GetPublicKey().Length;
+                Interlocked.Increment(ref _lifecycleGeneration);
+                LifecycleState = QuicPunchLifecycleState.Starting;
 
-            PeerStore = new PeerStore(Path.Combine(AppDataPath, "peers.db"));
+                CertManager.RenewSessionEntropy();
+                TorCertManager?.RenewSessionEntropy();
 
-            foreach (var speer in PeerStore.GetAll())
-            {
-                ExpectedPeerCerts.Add(speer.CertHash);
-                
-                int minPort = speer.MinPort > 0 ? speer.MinPort : LocalDiscoveryPort;
-                int maxPort = speer.MaxPort > 0 ? speer.MaxPort : LocalDiscoveryPort;
+                try { CancellationSource?.Dispose(); } catch { }
+                CancellationSource = _parentCancellationToken.CanBeCanceled || cancellationToken.CanBeCanceled
+                    ? CancellationTokenSource.CreateLinkedTokenSource(_parentCancellationToken, cancellationToken)
+                    : new CancellationTokenSource();
 
-                _ = PeerInterrogation(new PeerInfo()
+                Directory.CreateDirectory(NodeAppDataPath);
+                PeerStore = new PeerStore(Path.Combine(NodeAppDataPath, "peers.db"));
+
+                udp = new UdpClient();
+                ConfigureUdpSocket(udp);
+                udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                udp.Client.Bind(new IPEndPoint(IPAddress.Any, LocalPort));
+                udp.Client.DontFragment = true;
+
+                LocalDiscoveryPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
+                LocalPort = LocalDiscoveryPort;
+
+                _receiveLoopTask = Task.Run(() => ReceiveUdpLoopAsync(udp, CancellationSource.Token), CancellationSource.Token);
+
+                try
                 {
-                    Addresses = speer.Addresses,
-                    MaxPort = maxPort,
-                    MinPort = minPort,
-                    EcdhPublicKey = speer.EcdhPublicKey
-                }.SetCertificateHash(speer.CertHash), CancellationSource);
+                    _lanDiscoveryUdp = new UdpClient();
+                    ConfigureUdpSocket(_lanDiscoveryUdp);
+                    _lanDiscoveryUdp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    _lanDiscoveryUdp.Client.Bind(new IPEndPoint(IPAddress.Any, LanDiscoveryPort));
+                    _lanDiscoveryUdp.EnableBroadcast = true;
+                    try
+                    {
+                        _lanDiscoveryUdp.JoinMulticastGroup(IPAddress.Parse(DefaultLanDiscoveryMulticast));
+                    }
+                    catch { }
+
+                    _lanDiscoveryLoopTask = Task.Run(() => ReceiveLanDiscoveryLoopAsync(_lanDiscoveryUdp, CancellationSource.Token));
+                    QuicPunchLog.Info($"[LAN DISCOVERY] Listening on common port {LanDiscoveryPort} and multicast group {DefaultLanDiscoveryMulticast}");
+                }
+                catch (Exception ex)
+                {
+                    QuicPunchLog.Info($"[LAN DISCOVERY] Notice: Could not bind dedicated LAN discovery socket on port {LanDiscoveryPort}: {ex.Message}");
+                }
+
+                var stunEndpoints = await StunGatherer.GatherStunEndpoints(ct: CancellationSource.Token).ConfigureAwait(false);
+                _StunServerEndpoints = stunEndpoints.ToArray();
+
+                _StunClient = new SimpleStunClient(udp, _StunServerEndpoints);
+                try
+                {
+                    await StunRequest().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    QuicPunchLog.Info($"[QuicPunch] Initial STUN request warning: {ex.Message}");
+                }
+
+                if (_poolId != null && _poolId.Length == 20)
+                {
+                    int effectivePort = CurrentPeer.MinPort > 0 ? CurrentPeer.MinPort : LocalDiscoveryPort;
+                    TrackerScanner = new TrackerScanner(_poolId, effectivePort);
+                    TrackerScanner.SetPublicAddresses(CurrentPeer.Addresses);
+                    TrackerScanner.OnPeerFound += OnTrackerPeerDiscovered;
+                    _ = TrackerScanner.Start(CustomTrackers);
+                }
+
+                _stunLoopTask = Task.Run(StartStunRequest, CancellationSource.Token);
+                _maintenanceLoopTask = Task.Run(MaintenanceLoopAsync, CancellationSource.Token);
+                LifecycleState = QuicPunchLifecycleState.Started;
+
+                _ = Task.Run(() => AutoConnectSavedPeersAsync(CancellationSource.Token));
+            }
+            catch (Exception ex)
+            {
+                try { CancellationSource?.Cancel(); } catch { }
+                try { TrackerScanner?.Stop(); TrackerScanner?.Dispose(); TrackerScanner = null; } catch { }
+                try { udp?.Close(); udp?.Dispose(); udp = null; } catch { }
+                try { _lanDiscoveryUdp?.Close(); _lanDiscoveryUdp?.Dispose(); _lanDiscoveryUdp = null; } catch { }
+                try { PeerStore?.Dispose(); PeerStore = null; } catch { }
+                LifecycleState = QuicPunchLifecycleState.Stopped;
+                throw;
+            }
+            finally
+            {
+                _lifecycleLock.Release();
+            }
+        }
+
+        private async Task ReceiveLanDiscoveryLoopAsync(UdpClient lanUdp, CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    var result = await lanUdp.ReceiveAsync(token).ConfigureAwait(false);
+                    if (result.Buffer.Length > 0)
+                    {
+                        _ = ProcessIncomingPacketAsync(result.Buffer, result.RemoteEndPoint, TransportType.Wan);
+                    }
+                }
+                catch (ObjectDisposedException) { break; }
+                catch (SocketException ex) when (ex.SocketErrorCode is SocketError.OperationAborted or SocketError.Interrupted) { break; }
+                catch (Exception ex)
+                {
+                    if (token.IsCancellationRequested) break;
+                    try { await Task.Delay(500, token).ConfigureAwait(false); } catch { break; }
+                }
+            }
+        }
+
+        private void CleanupSyncCore()
+        {
+            try { CancellationSource?.Cancel(); } catch { }
+
+            foreach (var w in _activeIncomingWorkers.Values)
+            {
+                try { w.Cts.Cancel(); } catch { }
             }
 
-            PeerStore.PeerAdded += (PeerStore.SavedPeer speer, bool external) =>
-            {                
-                ExpectedPeerCerts.Add(speer.CertHash);
+            foreach (var kvp in _activeOutboundNegotiations)
+            {
+                try { kvp.Value.Cts.Cancel(); } catch { }
+                try { kvp.Value.Cts.Dispose(); } catch { }
+            }
+            _activeOutboundNegotiations.Clear();
 
-                int minPort = speer.MinPort > 0 ? speer.MinPort : LocalDiscoveryPort;
-                int maxPort = speer.MaxPort > 0 ? speer.MaxPort : LocalDiscoveryPort;
+            foreach (var session in IncomingHandshakeSessions.Values)
+            {
+                session.MarkRejected();
+                session.ResponsePayloadTcs.TrySetResult(Array.Empty<byte>());
+            }
+            IncomingHandshakeSessions.Clear();
 
-                _ = PeerInterrogation(new PeerInfo()
+            try { _manager.CancelAll(); } catch { }
+
+            foreach (var kvp in _pendingQuicReady)
+            {
+                if (_pendingQuicReady.TryRemove(kvp.Key, out var tcs))
                 {
-                    Addresses = speer.Addresses,
-                    MaxPort = maxPort,
-                    MinPort = minPort,
-                    EcdhPublicKey = speer.EcdhPublicKey
-                }.SetCertificateHash(speer.CertHash), CancellationSource);
+                    tcs.TrySetCanceled();
+                }
+            }
+            _receivedQuicReady.Clear();
+
+            foreach (var kv in ActiveInterrogations)
+            {
+                try { kv.Value.Cts?.Cancel(); kv.Value.Cts?.Dispose(); } catch { }
+            }
+            ActiveInterrogations.Clear();
+
+            try { TrackerScanner?.Stop(); TrackerScanner?.Dispose(); TrackerScanner = null; } catch { }
+            try { udp?.Close(); udp?.Dispose(); udp = null; } catch { }
+            try { _lanDiscoveryUdp?.Close(); _lanDiscoveryUdp?.Dispose(); _lanDiscoveryUdp = null; } catch { }
+            try { PeerStore?.Dispose(); PeerStore = null; } catch { }
+
+            foreach (var peer in AvailablePeers.Values)
+            {
+                try { peer.Dispose(); } catch { }
+            }
+            AvailablePeers.Clear();
+
+            CertManager.RenewSessionEntropy();
+            TorCertManager?.RenewSessionEntropy();
+        }
+
+        private async Task CleanupResourcesAsync()
+        {
+            if (TrackerScanner != null)
+            {
+                try { await TrackerScanner.StopAsync().ConfigureAwait(false); } catch { }
+                try { TrackerScanner.Dispose(); } catch { }
+                TrackerScanner = null;
+            }
+
+            foreach (var w in _activeIncomingWorkers.Values)
+            {
+                try { w.Cts.Cancel(); } catch { }
+            }
+            var workerTasks = _activeIncomingWorkers.Values.Select(w => w.Task).ToArray();
+            if (workerTasks.Length > 0)
+            {
+                try
+                {
+                    await Task.WhenAll(workerTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                catch { }
+            }
+            _activeIncomingWorkers.Clear();
+
+            CleanupSyncCore();
+
+            List<(QuicConnection Connection, Stream Stream)> sessionsToDispose;
+            lock (_activeProtocolSessions)
+            {
+                sessionsToDispose = _activeProtocolSessions.Values.ToList();
+                _activeProtocolSessions.Clear();
+            }
+            foreach (var session in sessionsToDispose)
+            {
+                try { await session.Stream.DisposeAsync().ConfigureAwait(false); } catch { }
+                try { await session.Connection.DisposeAsync().ConfigureAwait(false); } catch { }
+            }
+
+            if (TorHub != null)
+            {
+                try { await TorHub.DisposeAsync().ConfigureAwait(false); } catch { }
+                TorHub = null;
+            }
+
+            if (TorManager != null)
+            {
+                try { await TorManager.DisposeAsync().ConfigureAwait(false); } catch { }
+                TorManager = null;
+            }
+        }
+
+        public async Task StopAsync()
+        {
+            await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (LifecycleState != QuicPunchLifecycleState.Started && LifecycleState != QuicPunchLifecycleState.Starting)
+                    return;
+
+                LifecycleState = QuicPunchLifecycleState.Stopping;
+                await CleanupResourcesAsync().ConfigureAwait(false);
+                LifecycleState = QuicPunchLifecycleState.Stopped;
+            }
+            finally
+            {
+                _lifecycleLock.Release();
+            }
+
+            if (_receiveLoopTask != null)
+            {
+                try { await _receiveLoopTask.ConfigureAwait(false); } catch { }
+            }
+            if (_lanDiscoveryLoopTask != null)
+            {
+                try { await _lanDiscoveryLoopTask.ConfigureAwait(false); } catch { }
+            }
+            if (_stunLoopTask != null)
+            {
+                try { await _stunLoopTask.ConfigureAwait(false); } catch { }
+            }
+            if (_maintenanceLoopTask != null)
+            {
+                try { await _maintenanceLoopTask.ConfigureAwait(false); } catch { }
+            }
+        }
+
+        public async Task StartTorAsync(int virtualPort = 0, TorRuntimeOptions? options = null, TorManager? existingTorManager = null, CancellationToken cancellationToken = default)
+        {
+            QuicPunchLog.Info("[TOR SERVER] Initializing Tor runtime...");
+
+            Directory.CreateDirectory(NodeAppDataPath);
+            string identityPath = Path.Combine(NodeAppDataPath, "tor_identity.key");
+
+            if (File.Exists(identityPath))
+            {
+                try
+                {
+                    string keyBase64 = await File.ReadAllTextAsync(identityPath, cancellationToken).ConfigureAwait(false);
+                    TorIdentity = TorIdentity.FromPrivateKeyBase64(keyBase64);
+                }
+                catch (Exception ex)
+                {
+                    QuicPunchLog.Info($"[TOR SERVER] Warning: Failed to load saved identity: {ex.Message}. Generating new one.");
+                    TorIdentity = TorIdentity.CreateRandom();
+                    await File.WriteAllTextAsync(identityPath, TorIdentity.PrivateKeyBase64, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                TorIdentity = TorIdentity.CreateRandom();
+                await File.WriteAllTextAsync(identityPath, TorIdentity.PrivateKeyBase64, cancellationToken).ConfigureAwait(false);
+            }
+
+            TorCertManager = new CertManager(NodeAppDataPath, "tor");
+
+            int resolvedPort = virtualPort > 0
+                ? virtualPort
+                : (LocalPort > 0 ? LocalPort : Utilities.GetDeterministicPortFromCertHash(TorCertManager.CertPublicHash));
+
+            if (existingTorManager != null)
+            {
+                TorManager = existingTorManager;
+            }
+            else
+            {
+                var runtimeOptions = options != null
+                    ? new TorRuntimeOptions
+                    {
+                        DataDirectory = options.DataDirectory ?? Path.Combine(NodeAppDataPath, "TorData"),
+                        InstallDirectory = options.InstallDirectory,
+                        SocksPort = options.SocksPort,
+                        ControlPort = options.ControlPort,
+                        StartupTimeout = options.StartupTimeout,
+                        BootstrapTimeout = options.BootstrapTimeout,
+                        ShutdownTimeout = options.ShutdownTimeout
+                    }
+                    : new TorRuntimeOptions
+                    {
+                        DataDirectory = Path.Combine(NodeAppDataPath, "TorData")
+                    };
+
+                var trm = new TorRuntimeManager(runtimeOptions);
+                TorBootstrapStatus = "Bootstrapping...";
+                TorBootstrapProgress = 5;
+                trm.LogLine += (line) =>
+                {
+                    if (line.Contains("Bootstrapped ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int idx = line.IndexOf("Bootstrapped ", StringComparison.OrdinalIgnoreCase);
+                        string progress = line[idx..];
+                        TorBootstrapStatus = progress;
+                        var match = System.Text.RegularExpressions.Regex.Match(line, @"\b(\d{1,3})%");
+                        if (match.Success && int.TryParse(match.Groups[1].Value, out int pVal))
+                        {
+                            TorBootstrapProgress = pVal;
+                        }
+                        WriteLine($"[TOR SERVER] {progress}");
+                    }
+                };
+
+                await trm.StartAsync(cancellationToken).ConfigureAwait(false);
+                TorManager = new TorManager(trm);
+            }
+
+            TorHub = await TorPeerTransportHub.CreateAsync(TorManager, TorIdentity, resolvedPort, cancellationToken).ConfigureAwait(false);
+
+            TorOnionAddress = TorHub.OnionAddress;
+            TorCurrentPeer.OnionAddress = TorHub.OnionAddress;
+            TorCurrentPeer.MinPort = resolvedPort;
+            TorCurrentPeer.MaxPort = resolvedPort;
+            TorBootstrapProgress = 100;
+            TorBootstrapStatus = "Active (100%)";
+            TorLastError = null;
+            WriteLine($"[TOR SERVER] Hidden Service active at: {TorOnionAddress}:{resolvedPort}");
+
+            _ = Task.Run(() => AcceptTorLoopAsync(cancellationToken), cancellationToken);
+        }
+
+        public async Task StopTorAsync()
+        {
+            TorBootstrapStatus = "Stopping...";
+            if (TorHub != null)
+            {
+                try { await TorHub.DisposeAsync().ConfigureAwait(false); } catch { }
+                TorHub = null;
+            }
+            if (TorManager != null)
+            {
+                try { await TorManager.DisposeAsync().ConfigureAwait(false); } catch { }
+                TorManager = null;
+            }
+            TorOnionAddress = null;
+            if (CurrentPeer != null)
+            {
+                CurrentPeer.OnionAddress = null;
+            }
+            if (TorCurrentPeer != null)
+            {
+                TorCurrentPeer.OnionAddress = null;
+            }
+            TorBootstrapStatus = "Stopped";
+            TorBootstrapProgress = 0;
+        }
+
+        public async Task SendResponseAsync(byte[] payload, EndPoint remoteEndPoint, TransportType transport, TorQuicConnectionManager? torChannel = null)
+        {
+            EnsureStarted();
+            if (transport == TransportType.Tor && torChannel != null)
+            {
+                await torChannel.SendMessageAsync(payload).ConfigureAwait(false);
+            }
+            else if (udp != null && remoteEndPoint is IPEndPoint ipEp)
+            {
+                await udp.SendAsync(payload, ipEp).ConfigureAwait(false);
+            }
+        }
+
+        public async Task SendToPeerAsync(PeerInfo peer, byte[] payload, TransportType transport = TransportType.Wan)
+        {
+            EnsureStarted();
+            if ((transport == TransportType.Tor || peer.ActiveTransport == TransportType.Tor) && peer.TorChannel != null)
+            {
+                await peer.TorChannel.SendMessageAsync(payload).ConfigureAwait(false);
+            }
+            else if (udp != null && peer.ActiveEndPoint != null)
+            {
+                await udp.SendAsync(payload, peer.ActiveEndPoint).ConfigureAwait(false);
+            }
+        }
+
+        public async Task ConnectTorAsync(string remoteOnion, int remotePort = 443, CancellationToken token = default)
+        {
+            EnsureStarted();
+            if (TorManager == null || TorHub == null)
+                throw new InvalidOperationException("Tor service is not started. Call StartTorAsync first.");
+
+            var channel = await TorQuicConnectionManager.ConnectAsync(TorManager, TorHub, remoteOnion, remotePort, cancellationToken: token).ConfigureAwait(false);
+            _ = Task.Run(() => ReceiveTorConnectionLoopAsync(channel), token);
+
+            var peerInfo = new PeerInfo
+            {
+                OnionAddress = remoteOnion,
+                MinPort = remotePort,
+                MaxPort = remotePort,
+                NetworkType = NetworkType.Tor,
+                ActiveTransport = TransportType.Tor,
+                TorChannel = channel
             };
 
-            _ = ReceiveLoopAsync();
+            var payload = GenerateHelloPayload(MessageType.Interrogation, true, transport: TransportType.Tor);
+            await channel.SendMessageAsync(payload, token).ConfigureAwait(false);
+        }
 
-            Task.Run(StartStunRequest);
+        private byte[]? _connectionPassword;
+        private static readonly byte[] DefaultPasswordSalt = SHA3_256.HashData(Encoding.UTF8.GetBytes("QuicPunch-P2P-Default-Password-Salt-v1"));
+
+        internal void DerivePasswordHash()
+        {
+            if (_connectionPassword == null)
+            {
+                PasswordHash = null;
+                return;
+            }
+
+            byte[] salt = (_poolId != null && _poolId.Length > 0)
+                ? SHA3_256.HashData(_poolId)
+                : DefaultPasswordSalt;
+
+            PasswordHash = Rfc2898DeriveBytes.Pbkdf2(_connectionPassword, salt, 100_000, HashAlgorithmName.SHA3_512, 64);
         }
 
         private byte[] _poolId = [];
@@ -294,24 +747,111 @@ namespace QuicPunch
 
                 _poolId = value;
 
+                if (_connectionPassword != null)
+                {
+                    DerivePasswordHash();
+                }
+
                 if (TrackerScanner != null)
                 {
                     TrackerScanner.Stop();
-                    TrackerScanner = new TrackerScanner(value, LocalDiscoveryPort);
+                    int announcedPort = MostUsedPort > 0 ? MostUsedPort : (CurrentPeer.MinPort > 0 ? CurrentPeer.MinPort : LocalDiscoveryPort);
+                    TrackerScanner = new TrackerScanner(value, announcedPort);
+                    TrackerScanner.SetPublicAddresses(CurrentPeer.Addresses);
                     TrackerScanner.OnPeerFound += OnTrackerPeerDiscovered;
-                    TrackerScanner.Start();
+                    _ = TrackerScanner.Start(CustomTrackers);
                 }
             }
         }
-        internal byte[] PasswordHash { get; set; }
-        public bool AutoAcceptConnections { get; set; }
+        internal byte[]? PasswordHash { get; set; }
+        public bool AutoAcceptConnections { get; set; } = true;
+        public bool AutoAcceptUntrustedConnections { get; set; } = false;
         public bool SharePeers { get; set; }
         public bool AcceptSharedPeers { get; set; }
 
-        public TrackerScanner TrackerScanner { get; private set; }
+        private readonly ConcurrentDictionary<Guid, bool> _autoAcceptPeers = new();
+        private readonly ConcurrentDictionary<byte[], bool> _autoAcceptCertHashes = new(Utilities.ByteArrayComparer.Instance);
+
+        public void SetAutoAcceptAll(bool autoAccept)
+        {
+            AutoAcceptConnections = autoAccept;
+            AutoAcceptUntrustedConnections = autoAccept;
+        }
+
+        public void SetPeerAutoAccept(Guid peerId, bool autoAccept)
+        {
+            if (autoAccept)
+            {
+                _autoAcceptPeers[peerId] = true;
+                if (AvailablePeers.TryGetValue(peerId, out var peer) && peer.CertHash != null)
+                {
+                    _autoAcceptCertHashes[peer.CertHash] = true;
+                }
+            }
+            else
+            {
+                _autoAcceptPeers.TryRemove(peerId, out _);
+                if (AvailablePeers.TryGetValue(peerId, out var peer) && peer.CertHash != null)
+                {
+                    _autoAcceptCertHashes.TryRemove(peer.CertHash, out _);
+                }
+            }
+        }
+
+        public void SetPeerAutoAccept(byte[] certHash, bool autoAccept)
+        {
+            if (certHash == null) return;
+            if (autoAccept)
+            {
+                _autoAcceptCertHashes[certHash] = true;
+                var peer = AvailablePeers.Values.FirstOrDefault(p => p.CertHash != null && CryptographicOperations.FixedTimeEquals(p.CertHash, certHash));
+                if (peer != null) _autoAcceptPeers[peer.Id] = true;
+            }
+            else
+            {
+                _autoAcceptCertHashes.TryRemove(certHash, out _);
+                var peer = AvailablePeers.Values.FirstOrDefault(p => p.CertHash != null && CryptographicOperations.FixedTimeEquals(p.CertHash, certHash));
+                if (peer != null) _autoAcceptPeers.TryRemove(peer.Id, out _);
+            }
+        }
+
+        public bool IsPeerAutoAccepted(Guid peerId)
+        {
+            if (AutoAcceptUntrustedConnections) return true;
+            if (_autoAcceptPeers.ContainsKey(peerId)) return true;
+            if (AvailablePeers.TryGetValue(peerId, out var peer) && peer.CertHash != null)
+            {
+                return IsPeerAutoAccepted(peer.CertHash);
+            }
+            return false;
+        }
+
+        public bool IsPeerAutoAccepted(byte[] certHash)
+        {
+            if (AutoAcceptUntrustedConnections) return true;
+            if (certHash != null && _autoAcceptCertHashes.ContainsKey(certHash)) return true;
+            if (AutoAcceptConnections && certHash != null && IsTrustedPeer(certHash)) return true;
+            return false;
+        }
+
+        public IReadOnlyList<Guid> GetAutoAcceptedPeers()
+        {
+            var result = new HashSet<Guid>(_autoAcceptPeers.Keys);
+            foreach (var kvp in AvailablePeers)
+            {
+                if (kvp.Value.CertHash != null && _autoAcceptCertHashes.ContainsKey(kvp.Value.CertHash))
+                {
+                    result.Add(kvp.Key);
+                }
+            }
+            return result.ToList();
+        }
+
+        public TrackerScanner? TrackerScanner { get; private set; }
+        public string[]? CustomTrackers { get; set; }
         public CancellationTokenSource CancellationSource { get; private set; }
 
-        private string LastToken;
+        private string? LastToken;
         public async Task StartStunRequest()
         {
             _ = SendLocalLanDiscoveryAsync();
@@ -323,12 +863,24 @@ namespace QuicPunch
                 {
                     await StunRequest();
                 }
+                catch (OperationCanceledException) when (CancellationSource.IsCancellationRequested)
+                {
+                    break;
+                }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine(ex.ToString());
+                    if (!CancellationSource.IsCancellationRequested)
+                        QuicPunchLog.Error("[QuicPunch] Error in STUN loop", ex);
                 }
 
-                await Task.Delay(5000);
+                try
+                {
+                    await Task.Delay(20000, CancellationSource.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
 
@@ -361,8 +913,13 @@ namespace QuicPunch
             try
             {
                 var payload = GenerateHelloPayload(MessageType.Interrogation, true);
-                udp.EnableBroadcast = true;
-                await udp.SendAsync(payload, new IPEndPoint(IPAddress.Broadcast, LocalDiscoveryPort));
+                if (udp != null)
+                {
+                    udp.EnableBroadcast = true;
+                    try { await udp.SendAsync(payload, new IPEndPoint(IPAddress.Parse(DefaultLanDiscoveryMulticast), LanDiscoveryPort)).ConfigureAwait(false); } catch { }
+                    try { await udp.SendAsync(payload, new IPEndPoint(IPAddress.Broadcast, LanDiscoveryPort)).ConfigureAwait(false); } catch { }
+                    try { await udp.SendAsync(payload, new IPEndPoint(IPAddress.Loopback, LanDiscoveryPort)).ConfigureAwait(false); } catch { }
+                }
             }
             catch { }
         }
@@ -387,51 +944,295 @@ namespace QuicPunch
                         MinPort = ep.Port,
                         MaxPort = ep.Port
                     };
-                    _ = PeerInterrogation(peerInfo, CancellationSource);
+                    _ = PeerInterrogation(peerInfo, CancellationSource.Token);
                 }
             }
             catch { }
         }
 
-        private async Task StunRequest()
+        private int _consecutiveStunFailures = 0;
+
+        public async Task<bool> RefreshStunEndpointsAsync(bool force = false)
         {
-            await _StunClient.SendRequest(CancellationSource.Token);
+            try
+            {
+                var stunEndpoints = await StunGatherer.GatherStunEndpoints(forceRefresh: force, ct: CancellationSource.Token).ConfigureAwait(false);
+                if (stunEndpoints.Count > 0)
+                {
+                    _StunServerEndpoints = stunEndpoints.ToArray();
+                    if (udp != null)
+                    {
+                        _StunClient = new SimpleStunClient(udp, _StunServerEndpoints);
+                    }
+                    _consecutiveStunFailures = 0;
+                    QuicPunchLog.Info($"[STUN RECOVERY] Refreshed STUN endpoints. Active server count: {_StunServerEndpoints.Length}");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                QuicPunchLog.Info($"[STUN REFRESH] Could not refresh STUN endpoints: {ex.Message}");
+            }
+            return false;
+        }
 
-            await Task.Delay(500);
+        public static readonly TimeSpan StunRetentionWindow = TimeSpan.FromSeconds(80);
 
-            CurrentPeer.NetworkType =  Helpers.GetNetworkType(_StunClient.StunResponseEndpointHits);
-            MostUsedPort = Helpers.GetMostUsedPort(_StunClient.StunResponseEndpointHits);
-            
-            var portOrder = _StunClient.StunResponseEndpointHits.OrderByDescending(k => k.Key.Port);
+        private async Task StunRequest(bool resetOnFailure = false)
+        {
+            if (_StunClient == null || _StunServerEndpoints.Length == 0)
+            {
+                await RefreshStunEndpointsAsync().ConfigureAwait(false);
+                if (_StunClient == null || _StunServerEndpoints.Length == 0)
+                {
+                    if (resetOnFailure)
+                    {
+                        ResetNatMapping();
+                    }
+                    return;
+                }
+            }
 
-            StunPortRange = portOrder.All(po => po.Key.Port == MostUsedPort) ?  (MostUsedPort, MostUsedPort) : ((portOrder.Last().Key.Port / 255) * 255, ((portOrder.First().Key.Port + (255 - 1)) / 255) * 255);
-            CurrentPeer.Addresses = _StunClient.StunResponseEndpointHits.Select(k => k.Key.Address).Where(a => !SimpleStunClient.IsBogonOrLocalhost(a)).Distinct().ToArray();
+            await _StunClient.SendRequest(CancellationSource.Token).ConfigureAwait(false);
 
-            CurrentPeer.MinPort = StunPortRange.minPort;
-            CurrentPeer.MaxPort = StunPortRange.maxPort;
-            
+            await Task.Delay(1000, CancellationSource.Token).ConfigureAwait(false);
+
+            _StunClient.PruneExpiredHits(StunRetentionWindow);
+
+            var activeHits = _StunClient.GetActiveHitsSnapshot();
+
+            if (activeHits.Count == 0)
+            {
+                _consecutiveStunFailures++;
+                if (_consecutiveStunFailures >= 3)
+                {
+                    QuicPunchLog.Info($"[STUN RESILIENCE] {_consecutiveStunFailures} consecutive STUN failures. Triggering endpoint refresh...");
+                    _ = Task.Run(async () => await RefreshStunEndpointsAsync(force: true));
+                }
+
+                if (resetOnFailure || _consecutiveStunFailures >= 3)
+                {
+                    ResetNatMapping();
+                }
+
+                if (CurrentPeer.Addresses == null || CurrentPeer.Addresses.Length == 0)
+                {
+                    var localIps = Utilities.GetValidLocalIPAddresses();
+                    if (localIps.Count > 0)
+                    {
+                        CurrentPeer.Addresses = localIps.OrderBy(Utilities.IpToUint).ToArray();
+                        TrackerScanner?.SetPublicAddresses(CurrentPeer.Addresses);
+                    }
+                }
+
+                if (CurrentPeer.MinPort <= 0) CurrentPeer.MinPort = LocalDiscoveryPort;
+                if (CurrentPeer.MaxPort <= 0) CurrentPeer.MaxPort = LocalDiscoveryPort;
+
+                if (resetOnFailure)
+                {
+                    TrackerScanner?.UpdateAnnouncement(CurrentPeer.Addresses, LocalDiscoveryPort);
+                }
+                return;
+            }
+
+            _consecutiveStunFailures = 0;
+
+            CurrentPeer.NetworkType = Utilities.GetNetworkType(activeHits);
+            MostUsedPort = Utilities.GetMostUsedPort(activeHits);
+            if (MostUsedPort <= 0) MostUsedPort = LocalDiscoveryPort;
+
+            var ports = activeHits.Keys.Select(k => k.Port).ToList();
+            int minObservedPort = ports.Count > 0 ? ports.Min() : MostUsedPort;
+            int maxObservedPort = ports.Count > 0 ? ports.Max() : MostUsedPort;
+
+            if (minObservedPort == maxObservedPort || ports.All(p => p == MostUsedPort))
+            {
+                StunPortRange = (MostUsedPort, MostUsedPort);
+            }
+            else
+            {
+                StunPortRange = (Math.Clamp(minObservedPort, 1, 65535), Math.Clamp(maxObservedPort, 1, 65535));
+            }
+
+            var discoveredAddresses = activeHits.Keys
+                .Select(k => k.Address)
+                .Where(a => !SimpleStunClient.IsBogonOrLocalhost(a))
+                .Distinct()
+                .OrderBy(Utilities.IpToUint)
+                .ToArray();
+
+            if (discoveredAddresses.Length > 0)
+            {
+                CurrentPeer.Addresses = discoveredAddresses;
+            }
+
+            CurrentPeer.MinPort = Math.Max(1, StunPortRange.minPort);
+            CurrentPeer.MaxPort = Math.Max(CurrentPeer.MinPort, StunPortRange.maxPort);
+
+            int announcedPort = MostUsedPort > 0 ? MostUsedPort : (CurrentPeer.MinPort > 0 ? CurrentPeer.MinPort : LocalDiscoveryPort);
+            TrackerScanner?.UpdateAnnouncement(CurrentPeer.Addresses, announcedPort);
+
             var newToken = GetToken();
-         
+
             if (newToken != LastToken)
             {
                 LastToken = newToken;
 
-                Console.WriteLine($"New token generated: {newToken}");
+                QuicPunchLog.Info($"New token generated: {newToken}");
             }
-
-            _StunClient.StunResponseEndpointHits.Clear();
         }
 
         public const int PunchIntervalMiliseconds = 2500 / 2;
 
         public static byte[] MagicHeader = Encoding.UTF8.GetBytes("PNch");
-        
+
         public class ExpectedPeerCertSet
         {
-            private readonly ConcurrentDictionary<byte[], byte> _dict = new(Helpers.ByteArrayComparer.Instance);
+            private readonly ConcurrentDictionary<byte[], byte> _dict = new(Utilities.ByteArrayComparer.Instance);
             public void Add(byte[] certHash) { if (certHash != null) _dict[certHash] = 0; }
-            public bool Contains(byte[] certHash) => certHash != null && _dict.ContainsKey(certHash);
+        public bool Contains(byte[] certHash) => certHash != null && _dict.ContainsKey(certHash);
+            public bool Remove(byte[] certHash) => certHash != null && _dict.TryRemove(certHash, out _);
+            public void Clear() => _dict.Clear();
         }
+
+        public async Task AutoConnectSavedPeersAsync(CancellationToken ct = default)
+        {
+            if (PeerStore == null) return;
+
+            try { await Task.Delay(1000, ct).ConfigureAwait(false); } catch { return; }
+
+            var saved = PeerStore.SavedPeers.Where(p => p.AutoConnect).ToList();
+            if (saved.Count == 0) return;
+
+            WriteLine($"[AUTO-CONNECT] Initiating background connection for {saved.Count} saved peer(s)...");
+
+            foreach (var sp in saved)
+            {
+                if (ct.IsCancellationRequested) break;
+                try
+                {
+                    if (sp.CertHash != null)
+                    {
+                        ExpectedPeerCerts.Add(sp.CertHash);
+                        TrustPeer(sp.CertHash);
+                    }
+
+                    if (!string.IsNullOrEmpty(sp.OnionAddress) && IsTorStarted)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                WriteLine($"[AUTO-CONNECT] Connecting via Tor to {sp.Name ?? sp.OnionAddress}...");
+                                await ConnectTorAsync(sp.OnionAddress, sp.MinPort > 0 ? sp.MinPort : 443, ct).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                WriteLine($"[AUTO-CONNECT TOR] Failed for {sp.Name ?? sp.OnionAddress}: {ex.Message}");
+                            }
+                        }, ct);
+                    }
+
+                    if (sp.Addresses != null && sp.Addresses.Length > 0 && sp.Addresses.Any(a => !IPAddress.IsLoopback(a)))
+                    {
+                        var peerInfo = CreatePeerInfoFromSavedPeer(sp);
+
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                WriteLine($"[AUTO-CONNECT] Interrogating WAN peer {sp.Name ?? string.Join(", ", sp.Addresses.Select(a => a.ToString()))}...");
+                                await PeerInterrogation(peerInfo, ct).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                WriteLine($"[AUTO-CONNECT WAN] Failed for {sp.Name ?? "Saved Peer"}: {ex.Message}");
+                            }
+                        }, ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    WriteLine($"[AUTO-CONNECT] Error for saved peer: {ex.Message}");
+                }
+            }
+        }
+
+        public static PeerInfo CreatePeerInfoFromSavedPeer(PeerStore.SavedPeer sp)
+        {
+            var netType = sp.NetworkType;
+            if (netType == NetworkType.Unknown || netType == NetworkType.Static)
+            {
+                if (sp.Addresses.Length > 1 && sp.MinPort != sp.MaxPort)
+                    netType = NetworkType.DynamicPortAndAddress;
+                else if (sp.Addresses.Length > 1)
+                    netType = NetworkType.DynamicAddress;
+                else if (sp.MinPort != sp.MaxPort)
+                    netType = NetworkType.DynamicPort;
+                else
+                    netType = NetworkType.Static;
+            }
+
+            return new PeerInfo
+            {
+                Name = sp.Name ?? "Saved Peer",
+                NetworkType = netType,
+                Addresses = sp.Addresses,
+                MinPort = sp.MinPort,
+                MaxPort = sp.MaxPort,
+                EcdhPublicKey = sp.EcdhPublicKey,
+                OnionAddress = sp.OnionAddress
+            }.SetCertificateHash(sp.CertHash);
+        }
+
+        public bool SavePeer(PeerInfo peer, bool autoConnect = true)
+        {
+            EnsureStarted();
+            ArgumentNullException.ThrowIfNull(peer);
+            if (peer.CertHash != null)
+            {
+                ExpectedPeerCerts.Add(peer.CertHash);
+                TrustPeer(peer.CertHash);
+            }
+            return PeerStore != null && PeerStore.AddOrUpdate(peer, autoConnect);
+        }
+
+        public bool SavePeer(string token, bool autoConnect = true)
+        {
+            EnsureStarted();
+            ArgumentException.ThrowIfNullOrWhiteSpace(token);
+            var peer = Utilities.DecodeEndpointToken(token);
+            if (peer.CertHash != null)
+            {
+                ExpectedPeerCerts.Add(peer.CertHash);
+                TrustPeer(peer.CertHash);
+            }
+            return PeerStore != null && PeerStore.AddOrUpdate(peer, autoConnect);
+        }
+
+        public bool RemoveSavedPeer(byte[] certHash)
+        {
+            EnsureStarted();
+            ArgumentNullException.ThrowIfNull(certHash);
+            ExpectedPeerCerts.Remove(certHash);
+            return PeerStore != null && PeerStore.Remove(certHash);
+        }
+
+        public void TrustPeer(byte[] certHash)
+        {
+            ArgumentNullException.ThrowIfNull(certHash);
+            ExpectedPeerCerts.Add(certHash);
+        }
+
+        public void UntrustPeer(byte[] certHash)
+        {
+            ArgumentNullException.ThrowIfNull(certHash);
+            ExpectedPeerCerts.Remove(certHash);
+        }
+
+        public bool IsTrustedPeer(byte[]? certHash) => certHash != null && ExpectedPeerCerts.Contains(certHash);
+        public bool IsTrustedPeer(PeerInfo? peer) => peer?.CertHash != null && IsTrustedPeer(peer.CertHash);
+        public bool IsTrustedPeer(Guid peerId) => AvailablePeers.TryGetValue(peerId, out var p) && IsTrustedPeer(p);
 
         public ConcurrentDictionary<Guid, PeerInfo> AvailablePeers { get; } = new();
         public ExpectedPeerCertSet ExpectedPeerCerts { get; } = new();
@@ -439,23 +1240,20 @@ namespace QuicPunch
         public event Action<PeerInfo>? OnPeerDisconnected;
         internal void RaisePeerDisconnected(PeerInfo peer) => OnPeerDisconnected?.Invoke(peer);
 
-        internal byte[] BuildDisconnectPacket()
-        {
-            byte[] packet = new byte[MagicHeader.Length + 1 + CurrentPeer.IdRaw.Length];
-            Buffer.BlockCopy(MagicHeader, 0, packet, 0, MagicHeader.Length);
-            packet[MagicHeader.Length] = (byte)MessageType.Disconnect;
-            Buffer.BlockCopy(CurrentPeer.IdRaw, 0, packet, MagicHeader.Length + 1, CurrentPeer.IdRaw.Length);
-            return packet;
-        }
+        public static QuicPunchBuilder CreateBuilder() => new();
+
+        internal byte[] BuildDisconnectPacket(TransportType transport = TransportType.Wan) =>
+            PacketBuilder.BuildDisconnectPacket(this, transport);
 
         public void DisconnectPeer(Guid peerId)
         {
+            EnsureStarted();
             if (AvailablePeers.TryRemove(peerId, out var peer))
             {
-                if (peer.ActiveEndPoint != null)
+                if (peer.ActiveEndPoint != null || peer.TorChannel != null)
                 {
-                    byte[] packet = BuildDisconnectPacket();
-                    _ = udp.SendAsync(packet, peer.ActiveEndPoint);
+                    byte[] packet = BuildDisconnectPacket(peer.ActiveTransport);
+                    _ = SendToPeerAsync(peer, packet, peer.ActiveTransport);
                 }
 
                 if (peer.CertHash != null)
@@ -466,24 +1264,59 @@ namespace QuicPunch
                     foreach (var k in keysToCancel) CancelInterrogation(k);
                 }
 
+                _ = CloseAllPeerSessionsAsync(peerId);
+                peer.Dispose();
+
+                if (AvailablePeers.IsEmpty)
+                {
+                    GetCertManager(peer.ActiveTransport).RenewSessionEntropy();
+                }
+
                 WriteLine($"Disconnected peer {peer.Name} ({peerId})");
                 OnPeerDisconnected?.Invoke(peer);
             }
+        }
+
+        public bool RemovePeer(Guid peerId)
+        {
+            EnsureStarted();
+            if (AvailablePeers.TryRemove(peerId, out var peer))
+            {
+                if (peer.CertHash != null)
+                {
+                    var keysToCancel = ActiveInterrogations
+                        .Where(kv => kv.Value.Peer.CertHash != null && kv.Value.Peer.CertHash.SequenceEqual(peer.CertHash))
+                        .Select(kv => kv.Key).ToList();
+                    foreach (var k in keysToCancel) CancelInterrogation(k);
+                }
+
+                _ = CloseAllPeerSessionsAsync(peerId);
+                peer.Dispose();
+
+                if (AvailablePeers.IsEmpty)
+                {
+                    GetCertManager(peer.ActiveTransport).RenewSessionEntropy();
+                }
+
+                WriteLine($"Removed peer {peer.Name} ({peerId})");
+                RaisePeerDisconnected(peer);
+                return true;
+            }
+            return false;
         }
 
         private readonly ConcurrentDictionary<ushort, Channel<(Guid Peer, byte[] Payload)>> _packetChannels = new();
         public ChannelReader<(Guid Peer, byte[] Payload)> GetPacketReader(ushort packetType)
         {
             return _packetChannels.GetOrAdd(packetType, _ =>
-                Channel.CreateBounded<(Guid, byte[])>(256)).Reader;
+                Channel.CreateUnbounded<(Guid, byte[])>(new UnboundedChannelOptions { SingleReader = false, SingleWriter = false })).Reader;
         }
 
         internal void PublishReceivedData(Guid peerId, ushort packetType, byte[] payload)
         {
-            if (_packetChannels.TryGetValue(packetType, out var channel))
-            {
-                channel.Writer.TryWrite((peerId, payload));
-            }
+            var channel = _packetChannels.GetOrAdd(packetType, _ =>
+                Channel.CreateUnbounded<(Guid, byte[])>(new UnboundedChannelOptions { SingleReader = false, SingleWriter = false }));
+            channel.Writer.TryWrite((peerId, payload));
         }
 
         public interface IProtocolHandler
@@ -497,87 +1330,718 @@ namespace QuicPunch
         public bool RemoveProtocol(IProtocolHandler handler) => ProtocolHandlers.TryRemove(handler.ProtocolId, out _);
         public void RegisterProtocol(IProtocolHandler handler) => ProtocolHandlers[handler.ProtocolId] = handler;
 
-
         public event Action<PeerInfo>? OnPeerAvailable;
         internal void RaisePeerAvailable(PeerInfo peerInfo)
         {
             OnPeerAvailable?.Invoke(peerInfo);
         }
 
-        //TODO: add retries :smile:
-        private async Task<HandshakeDecision> NegotiateConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
-        {
-            byte[] payload;
+        private readonly ConcurrentDictionary<(Guid PeerId, Guid ProtocolId), (QuicConnection Connection, Stream Stream)> _activeProtocolSessions = new();
 
+        public async Task<bool> RegisterProtocolSessionAsync(Guid peerId, Guid protocolId, QuicConnection connection, Stream stream, long generation = 0)
+        {
+            if (LifecycleState != QuicPunchLifecycleState.Started ||
+                (generation != 0 && generation != _lifecycleGeneration) ||
+                (CancellationSource?.IsCancellationRequested ?? true))
+            {
+                QuicPunchLog.Info($"[SESSION REGISTRATION REJECTED] Cannot register session for peer {peerId} protocol {protocolId}: LifecycleState={LifecycleState}, generation mismatch (worker: {generation}, current: {_lifecycleGeneration}). Disposing connection.");
+                try { await stream.DisposeAsync().ConfigureAwait(false); } catch { }
+                try { await connection.DisposeAsync().ConfigureAwait(false); } catch { }
+                return false;
+            }
+
+            var key = (peerId, protocolId);
+            (QuicConnection Connection, Stream Stream) oldSession = default;
+            bool hasOld = false;
+
+            lock (_activeProtocolSessions)
+            {
+                if (LifecycleState != QuicPunchLifecycleState.Started ||
+                    (generation != 0 && generation != _lifecycleGeneration) ||
+                    (CancellationSource?.IsCancellationRequested ?? true))
+                {
+                }
+                else
+                {
+                    if (_activeProtocolSessions.TryRemove(key, out oldSession))
+                    {
+                        hasOld = true;
+                    }
+                    _activeProtocolSessions[key] = (connection, stream);
+                    goto Proceed;
+                }
+            }
+
+            QuicPunchLog.Info($"[SESSION REGISTRATION REJECTED] Cannot register session for peer {peerId} protocol {protocolId}: instance stopped during registration. Disposing connection.");
+            try { await stream.DisposeAsync().ConfigureAwait(false); } catch { }
+            try { await connection.DisposeAsync().ConfigureAwait(false); } catch { }
+            return false;
+
+        Proceed:
+            if (hasOld)
+            {
+                try { await oldSession.Stream.DisposeAsync().ConfigureAwait(false); } catch { }
+                try { await oldSession.Connection.DisposeAsync().ConfigureAwait(false); } catch { }
+            }
+            return true;
+        }
+
+        public async Task UnregisterProtocolSessionAsync(Guid peerId, Guid protocolId, QuicConnection? connection = null)
+        {
+            var key = (peerId, protocolId);
+            if (_activeProtocolSessions.TryGetValue(key, out var session))
+            {
+                if (connection == null || ReferenceEquals(session.Connection, connection))
+                {
+                    var kvp = new KeyValuePair<(Guid PeerId, Guid ProtocolId), (QuicConnection Connection, Stream Stream)>(key, session);
+                    if (((ICollection<KeyValuePair<(Guid PeerId, Guid ProtocolId), (QuicConnection Connection, Stream Stream)>>)_activeProtocolSessions).Remove(kvp))
+                    {
+                        try { await session.Stream.DisposeAsync().ConfigureAwait(false); } catch { }
+                        try { await session.Connection.DisposeAsync().ConfigureAwait(false); } catch { }
+                    }
+                }
+            }
+        }
+
+        public async Task CloseAllPeerSessionsAsync(Guid peerId)
+        {
+            var keys = _activeProtocolSessions.Keys.Where(k => k.PeerId == peerId).ToList();
+            foreach (var key in keys)
+            {
+                if (_activeProtocolSessions.TryRemove(key, out var session))
+                {
+                    try { await session.Stream.DisposeAsync().ConfigureAwait(false); } catch { }
+                    try { await session.Connection.DisposeAsync().ConfigureAwait(false); } catch { }
+                }
+            }
+        }
+
+        public sealed class OutboundNegotiation
+        {
+            public Guid ConnectionGuid { get; }
+            public CancellationTokenSource Cts { get; }
+            public volatile bool IsYielded;
+            public TaskCompletionSource<(HandshakeDecision decision, Guid connectionGuid)> DecisionTcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public OutboundNegotiation(Guid connectionGuid, CancellationTokenSource cts)
+            {
+                ConnectionGuid = connectionGuid;
+                Cts = cts;
+            }
+        }
+
+        internal sealed class ConnectionFlight
+        {
+            public Guid AttemptId { get; } = Guid.NewGuid();
+            public Task Task { get; }
+
+            public ConnectionFlight(Task task)
+            {
+                Task = task;
+            }
+        }
+
+        private readonly ConcurrentDictionary<(Guid PeerId, Guid ProtocolId), OutboundNegotiation> _activeOutboundNegotiations = new();
+        private readonly ConcurrentDictionary<(Guid PeerId, Guid ProtocolId), ConnectionFlight> _activeConnectionFlights = new();
+
+        public bool IsConnectionInFlight(Guid peerId, Guid protocolId) =>
+            _activeConnectionFlights.ContainsKey((peerId, protocolId));
+
+        public bool HasActiveProtocolSession(Guid peerId, Guid protocolId) =>
+            _activeProtocolSessions.ContainsKey((peerId, protocolId));
+
+        public int ActiveOutboundNegotiationsCount => _activeOutboundNegotiations.Count;
+        public int ActiveOutboundNegotiationCount => _activeOutboundNegotiations.Count;
+        public int ActiveConnectionFlightsCount => _activeConnectionFlights.Count;
+        public int ActiveProtocolSessionCount => _activeProtocolSessions.Count;
+        public int PendingQuicReadyCount => _pendingQuicReady.Count;
+        public int ActiveIncomingWorkerCount => _activeIncomingWorkers.Count;
+
+        internal readonly ConcurrentDictionary<Guid, IncomingHandshakeWorker> _activeIncomingWorkers = new();
+
+        internal bool TryRegisterIncomingWorker(IncomingHandshakeWorker worker)
+        {
+            if (LifecycleState != QuicPunchLifecycleState.Started || CancellationSource == null || CancellationSource.IsCancellationRequested)
+                return false;
+
+            return _activeIncomingWorkers.TryAdd(worker.ConnectionGuid, worker);
+        }
+
+        internal void UnregisterIncomingWorker(Guid connectionGuid)
+        {
+            _activeIncomingWorkers.TryRemove(connectionGuid, out _);
+        }
+        internal readonly ConcurrentDictionary<Guid, long> LastSeenDisconnectTicks = new();
+        public int MaxIncomingHandshakeSessions { get; set; } = 1000;
+        public TimeSpan HandshakePendingTtl { get; set; } = TimeSpan.FromSeconds(45);
+        public TimeSpan HandshakeCompletedTtl { get; set; } = TimeSpan.FromSeconds(90);
+        public TimeSpan HandshakeRejectedTtl { get; set; } = TimeSpan.FromSeconds(30);
+
+        internal readonly ConcurrentDictionary<Guid, IncomingHandshakeSession> IncomingHandshakeSessions = new();
+
+        internal IncomingHandshakeSession? GetOrAddIncomingHandshakeSession(Guid guid, Guid peerId, Guid protocolId)
+        {
+            if (IncomingHandshakeSessions.TryGetValue(guid, out var existing))
+                return existing;
+
+            if (IncomingHandshakeSessions.Count >= MaxIncomingHandshakeSessions)
+            {
+                PruneExpiredIncomingHandshakeSessions();
+            }
+
+            if (IncomingHandshakeSessions.Count >= MaxIncomingHandshakeSessions)
+            {
+                EvictOldestIncomingHandshakeSession();
+            }
+
+            var newSession = new IncomingHandshakeSession(guid, peerId, protocolId);
+            return IncomingHandshakeSessions.GetOrAdd(guid, newSession);
+        }
+
+        private void EvictOldestIncomingHandshakeSession()
+        {
+            Guid? oldestKey = null;
+            long oldestScore = long.MaxValue;
+
+            foreach (var kvp in IncomingHandshakeSessions)
+            {
+                long score = kvp.Value.CreatedTimestampMonotonic;
+                if (kvp.Value.State != HandshakeSessionState.Pending)
+                {
+                    score -= TimeSpan.FromDays(1).Ticks;
+                }
+
+                if (score < oldestScore)
+                {
+                    oldestScore = score;
+                    oldestKey = kvp.Key;
+                }
+            }
+
+            if (oldestKey.HasValue)
+            {
+                IncomingHandshakeSessions.TryRemove(oldestKey.Value, out _);
+            }
+        }
+
+        public int PruneExpiredIncomingHandshakeSessions()
+        {
+            return PruneExpiredIncomingHandshakeSessions(HandshakePendingTtl, HandshakeCompletedTtl, HandshakeRejectedTtl);
+        }
+
+        public int PruneExpiredIncomingHandshakeSessions(TimeSpan pendingTtl, TimeSpan completedTtl, TimeSpan rejectedTtl)
+        {
+            int pruned = 0;
+            foreach (var kvp in IncomingHandshakeSessions)
+            {
+                if (kvp.Value.IsExpired(pendingTtl, completedTtl, rejectedTtl))
+                {
+                    if (IncomingHandshakeSessions.TryRemove(kvp.Key, out _))
+                    {
+                        pruned++;
+                    }
+                }
+            }
+            return pruned;
+        }
+
+        public void PruneExpiredIncomingHandshakeSessions(TimeSpan maxAge)
+        {
+            PruneExpiredIncomingHandshakeSessions(maxAge, maxAge, maxAge);
+        }
+
+        private async Task MaintenanceLoopAsync()
+        {
+            var token = CancellationSource.Token;
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
+                    PruneExpiredIncomingHandshakeSessions();
+                    PruneExpiredChallenges(TimeSpan.FromSeconds(60));
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    QuicPunchLog.Error("[QuicPunch] Error in maintenance loop", ex);
+                }
+            }
+        }
+
+        internal sealed class PendingChallenge
+        {
+            public byte[] Nonce { get; }
+            public long CreatedTimestampMonotonic { get; } = System.Diagnostics.Stopwatch.GetTimestamp();
+            public IPEndPoint? TargetEndPoint { get; }
+
+            public PendingChallenge(byte[] nonce, IPEndPoint? targetEndPoint = null)
+            {
+                Nonce = nonce;
+                TargetEndPoint = targetEndPoint;
+            }
+
+            public bool IsExpired(TimeSpan timeout)
+            {
+                return System.Diagnostics.Stopwatch.GetElapsedTime(CreatedTimestampMonotonic) > timeout;
+            }
+        }
+
+        internal readonly ConcurrentDictionary<string, PendingChallenge> _pendingChallenges = new();
+
+        public byte[] CreatePendingChallenge(IPEndPoint? target = null)
+        {
+            var nonce = RandomNumberGenerator.GetBytes(24);
+            var key = Convert.ToBase64String(nonce);
+            _pendingChallenges[key] = new PendingChallenge(nonce, target);
+            return nonce;
+        }
+
+        public bool ValidateAndConsumeChallenge(byte[] nonce)
+        {
+            if (nonce == null || nonce.Length != 24) return false;
+            var key = Convert.ToBase64String(nonce);
+            if (_pendingChallenges.TryRemove(key, out var challenge))
+            {
+                return !challenge.IsExpired(TimeSpan.FromSeconds(30));
+            }
+            return false;
+        }
+
+        public void PruneExpiredChallenges(TimeSpan maxAge)
+        {
+            foreach (var kvp in _pendingChallenges)
+            {
+                if (kvp.Value.IsExpired(maxAge))
+                {
+                    _pendingChallenges.TryRemove(kvp.Key, out _);
+                }
+            }
+        }
+
+        internal bool TryGetActiveOutboundNegotiation(Guid peerId, Guid protocolId, out OutboundNegotiation? negotiation) =>
+            _activeOutboundNegotiations.TryGetValue((peerId, protocolId), out negotiation);
+
+        private readonly ConcurrentDictionary<Guid, TaskCompletionSource<ushort>> _pendingQuicReady = new();
+        private readonly ConcurrentDictionary<Guid, (ushort Port, long Generation)> _receivedQuicReady = new();
+
+        public async Task<ushort> WaitForQuicReadyAsync(Guid connectionGuid, TimeSpan timeout, CancellationToken ct)
+        {
+            if (_receivedQuicReady.TryRemove(connectionGuid, out var alreadyReceived))
+            {
+                if (alreadyReceived.Generation == _lifecycleGeneration)
+                {
+                    return alreadyReceived.Port;
+                }
+            }
+
+            var tcs = _pendingQuicReady.GetOrAdd(connectionGuid, _ => new TaskCompletionSource<ushort>(TaskCreationOptions.RunContinuationsAsynchronously));
+
+            if (_receivedQuicReady.TryRemove(connectionGuid, out alreadyReceived))
+            {
+                _pendingQuicReady.TryRemove(connectionGuid, out _);
+                if (alreadyReceived.Generation == _lifecycleGeneration)
+                {
+                    return alreadyReceived.Port;
+                }
+            }
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(timeout);
+
+            using (timeoutCts.Token.Register(() => tcs.TrySetCanceled(timeoutCts.Token)))
+            {
+                try
+                {
+                    return await tcs.Task.ConfigureAwait(false);
+                }
+                finally
+                {
+                    _pendingQuicReady.TryRemove(connectionGuid, out _);
+                }
+            }
+        }
+
+        public void UnregisterPendingQuicReady(Guid connectionGuid)
+        {
+            _pendingQuicReady.TryRemove(connectionGuid, out _);
+            _receivedQuicReady.TryRemove(connectionGuid, out _);
+        }
+
+        public async Task SendQuicReadyAsync(PeerInfo peer, Guid connectionGuid, ushort listeningPort, TransportType transport = TransportType.Wan)
+        {
+            byte[] packet = PacketBuilder.BuildQuicReadyPacket(this, connectionGuid, listeningPort, transport);
+            if (peer.ActiveEndPoint != null)
+            {
+                await SendResponseAsync(packet, peer.ActiveEndPoint, transport, peer.TorChannel).ConfigureAwait(false);
+            }
+            if (peer.Addresses != null)
+            {
+                foreach (var addr in peer.Addresses)
+                {
+                    if (Utilities.IsValidPeerAddress(addr))
+                    {
+                        if (peer.MinPort > 0)
+                            _ = SendResponseAsync(packet, new IPEndPoint(addr, peer.MinPort), transport, peer.TorChannel);
+                        if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Port != peer.MinPort)
+                            _ = SendResponseAsync(packet, new IPEndPoint(addr, peer.ActiveEndPoint.Port), transport, peer.TorChannel);
+                    }
+                }
+            }
+
+            if (transport == TransportType.Wan)
+            {
+                _ = Task.Run(async () =>
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        await Task.Delay(25).ConfigureAwait(false);
+                        if (peer.ActiveEndPoint != null)
+                        {
+                            await SendResponseAsync(packet, peer.ActiveEndPoint, transport, peer.TorChannel).ConfigureAwait(false);
+                        }
+                    }
+                });
+            }
+        }
+
+        private void HandleQuicReady(BinaryReader r, EndPoint remoteEndPoint, byte[] buffer, TransportType transport, TorQuicConnectionManager? torChannel)
+        {
+            var peerId = new Guid(r.ReadBytes(16));
+            var connectionGuid = new Guid(r.ReadBytes(16));
+            var listeningPort = r.ReadUInt16();
+            var timestamp = r.ReadInt64();
+            var signature = r.ReadBytes(CertManager.SignatureLength);
+
+            if (!AvailablePeers.TryGetValue(peerId, out var peer) || peer == null)
+                return;
+
+            if (!peer.Curve.VerifyData(buffer.AsSpan(0, (int)r.BaseStream.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
+            {
+                QuicPunchLog.Info($"[QUIC READY] Received invalid signature from {remoteEndPoint}");
+                return;
+            }
+
+            if (LifecycleState != QuicPunchLifecycleState.Started)
+                return;
+
+            long currentGen = _lifecycleGeneration;
+            QuicPunchLog.Info($"[QUIC READY] Received QUIC_READY from peer {peer.Name} (Guid: {connectionGuid}, Port: {listeningPort})");
+            _receivedQuicReady[connectionGuid] = (listeningPort, currentGen);
+            if (_pendingQuicReady.TryRemove(connectionGuid, out var tcs))
+            {
+                _receivedQuicReady.TryRemove(connectionGuid, out _);
+                tcs.TrySetResult(listeningPort);
+            }
+        }
+
+        private async Task<(HandshakeDecision decision, Guid connectionGuid)> NegotiateConnection(
+            Guid protocolHandler, PeerInfo peer, ushort localPort, IReadOnlyList<CandidateEndpoint>? candidates = null, CancellationToken cancellationToken = default)
+        {
+            EnsureStarted();
             var connectionGuid = Guid.NewGuid();
+            var transport = peer.ActiveTransport;
+            var payload = GenerateHandshakePayload(HandShakeType.Request, localPort, protocolHandler, connectionGuid, candidates, transport);
 
-            using (MemoryStream ms = new MemoryStream())
-            using (BinaryWriter w = new BinaryWriter(ms))
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationSource.Token, cancellationToken);
+            var negotiationKey = (peer.Id, protocolHandler);
+            var outbound = new OutboundNegotiation(connectionGuid, linkedCts);
+
+            while (!_activeOutboundNegotiations.TryAdd(negotiationKey, outbound))
             {
-                w.Write(MagicHeader);
-                w.Write((byte)MessageType.Handshake);
-                w.Write(CurrentPeer.IdRaw);
-                w.Write((byte)HandShakeType.Request);
-                w.Write(localPort);
-                w.Write(protocolHandler.ToByteArray());
-                w.Write(connectionGuid.ToByteArray());
-
-                payload = ms.ToArray();
-                var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
-                Array.Resize(ref payload, payload.Length + signature.Length);
-                Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
+                if (_activeOutboundNegotiations.TryGetValue(negotiationKey, out var existingNegotiation))
+                {
+                    QuicPunchLog.Info($"[Handshake Negotiation] Outbound negotiation for {peer.Name} ({negotiationKey}) already in flight. Awaiting existing negotiation.");
+                    return await existingNegotiation.DecisionTcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
 
-            udp.BigSendAsync(payload, peer);
+            try
+            {
+                var epForRequest = peer.ActiveEndPoint ?? new IPEndPoint(IPAddress.Loopback, 0);
+                var decisionTask = _manager.WaitForDecisionAsync(new HandshakeRequest(connectionGuid, protocolHandler, epForRequest), TimeSpan.FromSeconds(25), false, linkedCts.Token);
 
-            var decision = await Manager.WaitForDecisionAsync(new HandshakeRequest(connectionGuid, protocolHandler, peer.ActiveEndPoint), TimeSpan.FromSeconds(30), false, mainCts.Token);
+                while (!decisionTask.IsCompleted && !linkedCts.Token.IsCancellationRequested)
+                {
+                    if (transport == TransportType.Tor && peer.TorChannel != null)
+                    {
+                        _ = peer.TorChannel.SendMessageAsync(payload, linkedCts.Token);
+                    }
+                    else if (udp != null)
+                    {
+                        _ = udp.BigSendAsync(payload, peer);
+                    }
 
-            if (!decision.Accepted)
-                throw new Exception("Handshake declined by peer.");
+                    await Task.WhenAny(decisionTask, Task.Delay(500, linkedCts.Token)).ConfigureAwait(false);
+                }
 
-            WriteLine("Peer accepted :D");
+                var decision = await decisionTask.ConfigureAwait(false);
 
-            return decision;
+                if (!decision.Accepted)
+                {
+                    if (outbound.IsYielded)
+                    {
+                        WriteLine("[Handshake Glare] Outbound negotiation yielded cleanly to remote authoritative request.");
+                        var yieldedResult = (new HandshakeDecision(false, null, null), connectionGuid);
+                        outbound.DecisionTcs.TrySetResult(yieldedResult);
+                        return yieldedResult;
+                    }
+                    var declinedEx = new Exception("Handshake declined by peer.");
+                    outbound.DecisionTcs.TrySetException(declinedEx);
+                    throw declinedEx;
+                }
+
+                WriteLine("Peer accepted :D");
+                var acceptResult = (decision, connectionGuid);
+                outbound.DecisionTcs.TrySetResult(acceptResult);
+                return acceptResult;
+            }
+            catch (Exception ex)
+            {
+                outbound.DecisionTcs.TrySetException(ex);
+                throw;
+            }
+            finally
+            {
+                _activeOutboundNegotiations.TryRemove(new KeyValuePair<(Guid PeerId, Guid ProtocolId), OutboundNegotiation>(negotiationKey, outbound));
+            }
         }
-        public async Task<(bool Success, UdpClient Client, IPEndPoint remoteEndpoint)> InitUdpConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        internal async Task<(UdpClient Socket, ushort BoundPort, List<CandidateEndpoint> Candidates)> CreateBoundSocketAndGatherCandidatesAsync(
+            ushort localPort, string? logLabel = null, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var nudp = new UdpClient();
+            try
+            {
+                ConfigureUdpSocket(nudp);
+                nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                try
+                {
+                    nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
+                }
+                catch
+                {
+                    nudp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+                }
+                ushort boundPort = (ushort)((IPEndPoint)nudp.Client.LocalEndPoint!).Port;
+
+                cancellationToken.ThrowIfCancellationRequested();
+                var candidates = await SimpleStunClient.GatherCandidatesAsync(nudp, boundPort, StunServerEndpoints, TimeSpan.FromMilliseconds(1000), cancellationToken).ConfigureAwait(false);
+
+                if (CurrentPeer?.Addresses != null)
+                {
+                    foreach (var addr in CurrentPeer.Addresses)
+                    {
+                        if (!SimpleStunClient.IsBogonOrLocalhost(addr))
+                        {
+                            var ep = new IPEndPoint(addr, boundPort);
+                            if (!candidates.Any(c => c.EndPoint.Equals(ep)))
+                            {
+                                candidates.Add(new CandidateEndpoint(ep, CandidateType.ServerReflexive, 1694498800));
+                            }
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(logLabel))
+                {
+                    QuicPunchLog.Info($"{logLabel} (BoundPort: {boundPort}): {candidates.Count} candidate(s) [{string.Join(", ", candidates.Select(c => $"{c.Type}:{c.EndPoint}"))}]");
+                }
+                return (nudp, boundPort, candidates);
+            }
+            catch
+            {
+                nudp.Dispose();
+                throw;
+            }
+        }
+
+        public async Task<(bool Success, UdpClient? Client, IPEndPoint? remoteEndpoint)> InitUdpConnection(Guid protocolHandler, PeerInfo peer, ushort localPort = 0, CancellationToken cancellationToken = default)
+        {
+            EnsureStarted();
             if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
             {
                 throw new KeyNotFoundException("Handler not found for protocol: " + nameof(protocolHandler));
             }
 
-            var nudp = new UdpClient();
-            ConfigureUdpSocket(nudp);
-            nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
+            var (nudp, boundPort, candidates) = await CreateBoundSocketAndGatherCandidatesAsync(localPort, $"[UDP INIT] Gathered candidates for connection with {peer.Name}", cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var (decision, connectionGuid) = await NegotiateConnection(protocolHandler, peer, boundPort, candidates, cancellationToken);
+                if (!decision.Accepted)
+                {
+                    nudp.Dispose();
+                    return (false, null, null);
+                }
 
-            var decision = await NegotiateConnection(protocolHandler, peer, localPort, mainCts);
-
-            return await QuicPunchConnection.OpenPortCore(nudp, peer, (ushort)decision.Port, mainCts.Token);
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationSource.Token, cancellationToken);
+                var res = await QuicPunchConnection.OpenPortCore(CurrentPeer, nudp, peer, decision.Candidates, (ushort)decision.Port!, connectionGuid, linkedCts.Token);
+                if (!res.Success) nudp.Dispose();
+                return res;
+            }
+            catch
+            {
+                nudp.Dispose();
+                throw;
+            }
         }
-        public async Task InitQuicConnection(Guid protocolHandler, PeerInfo peer, ushort localPort, CancellationTokenSource mainCts)
+        public async Task InitQuicConnection(Guid protocolHandler, PeerInfo peer, ushort localPort = 0, CancellationToken cancellationToken = default)
         {
+            EnsureStarted();
             if (!ProtocolHandlers.TryGetValue(protocolHandler, out var handler))
             {
                 throw new KeyNotFoundException("Handler not found for protocol: " + nameof(protocolHandler));
             }
 
-            var nudp = new UdpClient();
-            ConfigureUdpSocket(nudp);
-            nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
+            var flightKey = (peer.Id, protocolHandler);
 
-            var decision = await NegotiateConnection(protocolHandler, peer, localPort, mainCts);
-
-            var connection = await QuicPunchConnection.InitQuicConnectionCore(CurrentPeer, nudp, peer, (ushort)decision.Port, CertManager.PeerCertificate!, handler.CompressionOptions, mainCts.Token);
-
-            if (connection.Connection == null || connection.Stream == null)
+            if (_activeProtocolSessions.TryGetValue(flightKey, out _))
             {
-                await handler.DeniedAsync(peer, mainCts.Token);
+                QuicPunchLog.Info($"[QUIC INIT] Protocol session with {peer.Name} ({peer.Id}) for {handler.ProtocolName} ({protocolHandler}) is already active. Reusing existing session.");
+                return;
             }
-            else
+
+            TaskCompletionSource<object?>? myTcs = null;
+            ConnectionFlight? myFlight = null;
+            Task? flightToAwait = null;
+
+            while (true)
             {
-                await handler.HandleAsync(connection.Connection, connection.Stream, peer, mainCts.Token);
+                if (_activeProtocolSessions.TryGetValue(flightKey, out _))
+                {
+                    QuicPunchLog.Info($"[QUIC INIT] Protocol session with {peer.Name} ({peer.Id}) for {handler.ProtocolName} ({protocolHandler}) is already active. Reusing existing session.");
+                    return;
+                }
+
+                if (_activeConnectionFlights.TryGetValue(flightKey, out var existingFlight))
+                {
+                    QuicPunchLog.Info($"[QUIC INIT] Connection with {peer.Name} ({peer.Id}) for {handler.ProtocolName} already in flight (Attempt: {existingFlight.AttemptId}). Awaiting existing flight.");
+                    flightToAwait = existingFlight.Task;
+                    break;
+                }
+
+                if (myTcs == null)
+                {
+                    myTcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    myFlight = new ConnectionFlight(myTcs.Task);
+                }
+
+                if (_activeConnectionFlights.TryAdd(flightKey, myFlight!))
+                {
+                    break;
+                }
+            }
+
+            if (flightToAwait != null)
+            {
+                await flightToAwait.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            try
+            {
+                await ExecuteInitQuicConnectionAsync(handler, peer, localPort, myTcs!, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _activeConnectionFlights.TryRemove(new KeyValuePair<(Guid PeerId, Guid ProtocolId), ConnectionFlight>(flightKey, myFlight!));
+            }
+        }
+
+        private async Task ExecuteInitQuicConnectionAsync(
+            IProtocolHandler handler,
+            PeerInfo peer,
+            ushort localPort,
+            TaskCompletionSource<object?> flightTcs,
+            CancellationToken cancellationToken)
+        {
+            var protocolHandler = handler.ProtocolId;
+
+            if (peer.ActiveTransport == TransportType.Tor && peer.TorChannel != null)
+            {
+                try
+                {
+                    var (decision, connectionGuid) = await NegotiateConnection(protocolHandler, peer, localPort, null, cancellationToken).ConfigureAwait(false);
+                    if (!decision.Accepted)
+                    {
+                        flightTcs.TrySetResult(null);
+                        return;
+                    }
+
+                    var quicConn = peer.TorChannel.CreateQuicConnection();
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationSource.Token, cancellationToken);
+                    var quicStream = await quicConn.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, linkedCts.Token).ConfigureAwait(false);
+                    bool torRegistered = await RegisterProtocolSessionAsync(peer.Id, protocolHandler, quicConn, quicStream, _lifecycleGeneration).ConfigureAwait(false);
+                    flightTcs.TrySetResult(null);
+                    if (!torRegistered)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        await handler.HandleAsync(quicConn, quicStream, peer, linkedCts.Token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        await UnregisterProtocolSessionAsync(peer.Id, protocolHandler, quicConn).ConfigureAwait(false);
+                        try { await quicStream.DisposeAsync().ConfigureAwait(false); } catch { }
+                        try { await quicConn.DisposeAsync().ConfigureAwait(false); } catch { }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    flightTcs.TrySetException(ex);
+                    throw;
+                }
+                return;
+            }
+
+            var (nudp, boundPort, candidates) = await CreateBoundSocketAndGatherCandidatesAsync(localPort, $"[QUIC INIT] Gathered candidates for connection with {peer.Name}", cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var (decision, connectionGuid) = await NegotiateConnection(protocolHandler, peer, boundPort, candidates, cancellationToken).ConfigureAwait(false);
+                if (!decision.Accepted)
+                {
+                    nudp.Dispose();
+                    flightTcs.TrySetResult(null);
+                    return;
+                }
+
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationSource.Token, cancellationToken);
+                var connection = await QuicPunchConnection.InitQuicConnectionCore(this, CurrentPeer, nudp, peer, decision.Candidates, (ushort)decision.Port!, connectionGuid, CertManager.PeerCertificate!, handler.CompressionOptions, linkedCts.Token).ConfigureAwait(false);
+
+                if (connection.Connection == null || connection.Stream == null)
+                {
+                    flightTcs.TrySetResult(null);
+                    await handler.DeniedAsync(peer, linkedCts.Token).ConfigureAwait(false);
+                }
+                else
+                {
+                    bool wanRegistered = await RegisterProtocolSessionAsync(peer.Id, protocolHandler, connection.Connection, connection.Stream, _lifecycleGeneration).ConfigureAwait(false);
+                    flightTcs.TrySetResult(null);
+                    if (!wanRegistered)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        await handler.HandleAsync(connection.Connection, connection.Stream, peer, linkedCts.Token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        await UnregisterProtocolSessionAsync(peer.Id, protocolHandler, connection.Connection).ConfigureAwait(false);
+                        try { await connection.Stream.DisposeAsync().ConfigureAwait(false); } catch { }
+                        try { await connection.Connection.DisposeAsync().ConfigureAwait(false); } catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                nudp.Dispose();
+                flightTcs.TrySetException(ex);
+                throw;
             }
         }
 
@@ -609,177 +2073,228 @@ namespace QuicPunch
             return false;
         }
 
-        public async Task PeerInterrogation(string token, CancellationTokenSource mainCts)
+        public async Task PeerInterrogation(string token, CancellationToken cancellationToken = default)
         {
-            var p = Helpers.DecodeEndpointToken(token);
-            ExpectedPeerCerts.Add(p.CertHash);
-            await PeerInterrogation(p, mainCts);
+            var p = Utilities.DecodeEndpointToken(token);
+            await PeerInterrogation(p, cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task PeerInterrogation(PeerInfo peer, CancellationTokenSource cts)
+        public async Task PeerInterrogation(PeerInfo peer, CancellationToken cancellationToken = default)
         {
-            if (peer.CertHash != null && CurrentPeer.CertHash != null && peer.CertHash.SequenceEqual(CurrentPeer.CertHash))
+            if (peer.CertHash != null && CurrentPeer?.CertHash != null && peer.CertHash.SequenceEqual(CurrentPeer.CertHash))
             {
                 return;
             }
 
-            if (peer.CertHash != null)
+            if (peer.CertHash != null && TorCurrentPeer?.CertHash != null && peer.CertHash.SequenceEqual(TorCurrentPeer.CertHash))
             {
-                ExpectedPeerCerts.Add(peer.CertHash);
+                return;
             }
 
-            if (cts == null)
-                cts = new CancellationTokenSource();
+            bool isTorPeer = peer.NetworkType == NetworkType.Tor || (peer.Addresses == null || peer.Addresses.Length == 0 && !string.IsNullOrEmpty(peer.OnionAddress));
+            bool isWanPeer = peer.Addresses != null && peer.Addresses.Length > 0;
 
-            var lcts = CancellationTokenSource.CreateLinkedTokenSource(cts!.Token);
-            var session = new ActiveInterrogationSession(peer, lcts);
-
-            var existingKeys = ActiveInterrogations
-                .Where(kv => kv.Value.Peer.CertHash != null && peer.CertHash != null && kv.Value.Peer.CertHash.SequenceEqual(peer.CertHash))
-                .Select(kv => kv.Key).ToList();
-            foreach (var k in existingKeys)
+            if (isTorPeer)
             {
-                CancelInterrogation(k);
+                if (!IsTorStarted || TorManager == null || TorHub == null)
+                {
+                    throw new InvalidOperationException("Cannot connect to Tor token: Tor service is not started. Start Tor first.");
+                }
+
+                if (peer.CertHash != null)
+                {
+                    ExpectedPeerCerts.Add(peer.CertHash);
+                    TrustPeer(peer.CertHash);
+                }
+
+                if (!string.IsNullOrEmpty(peer.OnionAddress))
+                {
+                    await ConnectTorAsync(peer.OnionAddress, peer.MinPort > 0 ? peer.MinPort : 443, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
             }
 
-            ActiveInterrogations[session.Id] = session;
-
-            WriteLine($"Starting interogation for {string.Join(", ",peer.Addresses)}...");
-
-            _ = Task.Run(async () =>
+            if (isWanPeer)
             {
-                try
+                if (!IsStarted || udp == null)
                 {
-                    await SendLoopAsync(udp!, peer, lcts.Token);
+                    throw new InvalidOperationException("Cannot connect to WAN token: WAN/UDP transport is not active. Start WAN service first.");
                 }
-                finally
+
+                if (peer.CertHash != null)
                 {
-                    ActiveInterrogations.TryRemove(session.Id, out _);
-                    lcts.Dispose();
+                    ExpectedPeerCerts.Add(peer.CertHash);
+                    TrustPeer(peer.CertHash);
                 }
-            });
-        }
-        
-        private async Task ReceiveLoopAsync()
-        {
-            while (!CancellationSource.IsCancellationRequested)
-            {
-                try
+
+                var lcts = CancellationTokenSource.CreateLinkedTokenSource(CancellationSource.Token, cancellationToken);
+                var session = new ActiveInterrogationSession(peer, lcts);
+
+                var existingKeys = ActiveInterrogations
+                    .Where(kv => kv.Value.Peer.CertHash != null && peer.CertHash != null && kv.Value.Peer.CertHash.SequenceEqual(peer.CertHash))
+                    .Select(kv => kv.Key).ToList();
+                foreach (var k in existingKeys)
                 {
-                skipPacket:
+                    CancelInterrogation(k);
+                }
 
-                    var result = await udp.ReceiveAsync(CancellationSource.Token);
+                ActiveInterrogations[session.Id] = session;
 
-                    if (result.RemoteEndPoint.Address == IPAddress.Parse("79.116.202.89"))
+                WriteLine($"Starting interrogation for {string.Join(", ", peer.Addresses)}...");
+                _ = Task.Run(async () =>
+                {
+                    try
                     {
-                        Console.Write("omg");
-                    }    
+                        await SendLoopAsync(udp!, peer, lcts.Token);
+                    }
+                    finally
+                    {
+                        ActiveInterrogations.TryRemove(session.Id, out _);
+                        lcts.Dispose();
+                    }
+                });
+            }
+        }
 
-                    if (_StunClient.TryProcessIncoming(result.Buffer, result.RemoteEndPoint))
+        public async Task ProcessIncomingPacketAsync(byte[] buffer, EndPoint remoteEndPoint, TransportType transport, TorQuicConnectionManager? torChannel = null)
+        {
+            if (LifecycleState == QuicPunchLifecycleState.Disposed || LifecycleState == QuicPunchLifecycleState.Stopped || CancellationSource == null || CancellationSource.IsCancellationRequested)
+                return;
+
+            if (buffer == null || buffer.Length < MagicHeader.Length + 1)
+                return;
+
+            for (int i = 0; i < MagicHeader.Length; i++)
+            {
+                if (buffer[i] != MagicHeader[i])
+                    return;
+            }
+
+            using (MemoryStream ms = new MemoryStream(buffer))
+            using (BinaryReader r = new BinaryReader(ms))
+            {
+                ms.Position = MagicHeader.Length;
+                byte messageType = r.ReadByte();
+
+                switch (messageType)
+                {
+                    case (byte)MessageType.Interrogation:
+                    case (byte)MessageType.Hello:
+                        HelloHandler.HandleHello(this, r, udp, remoteEndPoint, buffer, messageType, transport, torChannel);
+                        break;
+
+                    case (byte)MessageType.Ack:
+                        AckHandler.HandleAck(this, r, udp, remoteEndPoint, buffer, transport, torChannel);
+                        break;
+
+                    case (byte)MessageType.Handshake:
+                        HandshakeHandler.HandleHandshake(this, r, udp, remoteEndPoint, buffer, transport, torChannel);
+                        break;
+
+                    case (byte)MessageType.Ping:
+                        PingHandler.HandlePing(this, r, udp, remoteEndPoint, transport, torChannel);
+                        break;
+
+                    case (byte)MessageType.Disconnect:
+                        DisconnectHandler.HandleDisconnect(this, r, udp, remoteEndPoint, buffer, transport, torChannel);
+                        break;
+
+                    case (byte)MessageType.QuicReady:
+                        HandleQuicReady(r, remoteEndPoint, buffer, transport, torChannel);
+                        break;
+
+                    case (byte)MessageType.Data:
+                        var span = buffer.AsSpan();
+                        const int TagSize = 16; 
+                        int headerAadSize = MagicHeader.Length + sizeof(byte) + sizeof(ushort) + 16 + sizeof(ulong);
+
+                        int minimumLength = headerAadSize + TagSize;
+
+                        if (span.Length < minimumLength)
+                        {
+                            return;
+                        }
+
+                        int offset = 0;
+
+                        offset += MagicHeader.Length;
+                        offset++;
+
+                        ushort packetType = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, sizeof(ushort)));
+                        offset += sizeof(ushort);
+
+                        ReadOnlySpan<byte> senderId = span.Slice(offset, 16);
+                        var peerId = new Guid(senderId);
+
+                        if (!this.AvailablePeers.TryGetValue(peerId, out var peer) || peer.RxCipher == null || peer.RxSalt == null)
+                        {
+                            return;
+                        }
+
+                        offset += 16;
+
+                        ulong sequenceNumber = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(offset, sizeof(ulong)));
+                        offset += sizeof(ulong);
+
+                        if (!peer.InboundReplayFilter.Check(sequenceNumber))
+                        {
+                            return;
+                        }
+
+                        ReadOnlySpan<byte> associatedData = span.Slice(0, headerAadSize);
+
+                        ReadOnlySpan<byte> tag = span.Slice(offset, TagSize);
+                        offset += TagSize;
+
+                        ReadOnlySpan<byte> ciphertext = span[offset..];
+
+                        var plaintext = new byte[ciphertext.Length];
+
+                        Span<byte> nonce = stackalloc byte[12];
+                        peer.RxSalt.CopyTo(nonce.Slice(0, 4));
+                        BinaryPrimitives.WriteUInt64BigEndian(nonce.Slice(4, 8), sequenceNumber);
+
+                        try
+                        {
+                            peer.RxCipher.Decrypt(nonce, ciphertext, tag, plaintext, associatedData);
+                        }
+                        catch (CryptographicException)
+                        {
+                            return;
+                        }
+
+                        if (!peer.InboundReplayFilter.CheckAndAdd(sequenceNumber))
+                        {
+                            return;
+                        }
+
+                        PublishReceivedData(peerId, packetType, plaintext);
+                        break;
+
+                    default:
+                        WriteLine($"Received unknown message type {(char)messageType} from {remoteEndPoint}");
+                        break;
+                }
+            }
+        }
+
+        private async Task ReceiveUdpLoopAsync(UdpClient socket, CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested && !CancellationSource.IsCancellationRequested)
+            {
+                try
+                {
+                    var result = await socket.ReceiveAsync(ct).ConfigureAwait(false);
+
+                    if (_StunClient != null && _StunClient.TryProcessIncoming(result.Buffer, result.RemoteEndPoint))
                     {
                         continue;
                     }
 
-                    if (!_rateLimiter.IsAllowed(Helpers.IpToUint(result.RemoteEndPoint.Address)))
-                        goto skipPacket;
+                    if (!_rateLimiter.IsAllowed(Utilities.IpToUint(result.RemoteEndPoint.Address)))
+                        continue;
 
-                    //Console.WriteLine("Recived: " + Encoding.UTF8.GetString(result.Buffer));
-                    //if (result.Buffer.Length > 1464 || result.Buffer.Length < MagicHeader.Length + (128 / 8))
-                    //    goto skipPacket;
-
-                    for (int i = 0; i < MagicHeader.Length; i++)
-                    {
-                        if (result.Buffer[i] != MagicHeader[i])
-                            goto skipPacket;
-                    }
-
-                    using (MemoryStream ms = new MemoryStream(result.Buffer))
-                    using (BinaryReader r = new BinaryReader(ms))
-                    {
-                        ms.Position = MagicHeader.Length;
-                        byte messageType = r.ReadByte();
-
-                        switch (messageType)
-                        {
-                            case (byte)MessageType.Interrogation:
-                            case (byte)MessageType.Hello:
-                                HelloHandler.HandleHello(this, r, udp, result, messageType);
-                                continue;
-
-                            case (byte)MessageType.Ack:
-                                AckHandler.HandleAck(this, r, udp, result);
-                                continue;
-
-                            case (byte)MessageType.Handshake:
-                                HandshakeHandler.HandleHandshake(this, r, udp, result);
-                                continue;
-
-                            case (byte)MessageType.Ping:
-                                PingHandler.HandlePing(this, r, udp, result);
-                                continue;
-
-                            case (byte)MessageType.Disconnect:
-                                DisconnectHandler.HandleDisconnect(this, r, udp, result);
-                                continue;
-
-                            case (byte)MessageType.Data:
-                                var span = result.Buffer.AsSpan();
-
-                                const int NonceSize = 12;
-                                const int TagSize = 16; 
-
-                                int minimumLength = MagicHeader.Length + sizeof(byte) + sizeof(ushort) + CurrentPeer.IdRaw.Length + NonceSize + TagSize;
-
-                                if (span.Length < minimumLength)
-                                {
-                                    continue;
-                                }
-
-                                int offset = 0;
-
-                                offset += MagicHeader.Length; //Ignore header
-                                offset++; //Ignore message type
-                                
-                                ushort packetType = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, sizeof(ushort)));
-                                offset += sizeof(ushort);
-
-                                ReadOnlySpan<byte> senderId = span.Slice(offset, CurrentPeer.IdRaw.Length);
-                                
-                                offset += CurrentPeer.IdRaw.Length;
-
-                                ReadOnlySpan<byte> nonce = span.Slice(offset, NonceSize);
-                                offset += NonceSize;
-
-                                ReadOnlySpan<byte> tag = span.Slice(offset, TagSize);
-                                offset += TagSize;
-
-                                ReadOnlySpan<byte> ciphertext = span[offset..];
-
-                                var plaintext = new byte[ciphertext.Length];
-
-                                var peerId = new Guid(senderId);
-                                if (!this.AvailablePeers.TryGetValue(peerId, out var peer) || peer.PeerCipher == null)
-                                {
-                                    continue;
-                                }
-
-                                try
-                                {
-                                    peer.PeerCipher.Decrypt(nonce, ciphertext, tag, plaintext);
-                                    PublishReceivedData(peerId, packetType, plaintext);
-                                }
-                                catch (CryptographicException)
-                                {
-                                    plaintext = Array.Empty<byte>();
-                                    continue;
-                                }
-                                continue;
-
-                            default:
-                                WriteLine($"Received unknown message type {(char)messageType} from {result.RemoteEndPoint}");
-                                continue;
-                        }
-                    }
+                    await ProcessIncomingPacketAsync(result.Buffer, result.RemoteEndPoint, TransportType.Wan).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -787,148 +2302,94 @@ namespace QuicPunch
                 }
                 catch (ObjectDisposedException)
                 {
-                    if (CancellationSource.IsCancellationRequested)
-                        break;
+                    break;
                 }
                 catch (SocketException sex)
                 {
-                    if (CancellationSource.IsCancellationRequested || sex.SocketErrorCode == SocketError.OperationAborted)
+                    if (ct.IsCancellationRequested || CancellationSource.IsCancellationRequested ||
+                        sex.SocketErrorCode == SocketError.OperationAborted ||
+                        sex.SocketErrorCode == SocketError.Interrupted ||
+                        sex.SocketErrorCode == SocketError.InvalidArgument)
+                    {
                         break;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    WriteLine($"Error in ReceiveLoopAsync: {ex.Message}");
-                    if (CancellationSource.IsCancellationRequested)
+                    if (ct.IsCancellationRequested || CancellationSource.IsCancellationRequested)
                         break;
+                    QuicPunchLog.Error($"[ReceiveUdpLoopAsync] Error processing packet: {ex.Message}", ex);
                 }
             }
         }
 
-        internal byte[] GenerateAck(bool sharePeers)
+        private async Task ReceiveTorConnectionLoopAsync(TorQuicConnectionManager channel)
         {
-            byte[] payload;
-
-            using (MemoryStream ms = new MemoryStream())
-            using (BinaryWriter w = new BinaryWriter(ms))
+            try
             {
-                w.Write(MagicHeader);
-                w.Write((byte)MessageType.Ack);
-                w.Write(CurrentPeer.IdRaw);
-
-                var peersCopy = AvailablePeers.ToArray();
-
-                w.Write(sharePeers ? (ushort)peersCopy.Length : (ushort)0);
-
-                if (sharePeers)
+                string onionHost = !string.IsNullOrEmpty(channel.RemoteOnion) ? channel.RemoteOnion : "127.0.0.1";
+                var endPoint = channel.RemoteEndPoint ?? new DnsEndPoint(onionHost, channel.RemoteVirtualPort > 0 ? channel.RemoteVirtualPort : 443);
+                while (!CancellationSource.IsCancellationRequested && !channel.IsClosed)
                 {
-                    foreach (var peer in peersCopy.Select(p => p.Value))
+                    try
                     {
-                        PackedFlags pf = new PackedFlags()
+                        var messageMemory = await channel.ReceiveMessageAsync(CancellationSource.Token).ConfigureAwait(false);
+                        byte[] message = messageMemory.ToArray();
+                        if (message.Length > 0)
                         {
-                            NetworkType = peer.NetworkType
-                        };
-
-                        w.Write((byte)pf.RawValue);
-
-                        w.Write((byte)peer.Addresses.Length);
-                        foreach (var e in peer.Addresses)
-                        {
-                            w.Write(e.GetAddressBytes());
+                            await ProcessIncomingPacketAsync(message, endPoint, TransportType.Tor, channel).ConfigureAwait(false);
                         }
-                        
-                        w.Write((ushort)peer.MinPort);
-                        w.Write((ushort)peer.MaxPort);
-                        w.Write(peer.CertHash);
+                    }
+                    catch (OperationCanceledException) { break; }
+                    catch (Exception ex)
+                    {
+                        if (channel.IsClosed || CancellationSource.IsCancellationRequested)
+                            break;
+                        QuicPunchLog.Error("Error processing packet in ReceiveTorConnectionLoopAsync", ex);
                     }
                 }
-
-                w.Write(PreciseTime.GetCorrectTime().Ticks);
-
-                payload = ms.ToArray();
-
-                var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
-                Array.Resize(ref payload, payload.Length + signature.Length);
-                Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
-
-            return payload;
-        }
-        internal byte[] GenerateHelloPayload(MessageType type, bool passwordProof)
-        {
-            byte[] payload;
-
-            using (MemoryStream ms = new MemoryStream())
-            using (BinaryWriter w = new BinaryWriter(ms))
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
             {
-                w.Write(MagicHeader);
-                w.Write((byte)type);
-                w.Write(CurrentPeer.CertHash);
-                
-                PackedFlags pf = new PackedFlags()
-                {
-                    NetworkType = CurrentPeer.NetworkType
-                };
-                w.Write((byte)pf.RawValue);
-
-                var addresses = CurrentPeer.Addresses ?? Array.Empty<IPAddress>();
-                w.Write((byte)addresses.Length);
-                foreach (var address in addresses)
-                {
-                    w.Write(address.GetAddressBytes());
-                }
-                
-                ushort minPort = CurrentPeer.MinPort > 0 ? (ushort)CurrentPeer.MinPort : (ushort)LocalDiscoveryPort;
-                ushort maxPort = CurrentPeer.MaxPort > 0 ? (ushort)CurrentPeer.MaxPort : (ushort)LocalDiscoveryPort;
-
-                w.Write(minPort);
-                w.Write(maxPort);
-
-                var nameBytes = Encoding.UTF8.GetBytes(CurrentPeer.Name);
-                w.Write((byte)nameBytes.Length);
-                w.Write(nameBytes);
-
-                var cert = CertManager.PeerCertificate.Export(X509ContentType.Cert);
-                var certBytes = cert.Length;
-                w.Write((ushort)certBytes);
-                w.Write(cert);
-
-                w.Write((byte)(PasswordHash != null && passwordProof ? 255 : 0));
-
-                if (PasswordHash != null && passwordProof)
-                {
-                    var ticks = PreciseTime.GetCorrectTime().Ticks;
-                    w.Write(ticks);
-                    var nonce = RandomNumberGenerator.GetBytes(24);
-                    w.Write(nonce);
-
-                    var pop = HMACSHA3_256.HashData(Helpers.Combine(BitConverter.GetBytes(ticks), nonce), PasswordHash);
-
-                    w.Write(pop);
-                }
-
-                payload = ms.ToArray();
-
-                var signature = CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
-                Array.Resize(ref payload, payload.Length + signature.Length);
-                Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
+                QuicPunchLog.Error("Error in ReceiveTorConnectionLoopAsync", ex);
             }
-
-            return payload;
         }
 
-        internal byte[] BuildPingPacket(long timestamp, bool isResponse = false)
+        private async Task AcceptTorLoopAsync(CancellationToken token)
         {
-            int size = MagicHeader.Length + 1 + 1 + 16 + 8;
-            byte[] packet = new byte[size];
-
-            Buffer.BlockCopy(MagicHeader, 0, packet, 0, MagicHeader.Length);
-            packet[MagicHeader.Length] = (byte)MessageType.Ping;
-            packet[MagicHeader.Length + 1] = (byte)(isResponse ? 1 : 0);
-            Buffer.BlockCopy(CurrentPeer.IdRaw, 0, packet, MagicHeader.Length + 2, 16);
-            BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(MagicHeader.Length + 2 + 16, 8), timestamp);
-
-            return packet;
+            if (TorHub == null) return;
+            QuicPunchLog.Info($"[AcceptTorLoopAsync] Starting loop for node {CurrentPeer.Name}...");
+            try
+            {
+                while (!token.IsCancellationRequested && !CancellationSource.IsCancellationRequested)
+                {
+                    var channel = await TorQuicConnectionManager.AcceptAsync(TorHub, cancellationToken: token).ConfigureAwait(false);
+                    QuicPunchLog.Info($"[ACCEPT TOR LOOP] Accepted incoming Tor channel {channel.ConnectionId} from {channel.RemoteOnion}");
+                    _ = Task.Run(() => ReceiveTorConnectionLoopAsync(channel), token);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (ChannelClosedException) { }
+            catch (Exception ex)
+            {
+                if (!token.IsCancellationRequested && !CancellationSource.IsCancellationRequested)
+                    QuicPunchLog.Info($"Notice in AcceptTorLoopAsync: {ex.Message}");
+            }
         }
+
+        internal byte[] GenerateAck(bool sharePeers, TransportType transport = TransportType.Wan) =>
+            PacketBuilder.GenerateAck(this, sharePeers, transport);
+
+        internal byte[] GenerateHelloPayload(MessageType type, bool passwordProof, byte[]? challengeNonce = null, TransportType transport = TransportType.Wan, PeerInfo? targetPeer = null) =>
+            PacketBuilder.GenerateHelloPayload(this, type, passwordProof, challengeNonce, transport, targetPeer);
+
+        internal byte[] BuildPingPacket(long timestamp, bool isResponse = false, TransportType transport = TransportType.Wan) =>
+            PacketBuilder.BuildPingPacket(this, timestamp, isResponse, transport);
+
+        internal byte[] GenerateHandshakePayload(HandShakeType type, ushort port, Guid protocolId, Guid connectionGuid, IReadOnlyList<CandidateEndpoint>? candidates = null, TransportType transport = TransportType.Wan) =>
+            PacketBuilder.GenerateHandshakePayload(this, type, port, protocolId, connectionGuid, candidates, transport);
+
         private async Task SendLoopAsync(UdpClient udp, PeerInfo peer, CancellationToken token)
         {
             int tries = 0;
@@ -941,8 +2402,7 @@ namespace QuicPunch
                 {
                     bool peerResponded = AvailablePeers.TryGetValue(peer.Id, out PeerInfo availablePeer);
 
-                    // Generate fresh payload each time (password proof includes timestamp/nonce)
-                    var helloPayload = GenerateHelloPayload(MessageType.Hello, includePassword);
+                    var helloPayload = GenerateHelloPayload(MessageType.Hello, includePassword, targetPeer: availablePeer ?? peer);
 
                     if (peerResponded)
                     {
@@ -950,29 +2410,31 @@ namespace QuicPunch
                     }
                     else
                     {
-                        var payload = GenerateHelloPayload(MessageType.Interrogation, true);
+                        var payload = GenerateHelloPayload(MessageType.Interrogation, true, targetPeer: peer);
                         await udp.BigSendAsync(payload, peer);
                     }
 
                     tries++;
 
-                    // Fast burst for first 5 attempts (50ms apart = 250ms total burst),
-                    // then linear backoff: 1s, 2s, 3s... capped at 20s
                     int delayMs;
                     if (tries <= 5)
                     {
-                        delayMs = 50;
+                        delayMs = 125;
                     }
                     else
                     {
-                        delayMs = Math.Min((tries - 5) * 1000, 20000);
+                        delayMs = Math.Min(((tries - 5) * 2) * 1000, 20000);
                     }
+
+                    _ = PreciseTime.WaitNextTrigger(delayMs);
+
+                    QuicPunchLog.Info($"Send hello packet to {peer} that responded {peerResponded} at {PreciseTime.GetCorrectTime():HH:mm:ss.fff} time til next {TimeSpan.FromTicks(delayMs).Seconds}");
 
                     await Task.Delay(delayMs, token);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine(ex.ToString());
+                    QuicPunchLog.Error("[QuicPunch] Error in periodic hello loop", ex);
                     await Task.Delay(250, token);
                 }
             }
@@ -980,13 +2442,18 @@ namespace QuicPunch
 
         public async ValueTask SendPayloadAsync(PeerInfo peer, ushort packetType, ReadOnlyMemory<byte> payload)
         {
-            if (peer.PeerCipher == null)
+            EnsureStarted();
+            if (peer.TxCipher == null || peer.TxSalt == null)
                 throw new InvalidOperationException("Peer cipher is not initialized.");
 
-            const int NonceSize = 12;
-            const int TagSize = 16;
+            var currentPeer = GetCurrentPeer(peer.ActiveTransport);
 
-            int packetLength = MagicHeader.Length + sizeof(byte)  + sizeof(ushort) + CurrentPeer.IdRaw.Length + NonceSize + TagSize + payload.Length;
+            const int TagSize = 16;
+            int headerAadSize = MagicHeader.Length + sizeof(byte) + sizeof(ushort) + 16 + sizeof(ulong);
+
+            ulong sequenceNumber = peer.GetNextOutboundSequence();
+
+            int packetLength = headerAadSize + TagSize + payload.Length;
 
             byte[] packet = ArrayPool<byte>.Shared.Rent(packetLength);
             try
@@ -1002,47 +2469,145 @@ namespace QuicPunch
                 BinaryPrimitives.WriteUInt16LittleEndian(span.Slice(offset, sizeof(ushort)), packetType);
                 offset += sizeof(ushort);
 
-                CurrentPeer.IdRaw.CopyTo(span[offset..]);
+                currentPeer.IdRaw.CopyTo(span[offset..]);
                 offset += 16;
 
-                Span<byte> nonce = span.Slice(offset, NonceSize);
-                offset += NonceSize;
+                BinaryPrimitives.WriteUInt64LittleEndian(span.Slice(offset, sizeof(ulong)), sequenceNumber);
+                offset += sizeof(ulong);
+
+                ReadOnlySpan<byte> associatedData = span.Slice(0, headerAadSize);
 
                 Span<byte> tag = span.Slice(offset, TagSize);
                 offset += TagSize;
 
                 Span<byte> ciphertext = span.Slice(offset);
 
-                RandomNumberGenerator.Fill(nonce);
+                Span<byte> nonce = stackalloc byte[12];
+                peer.TxSalt.CopyTo(nonce.Slice(0, 4));
+                BinaryPrimitives.WriteUInt64BigEndian(nonce.Slice(4, 8), sequenceNumber);
 
-                peer.PeerCipher.Encrypt(nonce, payload.Span, ciphertext, tag);
+                peer.TxCipher.Encrypt(nonce, payload.Span, ciphertext, tag, associatedData);
 
-                await udp.BigSendAsync(packet.AsMemory(0, packetLength), peer)
-                         .ConfigureAwait(false);
+                if (peer.ActiveTransport == TransportType.Tor && peer.TorChannel != null)
+                {
+                    await peer.TorChannel.SendMessageAsync(packet.AsMemory(0, packetLength)).ConfigureAwait(false);
+                }
+                else if (udp != null)
+                {
+                    await udp.BigSendAsync(packet.AsMemory(0, packetLength), peer)
+                             .ConfigureAwait(false);
+                }
             }
             finally
             {
                 ArrayPool<byte>.Shared.Return(packet);
             }
         }
-        public string GetToken() => 
-            Helpers.EncodeEndpointToken(CurrentPeer);
+        public string GetToken() => GetWanToken();
+
+        public string GetWanToken() => 
+            Utilities.EncodeEndpointToken(CurrentPeer);
+
+        public string? GetTorToken()
+        {
+            if (string.IsNullOrEmpty(TorCurrentPeer?.OnionAddress))
+                return null;
+            return Utilities.EncodeEndpointToken(TorCurrentPeer);
+        }
+
+        public string GetToken(TransportType transport) =>
+            transport == TransportType.Tor ? (GetTorToken() ?? "") : GetWanToken();
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+                return;
+
+            await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (LifecycleState == QuicPunchLifecycleState.Started || LifecycleState == QuicPunchLifecycleState.Starting)
+                {
+                    LifecycleState = QuicPunchLifecycleState.Stopping;
+                }
+
+                await CleanupResourcesAsync().ConfigureAwait(false);
+                LifecycleState = QuicPunchLifecycleState.Disposed;
+            }
+            finally
+            {
+                _lifecycleLock.Release();
+            }
+
+            try { CancellationSource?.Dispose(); } catch { }
+            try { CertManager?.Dispose(); } catch { }
+            try { TorCertManager?.Dispose(); } catch { }
+        }
+
+        private void CleanupResourcesSync()
+        {
+            CleanupSyncCore();
+            _activeIncomingWorkers.Clear();
+
+            List<(QuicConnection Connection, Stream Stream)> sessionsToDispose;
+            lock (_activeProtocolSessions)
+            {
+                sessionsToDispose = _activeProtocolSessions.Values.ToList();
+                _activeProtocolSessions.Clear();
+            }
+            foreach (var session in sessionsToDispose)
+            {
+                try { session.Stream.Dispose(); } catch { }
+                try { _ = session.Connection.DisposeAsync().AsTask(); } catch { }
+            }
+
+            if (TorHub != null)
+            {
+                try { _ = TorHub.DisposeAsync().AsTask(); } catch { }
+                TorHub = null;
+            }
+
+            if (TorManager != null)
+            {
+                try { _ = TorManager.DisposeAsync().AsTask(); } catch { }
+                TorManager = null;
+            }
+        }
 
         public void Dispose()
         {
-            CancellationSource?.Cancel();
+            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+                return;
+
+            _lifecycleLock.Wait();
+            try
+            {
+                if (LifecycleState == QuicPunchLifecycleState.Started || LifecycleState == QuicPunchLifecycleState.Starting)
+                {
+                    LifecycleState = QuicPunchLifecycleState.Stopping;
+                }
+
+                CleanupResourcesSync();
+                LifecycleState = QuicPunchLifecycleState.Disposed;
+            }
+            finally
+            {
+                _lifecycleLock.Release();
+            }
+
             try { CancellationSource?.Dispose(); } catch { }
-            try { TrackerScanner?.Dispose(); } catch { }
-            try { udp?.Dispose(); } catch { }
+            try { CertManager?.Dispose(); } catch { }
+            try { TorCertManager?.Dispose(); } catch { }
         }
-        
+
         public enum NetworkType : byte
         {
             Unknown = 255,
             Static  = 0,
             DynamicPort = 1,
             DynamicAddress = 2,
-            DynamicPortAndAddress = 3
+            DynamicPortAndAddress = 3,
+            Tor = 4
         }
     }
 }

@@ -1,3 +1,4 @@
+using QuicPunch.Helpers;
 using System;
 using System.Collections.Generic;
 using System.IO.Hashing;
@@ -6,6 +7,7 @@ using System.Net.Sockets;
 using System.Runtime.Intrinsics.Arm;
 using System.Security.Cryptography;
 using System.Text;
+using TransportType = QuicPunch.QuicPunch.TransportType;
 using static QuicPunch.QuicPunch;
 using static QuicPunch.QuicPunchStructures;
 
@@ -13,8 +15,11 @@ namespace QuicPunch.PacketHandler
 {
     internal class HandshakeHandler
     {
-        internal static void HandleHandshake(QuicPunch qc, BinaryReader r, UdpClient udp, UdpReceiveResult result)
+        internal static void HandleHandshake(QuicPunch qc, BinaryReader r, UdpClient? udp, EndPoint remoteEndPoint, byte[] buffer, TransportType transport = TransportType.Wan, TorQuicConnectionManager? torChannel = null)
         {
+            if (qc.LifecycleState != QuicPunchLifecycleState.Started || qc.CancellationSource == null || qc.CancellationSource.IsCancellationRequested)
+                return;
+
             var peerId = new Guid(r.ReadBytes(16));
             if (peerId == Guid.Empty) return;
 
@@ -23,135 +28,355 @@ namespace QuicPunch.PacketHandler
 
             var connectionTypeBytes = r.ReadBytes(16);
             var guidBytes = r.ReadBytes(16);
-            var signatureHandshake = r.ReadBytes(64); //Signature data
 
-            if (connectionTypeBytes.Length != 16 || guidBytes.Length != 16 || signatureHandshake.Length != 64)
+            if (connectionTypeBytes.Length != 16 || guidBytes.Length != 16)
                 return;
 
             var connectionType = new Guid(connectionTypeBytes);
             var guid = new Guid(guidBytes);
 
-            if (!qc.AvailablePeers.TryGetValue(peerId, out PeerInfo handshakePeer))
+            var remoteCandidates = new List<CandidateEndpoint>();
+            int remainingBytes = (int)(r.BaseStream.Length - r.BaseStream.Position);
+            if (remainingBytes > CertManager.SignatureLength)
             {
-                Console.WriteLine($"Received handshake from unknown peer {result.RemoteEndPoint}");
+                byte cCount = r.ReadByte();
+                for (int i = 0; i < cCount && (r.BaseStream.Length - r.BaseStream.Position > CertManager.SignatureLength); i++)
+                {
+                    var cType = (CandidateType)r.ReadByte();
+                    var ip = new IPAddress(r.ReadBytes(4));
+                    var port = r.ReadUInt16();
+                    var prio = r.ReadUInt32();
+                    if (Utilities.IsValidPeerAddress(ip))
+                    {
+                        remoteCandidates.Add(new CandidateEndpoint(new IPEndPoint(ip, port), cType, prio));
+                    }
+                }
+            }
+
+            var signatureHandshake = r.ReadBytes(CertManager.SignatureLength);
+            if (signatureHandshake.Length != CertManager.SignatureLength)
+                return;
+
+            if (!qc.AvailablePeers.TryGetValue(peerId, out PeerInfo? handshakePeer) || handshakePeer == null)
+            {
+                QuicPunchLog.Info($"Received handshake from unknown peer {remoteEndPoint}");
                 return;
             }
 
-            handshakePeer.ActiveEndPoint = result.RemoteEndPoint;
-
-            if (!handshakePeer.Curve.VerifyData(result.Buffer.AsSpan(0, (int)r.BaseStream.Position - signatureHandshake.Length), signatureHandshake, HashAlgorithmName.SHA3_256))
+            if (!handshakePeer.Curve.VerifyData(buffer.AsSpan(0, (int)r.BaseStream.Position - signatureHandshake.Length), signatureHandshake, HashAlgorithmName.SHA3_256))
             {
-                Console.WriteLine("Received invalid signature from " + result.RemoteEndPoint);
+                QuicPunchLog.Info("Received invalid signature from " + remoteEndPoint);
                 return;
             }
+
+            if (remoteEndPoint is IPEndPoint ipEp)
+            {
+                handshakePeer.ActiveEndPoint = ipEp;
+            }
+            handshakePeer.ActiveTransport = transport;
+            if (torChannel != null) handshakePeer.TorChannel = torChannel;
 
             switch (handShakeType)
             {
                 case HandShakeType.Request:
-                    Console.WriteLine($"Received handshake request from {result.RemoteEndPoint}");
+                    var session = qc.GetOrAddIncomingHandshakeSession(guid, peerId, connectionType);
+                    if (session == null) return;
 
-                    _ = Task.Run(async () =>
+                    if (session.ConnectionTaskStarted)
                     {
-                        HandShakeType decidedResponse = HandShakeType.Unsupported;
-                        ushort decidedPort = 0;
-                        CancellationToken ct = CancellationToken.None;
+                        ResendCachedResponse(qc, session, remoteEndPoint, transport, torChannel);
+                        return;
+                    }
 
-                        if (qc.ProtocolHandlers.TryGetValue(connectionType, out var handler))
+                    lock (session)
+                    {
+                        if (session.ConnectionTaskStarted)
                         {
-                            HandshakeDecision decision;
-
-                            if (qc.AutoAcceptConnections)
-                            {
-                                decision = new HandshakeDecision(true, (ushort)Random.Shared.Next(ushort.MaxValue / 2, ushort.MaxValue), CancellationToken.None);
-                            }
-                            else
-                            {
-                                decision = await qc.Manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, result.RemoteEndPoint), TimeSpan.FromSeconds(30), true, CancellationToken.None);
-                            }
-
-                            if (decision.Accepted)
-                            {
-                                if (decision.Port == null || decision.Port == 0)
-                                    throw new Exception("Invalid port in handshake decision.");
-
-                                decidedResponse = HandShakeType.Accept;
-                                decidedPort = (ushort)decision.Port;
-                                ct = decision.Ct ?? CancellationToken.None;
-                            }
-                            else
-                            {
-                                decidedResponse = HandShakeType.Decline;
-                                decidedPort = 0;
-                            }
+                            ResendCachedResponse(qc, session, remoteEndPoint, transport, torChannel);
+                            return;
                         }
+                        session.ConnectionTaskStarted = true;
+                    }
 
+                    QuicPunchLog.Info($"[HANDSHAKE SESSION] Starting new incoming handshake session for Guid: {guid} from {remoteEndPoint} (Candidates: {remoteCandidates.Count})");
+
+                    bool wasYielded = false;
+                    if (qc.TryGetActiveOutboundNegotiation(peerId, connectionType, out var outboundNegotiation) && outboundNegotiation != null)
+                    {
+                        var currentPeer = qc.GetCurrentPeer(transport);
+                        bool localWins = currentPeer != null && currentPeer.Id.CompareTo(peerId) > 0;
+
+                        if (localWins)
+                        {
+                            QuicPunchLog.Info($"[Handshake Glare] Simultaneous connection detected. Local peer wins ({currentPeer?.Id} > {peerId}). Authoritative local request takes precedence.");
+                            session.MarkRejected();
+                            session.ResponsePayloadTcs.TrySetResult(Array.Empty<byte>());
+                            return;
+                        }
+                        else
+                        {
+                            QuicPunchLog.Info($"[Handshake Glare] Simultaneous connection detected. Remote peer wins ({peerId} > {currentPeer?.Id}). Yielding local request to process incoming.");
+                            outboundNegotiation.IsYielded = true;
+                            wasYielded = true;
+                            try { outboundNegotiation.Cts.Cancel(); } catch { }
+                        }
+                    }
+
+                    long workerGen = qc.LifecycleGeneration;
+                    var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(qc.LifecycleToken);
+                    handshakeCts.CancelAfter(qc.HandshakePendingTtl);
+
+                    var worker = new IncomingHandshakeWorker(guid, workerGen, handshakeCts);
+                    if (!qc.TryRegisterIncomingWorker(worker))
+                    {
+                        session.MarkRejected();
+                        session.ResponsePayloadTcs.TrySetResult(Array.Empty<byte>());
+                        handshakeCts.Dispose();
+                        return;
+                    }
+
+                    worker.Task = Task.Run(async () =>
+                    {
                         UdpClient? nudp = null;
-
-                        if (decidedResponse == HandShakeType.Accept)
+                        CancellationTokenSource? decisionLinkedCts = null;
+                        bool sessionHandedOff = false;
+                        try
                         {
-                            nudp = new UdpClient();
-                            ConfigureUdpSocket(nudp);
+                            var token = handshakeCts.Token;
+                            token.ThrowIfCancellationRequested();
 
-                            nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                            nudp.Client.Bind(new IPEndPoint(IPAddress.Any, decidedPort));
-                        }
+                            HandShakeType decidedResponse = HandShakeType.Unsupported;
+                            ushort decidedPort = 0;
 
-                        byte[] payload;
-
-                        using (MemoryStream ms = new MemoryStream())
-                        using (BinaryWriter w = new BinaryWriter(ms))
-                        {
-                            w.Write(MagicHeader);
-                            w.Write((byte)MessageType.Handshake);
-                            w.Write(qc.CurrentPeer.IdRaw);
-                            w.Write((byte)(decidedResponse));
-                            w.Write(decidedPort);
-                            w.Write(connectionType.ToByteArray());
-                            w.Write(guid.ToByteArray());
-
-                            payload = ms.ToArray();
-                            var signature = qc.CertManager.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
-                            Array.Resize(ref payload, payload.Length + signature.Length);
-                            Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
-                        }
-
-                        await udp.SendAsync(payload, result.RemoteEndPoint);
-                        
-                        _ = Task.Run(async () =>
-                        {
-                            for (int i = 0; i < 3; i++)
+                            if (qc.ProtocolHandlers.TryGetValue(connectionType, out var handler))
                             {
-                                await Task.Delay(25);
-                                await udp.SendAsync(payload, result.RemoteEndPoint);
+                                HandshakeDecision decision;
+
+                                bool isTrusted = qc.IsTrustedPeer(handshakePeer);
+                                bool isAutoAccepted = (qc.AutoAcceptConnections && isTrusted)
+                                    || qc.AutoAcceptUntrustedConnections
+                                    || wasYielded
+                                    || qc.IsPeerAutoAccepted(peerId)
+                                    || (handshakePeer.CertHash != null && qc.IsPeerAutoAccepted(handshakePeer.CertHash));
+
+                                if (isAutoAccepted)
+                                {
+                                    decision = new HandshakeDecision(true, (ushort)0, CancellationToken.None);
+                                }
+                                else
+                                {
+                                    var epForHandshake = remoteEndPoint as IPEndPoint ?? new IPEndPoint(IPAddress.Loopback, 0);
+                                    decision = await qc._manager.WaitForDecisionAsync(new HandshakeRequest(guid, connectionType, epForHandshake, peerId, handshakePeer.CertHash), TimeSpan.FromSeconds(30), true, token).ConfigureAwait(false);
+                                }
+
+                                if (decision.Accepted)
+                                {
+                                    decidedResponse = HandShakeType.Accept;
+                                    decidedPort = (ushort)(decision.Port ?? 0);
+                                    if (decision.Ct.HasValue && decision.Ct.Value.CanBeCanceled)
+                                    {
+                                        decisionLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(token, decision.Ct.Value);
+                                        token = decisionLinkedCts.Token;
+                                    }
+                                }
+                                else
+                                {
+                                    decidedResponse = HandShakeType.Decline;
+                                    decidedPort = 0;
+                                }
                             }
-                        });
 
-                        if (decidedResponse == HandShakeType.Accept)
-                        {
-                            var connection = await QuicPunchConnection.InitQuicConnectionCore(qc.CurrentPeer, nudp, qc.AvailablePeers[peerId], remotePort, qc.CertManager.PeerCertificate!, handler.CompressionOptions, ct);
+                            token.ThrowIfCancellationRequested();
 
-                            if (connection.Connection == null || connection.Stream == null)
+                            List<CandidateEndpoint>? localCandidates = null;
+                            if (decidedResponse == HandShakeType.Accept && transport == TransportType.Wan)
                             {
-                                _ = Task.Run(async () => await handler.DeniedAsync(qc.AvailablePeers[peerId], ct));
+                                (nudp, decidedPort, localCandidates) = await qc.CreateBoundSocketAndGatherCandidatesAsync(
+                                    decidedPort, $"[HANDSHAKE ACCEPT] remote: {remoteEndPoint}", token).ConfigureAwait(false);
+                            }
+
+                            token.ThrowIfCancellationRequested();
+
+                            byte[] payload = qc.GenerateHandshakePayload(decidedResponse, decidedPort, connectionType, guid, localCandidates, transport);
+                            if (decidedResponse == HandShakeType.Accept)
+                            {
+                                session.MarkCompleted();
                             }
                             else
                             {
-                                _ = Task.Run(async () => await handler.HandleAsync(connection.Connection, connection.Stream, qc.AvailablePeers[peerId], ct));
+                                session.MarkRejected();
+                            }
+                            session.ResponsePayloadTcs.TrySetResult(payload);
+                            await qc.SendResponseAsync(payload, remoteEndPoint, transport, torChannel).ConfigureAwait(false);
+
+                            if (transport == TransportType.Wan)
+                            {
+                                _ = Task.Run(async () =>
+                                {
+                                    for (int i = 0; i < 3; i++)
+                                    {
+                                        if (token.IsCancellationRequested) break;
+                                        try { await Task.Delay(25, token).ConfigureAwait(false); } catch { break; }
+                                        await qc.SendResponseAsync(payload, remoteEndPoint, transport, torChannel).ConfigureAwait(false);
+                                    }
+                                });
+                            }
+
+                            token.ThrowIfCancellationRequested();
+
+                            if (decidedResponse == HandShakeType.Accept && handler != null)
+                            {
+                                if (!qc.AvailablePeers.TryGetValue(peerId, out var targetPeer))
+                                {
+                                    targetPeer = handshakePeer;
+                                }
+
+                                if (transport == TransportType.Wan && nudp != null)
+                                {
+                                    var connection = await QuicPunchConnection.InitQuicConnectionCore(qc, qc.GetCurrentPeer(transport), nudp, targetPeer, remoteCandidates, remotePort, guid, qc.GetCertManager(transport).PeerCertificate!, handler.CompressionOptions, token).ConfigureAwait(false);
+
+                                    token.ThrowIfCancellationRequested();
+
+                                    if (connection.Connection == null || connection.Stream == null)
+                                    {
+                                        _ = Task.Run(async () => await handler.DeniedAsync(targetPeer, token).ConfigureAwait(false));
+                                    }
+                                    else
+                                    {
+                                        bool registered = await qc.RegisterProtocolSessionAsync(targetPeer.Id, connectionType, connection.Connection, connection.Stream, workerGen).ConfigureAwait(false);
+                                        if (registered)
+                                        {
+                                            sessionHandedOff = true;
+                                            handshakeCts.CancelAfter(Timeout.InfiniteTimeSpan);
+
+                                            var capturedCts = handshakeCts;
+                                            var capturedDecisionCts = decisionLinkedCts;
+                                            _ = Task.Run(async () =>
+                                            {
+                                                try
+                                                {
+                                                    await handler.HandleAsync(connection.Connection, connection.Stream, targetPeer, token).ConfigureAwait(false);
+                                                }
+                                                finally
+                                                {
+                                                    await qc.UnregisterProtocolSessionAsync(targetPeer.Id, connectionType, connection.Connection).ConfigureAwait(false);
+                                                    try { await connection.Stream.DisposeAsync().ConfigureAwait(false); } catch { }
+                                                    try { await connection.Connection.DisposeAsync().ConfigureAwait(false); } catch { }
+                                                    try { capturedDecisionCts?.Dispose(); } catch { }
+                                                    try { capturedCts.Dispose(); } catch { }
+                                                }
+                                            }, token);
+                                        }
+                                    }
+                                }
+                                else if (transport == TransportType.Tor && (torChannel != null || handshakePeer.TorChannel != null))
+                                {
+                                    var activeChannel = torChannel ?? handshakePeer.TorChannel!;
+                                    var dummyConn = activeChannel.CreateQuicConnection();
+                                    try
+                                    {
+                                        var stream = await dummyConn.AcceptInboundStreamAsync(token).ConfigureAwait(false);
+                                        token.ThrowIfCancellationRequested();
+
+                                        bool registered = await qc.RegisterProtocolSessionAsync(targetPeer.Id, connectionType, dummyConn, stream, workerGen).ConfigureAwait(false);
+                                        if (registered)
+                                        {
+                                            sessionHandedOff = true;
+                                            handshakeCts.CancelAfter(Timeout.InfiniteTimeSpan);
+
+                                            var capturedCts = handshakeCts;
+                                            var capturedDecisionCts = decisionLinkedCts;
+                                            _ = Task.Run(async () =>
+                                            {
+                                                try
+                                                {
+                                                    await handler.HandleAsync(dummyConn, stream, targetPeer, token).ConfigureAwait(false);
+                                                }
+                                                finally
+                                                {
+                                                    await qc.UnregisterProtocolSessionAsync(targetPeer.Id, connectionType, dummyConn).ConfigureAwait(false);
+                                                    try { await stream.DisposeAsync().ConfigureAwait(false); } catch { }
+                                                    try { await dummyConn.DisposeAsync().ConfigureAwait(false); } catch { }
+                                                    try { capturedDecisionCts?.Dispose(); } catch { }
+                                                    try { capturedCts.Dispose(); } catch { }
+                                                }
+                                            }, token);
+                                        }
+                                    }
+                                    catch (OperationCanceledException)
+                                    {
+                                        try { await dummyConn.DisposeAsync().ConfigureAwait(false); } catch { }
+                                        throw;
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        QuicPunchLog.Error("[TOR QUIC HANDLER ERROR]", ex);
+                                        await handler.DeniedAsync(targetPeer, token).ConfigureAwait(false);
+                                        try { await dummyConn.DisposeAsync().ConfigureAwait(false); } catch { }
+                                    }
+                                }
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            session.MarkRejected();
+                            session.ResponsePayloadTcs.TrySetResult(Array.Empty<byte>());
+                            try { nudp?.Dispose(); } catch { }
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            session.MarkRejected();
+                            session.ResponsePayloadTcs.TrySetResult(Array.Empty<byte>());
+                            try { nudp?.Dispose(); } catch { }
+                        }
+                        catch (Exception ex)
+                        {
+                            session.MarkRejected();
+                            session.ResponsePayloadTcs.TrySetResult(Array.Empty<byte>());
+                            QuicPunchLog.Error("[HandshakeHandler] Error processing handshake request", ex);
+                            try { nudp?.Dispose(); } catch { }
+                        }
+                        finally
+                        {
+                            qc.UnregisterIncomingWorker(guid);
+                            if (!sessionHandedOff)
+                            {
+                                try { decisionLinkedCts?.Dispose(); } catch { }
+                                try { handshakeCts.Dispose(); } catch { }
                             }
                         }
                     });
                     return;
 
                 case HandShakeType.Accept:
-                    Console.WriteLine($"Received handshake ACCEPT from {result.RemoteEndPoint}");
-                    qc.Manager.Approve(guid, remotePort, null);
+                    if (qc._manager.Approve(guid, remotePort, remoteCandidates))
+                    {
+                        QuicPunchLog.Info($"Received handshake ACCEPT from {remoteEndPoint} (Candidates: {remoteCandidates.Count})");
+                    }
                     return;
 
                 case HandShakeType.Decline or HandShakeType.Unsupported:
-                    Console.WriteLine($"Handshake canceled from {result.RemoteEndPoint}");
-                    qc.Manager.Reject(guid);
+                    QuicPunchLog.Info($"Handshake canceled from {remoteEndPoint}");
+                    qc._manager.Reject(guid);
                     return;
             }
+        }
+
+        private static void ResendCachedResponse(QuicPunch qc, IncomingHandshakeSession session, EndPoint remoteEndPoint, TransportType transport, TorQuicConnectionManager? torChannel)
+        {
+            QuicPunchLog.Info($"[HANDSHAKE IDEMPOTENT] Duplicate Handshake Request received for existing session {session.ConnectionGuid}. Resending cached response.");
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var cachedPayload = await session.ResponsePayloadTcs.Task.WaitAsync(qc.LifecycleToken).ConfigureAwait(false);
+                    if (cachedPayload != null && cachedPayload.Length > 0)
+                    {
+                        await qc.SendResponseAsync(cachedPayload, remoteEndPoint, transport, torChannel).ConfigureAwait(false);
+                    }
+                }
+                catch { }
+            });
         }
     }
 }

@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using QuicPunch;
+using QuicConnection = QuicPunch.QuicConnection;
 
 namespace QuicPunchTests
 {
@@ -26,11 +27,44 @@ namespace QuicPunchTests
         public event Action<PeerInfo>? OnPeerConnected;
         public event Action<PeerInfo>? OnPeerDisconnected;
 
-        public static ConcurrentDictionary<Guid, (PeerInfo Peer, StreamWriter Writer)> ActiveChats { get; } = new();
+        public class ChatSession : IDisposable
+        {
+            public PeerInfo Peer { get; }
+            public StreamWriter Writer { get; }
+            public SemaphoreSlim WriteLock { get; } = new(1, 1);
+
+            public ChatSession(PeerInfo peer, StreamWriter writer)
+            {
+                Peer = peer;
+                Writer = writer;
+            }
+
+            public async Task SendLineAsync(string text, CancellationToken ct = default)
+            {
+                await WriteLock.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    await Writer.WriteLineAsync(text.AsMemory(), ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    WriteLock.Release();
+                }
+            }
+
+            public void Dispose()
+            {
+                WriteLock.Dispose();
+                try { Writer.Dispose(); } catch { }
+            }
+        }
+
+        public static ConcurrentDictionary<Guid, ChatSession> ActiveChats { get; } = new();
 
         public async Task DeniedAsync(PeerInfo peer, CancellationToken ct)
         {
             Console.WriteLine($"\n[CHAT] Connection with {peer.Name} ({peer.ActiveEndPoint}) failed or denied.");
+            await Task.CompletedTask;
         }
 
         public async Task HandleAsync(
@@ -40,121 +74,115 @@ namespace QuicPunchTests
             CancellationToken ct)
         {
             Console.WriteLine($"\n--- DIRECT CHAT SESSION STARTED with {peer.Name} ({peer.ActiveEndPoint}) ---");
-            var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
-            var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
+            using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+            using var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
 
-            ActiveChats[peer.Id] = (peer, writer);
+            var session = new ChatSession(peer, writer);
+            ActiveChats[peer.Id] = session;
             OnPeerConnected?.Invoke(peer);
 
-            // Send sync request upon session connection
             try
             {
                 var syncReqPacket = JsonSerializer.Serialize(new { type = "chat_sync_req" });
-                await writer.WriteLineAsync(syncReqPacket);
+                await session.SendLineAsync(syncReqPacket, ct);
             }
             catch {}
 
-            _ = Task.Run(async () =>
+            try
             {
-                try
+                while (!ct.IsCancellationRequested)
                 {
-                    while (!ct.IsCancellationRequested)
+                    var line = await reader.ReadLineAsync(ct);
+                    if (line == null) break;
+                    if (string.IsNullOrWhiteSpace(line) || line == "\0") continue;
+
+                    try
                     {
-                        var line = await reader.ReadLineAsync();
+                        using var doc = JsonDocument.Parse(line);
+                        var root = doc.RootElement;
+                        string type = root.TryGetProperty("type", out var tEl) ? tEl.GetString() ?? "" : "";
+                        string msgId = root.TryGetProperty("msgId", out var idEl) ? idEl.GetString() ?? "" : "";
 
-                        if (line == null) break;
-                        if (string.IsNullOrWhiteSpace(line) || line == "\0") continue;
-
-                        try
+                        if (type == "chat_msg")
                         {
-                            using var doc = JsonDocument.Parse(line);
-                            var root = doc.RootElement;
-                            string type = root.TryGetProperty("type", out var tEl) ? tEl.GetString() ?? "" : "";
-                            string msgId = root.TryGetProperty("msgId", out var idEl) ? idEl.GetString() ?? "" : "";
+                            string content = root.TryGetProperty("content", out var cEl) ? cEl.GetString() ?? "" : "";
+                            string sender = (root.TryGetProperty("sender", out var sEl) ? sEl.GetString() : null) ?? peer.Name ?? "Unknown";
 
-                            if (type == "chat_msg")
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            string preview = content.Length > 80 ? (content.StartsWith("{") ? "[Media Attachment]" : content[..80] + "...") : content;
+                            Console.WriteLine($"[{sender}]: {preview}");
+                            Console.ResetColor();
+
+                            OnMessageReceived?.Invoke(peer, content, msgId);
+
+                            var ackPacket = JsonSerializer.Serialize(new
                             {
-                                string content = root.TryGetProperty("content", out var cEl) ? cEl.GetString() ?? "" : "";
-                                string sender = root.TryGetProperty("sender", out var sEl) ? sEl.GetString() ?? peer.Name : peer.Name;
-
-                                Console.ForegroundColor = ConsoleColor.Cyan;
-                                Console.WriteLine($"[{sender}]: {content}");
-                                Console.ResetColor();
-
-                                OnMessageReceived?.Invoke(peer, content, msgId);
-
-                                // Send back ACK confirmation JSON packet
-                                var ackPacket = JsonSerializer.Serialize(new
+                                type = "chat_ack",
+                                msgId = msgId,
+                                status = "delivered"
+                            });
+                            await session.SendLineAsync(ackPacket, ct);
+                        }
+                        else if (type == "chat_ack")
+                        {
+                            Console.WriteLine($"[CHAT ACK] Message {msgId} confirmed by {peer.Name}");
+                            OnMessageAckReceived?.Invoke(peer, msgId);
+                        }
+                        else if (type == "chat_sync_req")
+                        {
+                            var history = OnGetHistoryForPeer?.Invoke(peer.Id) ?? new();
+                            var syncResPacket = JsonSerializer.Serialize(new
+                            {
+                                type = "chat_sync_res",
+                                messages = history.Select(h => new
                                 {
-                                    type = "chat_ack",
-                                    msgId = msgId,
-                                    status = "delivered"
-                                });
-                                await writer.WriteLineAsync(ackPacket);
-                            }
-                            else if (type == "chat_ack")
+                                    msgId = h.MsgId,
+                                    sender = h.Sender,
+                                    content = h.Content,
+                                    timestamp = h.Timestamp.ToString("o")
+                                })
+                            });
+                            await session.SendLineAsync(syncResPacket, ct);
+                        }
+                        else if (type == "chat_sync_res")
+                        {
+                            if (root.TryGetProperty("messages", out var msgsEl) && msgsEl.ValueKind == JsonValueKind.Array)
                             {
-                                Console.WriteLine($"[CHAT ACK] Message {msgId} confirmed by {peer.Name}");
-                                OnMessageAckReceived?.Invoke(peer, msgId);
-                            }
-                            else if (type == "chat_sync_req")
-                            {
-                                var history = OnGetHistoryForPeer?.Invoke(peer.Id) ?? new();
-                                var syncResPacket = JsonSerializer.Serialize(new
+                                var items = new List<(string MsgId, string Sender, string Content, DateTime Timestamp)>();
+                                foreach (var el in msgsEl.EnumerateArray())
                                 {
-                                    type = "chat_sync_res",
-                                    messages = history.Select(h => new
-                                    {
-                                        msgId = h.MsgId,
-                                        sender = h.Sender,
-                                        content = h.Content,
-                                        timestamp = h.Timestamp.ToString("o")
-                                    })
-                                });
-                                await writer.WriteLineAsync(syncResPacket);
-                            }
-                            else if (type == "chat_sync_res")
-                            {
-                                if (root.TryGetProperty("messages", out var msgsEl) && msgsEl.ValueKind == JsonValueKind.Array)
-                                {
-                                    var items = new List<(string MsgId, string Sender, string Content, DateTime Timestamp)>();
-                                    foreach (var el in msgsEl.EnumerateArray())
-                                    {
-                                        string id = el.TryGetProperty("msgId", out var iEl) ? iEl.GetString() ?? "" : "";
-                                        string snd = el.TryGetProperty("sender", out var sEl) ? sEl.GetString() ?? "" : "";
-                                        string cnt = el.TryGetProperty("content", out var cEl) ? cEl.GetString() ?? "" : "";
-                                        DateTime ts = el.TryGetProperty("timestamp", out var tsEl) && DateTime.TryParse(tsEl.GetString(), out var parsedTs) ? parsedTs : DateTime.Now;
-                                        if (!string.IsNullOrEmpty(id)) items.Add((id, snd, cnt, ts));
-                                    }
-                                    OnHistorySyncReceived?.Invoke(peer, items);
+                                    string id = el.TryGetProperty("msgId", out var iEl) ? iEl.GetString() ?? "" : "";
+                                    string snd = el.TryGetProperty("sender", out var sEl) ? sEl.GetString() ?? "" : "";
+                                    string cnt = el.TryGetProperty("content", out var cEl) ? cEl.GetString() ?? "" : "";
+                                    DateTime ts = el.TryGetProperty("timestamp", out var tsEl) && DateTime.TryParse(tsEl.GetString(), out var parsedTs) ? parsedTs : DateTime.Now;
+                                    if (!string.IsNullOrEmpty(id)) items.Add((id, snd, cnt, ts));
                                 }
-                            }
-                            else
-                            {
-                                OnMessageReceived?.Invoke(peer, line, Guid.NewGuid().ToString());
+                                OnHistorySyncReceived?.Invoke(peer, items);
                             }
                         }
-                        catch
+                        else
                         {
                             OnMessageReceived?.Invoke(peer, line, Guid.NewGuid().ToString());
                         }
                     }
+                    catch
+                    {
+                        OnMessageReceived?.Invoke(peer, line, Guid.NewGuid().ToString());
+                    }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[QUIC] Error reading chat stream: {ex.Message}");
-                }
-                finally
-                {
-                    ActiveChats.TryRemove(peer.Id, out _);
-                    OnPeerDisconnected?.Invoke(peer);
-                    Console.WriteLine($"\n[QUIC] Chat session with {peer.Name} ended.");
-                }
-            }, ct);
-
-            while (!ct.IsCancellationRequested)
+            }
+            catch (Exception ex)
             {
-                await Task.Delay(1000, ct);
+                Console.WriteLine($"[QUIC] Error reading chat stream: {ex.Message}");
+            }
+            finally
+            {
+                if (ActiveChats.TryRemove(peer.Id, out var removedSession))
+                {
+                    removedSession.Dispose();
+                }
+                OnPeerDisconnected?.Invoke(peer);
+                Console.WriteLine($"\n[QUIC] Chat session with {peer.Name} ended.");
             }
         }
 
@@ -173,7 +201,7 @@ namespace QuicPunchTests
                         content = message,
                         timestamp = DateTime.UtcNow.ToString("o")
                     });
-                    await chat.Writer.WriteLineAsync(packet);
+                    await chat.SendLineAsync(packet);
                     return (true, msgId);
                 }
                 catch (Exception ex)

@@ -6,13 +6,14 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using Photino.NET;
-using QuicPunch;
+using QuicPunch.Helpers;
 
 namespace QuicPunchTests
 {
@@ -23,7 +24,7 @@ namespace QuicPunchTests
         private readonly VirtualLanHandler _lanHandler;
         private readonly VoiceCallHandler _voiceHandler;
         private readonly CancellationTokenSource _cts;
-        private HttpListener _listener;
+        private HttpListener? _listener;
         private int _port;
 
         public static ConcurrentQueue<string> EventLogs { get; } = new();
@@ -34,6 +35,7 @@ namespace QuicPunchTests
         public record ChatMessage(string PeerId, string MsgId, string Sender, string Message, DateTime Timestamp, bool IsMe, bool IsConfirmed);
         public record PendingPetitionItem(Guid RequestId, Guid ProtocolId, string ProtocolName, string PeerName, Guid PeerId, TaskCompletionSource<HandshakeDecision> Tcs);
         public static ConcurrentDictionary<Guid, PendingPetitionItem> PendingPetitions { get; } = new();
+        public static ConcurrentDictionary<(Guid PeerId, Guid ProtocolId), Guid> InFlightConnections { get; } = new();
 
         public WebUiServer(QuicPunch.QuicPunch qcc, ChatHandler chatHandler, VirtualLanHandler lanHandler, VoiceCallHandler voiceHandler, CancellationTokenSource cts, int port = 5000)
         {
@@ -48,8 +50,9 @@ namespace QuicPunchTests
 
             _chatHandler.OnMessageReceived += (peer, msg, msgId) =>
             {
-                ChatMessages.Enqueue(new ChatMessage(peer.Id.ToString(), msgId, peer.Name, msg, DateTime.Now, false, true));
-                LogEvent($"[CHAT] Message from {peer.Name}: {msg}");
+                ChatMessages.Enqueue(new ChatMessage(peer.Id.ToString(), msgId, peer.Name ?? "Unknown", msg, DateTime.Now, false, true));
+                string preview = msg.Length > 80 ? (msg.StartsWith("{") ? "[Media Attachment]" : msg[..80] + "...") : msg;
+                LogEvent($"[CHAT] Message from {peer.Name ?? "Unknown"}: {preview}");
             };
 
             _chatHandler.OnMessageAckReceived += (peer, msgId) =>
@@ -91,6 +94,13 @@ namespace QuicPunchTests
                 }
             };
 
+            _chatHandler.OnPeerConnected += (peer) =>
+            {
+                var keys = PendingPetitions.Where(kv => kv.Value.PeerId == peer.Id).Select(kv => kv.Key).ToList();
+                foreach (var k in keys) PendingPetitions.TryRemove(k, out _);
+                LogEvent($"[CHAT] Direct chat connected with {peer.Name}");
+            };
+
             _qcc.OnPeerDisconnected += (peer) =>
             {
                 LogEvent($"[NETWORK] Peer {peer.Name ?? "Unknown"} disconnected");
@@ -99,24 +109,48 @@ namespace QuicPunchTests
             _qcc.Manager.HandshakeRequested += (request, ct) =>
             {
                 string protoName = _qcc.ProtocolHandlers.TryGetValue(request.ProtocolId, out var h) ? h.ProtocolName : "Connection";
-                var matchedPeer = _qcc.AvailablePeers.Values.FirstOrDefault(p => p.ActiveEndPoint?.Equals(request.RemoteEndPoint) == true || (p.Addresses != null && p.Addresses.Any(a => a.Equals(request.RemoteEndPoint.Address))));
-                string peerName = matchedPeer?.Name ?? request.RemoteEndPoint.ToString();
-                Guid peerId = matchedPeer?.Id ?? Guid.Empty;
 
-                // Deduplicate: If an existing petition for this peer & protocol is pending, replace it
-                var existingKey = PendingPetitions.FirstOrDefault(kv => kv.Value.PeerName == peerName && kv.Value.ProtocolId == request.ProtocolId).Key;
-                if (existingKey != default)
+                QuicPunch.PeerInfo? matchedPeer = null;
+                if (request.PeerId != Guid.Empty && _qcc.AvailablePeers.TryGetValue(request.PeerId, out var pById))
                 {
-                    if (PendingPetitions.TryRemove(existingKey, out var oldPet))
-                    {
-                        try { oldPet.Tcs.TrySetResult(new HandshakeDecision(false, null, CancellationToken.None)); } catch { }
-                    }
+                    matchedPeer = pById;
+                }
+                else if (request.CertHash != null && request.CertHash.Length > 0)
+                {
+                    matchedPeer = _qcc.AvailablePeers.Values.FirstOrDefault(p => p.CertHash != null && CryptographicOperations.FixedTimeEquals(p.CertHash, request.CertHash));
+                }
+
+                if (matchedPeer == null)
+                {
+                    matchedPeer = _qcc.AvailablePeers.Values.FirstOrDefault(p => p.ActiveEndPoint?.Equals(request.RemoteEndPoint) == true || (p.Addresses != null && p.Addresses.Any(a => a.Equals(request.RemoteEndPoint.Address))));
+                }
+
+                string peerName = matchedPeer?.Name ?? (request.PeerId != Guid.Empty ? $"Peer-{request.PeerId.ToString()[..6]}" : request.RemoteEndPoint.ToString());
+                Guid peerId = matchedPeer?.Id ?? (request.PeerId != Guid.Empty ? request.PeerId : Guid.Empty);
+
+                if (PendingPetitions.TryGetValue(request.Id, out var existingItem))
+                {
+                    return existingItem.Tcs.Task;
+                }
+
+                var existingItemForPeer = PendingPetitions.Values.FirstOrDefault(v => peerId != Guid.Empty ? (v.PeerId == peerId && v.ProtocolId == request.ProtocolId) : (v.PeerName == peerName && v.ProtocolId == request.ProtocolId));
+                if (existingItemForPeer != null)
+                {
+                    return existingItemForPeer.Tcs.Task;
                 }
 
                 var tcs = new TaskCompletionSource<HandshakeDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var petition = new PendingPetitionItem(request.Id, request.ProtocolId, protoName, peerName, peerId, tcs);
                 PendingPetitions[request.Id] = petition;
                 LogEvent($"[PETITION] Connection request from {peerName} ({protoName})");
+
+                ct.Register(() =>
+                {
+                    if (PendingPetitions.TryRemove(request.Id, out var expired))
+                    {
+                        LogEvent($"[PETITION] Connection request from {expired.PeerName} ({expired.ProtocolName}) timed out");
+                    }
+                });
 
                 return tcs.Task;
             };
@@ -294,7 +328,7 @@ namespace QuicPunchTests
 
         private async Task ListenLoopAsync()
         {
-            while (!_cts.Token.IsCancellationRequested && _listener.IsListening)
+            while (!_cts.Token.IsCancellationRequested && _listener != null && _listener.IsListening)
             {
                 try
                 {
@@ -328,7 +362,7 @@ namespace QuicPunchTests
                     return;
                 }
 
-                var path = req.Url.AbsolutePath.ToLowerInvariant();
+                var path = req.Url?.AbsolutePath.ToLowerInvariant() ?? "/";
 
                 if (path == "/" || path == "/index.html")
                 {
@@ -398,7 +432,7 @@ namespace QuicPunchTests
                         if (VoiceCallHandler.ActiveCalls.TryRemove(pid, out var call))
                         {
                             try { call.Stream.Close(); } catch { }
-                            try { call.Connection.DisposeAsync(); } catch { }
+                            _ = Task.Run(async () => { try { await call.Connection.DisposeAsync(); } catch { } });
                             CallSignals.Enqueue((pid.ToString(), "call-ended"));
                             LogEvent($"[VOICE] Ended voice call with {call.Peer.Name}");
                         }
@@ -408,89 +442,160 @@ namespace QuicPunchTests
                     resp.ContentLength64 = respBytes.Length;
                     await resp.OutputStream.WriteAsync(respBytes);
                 }
-                else if (path == "/api/saved-peer-delete" && req.HttpMethod == "POST")
+                else if (path == "/api/tor-start" && req.HttpMethod == "POST")
                 {
-                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
-                    string body = await r.ReadToEndAsync();
-                    using var doc = JsonDocument.Parse(body);
-                    string certHashB64 = doc.RootElement.GetProperty("certHash").GetString() ?? "";
-                    if (!string.IsNullOrEmpty(certHashB64))
+                    int vPort = 0;
+                    try
                     {
-                        byte[] certHash = Convert.FromBase64String(certHashB64);
-                        _qcc.PeerStore.Remove(certHash);
-                        LogEvent("[DB] Removed saved peer from peers.db");
-                    }
-                    byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
-                    resp.ContentType = "application/json";
-                    resp.ContentLength64 = respBytes.Length;
-                    await resp.OutputStream.WriteAsync(respBytes);
-                }
-                else if (path == "/api/saved-peer-update" && req.HttpMethod == "POST")
-                {
-                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
-                    string body = await r.ReadToEndAsync();
-                    using var doc = JsonDocument.Parse(body);
-                    string certHashB64 = doc.RootElement.GetProperty("certHash").GetString() ?? "";
-                    int minPort = doc.RootElement.TryGetProperty("minPort", out var mnEl) ? mnEl.GetInt32() : 1024;
-                    int maxPort = doc.RootElement.TryGetProperty("maxPort", out var mxEl) ? mxEl.GetInt32() : 65535;
-                    minPort = Math.Clamp(minPort, 1, 65535);
-                    maxPort = Math.Clamp(maxPort, minPort, 65535);
-
-                    string addrsRaw = doc.RootElement.TryGetProperty("addresses", out var adEl) ? adEl.GetString() ?? "" : "";
-                    
-                    var ips = new List<IPAddress>();
-                    foreach (var raw in addrsRaw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        if (IPAddress.TryParse(raw.Trim(), out var ip))
+                        using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                        string body = await r.ReadToEndAsync();
+                        if (!string.IsNullOrWhiteSpace(body))
                         {
-                            ips.Add(ip);
+                            using var doc = JsonDocument.Parse(body);
+                            if (doc.RootElement.TryGetProperty("port", out var pEl)) vPort = pEl.GetInt32();
                         }
                     }
+                    catch { }
 
-                    if (!string.IsNullOrEmpty(certHashB64) && ips.Count > 0)
+                    if (!_qcc.IsTorStarted)
                     {
-                        byte[] certHash = Convert.FromBase64String(certHashB64);
-                        _qcc.PeerStore.AddOrUpdate(ips, minPort, maxPort, certHash);
-                        LogEvent($"[DB] Updated saved peer in peers.db ({minPort}-{maxPort}) with {ips.Count} valid IP(s)");
+                        LogEvent("[TOR] Starting Tor runtime and hidden service...");
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await _qcc.StartTorAsync(vPort, cancellationToken: _cts.Token);
+                                LogEvent($"[TOR] Hidden service ready at {_qcc.TorOnionAddress}");
+                            }
+                            catch (Exception ex)
+                            {
+                                LogEvent($"[TOR ERROR] Failed to start Tor: {ex.Message}");
+                            }
+                        });
                     }
-
+                    byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true,\"message\":\"Tor starting in background\"}");
+                    resp.ContentType = "application/json";
+                    resp.ContentLength64 = respBytes.Length;
+                    await resp.OutputStream.WriteAsync(respBytes);
+                }
+                else if (path == "/api/tor-stop" && req.HttpMethod == "POST")
+                {
+                    LogEvent("[TOR] Stopping Tor runtime...");
+                    await _qcc.StopTorAsync();
+                    LogEvent("[TOR] Tor service stopped.");
                     byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
                     resp.ContentType = "application/json";
                     resp.ContentLength64 = respBytes.Length;
                     await resp.OutputStream.WriteAsync(respBytes);
                 }
-                else if (path == "/api/voice-poll")
+                else if (path == "/api/tor-connect" && req.HttpMethod == "POST")
                 {
-                    var chunks = new List<string>();
-                    while (IncomingAudioQueue.TryDequeue(out var item))
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string onion = doc.RootElement.GetProperty("onion").GetString() ?? "";
+                    int port = doc.RootElement.TryGetProperty("port", out var pEl) ? pEl.GetInt32() : 443;
+
+                    try
                     {
-                        chunks.Add($"{{\"peerId\":\"{HttpUtility.JavaScriptStringEncode(item.PeerId)}\",\"data\":\"{Convert.ToBase64String(item.Data)}\"}}");
+                        if (string.IsNullOrWhiteSpace(onion))
+                        {
+                            throw new ArgumentException("Onion address is required.");
+                        }
+
+                        if (!_qcc.IsTorStarted)
+                        {
+                            throw new InvalidOperationException("El servicio Tor no está iniciado. Inicia Tor primero.");
+                        }
+
+                        if (onion.Contains(':'))
+                        {
+                            var parts = onion.Split(':');
+                            onion = parts[0];
+                            if (int.TryParse(parts[1], out int parsedPort)) port = parsedPort;
+                        }
+
+                        LogEvent($"[TOR] Connecting to remote onion service {onion}:{port}...");
+                        await _qcc.ConnectTorAsync(onion, port, _cts.Token);
+                        LogEvent($"[TOR] Connected to {onion}:{port}!");
+
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
                     }
-                    var signals = new List<string>();
-                    while (CallSignals.TryDequeue(out var sig))
+                    catch (Exception ex)
                     {
-                        signals.Add($"{{\"peerId\":\"{HttpUtility.JavaScriptStringEncode(sig.PeerId)}\",\"signal\":\"{HttpUtility.JavaScriptStringEncode(sig.SignalType)}\"}}");
+                        LogEvent($"[TOR ERROR] {ex.Message}");
+                        resp.StatusCode = 400;
+                        byte[] errBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { success = false, error = ex.Message }));
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
                     }
-                    string json = $"{{\"chunks\":[{string.Join(",", chunks)}],\"signals\":[{string.Join(",", signals)}]}}";
-                    byte[] respBytes = Encoding.UTF8.GetBytes(json);
-                    resp.ContentType = "application/json";
-                    resp.ContentLength64 = respBytes.Length;
-                    await resp.OutputStream.WriteAsync(respBytes);
+                }
+                else if (path == "/api/tor-newnym" && req.HttpMethod == "POST")
+                {
+                    if (_qcc.TorManager != null)
+                    {
+                        LogEvent("[TOR] Requesting new clean circuits (NEWNYM)...");
+                        await _qcc.TorManager.RequestNewCircuitsAsync(_cts.Token);
+                        LogEvent("[TOR] New circuits requested successfully.");
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 400;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Tor is not running\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
                 }
                 else if (path == "/api/connect-token" && req.HttpMethod == "POST")
                 {
-                    using var r = new StreamReader(req.InputStream, req.ContentEncoding);
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
                     string body = await r.ReadToEndAsync();
                     using var doc = JsonDocument.Parse(body);
                     string token = doc.RootElement.GetProperty("token").GetString() ?? "";
+                    token = token.Trim();
 
-                    LogEvent($"Connecting via token: {token[..Math.Min(20, token.Length)]}...");
-                    _ = _qcc.PeerInterrogation(token, _cts);
+                    try
+                    {
+                        var peer = Utilities.DecodeEndpointToken(token);
+                        bool isTor = peer.NetworkType == QuicPunch.QuicPunch.NetworkType.Tor || (peer.Addresses == null || peer.Addresses.Length == 0 && !string.IsNullOrEmpty(peer.OnionAddress));
+                        bool isWan = peer.Addresses != null && peer.Addresses.Length > 0;
 
-                    byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
-                    resp.ContentType = "application/json";
-                    resp.ContentLength64 = respBytes.Length;
-                    await resp.OutputStream.WriteAsync(respBytes);
+                        if (isTor && !_qcc.IsTorStarted)
+                        {
+                            throw new InvalidOperationException("El token es de Tor y el servicio Tor no está iniciado. Inicia Tor primero.");
+                        }
+
+                        if (isWan && (!_qcc.IsStarted || _qcc.udp == null))
+                        {
+                            throw new InvalidOperationException("El token es de WAN y el servicio WAN/UDP no está iniciado.");
+                        }
+
+                        LogEvent($"Connecting via {(isTor ? "Tor" : "WAN")} token: {token[..Math.Min(20, token.Length)]}...");
+                        await _qcc.PeerInterrogation(peer, _cts.Token);
+
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogEvent($"[CONNECT ERROR] {ex.Message}");
+                        resp.StatusCode = 400;
+                        byte[] errBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { success = false, error = ex.Message }));
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
                 }
                 else if (path == "/api/cancel-interrogation" && req.HttpMethod == "POST")
                 {
@@ -541,7 +646,322 @@ namespace QuicPunchTests
                         await resp.OutputStream.WriteAsync(errBytes);
                     }
                 }
-                else if (path == "/api/change-listener-port" && req.HttpMethod == "POST")
+                else if (path == "/api/voice-poll" && req.HttpMethod == "GET")
+                {
+                    var signals = new List<object>();
+                    while (CallSignals.TryDequeue(out var sig))
+                    {
+                        signals.Add(new { peerId = sig.PeerId, signal = sig.SignalType });
+                    }
+
+                    var chunks = new List<object>();
+                    while (IncomingAudioQueue.TryDequeue(out var item))
+                    {
+                        chunks.Add(new { peerId = item.PeerId, data = Convert.ToBase64String(item.Data) });
+                    }
+
+                    var pollObj = new { signals, chunks };
+                    byte[] respBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(pollObj));
+                    resp.ContentType = "application/json";
+                    resp.ContentLength64 = respBytes.Length;
+                    await resp.OutputStream.WriteAsync(respBytes);
+                }
+                else if ((path == "/api/respond-petition" || path == "/api/accept-petition" || path == "/api/decline-petition") && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string reqIdStr = doc.RootElement.GetProperty("requestId").GetString() ?? "";
+                    bool accept = path == "/api/accept-petition" || (path != "/api/decline-petition" && doc.RootElement.TryGetProperty("accept", out var accEl) && accEl.GetBoolean());
+
+                    if (Guid.TryParse(reqIdStr, out var reqId) && PendingPetitions.TryRemove(reqId, out var item))
+                    {
+                        if (accept)
+                        {
+                            ushort assignedPort = 0;
+                            item.Tcs.TrySetResult(new HandshakeDecision(true, assignedPort, CancellationToken.None));
+                            LogEvent($"[PETITION] Accepted connection request from {item.PeerName} ({item.ProtocolName})");
+                        }
+                        else
+                        {
+                            item.Tcs.TrySetResult(new HandshakeDecision(false, null, CancellationToken.None));
+                            LogEvent($"[PETITION] Declined connection request from {item.PeerName} ({item.ProtocolName})");
+                        }
+
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 404;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Petition not found or expired\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
+                else if (path == "/api/save-peer" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string peerIdStr = doc.RootElement.TryGetProperty("peerId", out var pEl) ? pEl.GetString() ?? "" : "";
+                    string certHashBase64 = doc.RootElement.TryGetProperty("certHash", out var cEl) ? cEl.GetString() ?? "" : "";
+                    bool shouldSave = !doc.RootElement.TryGetProperty("save", out var sEl) || sEl.GetBoolean();
+                    bool autoConnect = !doc.RootElement.TryGetProperty("autoConnect", out var acEl) || acEl.GetBoolean();
+
+                    QuicPunch.PeerInfo? peerToSave = null;
+                    byte[]? targetCertHash = null;
+
+                    if (Guid.TryParse(peerIdStr, out var pid) && _qcc.AvailablePeers.TryGetValue(pid, out var p))
+                    {
+                        peerToSave = p;
+                        targetCertHash = p.CertHash;
+                    }
+                    else if (!string.IsNullOrEmpty(certHashBase64))
+                    {
+                        targetCertHash = Convert.FromBase64String(certHashBase64);
+                        peerToSave = _qcc.AvailablePeers.Values.FirstOrDefault(x => x.CertHash != null && CryptographicOperations.FixedTimeEquals(x.CertHash, targetCertHash));
+                    }
+
+                    if (shouldSave)
+                    {
+                        if (peerToSave != null)
+                        {
+                            _qcc.SavePeer(peerToSave, autoConnect);
+                            LogEvent($"[PEER STORE] Saved peer {peerToSave.Name ?? "Peer"} in database");
+                            byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"saved\":true,\"isSaved\":true,\"autoConnect\":{autoConnect.ToString().ToLower()}}}");
+                            resp.ContentType = "application/json";
+                            resp.ContentLength64 = respBytes.Length;
+                            await resp.OutputStream.WriteAsync(respBytes);
+                        }
+                        else
+                        {
+                            resp.StatusCode = 404;
+                            byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Connected peer not found\"}");
+                            resp.ContentType = "application/json";
+                            resp.ContentLength64 = errBytes.Length;
+                            await resp.OutputStream.WriteAsync(errBytes);
+                        }
+                    }
+                    else
+                    {
+                        bool removed = false;
+                        if (targetCertHash != null && targetCertHash.Length > 0)
+                        {
+                            removed = _qcc.RemoveSavedPeer(targetCertHash);
+                        }
+                        else if (peerToSave?.CertHash != null)
+                        {
+                            removed = _qcc.RemoveSavedPeer(peerToSave.CertHash);
+                        }
+
+                        if (removed)
+                        {
+                            LogEvent($"[PEER STORE] Removed peer {peerToSave?.Name ?? "Peer"} from database");
+                            byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true,\"saved\":false,\"isSaved\":false}");
+                            resp.ContentType = "application/json";
+                            resp.ContentLength64 = respBytes.Length;
+                            await resp.OutputStream.WriteAsync(respBytes);
+                        }
+                        else
+                        {
+                            resp.StatusCode = 404;
+                            byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Peer was not in database or could not be removed\"}");
+                            resp.ContentType = "application/json";
+                            resp.ContentLength64 = errBytes.Length;
+                            await resp.OutputStream.WriteAsync(errBytes);
+                        }
+                    }
+                }
+                else if (path == "/api/save-all-peers" && req.HttpMethod == "POST")
+                {
+                    int count = 0;
+                    foreach (var p in _qcc.AvailablePeers.Values)
+                    {
+                        if (p.CertHash != null)
+                        {
+                            _qcc.SavePeer(p, true);
+                            count++;
+                        }
+                    }
+                    LogEvent($"[PEER STORE] Saved {count} connected peer(s) for auto-connect on restart");
+                    byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"savedCount\":{count}}}");
+                    resp.ContentType = "application/json";
+                    resp.ContentLength64 = respBytes.Length;
+                    await resp.OutputStream.WriteAsync(respBytes);
+                }
+                else if (path == "/api/toggle-saved-peer-autoconnect" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string certHashBase64 = doc.RootElement.GetProperty("certHash").GetString() ?? "";
+                    bool autoConnect = doc.RootElement.GetProperty("autoConnect").GetBoolean();
+                    byte[] certHash = Convert.FromBase64String(certHashBase64);
+
+                    if (_qcc.PeerStore != null && _qcc.PeerStore.ToggleAutoConnect(certHash, autoConnect))
+                    {
+                        LogEvent($"[PEER STORE] Updated auto-connect on startup to {autoConnect}");
+                        byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"autoConnect\":{autoConnect.ToString().ToLower()}}}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 404;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Peer not found in database\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
+                else if (path == "/api/connect-saved-peer" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string certHashBase64 = doc.RootElement.GetProperty("certHash").GetString() ?? "";
+                    byte[] certHash = Convert.FromBase64String(certHashBase64);
+
+                    if (_qcc.PeerStore != null && _qcc.PeerStore.TryGet(certHash, out var sp) && sp != null)
+                    {
+                        _qcc.ExpectedPeerCerts.Add(sp.CertHash);
+                        _qcc.TrustPeer(sp.CertHash);
+
+                        if (!string.IsNullOrEmpty(sp.OnionAddress) && _qcc.IsTorStarted)
+                        {
+                            _ = Task.Run(async () =>
+                            {
+                                try { await _qcc.ConnectTorAsync(sp.OnionAddress, sp.MinPort > 0 ? sp.MinPort : 443, _cts.Token); }
+                                catch (Exception ex) { LogEvent($"[CONNECT TOR] Failed for {sp.Name ?? sp.OnionAddress}: {ex.Message}"); }
+                            });
+                        }
+                        else if (sp.Addresses != null && sp.Addresses.Length > 0)
+                        {
+                            var peerInfo = QuicPunch.QuicPunch.CreatePeerInfoFromSavedPeer(sp);
+
+                            _ = Task.Run(async () =>
+                            {
+                                try { await _qcc.PeerInterrogation(peerInfo, _cts.Token); }
+                                catch (Exception ex) { LogEvent($"[INTERROGATION] Failed for {sp.Name ?? "Peer"}: {ex.Message}"); }
+                            });
+                        }
+
+                        LogEvent($"[PEER STORE] Initiated connection to saved peer {sp.Name ?? "Peer"}");
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 404;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Saved peer not found in database\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
+                else if (path == "/api/saved-peer-update" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string certHashBase64 = doc.RootElement.GetProperty("certHash").GetString() ?? "";
+                    string name = doc.RootElement.TryGetProperty("name", out var nEl) ? nEl.GetString() ?? "" : "";
+                    string onionAddress = doc.RootElement.TryGetProperty("onionAddress", out var onEl) ? onEl.GetString() ?? "" : "";
+                    bool autoConnect = !doc.RootElement.TryGetProperty("autoConnect", out var acEl) || acEl.GetBoolean();
+                    int minPort = doc.RootElement.TryGetProperty("minPort", out var minEl) ? minEl.GetInt32() : 0;
+                    int maxPort = doc.RootElement.TryGetProperty("maxPort", out var maxEl) ? maxEl.GetInt32() : 0;
+                    string addrsStr = doc.RootElement.TryGetProperty("addresses", out var adEl) ? adEl.GetString() ?? "" : "";
+
+                    var addrs = addrsStr.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(s => IPAddress.TryParse(s.Trim(), out var ip) ? ip : null)
+                        .Where(ip => ip != null)
+                        .Select(ip => ip!)
+                        .ToArray();
+
+                    if (addrs.Length == 0 && !string.IsNullOrEmpty(onionAddress))
+                    {
+                        addrs = new[] { IPAddress.Loopback };
+                    }
+
+                    byte[] certHash = Convert.FromBase64String(certHashBase64);
+
+                    if (_qcc.PeerStore != null)
+                    {
+                        _qcc.PeerStore.AddOrUpdate(addrs, minPort, maxPort, certHash, null, string.IsNullOrEmpty(name) ? null : name, string.IsNullOrEmpty(onionAddress) ? null : onionAddress, autoConnect);
+                        _qcc.TrustPeer(certHash);
+                        LogEvent($"[PEER STORE] Updated saved peer in database ({name})");
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 500;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"PeerStore unavailable\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
+                else if (path == "/api/saved-peer-delete" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string certHashBase64 = doc.RootElement.GetProperty("certHash").GetString() ?? "";
+                    byte[] certHash = Convert.FromBase64String(certHashBase64);
+
+                    if (_qcc.RemoveSavedPeer(certHash))
+                    {
+                        LogEvent($"[PEER STORE] Removed saved peer from database");
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 404;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Peer not found in database\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
+                else if ((path == "/api/lan-configure-ip" || path == "/api/lan-config") && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string newIp = doc.RootElement.GetProperty("ip").GetString() ?? "";
+                    string mask = doc.RootElement.TryGetProperty("subnetMask", out var smEl) ? smEl.GetString() ?? "255.0.0.0" : (doc.RootElement.TryGetProperty("subnet", out var sEl) ? sEl.GetString() ?? "255.0.0.0" : "255.0.0.0");
+
+                    if (_lanHandler.SetVirtualIp(newIp, mask))
+                    {
+                        LogEvent($"[LAN] Configured Virtual IP address to {newIp} ({mask})");
+                        byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"ip\":\"{newIp}\"}}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = respBytes.Length;
+                        await resp.OutputStream.WriteAsync(respBytes);
+                    }
+                    else
+                    {
+                        resp.StatusCode = 400;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"success\":false,\"error\":\"Invalid IP address or failed to apply netsh setting\"}");
+                        resp.ContentType = "application/json";
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
+                    }
+                }
+                else if ((path == "/api/change-listener-port" || path == "/api/change-port") && req.HttpMethod == "POST")
                 {
                     using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
                     string body = await r.ReadToEndAsync();
@@ -554,7 +974,7 @@ namespace QuicPunchTests
                         if (success)
                         {
                             LogEvent($"[NETWORK] Listener port successfully changed to {port}");
-                            byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"listenerPort\":{_qcc.LocalDiscoveryPort}}}");
+                            byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"port\":{_qcc.LocalDiscoveryPort},\"listenerPort\":{_qcc.LocalDiscoveryPort}}}");
                             resp.ContentType = "application/json";
                             resp.ContentLength64 = respBytes.Length;
                             await resp.OutputStream.WriteAsync(respBytes);
@@ -579,11 +999,14 @@ namespace QuicPunchTests
                 }
                 else if (path == "/api/connect-peer" && req.HttpMethod == "POST")
                 {
-                    using var r = new StreamReader(req.InputStream, req.ContentEncoding);
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
                     string body = await r.ReadToEndAsync();
                     using var doc = JsonDocument.Parse(body);
-                    string peerIdStr = doc.RootElement.GetProperty("peerId").GetString() ?? "";
-                    string protocol = doc.RootElement.GetProperty("protocol").GetString() ?? "chat";
+                    string peerIdStr = doc.RootElement.TryGetProperty("peerId", out var pIdEl) ? pIdEl.GetString() ?? "" : "";
+                    
+                    string protocol = "";
+                    if (doc.RootElement.TryGetProperty("protocolId", out var prIdEl)) protocol = prIdEl.GetString() ?? "";
+                    else if (doc.RootElement.TryGetProperty("protocol", out var prEl)) protocol = prEl.GetString() ?? "";
 
                     if (Guid.TryParse(peerIdStr, out var pid) && _qcc.AvailablePeers.TryGetValue(pid, out var peer))
                     {
@@ -592,21 +1015,36 @@ namespace QuicPunchTests
                         {
                             protoId = parsedProtoId;
                         }
-                        else if (protocol.ToLower() == "lan")
+                        else if (protocol.Equals("lan", StringComparison.OrdinalIgnoreCase) || protocol.Equals("friendslan", StringComparison.OrdinalIgnoreCase))
                         {
                             protoId = _lanHandler.ProtocolId;
                         }
+                        else if (protocol.Equals("voice", StringComparison.OrdinalIgnoreCase) || protocol.Equals("call", StringComparison.OrdinalIgnoreCase) || protocol.Equals("voicecall", StringComparison.OrdinalIgnoreCase))
+                        {
+                            protoId = _voiceHandler.ProtocolId;
+                        }
 
-                        // Check if there's already an active session for this peer+protocol
                         bool alreadyConnected = false;
                         if (protoId == _chatHandler.ProtocolId && ChatHandler.ActiveChats.ContainsKey(pid))
+                        {
+                            alreadyConnected = true;
+                        }
+                        else if (protoId == _voiceHandler.ProtocolId && VoiceCallHandler.ActiveCalls.ContainsKey(pid))
+                        {
+                            alreadyConnected = true;
+                        }
+                        else if (protoId == _lanHandler.ProtocolId && _lanHandler.ActivePeers.Values.Any(p => p.Peer.Id == pid))
+                        {
+                            alreadyConnected = true;
+                        }
+                        else if (_qcc.HasActiveProtocolSession(pid, protoId))
                         {
                             alreadyConnected = true;
                         }
 
                         if (alreadyConnected)
                         {
-                            LogEvent($"Already connected to {peer.Name} ({peer.Id}), reusing existing session.");
+                            LogEvent($"Already connected to {peer.Name} ({peer.Id}) on {protoId}, reusing existing session.");
                             byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true,\"reused\":true}");
                             resp.ContentType = "application/json";
                             resp.ContentLength64 = respBytes.Length;
@@ -614,17 +1052,57 @@ namespace QuicPunchTests
                         }
                         else if (_qcc.ProtocolHandlers.TryGetValue(protoId, out var handler))
                         {
-                            var keys = PendingPetitions.Where(kv => kv.Value.PeerId == peer.Id).Select(kv => kv.Key).ToList();
+                            var inFlightKey = (peer.Id, protoId);
+                            if (InFlightConnections.TryGetValue(inFlightKey, out _) || _qcc.IsConnectionInFlight(peer.Id, protoId))
+                            {
+                                LogEvent($"Connection to {peer.Name} for {handler.ProtocolName} already in progress. Reusing existing initiation.");
+                                byte[] inProgBytes = Encoding.UTF8.GetBytes("{\"success\":true,\"in_progress\":true}");
+                                resp.ContentType = "application/json";
+                                resp.ContentLength64 = inProgBytes.Length;
+                                await resp.OutputStream.WriteAsync(inProgBytes);
+                                return;
+                            }
+
+                            var attemptId = Guid.NewGuid();
+                            if (!InFlightConnections.TryAdd(inFlightKey, attemptId))
+                            {
+                                LogEvent($"Connection to {peer.Name} for {handler.ProtocolName} already in progress. Reusing existing initiation.");
+                                byte[] inProgBytes = Encoding.UTF8.GetBytes("{\"success\":true,\"in_progress\":true}");
+                                resp.ContentType = "application/json";
+                                resp.ContentLength64 = inProgBytes.Length;
+                                await resp.OutputStream.WriteAsync(inProgBytes);
+                                return;
+                            }
+
+                            var keys = PendingPetitions.Where(kv => kv.Value.PeerId == peer.Id && kv.Value.ProtocolId == protoId).Select(kv => kv.Key).ToList();
                             foreach (var k in keys) PendingPetitions.TryRemove(k, out _);
 
                             LogEvent($"Initiating {handler.ProtocolName} connection with {peer.Name} ({peer.Id})...");
-                            ushort localPort = (ushort)Random.Shared.Next(1024, 65535);
-                            _ = Task.Run(async () => await _qcc.InitQuicConnection(protoId, peer, localPort, _cts));
+                            ushort localPort = 0;
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await _qcc.InitQuicConnection(protoId, peer, localPort, _cts.Token);
+                                }
+                                finally
+                                {
+                                    InFlightConnections.TryRemove(new KeyValuePair<(Guid PeerId, Guid ProtocolId), Guid>(inFlightKey, attemptId));
+                                }
+                            });
 
                             byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
                             resp.ContentType = "application/json";
                             resp.ContentLength64 = respBytes.Length;
                             await resp.OutputStream.WriteAsync(respBytes);
+                        }
+                        else
+                        {
+                            resp.StatusCode = 400;
+                            byte[] errBytes = Encoding.UTF8.GetBytes($"{{\"success\":false,\"error\":\"Protocol handler {protoId} not found\"}}");
+                            resp.ContentType = "application/json";
+                            resp.ContentLength64 = errBytes.Length;
+                            await resp.OutputStream.WriteAsync(errBytes);
                         }
                     }
                     else
@@ -650,7 +1128,8 @@ namespace QuicPunchTests
                         if (sent)
                         {
                             ChatMessages.Enqueue(new ChatMessage(pid.ToString(), msgId, "Me", message, DateTime.Now, true, false));
-                            LogEvent($"[CHAT OUT] Sent to {pid}: {message}");
+                            string preview = message.Length > 80 ? (message.StartsWith("{") ? "[Media Attachment]" : message[..80] + "...") : message;
+                            LogEvent($"[CHAT OUT] Sent to {pid}: {preview}");
 
                             byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"msgId\":\"{msgId}\"}}");
                             resp.ContentType = "application/json";
@@ -667,41 +1146,45 @@ namespace QuicPunchTests
                         }
                     }
                 }
-                else if (path == "/api/accept-petition" && req.HttpMethod == "POST")
+                else if (path == "/api/settings/auto-accept" && req.HttpMethod == "POST")
                 {
-                    using var r = new StreamReader(req.InputStream, req.ContentEncoding);
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
                     string body = await r.ReadToEndAsync();
                     using var doc = JsonDocument.Parse(body);
-                    string reqIdStr = doc.RootElement.GetProperty("requestId").GetString() ?? "";
+                    bool autoAccept = doc.RootElement.GetProperty("autoAcceptAll").GetBoolean();
+                    _qcc.AutoAcceptConnections = autoAccept;
+                    LogEvent($"[SETTINGS] Auto-accept all connections set to {autoAccept}");
 
-                    if (Guid.TryParse(reqIdStr, out var reqId) && PendingPetitions.TryRemove(reqId, out var item))
+                    byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"autoAcceptAll\":{autoAccept.ToString().ToLower()}}}");
+                    resp.ContentType = "application/json";
+                    resp.ContentLength64 = respBytes.Length;
+                    await resp.OutputStream.WriteAsync(respBytes);
+                }
+                else if (path == "/api/peer/auto-accept" && req.HttpMethod == "POST")
+                {
+                    using var r = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8);
+                    string body = await r.ReadToEndAsync();
+                    using var doc = JsonDocument.Parse(body);
+                    string peerIdStr = doc.RootElement.GetProperty("peerId").GetString() ?? "";
+                    bool autoAccept = doc.RootElement.GetProperty("autoAccept").GetBoolean();
+
+                    if (Guid.TryParse(peerIdStr, out var pid))
                     {
-                        ushort assignedPort = (ushort)Random.Shared.Next(1024, 65535);
-                        item.Tcs.TrySetResult(new HandshakeDecision(true, assignedPort, CancellationToken.None));
-                        LogEvent($"[PETITION] Accepted connection request from {item.PeerName}");
+                        _qcc.SetPeerAutoAccept(pid, autoAccept);
+                        LogEvent($"[SETTINGS] Auto-accept for peer {pid} set to {autoAccept}");
 
-                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        byte[] respBytes = Encoding.UTF8.GetBytes($"{{\"success\":true,\"peerId\":\"{pid}\",\"autoAccept\":{autoAccept.ToString().ToLower()}}}");
                         resp.ContentType = "application/json";
                         resp.ContentLength64 = respBytes.Length;
                         await resp.OutputStream.WriteAsync(respBytes);
                     }
-                }
-                else if (path == "/api/decline-petition" && req.HttpMethod == "POST")
-                {
-                    using var r = new StreamReader(req.InputStream, req.ContentEncoding);
-                    string body = await r.ReadToEndAsync();
-                    using var doc = JsonDocument.Parse(body);
-                    string reqIdStr = doc.RootElement.GetProperty("requestId").GetString() ?? "";
-
-                    if (Guid.TryParse(reqIdStr, out var reqId) && PendingPetitions.TryRemove(reqId, out var item))
+                    else
                     {
-                        item.Tcs.TrySetResult(new HandshakeDecision(false, null, CancellationToken.None));
-                        LogEvent($"[PETITION] Declined connection request from {item.PeerName}");
-
-                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"success\":true}");
+                        resp.StatusCode = 400;
+                        byte[] errBytes = Encoding.UTF8.GetBytes("{\"error\":\"Invalid peer ID\"}");
                         resp.ContentType = "application/json";
-                        resp.ContentLength64 = respBytes.Length;
-                        await resp.OutputStream.WriteAsync(respBytes);
+                        resp.ContentLength64 = errBytes.Length;
+                        await resp.OutputStream.WriteAsync(errBytes);
                     }
                 }
                 else
@@ -724,8 +1207,10 @@ namespace QuicPunchTests
         {
             try
             {
-                string myToken = _qcc.GetToken() ?? "";
-                string quickUri = $"https://gato.ovh/protred?uri=QPHP://{HttpUtility.UrlEncode(HttpUtility.UrlEncode(myToken))}";
+                string wanToken = _qcc.GetWanToken() ?? "";
+                string torToken = _qcc.GetTorToken() ?? "";
+                string myToken = wanToken;
+                string quickUri = $"https://gato.ovh/protred?uri=QP://{HttpUtility.UrlEncode(HttpUtility.UrlEncode(wanToken))}";
                 string nodeName = _qcc.CurrentPeer?.Name ?? "LocalNode";
                 string nodeId = _qcc.CurrentPeer?.Id.ToString() ?? "";
                 int minPort = _qcc.CurrentPeer?.MinPort ?? 0;
@@ -745,7 +1230,7 @@ namespace QuicPunchTests
 
                 try
                 {
-                    foreach (var ip in Helpers.GetValidLocalIPAddresses())
+                    foreach (var ip in Utilities.GetValidLocalIPAddresses())
                     {
                         string s = ip.ToString();
                         if (!allAddrs.Contains(s)) allAddrs.Add(s);
@@ -753,18 +1238,51 @@ namespace QuicPunchTests
                 }
                 catch { }
 
-                var availablePeersList = _qcc.AvailablePeers.Values.Select(p => new
+                var savedPeersList = (_qcc.PeerStore?.SavedPeers?.ToList() ?? new List<PeerStore.SavedPeer>()).Select(sp => new
                 {
-                    id = p.Id.ToString(),
-                    name = p.Name ?? "",
-                    ping = p.Ping.HasValue ? Math.Round(p.Ping.Value.TotalMilliseconds, 1) : -1,
-                    hasPing = p.Ping.HasValue,
-                    activeEndPoint = p.ActiveEndPoint?.ToString() ?? "Unknown",
-                    minPort = p.MinPort,
-                    maxPort = p.MaxPort,
-                    addresses = p.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
-                    lastSeenSecondsAgo = p.LastSeen > DateTime.MinValue ? (int)Math.Max(0, (DateTime.Now - p.LastSeen).TotalSeconds) : 99999,
-                    lastSeenFormatted = p.LastSeen > DateTime.MinValue ? p.LastSeen.ToString("HH:mm:ss") : "Never"
+                    name = sp.Name ?? "",
+                    onionAddress = sp.OnionAddress ?? "",
+                    autoConnect = sp.AutoConnect,
+                    certHash = Convert.ToBase64String(sp.CertHash),
+                    minPort = sp.MinPort,
+                    maxPort = sp.MaxPort,
+                    networkType = (int)sp.NetworkType,
+                    addresses = sp.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>()
+                }).ToList();
+
+                var savedCertHashSet = new HashSet<string>(savedPeersList.Select(s => s.certHash));
+                var savedAutoConnectSet = new HashSet<string>(savedPeersList.Where(s => s.autoConnect).Select(s => s.certHash));
+                var autoAcceptedPeerIds = _qcc.GetAutoAcceptedPeers();
+                var autoAcceptedIdSet = new HashSet<Guid>(autoAcceptedPeerIds);
+
+                var availablePeersList = _qcc.AvailablePeers.Values.Select(p =>
+                {
+                    string cHashStr = p.CertHash != null ? Convert.ToBase64String(p.CertHash) : "";
+                    bool isSaved = !string.IsNullOrEmpty(cHashStr) && savedCertHashSet.Contains(cHashStr);
+                    bool autoConnectOnStartup = !string.IsNullOrEmpty(cHashStr) && savedAutoConnectSet.Contains(cHashStr);
+                    bool isAutoAccepted = autoAcceptedIdSet.Contains(p.Id);
+
+                    return new
+                    {
+                        id = p.Id.ToString(),
+                        name = p.Name ?? "",
+                        ping = p.Ping.HasValue ? Math.Round(p.Ping.Value.TotalMilliseconds, 1) : -1,
+                        hasPing = p.Ping.HasValue,
+                        activeEndPoint = p.ActiveEndPoint?.ToString() ?? (p.OnionAddress != null ? $"{p.OnionAddress}:{p.MinPort}" : "Unknown"),
+                        minPort = p.MinPort,
+                        maxPort = p.MaxPort,
+                        addresses = p.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
+                        activeTransport = p.ActiveTransport.ToString().ToLowerInvariant(),
+                        onionAddress = p.OnionAddress ?? "",
+                        isTor = p.ActiveTransport == global::QuicPunch.QuicPunch.TransportType.Tor || p.NetworkType == global::QuicPunch.QuicPunch.NetworkType.Tor || !string.IsNullOrEmpty(p.OnionAddress),
+                        hasCipher = p.PeerCipher != null,
+                        networkType = p.NetworkType.ToString(),
+                        isSaved,
+                        isAutoAccepted,
+                        autoConnectOnStartup,
+                        lastSeenSecondsAgo = p.LastSeen > DateTime.MinValue ? (int)Math.Max(0, (DateTime.UtcNow - p.LastSeen).TotalSeconds) : 99999,
+                        lastSeenFormatted = p.LastSeen > DateTime.MinValue ? p.LastSeen.ToLocalTime().ToString("HH:mm:ss") : "Never"
+                    };
                 }).ToList();
 
                 var activeChatsList = ChatHandler.ActiveChats.Values.Select(c => new
@@ -788,14 +1306,6 @@ namespace QuicPunchTests
                 {
                     id = kv.Key.ToString(),
                     name = kv.Value.ProtocolName ?? "Protocol"
-                }).ToList();
-
-                var savedPeersList = (_qcc.PeerStore?.SavedPeers?.ToList() ?? new List<PeerStore.SavedPeer>()).Select(sp => new
-                {
-                    certHash = Convert.ToBase64String(sp.CertHash),
-                    minPort = sp.MinPort,
-                    maxPort = sp.MaxPort,
-                    addresses = sp.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>()
                 }).ToList();
 
                 var pendingPetitionsList = PendingPetitions.Values.Select(p => new
@@ -826,6 +1336,48 @@ namespace QuicPunchTests
 
                 var logsList = EventLogs.TakeLast(50).ToList();
 
+                var activeLanPeersList = _lanHandler.ActivePeers.Values.Select(p => new
+                {
+                    peerId = p.Peer.Id.ToString(),
+                    peerName = p.Peer.Name ?? "Unknown",
+                    virtualIp = p.RemoteIp.ToString(),
+                    connectedAt = p.ConnectedAt.ToString("HH:mm:ss"),
+                    rxPackets = p.RxPackets,
+                    txPackets = p.TxPackets,
+                    rxBytes = p.RxBytes,
+                    txBytes = p.TxBytes
+                }).ToList();
+
+                var lanStatusObj = new
+                {
+                    adapterName = _lanHandler.AdapterName,
+                    adapterStatus = _lanHandler.AdapterStatus,
+                    lastError = _lanHandler.LastError ?? "",
+                    localVirtualIp = _lanHandler.LocalIp.ToString(),
+                    subnetMask = _lanHandler.SubnetMask,
+                    mtu = _lanHandler.Mtu,
+                    activePeers = activeLanPeersList,
+                    totalRxPackets = _lanHandler.TotalRxPackets,
+                    totalTxPackets = _lanHandler.TotalTxPackets,
+                    totalRxBytes = _lanHandler.TotalRxBytes,
+                    totalTxBytes = _lanHandler.TotalTxBytes
+                };
+
+                var torStatusObj = new
+                {
+                    isStarted = _qcc.IsTorStarted,
+                    onionAddress = _qcc.TorOnionAddress ?? "",
+                    serviceId = _qcc.TorIdentity?.ServiceId ?? "",
+                    socksPort = _qcc.TorManager?.SocksPort ?? 0,
+                    controlPort = _qcc.TorManager?.ControlPort ?? 0,
+                    virtualPort = _qcc.TorHub?.VirtualPort ?? 0,
+                    bootstrapProgress = _qcc.TorBootstrapProgress,
+                    bootstrapStatus = _qcc.TorBootstrapStatus,
+                    torNodeId = _qcc.TorCurrentPeer?.Id.ToString() ?? "",
+                    torCertHash = _qcc.TorCertManager?.CertPublicHash != null ? Convert.ToBase64String(_qcc.TorCertManager.CertPublicHash) : "",
+                    torLastError = _qcc.TorLastError ?? ""
+                };
+
                 var statusObj = new
                 {
                     nodeName,
@@ -835,6 +1387,8 @@ namespace QuicPunchTests
                     listenerPort,
                     networkType,
                     token = myToken,
+                    wanToken,
+                    torToken,
                     quickUri,
                     publicEndpoints = allAddrs,
                     availablePeers = availablePeersList,
@@ -845,6 +1399,11 @@ namespace QuicPunchTests
                     activeInterrogations = activeInterrogationsList,
                     chatMessages = msgsList,
                     pendingPetitions = pendingPetitionsList,
+                    autoAcceptAll = _qcc.AutoAcceptConnections,
+                    autoAcceptedPeers = _qcc.GetAutoAcceptedPeers().Select(g => g.ToString()).ToList(),
+                    lanStatus = lanStatusObj,
+                    torStatus = torStatusObj,
+                    torOnionAddress = _qcc.TorOnionAddress ?? "",
                     logs = logsList
                 };
 

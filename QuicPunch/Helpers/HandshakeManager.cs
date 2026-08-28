@@ -3,22 +3,27 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Text;
+using QuicPunch;
 
-namespace QuicPunch
+namespace QuicPunch.Helpers
 {
     public sealed record HandshakeRequest(
        Guid Id,
        Guid ProtocolId,
-       IPEndPoint RemoteEndPoint);
+       IPEndPoint RemoteEndPoint,
+       Guid PeerId = default,
+       byte[]? CertHash = null);
 
     public sealed record HandshakeDecision(
         bool Accepted,
         ushort? Port,
-        CancellationToken? Ct);
+        CancellationToken? Ct,
+        IReadOnlyList<CandidateEndpoint>? Candidates = null);
 
     public sealed class HandshakeManager
     {
         private readonly ConcurrentDictionary<Guid, TaskCompletionSource<HandshakeDecision>> _pending = new();
+        private readonly ConcurrentDictionary<Guid, byte> _activeRaises = new();
 
         public event Func<HandshakeRequest, CancellationToken, Task<HandshakeDecision>>? HandshakeRequested;
 
@@ -28,15 +33,15 @@ namespace QuicPunch
             bool localRaise,
             CancellationToken ct)
         {
-            var tcs = new TaskCompletionSource<HandshakeDecision>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-
-            if (!_pending.TryAdd(request.Id, tcs))
-                throw new InvalidOperationException("Duplicate handshake request.");
+            var tcs = _pending.GetOrAdd(request.Id, _ =>
+                new TaskCompletionSource<HandshakeDecision>(TaskCreationOptions.RunContinuationsAsynchronously));
 
             if (localRaise)
             {
-                _ = RaiseAsync(request, timeout, ct);
+                if (_activeRaises.TryAdd(request.Id, 0))
+                {
+                    _ = RaiseAsync(request, timeout, ct);
+                }
             }
             else
             {
@@ -55,7 +60,7 @@ namespace QuicPunch
                     timeoutCts.Dispose();
                 }, TaskContinuationOptions.ExecuteSynchronously);
             }
-            
+
             return tcs.Task;
         }
 
@@ -87,12 +92,25 @@ namespace QuicPunch
             }
         }
         public bool Reject(Guid id) => Complete(id, new HandshakeDecision(false, null, null));
-        public bool Approve(Guid id, ushort port, CancellationTokenSource cts) => Complete(id, new HandshakeDecision(true, port, cts?.Token));
+        public bool Approve(Guid id, ushort port, IReadOnlyList<CandidateEndpoint>? candidates = null, CancellationTokenSource? cts = null) => Complete(id, new HandshakeDecision(true, port, cts?.Token, candidates));
+
+        public int PendingDecisionsCount => _pending.Count;
+
+        public void CancelAll()
+        {
+            _activeRaises.Clear();
+            foreach (var kvp in _pending)
+            {
+                if (_pending.TryRemove(kvp.Key, out var tcs))
+                {
+                    tcs.TrySetResult(new HandshakeDecision(false, null, null));
+                }
+            }
+        }
+
         private bool Complete(Guid id, HandshakeDecision decision)
         {
-            if (decision.Accepted && (decision.Port == 0 || decision.Port == null))
-                throw new InvalidOperationException("Invalid port in handshake decision.");
-
+            _activeRaises.TryRemove(id, out _);
             if (!_pending.TryRemove(id, out var tcs))
                 return false;
 
