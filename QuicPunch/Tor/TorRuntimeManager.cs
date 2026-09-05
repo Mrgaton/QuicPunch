@@ -15,10 +15,26 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace QuicPunch;
+
+public enum TorTransportMode
+{
+    AutoCascade = 0,
+    Direct = 1,
+    Snowflake = 2,
+    Obfs4 = 3
+}
+
+public enum TorTransportTier
+{
+    Direct = 1,
+    Snowflake = 2,
+    Obfs4 = 3
+}
 
 public sealed class TorRuntimeManager : IAsyncDisposable
 {
@@ -49,11 +65,16 @@ public sealed class TorRuntimeManager : IAsyncDisposable
     private TorControlClient? _control;
     private FileStream? _dataDirectoryLock;
     private string? _torExecutable;
+    private string? _lyrebirdExecutable;
     private int _disposed;
 
     public TorRuntimeManager(TorRuntimeOptions? options = null)
     {
         _options = options ?? new TorRuntimeOptions();
+        if (_options.SocksPort > 0)
+            SocksPort = ValidatePort(_options.SocksPort, nameof(_options.SocksPort));
+        if (_options.ControlPort > 0)
+            ControlPort = ValidatePort(_options.ControlPort, nameof(_options.ControlPort));
     }
 
     public bool IsRunning =>
@@ -61,6 +82,7 @@ public sealed class TorRuntimeManager : IAsyncDisposable
 
     public int SocksPort { get; private set; }
     public int ControlPort { get; private set; }
+    public TorTransportTier ActiveTransport { get; private set; } = TorTransportTier.Direct;
 
     public string InstallDirectory =>
         Path.GetFullPath(_options.InstallDirectory ?? GetDefaultInstallDirectory());
@@ -72,6 +94,7 @@ public sealed class TorRuntimeManager : IAsyncDisposable
         Path.Combine(DataDirectory, "control_auth_cookie");
 
     public string? TorExecutablePath => _torExecutable;
+    public string? LyrebirdExecutablePath => _lyrebirdExecutable;
 
     public IReadOnlyCollection<string> RecentLogs => _logs.ToArray();
 
@@ -115,6 +138,14 @@ public sealed class TorRuntimeManager : IAsyncDisposable
         string parent = Path.GetDirectoryName(installDirectory)
             ?? throw new InvalidOperationException("Tor install directory must have a parent directory.");
 
+        // Fast path: if tor already exists in the application directory or Tor folder, use it immediately
+        if (TryFindPreExistingTorExecutable(installDirectory, out string? preExistingTor))
+        {
+            _torExecutable = preExistingTor;
+            AddLog($"[TOR] Found existing Tor executable at {_torExecutable}");
+            return preExistingTor!;
+        }
+
         await InstallGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -122,6 +153,13 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             await using FileStream installLock = await AcquireExclusiveFileLockAsync(
                 Path.Combine(parent, ".quicpunch-tor-install.lock"),
                 cancellationToken).ConfigureAwait(false);
+
+            if (TryFindPreExistingTorExecutable(installDirectory, out preExistingTor))
+            {
+                _torExecutable = preExistingTor;
+                AddLog($"[TOR] Found existing Tor executable at {_torExecutable}");
+                return preExistingTor!;
+            }
 
             if (TryValidateExistingInstall(installDirectory, markerPath, bundle, out string? existingTor))
             {
@@ -140,6 +178,10 @@ public sealed class TorRuntimeManager : IAsyncDisposable
 
                 string torExecutable = FindTorExecutable(staging);
                 EnsureExecutablePermission(torExecutable);
+
+                string? stagedLyrebird = FindLyrebirdExecutable(staging);
+                if (stagedLyrebird is not null)
+                    EnsureExecutablePermission(stagedLyrebird);
 
                 var marker = new TorInstallMarker(
                     PinnedBundleVersion,
@@ -161,6 +203,14 @@ public sealed class TorRuntimeManager : IAsyncDisposable
 
                 _torExecutable = Path.Combine(installDirectory, marker.ExecutableRelativePath);
                 EnsureExecutablePermission(_torExecutable);
+
+                string? installedLyrebird = FindLyrebirdExecutable(installDirectory);
+                if (installedLyrebird is not null)
+                {
+                    EnsureExecutablePermission(installedLyrebird);
+                    _lyrebirdExecutable = installedLyrebird;
+                }
+
                 return _torExecutable;
             }
             finally
@@ -205,74 +255,81 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             if (SocksPort == ControlPort)
                 throw new InvalidOperationException("Tor SOCKS and Control ports must be different.");
 
-            TryDeleteFile(CookieFile);
-
             string torrc = Path.Combine(DataDirectory, "quicpunch.torrc");
-            await WriteTorrcAsync(torrc, torExecutable, cancellationToken).ConfigureAwait(false);
 
-            var startInfo = new ProcessStartInfo
+            string? lyrebirdExecutable = _lyrebirdExecutable
+                ?? FindLyrebirdExecutable(InstallDirectory)
+                ?? FindLyrebirdExecutable(AppContext.BaseDirectory);
+            if (lyrebirdExecutable is not null)
             {
-                FileName = torExecutable,
-                WorkingDirectory = Path.GetDirectoryName(torExecutable)!,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
+                EnsureExecutablePermission(lyrebirdExecutable);
+                _lyrebirdExecutable = lyrebirdExecutable;
+            }
+
+            IReadOnlyList<TorTransportTier> tiers = _options.TransportMode switch
+            {
+                TorTransportMode.Direct => new[] { TorTransportTier.Direct },
+                TorTransportMode.Snowflake => new[] { TorTransportTier.Snowflake },
+                TorTransportMode.Obfs4 => new[] { TorTransportTier.Obfs4 },
+                _ => new[] { TorTransportTier.Direct, TorTransportTier.Snowflake, TorTransportTier.Obfs4 }
             };
-            startInfo.ArgumentList.Add("-f");
-            startInfo.ArgumentList.Add(torrc);
 
-            if (OperatingSystem.IsLinux())
+            Exception? lastException = null;
+
+            for (int i = 0; i < tiers.Count; i++)
             {
-                string? ldLibraryPath = BuildLinuxLibraryPath(InstallDirectory);
-                if (!string.IsNullOrWhiteSpace(ldLibraryPath))
+                cancellationToken.ThrowIfCancellationRequested();
+                var tier = tiers[i];
+                ActiveTransport = tier;
+                bool isLastTier = (i == tiers.Count - 1);
+
+                if (tier != TorTransportTier.Direct && string.IsNullOrEmpty(lyrebirdExecutable))
                 {
-                    if (startInfo.Environment.TryGetValue("LD_LIBRARY_PATH", out string? existing) &&
-                        !string.IsNullOrWhiteSpace(existing))
+                    AddLog($"[TOR] [Tier {i + 1}/{tiers.Count}] Skipping {tier}: Pluggable transport 'lyrebird' executable not found.");
+                    if (isLastTier)
                     {
-                        ldLibraryPath += Path.PathSeparator + existing;
+                        throw new FileNotFoundException(
+                            $"Pluggable transport 'lyrebird' not found in '{InstallDirectory}'. Cannot bootstrap {tier}.",
+                            lastException);
                     }
-                    startInfo.Environment["LD_LIBRARY_PATH"] = ldLibraryPath;
+                    continue;
+                }
+
+                TimeSpan tierTimeout = CalculateTierTimeout(_options, tier, isLastTier);
+                AddLog($"[TOR] [Tier {i + 1}/{tiers.Count}] Attempting connection via {tier} (timeout: {tierTimeout.TotalSeconds:F0}s)...");
+
+                try
+                {
+                    await TryStartProcessAndBootstrapAsync(
+                        torExecutable,
+                        tier,
+                        lyrebirdExecutable,
+                        torrc,
+                        tierTimeout,
+                        cancellationToken).ConfigureAwait(false);
+
+                    AddLog($"[TOR] Successfully connected and bootstrapped via {tier} (Tier {i + 1}/{tiers.Count})!");
+                    return;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
+                    if (!isLastTier)
+                    {
+                        AddLog($"[TOR] [Tier {i + 1}/{tiers.Count}] Connection via {tier} failed or timed out: {ex.Message}");
+                        AddLog($"[TOR] Cascading to next tier...");
+                        await StopChildProcessOnlyAsync().ConfigureAwait(false);
+                    }
                 }
             }
 
-            var process = new Process
-            {
-                StartInfo = startInfo,
-                EnableRaisingEvents = true
-            };
-
-            process.OutputDataReceived += (_, e) => { if (e.Data is not null) AddLog("OUT " + e.Data); };
-            process.ErrorDataReceived += (_, e) => { if (e.Data is not null) AddLog("ERR " + e.Data); };
-
-            try
-            {
-                if (!process.Start())
-                    throw new InvalidOperationException("Unable to start the Tor process.");
-            }
-            catch
-            {
-                process.Dispose();
-                throw;
-            }
-
-            _process = process;
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-
-            try
-            {
-                await WaitForControlSocketAndCookieAsync(process, cancellationToken).ConfigureAwait(false);
-
-                _control = new TorControlClient(ControlPort, CookieFile);
-                await _control.ConnectAsync(cancellationToken).ConfigureAwait(false);
-                await WaitForBootstrapAsync(process, cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
-                throw;
-            }
+            throw new InvalidOperationException(
+                $"Failed to bootstrap Tor across all configured tiers ({string.Join(" -> ", tiers)}). Last error: {lastException?.Message}",
+                lastException);
         }
         catch
         {
@@ -316,7 +373,83 @@ public sealed class TorRuntimeManager : IAsyncDisposable
         }
     }
 
-    private async ValueTask StopCoreAsync(CancellationToken cancellationToken)
+    private async ValueTask TryStartProcessAndBootstrapAsync(
+        string torExecutable,
+        TorTransportTier tier,
+        string? lyrebirdExecutable,
+        string torrc,
+        TimeSpan bootstrapTimeout,
+        CancellationToken cancellationToken)
+    {
+        TryDeleteFile(CookieFile);
+        await WriteTorrcAsync(torrc, torExecutable, tier, lyrebirdExecutable, cancellationToken).ConfigureAwait(false);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = torExecutable,
+            WorkingDirectory = Path.GetDirectoryName(torExecutable)!,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add("-f");
+        startInfo.ArgumentList.Add(torrc);
+
+        if (OperatingSystem.IsLinux())
+        {
+            string? ldLibraryPath = BuildLinuxLibraryPath(InstallDirectory);
+            if (!string.IsNullOrWhiteSpace(ldLibraryPath))
+            {
+                if (startInfo.Environment.TryGetValue("LD_LIBRARY_PATH", out string? existing) &&
+                    !string.IsNullOrWhiteSpace(existing))
+                {
+                    ldLibraryPath += Path.PathSeparator + existing;
+                }
+                startInfo.Environment["LD_LIBRARY_PATH"] = ldLibraryPath;
+            }
+        }
+
+        var process = new Process
+        {
+            StartInfo = startInfo,
+            EnableRaisingEvents = true
+        };
+
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) AddLog("OUT " + e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) AddLog("ERR " + e.Data); };
+
+        try
+        {
+            if (!process.Start())
+                throw new InvalidOperationException("Unable to start the Tor process.");
+        }
+        catch
+        {
+            process.Dispose();
+            throw;
+        }
+
+        _process = process;
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        try
+        {
+            await WaitForControlSocketAndCookieAsync(process, cancellationToken).ConfigureAwait(false);
+
+            _control = new TorControlClient(ControlPort, CookieFile);
+            await _control.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            await WaitForBootstrapAsync(process, bootstrapTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await StopChildProcessOnlyAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async ValueTask StopChildProcessOnlyAsync()
     {
         TorControlClient? control = Interlocked.Exchange(ref _control, null);
         Process? process = Interlocked.Exchange(ref _process, null);
@@ -325,13 +458,12 @@ public sealed class TorRuntimeManager : IAsyncDisposable
         {
             try
             {
-                using var signalTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                signalTimeout.CancelAfter(TimeSpan.FromSeconds(3));
+                using var signalTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 await control.SignalAsync("SHUTDOWN", signalTimeout.Token).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                AddLog("Control shutdown failed: " + ex.Message);
+                AddLog("Control shutdown warning: " + ex.Message);
             }
             finally
             {
@@ -340,23 +472,18 @@ public sealed class TorRuntimeManager : IAsyncDisposable
         }
 
         if (process is null)
-        {
-            ReleaseDataDirectoryLock();
             return;
-        }
 
         try
         {
             if (!process.HasExited)
             {
-                using var exitTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                exitTimeout.CancelAfter(_options.ShutdownTimeout);
-
+                using var exitTimeout = new CancellationTokenSource(_options.ShutdownTimeout);
                 try
                 {
                     await process.WaitForExitAsync(exitTimeout.Token).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException)
                 {
                     if (!process.HasExited)
                         process.Kill(entireProcessTree: true);
@@ -368,8 +495,14 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             try { process.CancelOutputRead(); } catch { }
             try { process.CancelErrorRead(); } catch { }
             process.Dispose();
-            ReleaseDataDirectoryLock();
+            TryDeleteFile(CookieFile);
         }
+    }
+
+    private async ValueTask StopCoreAsync(CancellationToken cancellationToken)
+    {
+        await StopChildProcessOnlyAsync().ConfigureAwait(false);
+        ReleaseDataDirectoryLock();
     }
 
     private void ReleaseDataDirectoryLock()
@@ -404,46 +537,96 @@ public sealed class TorRuntimeManager : IAsyncDisposable
 
     private async ValueTask WaitForBootstrapAsync(
         Process process,
+        TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        DateTime deadline = DateTime.UtcNow + _options.BootstrapTimeout;
+        DateTime deadline = DateTime.UtcNow + timeout;
+        int lastProgress = -1;
 
         while (DateTime.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             ThrowIfExited(process);
 
-            string phase = await ControlClient
-                .GetInfoAsync("status/bootstrap-phase", cancellationToken)
-                .ConfigureAwait(false);
-
-            if (phase.Contains("PROGRESS=100", StringComparison.OrdinalIgnoreCase) ||
-                phase.Contains("TAG=done", StringComparison.OrdinalIgnoreCase))
+            string? phase = null;
+            try
             {
-                AddLog("Tor bootstrap complete.");
-                return;
+                phase = await ControlClient
+                    .GetInfoAsync("status/bootstrap-phase", cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception) when (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
+            {
+                // Control port may still be completing handshake or warming up
+            }
+
+            if (!string.IsNullOrWhiteSpace(phase))
+            {
+                var match = Regex.Match(phase, @"PROGRESS=(\d{1,3})");
+                if (match.Success && int.TryParse(match.Groups[1].Value, out int progress))
+                {
+                    if (progress != lastProgress)
+                    {
+                        lastProgress = progress;
+                        var summaryMatch = Regex.Match(phase, @"SUMMARY=""([^""]+)""");
+                        string summary = summaryMatch.Success ? summaryMatch.Groups[1].Value : "Bootstrapping";
+                        AddLog($"Bootstrapped {progress}%: {summary}");
+                    }
+                }
+
+                if (phase.Contains("PROGRESS=100", StringComparison.OrdinalIgnoreCase) ||
+                    phase.Contains("TAG=done", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddLog($"Tor bootstrap complete via {ActiveTransport}.");
+                    return;
+                }
             }
 
             await Task.Delay(250, cancellationToken).ConfigureAwait(false);
         }
 
         throw new TimeoutException(
-            $"Tor did not finish bootstrapping within {_options.BootstrapTimeout}.");
+            $"Tor did not finish bootstrapping via {ActiveTransport} within {timeout.TotalSeconds:F0}s.");
     }
 
-    private async ValueTask WriteTorrcAsync(
+    internal static TimeSpan CalculateTierTimeout(TorRuntimeOptions options, TorTransportTier tier, bool isLastTier)
+    {
+        if (options.TransportMode != TorTransportMode.AutoCascade)
+            return options.BootstrapTimeout;
+
+        TimeSpan baseTierTimeout = options.TierBootstrapTimeout > TimeSpan.Zero
+            ? options.TierBootstrapTimeout
+            : TimeSpan.FromSeconds(35);
+
+        return tier switch
+        {
+            TorTransportTier.Direct => baseTierTimeout,
+            TorTransportTier.Snowflake => baseTierTimeout + TimeSpan.FromSeconds(10),
+            TorTransportTier.Obfs4 => isLastTier
+                ? TimeSpan.FromSeconds(Math.Max(baseTierTimeout.TotalSeconds + 15, 50))
+                : baseTierTimeout + TimeSpan.FromSeconds(15),
+            _ => baseTierTimeout
+        };
+    }
+
+    internal async ValueTask WriteTorrcAsync(
         string torrc,
         string torExecutable,
-        CancellationToken cancellationToken)
+        TorTransportTier tier = TorTransportTier.Direct,
+        string? lyrebirdExecutable = null,
+        CancellationToken cancellationToken = default)
     {
         string? geoIp = FindFileRecursive(InstallDirectory, "geoip");
         string? geoIp6 = FindFileRecursive(InstallDirectory, "geoip6");
 
+        int socksPort = SocksPort != 0 ? SocksPort : (_options.SocksPort != 0 ? _options.SocksPort : 9050);
+        int controlPort = ControlPort != 0 ? ControlPort : (_options.ControlPort != 0 ? _options.ControlPort : 9051);
+
         var sb = new StringBuilder();
         sb.AppendLine("ClientOnly 1");
         sb.AppendLine($"DataDirectory {QuoteTorPath(DataDirectory)}");
-        sb.AppendLine($"SocksPort 127.0.0.1:{SocksPort} IsolateSOCKSAuth");
-        sb.AppendLine($"ControlPort 127.0.0.1:{ControlPort}");
+        sb.AppendLine($"SocksPort 127.0.0.1:{socksPort} IsolateSOCKSAuth");
+        sb.AppendLine($"ControlPort 127.0.0.1:{controlPort}");
         sb.AppendLine("CookieAuthentication 1");
         sb.AppendLine($"CookieAuthFile {QuoteTorPath(CookieFile)}");
         sb.AppendLine($"__OwningControllerProcess {Environment.ProcessId}");
@@ -453,6 +636,35 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             sb.AppendLine($"GeoIPFile {QuoteTorPath(geoIp)}");
         if (geoIp6 is not null)
             sb.AppendLine($"GeoIPv6File {QuoteTorPath(geoIp6)}");
+
+        if (tier == TorTransportTier.Snowflake)
+        {
+            if (string.IsNullOrWhiteSpace(lyrebirdExecutable))
+                throw new InvalidOperationException("Snowflake transport requires 'lyrebird' executable.");
+
+            sb.AppendLine("UseBridges 1");
+            sb.AppendLine($"ClientTransportPlugin snowflake exec {QuoteTorPath(lyrebirdExecutable)}");
+
+            var bridges = TorBridges.GetSnowflakeBridges(InstallDirectory, _options.CustomBridges);
+            foreach (var bridge in bridges)
+            {
+                sb.AppendLine($"Bridge {bridge}");
+            }
+        }
+        else if (tier == TorTransportTier.Obfs4)
+        {
+            if (string.IsNullOrWhiteSpace(lyrebirdExecutable))
+                throw new InvalidOperationException("Obfs4 transport requires 'lyrebird' executable.");
+
+            sb.AppendLine("UseBridges 1");
+            sb.AppendLine($"ClientTransportPlugin obfs4 exec {QuoteTorPath(lyrebirdExecutable)}");
+
+            var bridges = TorBridges.GetObfs4Bridges(InstallDirectory, _options.CustomBridges);
+            foreach (var bridge in bridges)
+            {
+                sb.AppendLine($"Bridge {bridge}");
+            }
+        }
 
         foreach (string extra in _options.AdditionalTorrcLines)
         {
@@ -569,6 +781,13 @@ public sealed class TorRuntimeManager : IAsyncDisposable
                             await entry.DataStream.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
                     }
                     TrySetUnixMode(target, entry.Mode);
+                    string targetName = Path.GetFileName(target);
+                    if (string.Equals(targetName, "tor", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(targetName, "lyrebird", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(targetName, "conjure-client", StringComparison.OrdinalIgnoreCase))
+                    {
+                        EnsureExecutablePermission(target);
+                    }
                     break;
 
                 case TarEntryType.SymbolicLink:
@@ -669,12 +888,86 @@ public sealed class TorRuntimeManager : IAsyncDisposable
 
             EnsureExecutablePermission(executable);
             torExecutable = executable;
+            string? lyrebird = FindLyrebirdExecutable(installDirectory);
+            if (lyrebird is not null)
+                EnsureExecutablePermission(lyrebird);
             return true;
         }
         catch
         {
             return false;
         }
+    }
+
+    private static bool TryFindPreExistingTorExecutable(string installDirectory, out string? torExecutable)
+    {
+        torExecutable = null;
+        string exeName = OperatingSystem.IsWindows() ? "tor.exe" : "tor";
+
+        try
+        {
+            // 1. Look directly in AppContext.BaseDirectory (same directory as current binary)
+            string directAppPath = Path.Combine(AppContext.BaseDirectory, exeName);
+            if (File.Exists(directAppPath))
+            {
+                EnsureExecutablePermission(directAppPath);
+                torExecutable = Path.GetFullPath(directAppPath);
+                return true;
+            }
+
+            // 2. Look in AppContext.BaseDirectory/Tor/
+            string appTorPath = Path.Combine(AppContext.BaseDirectory, "Tor", exeName);
+            if (File.Exists(appTorPath))
+            {
+                EnsureExecutablePermission(appTorPath);
+                torExecutable = Path.GetFullPath(appTorPath);
+                return true;
+            }
+
+            // 3. Search in configured installDirectory if directory exists
+            if (!string.IsNullOrWhiteSpace(installDirectory) && Directory.Exists(installDirectory))
+            {
+                string inInstallDir = Path.Combine(installDirectory, exeName);
+                if (File.Exists(inInstallDir))
+                {
+                    EnsureExecutablePermission(inInstallDir);
+                    torExecutable = Path.GetFullPath(inInstallDir);
+                    return true;
+                }
+
+                try
+                {
+                    string found = FindTorExecutable(installDirectory);
+                    if (File.Exists(found))
+                    {
+                        EnsureExecutablePermission(found);
+                        torExecutable = Path.GetFullPath(found);
+                        return true;
+                    }
+                }
+                catch { }
+            }
+
+            // 4. Recursive search in AppContext.BaseDirectory/Tor if present
+            string appTorDir = Path.Combine(AppContext.BaseDirectory, "Tor");
+            if (Directory.Exists(appTorDir))
+            {
+                try
+                {
+                    string found = FindTorExecutable(appTorDir);
+                    if (File.Exists(found))
+                    {
+                        EnsureExecutablePermission(found);
+                        torExecutable = Path.GetFullPath(found);
+                        return true;
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        return false;
     }
 
     private static TorBundleDescriptor GetBundleForCurrentPlatform()
@@ -709,6 +1002,23 @@ public sealed class TorRuntimeManager : IAsyncDisposable
                 .Any(part => string.Equals(part, "tor", StringComparison.OrdinalIgnoreCase)))
             .ThenBy(p => p.Length)
             .First();
+    }
+
+    public static string? FindLyrebirdExecutable(string root)
+    {
+        if (!Directory.Exists(root))
+            return null;
+
+        string expected = OperatingSystem.IsWindows() ? "lyrebird.exe" : "lyrebird";
+        string[] candidates = Directory.GetFiles(root, expected, SearchOption.AllDirectories);
+
+        if (candidates.Length == 0)
+            return null;
+
+        return candidates
+            .OrderByDescending(p => p.Contains("pluggable_transports", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(p => p.Length)
+            .FirstOrDefault();
     }
 
     private static string? FindFileRecursive(string root, string exactName) =>
@@ -850,8 +1160,7 @@ public sealed class TorRuntimeManager : IAsyncDisposable
 
     private static string GetDefaultInstallDirectory() =>
         Path.Combine(
-            Path.GetTempPath(),
-            "QuicPunch",
+            AppContext.BaseDirectory,
             "Tor",
             PinnedBundleVersion,
             OperatingSystem.IsWindows() ? "windows-x64" : "linux-x64");
@@ -946,9 +1255,13 @@ public sealed class TorRuntimeOptions
 
     public int ControlPort { get; init; }
 
+    public TorTransportMode TransportMode { get; init; } = TorTransportMode.AutoCascade;
+
     public TimeSpan StartupTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public TimeSpan BootstrapTimeout { get; init; } = TimeSpan.FromMinutes(3);
+    public TimeSpan TierBootstrapTimeout { get; init; } = TimeSpan.FromSeconds(35);
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(8);
 
     public string[] AdditionalTorrcLines { get; init; } = Array.Empty<string>();
+    public string[] CustomBridges { get; init; } = Array.Empty<string>();
 }

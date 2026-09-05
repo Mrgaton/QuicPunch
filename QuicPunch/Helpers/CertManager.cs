@@ -11,10 +11,10 @@ namespace QuicPunch.Helpers
     public sealed class CertManager : IDisposable
     {
         private static readonly byte[] BundleMagic = "QPID"u8.ToArray();
-        private const byte BundleVersion = 0x01;
+        private const byte BundleVersion = 0x02;
 
         public const string EcdhExtensionOid = "1.3.6.1.4.1.99999.1";
-        public const int SignatureLength = 96; // 48 bytes r + 48 bytes s for NIST P-384 curve
+        public const int SignatureLength = 64; // 32 bytes r + 32 bytes s for NIST P-256 curve
 
         private readonly object _lock = new();
         private readonly string _configPath;
@@ -26,6 +26,9 @@ namespace QuicPunch.Helpers
         private byte[]? _ecdhPublicKeyRaw;
         private ECDsa? _curve;
         private byte[]? _curveHash;
+        private byte[]? _nostrPrivateKey;
+        private byte[]? _nostrPublicKey;
+        private string? _nostrPublicKeyHex;
         private byte[] _sessionNonce = RandomNumberGenerator.GetBytes(32);
         private ECDiffieHellman? _ephemeralEcdh;
         private byte[]? _ephemeralEcdhPublicKeyRaw;
@@ -131,6 +134,16 @@ namespace QuicPunch.Helpers
                     return false;
                 }
 
+                using (var ecdsa = loadedCert.GetECDsaPublicKey())
+                {
+                    if (ecdsa == null || ecdsa.KeySize != 256 || loadedEcdh.KeySize != 256)
+                    {
+                        loadedCert.Dispose();
+                        loadedEcdh.Dispose();
+                        return false;
+                    }
+                }
+
                 cert = loadedCert;
                 ecdh = loadedEcdh;
                 return true;
@@ -165,6 +178,16 @@ namespace QuicPunch.Helpers
                     return false;
                 }
 
+                using (var ecdsa = loadedCert.GetECDsaPublicKey())
+                {
+                    if (ecdsa == null || ecdsa.KeySize != 256 || loadedEcdh.KeySize != 256)
+                    {
+                        loadedCert.Dispose();
+                        loadedEcdh.Dispose();
+                        return false;
+                    }
+                }
+
                 cert = loadedCert;
                 ecdh = loadedEcdh;
                 return true;
@@ -182,8 +205,9 @@ namespace QuicPunch.Helpers
             _ecdhKey?.Dispose();
             _peerCertificate?.Dispose();
 
-            var ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP384);
-            var cert = GenerateIdentityCertificate(Environment.MachineName, ecdh);
+            var ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+            var (username, hostname, _) = Utilities.GenerateRandomIdentityNames();
+            var cert = GenerateIdentityCertificate(hostname, username, ecdh);
 
             SaveBundleAtomic(IdentityPath, cert, ecdh);
 
@@ -241,6 +265,26 @@ namespace QuicPunch.Helpers
             }
         }
 
+        public string PeerName
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    EnsureLoadedLocked();
+                    string? upn = _peerCertificate?.GetNameInfo(X509NameType.UpnName, false);
+                    if (!string.IsNullOrWhiteSpace(upn))
+                        return upn;
+
+                    string? cn = _peerCertificate?.GetNameInfo(X509NameType.SimpleName, false);
+                    if (!string.IsNullOrWhiteSpace(cn))
+                        return $"user@{cn}";
+
+                    return "quic-punch-peer";
+                }
+            }
+        }
+
         public byte[] CertPublicHash
         {
             get
@@ -265,6 +309,21 @@ namespace QuicPunch.Helpers
                     EnsureLoadedLocked();
                     return _ecdhKey!;
                 }
+            }
+        }
+
+        public byte[] DeriveStaticSecret(ECDiffieHellmanPublicKey remotePublicKey)
+        {
+            if (remotePublicKey == null)
+                throw new ArgumentNullException(nameof(remotePublicKey));
+
+            lock (_lock)
+            {
+                if (_isDisposed)
+                    throw new ObjectDisposedException(nameof(CertManager));
+
+                EnsureLoadedLocked();
+                return _ecdhKey!.DeriveRawSecretAgreement(remotePublicKey);
             }
         }
 
@@ -316,14 +375,73 @@ namespace QuicPunch.Helpers
             }
         }
 
-        public static X509Certificate2 GenerateIdentityCertificate(string peerId, ECDiffieHellman ecdh)
+        private static readonly byte[] NostrIdentityInfo = "QuicPunch:NostrIdentity"u8.ToArray();
+
+        public byte[] NostrPrivateKey
         {
-            using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+            get
+            {
+                lock (_lock)
+                {
+                    if (_isDisposed)
+                        throw new ObjectDisposedException(nameof(CertManager));
+
+                    if (_nostrPrivateKey != null)
+                        return _nostrPrivateKey;
+
+                    EnsureLoadedLocked();
+                    byte[] ecdhBytes = _ecdhKey!.ExportPkcs8PrivateKey();
+                    try
+                    {
+                        _nostrPrivateKey = NostrSchnorr.DerivePrivateKey(ecdhBytes, NostrIdentityInfo);
+                        return _nostrPrivateKey;
+                    }
+                    finally
+                    {
+                        CryptographicOperations.ZeroMemory(ecdhBytes);
+                    }
+                }
+            }
+        }
+
+        public byte[] NostrPublicKey
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    if (_nostrPublicKey != null)
+                        return _nostrPublicKey;
+
+                    _nostrPublicKey = NostrSchnorr.GetPublicKeyX(NostrPrivateKey);
+                    return _nostrPublicKey;
+                }
+            }
+        }
+
+        public string NostrPublicKeyHex
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    if (_nostrPublicKeyHex != null)
+                        return _nostrPublicKeyHex;
+
+                    _nostrPublicKeyHex = Convert.ToHexString(NostrPublicKey).ToLowerInvariant();
+                    return _nostrPublicKeyHex;
+                }
+            }
+        }
+
+        public static X509Certificate2 GenerateIdentityCertificate(string hostname, string username, ECDiffieHellman ecdh)
+        {
+            using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
             var request = new CertificateRequest(
-                $"CN={peerId}",
+                $"CN={hostname}",
                 ecdsa,
-                HashAlgorithmName.SHA384);
+                HashAlgorithmName.SHA256);
 
             request.CertificateExtensions.Add(
                 new X509BasicConstraintsExtension(
@@ -349,9 +467,12 @@ namespace QuicPunch.Helpers
                     critical: true));
 
             var san = new SubjectAlternativeNameBuilder();
-            san.AddUserPrincipalName(peerId);
-            san.AddDnsName(peerId);
+            string upn = $"{username}@{hostname}";
+            san.AddUserPrincipalName(upn);
+            san.AddDnsName(hostname);
             san.AddDnsName("quic-punch");
+            san.AddDnsName("cloudflare-quic.com");
+            san.AddDnsName("cdn.cloudflare.net");
             san.AddDnsName("localhost");
             san.AddIpAddress(IPAddress.Loopback);
             san.AddIpAddress(IPAddress.IPv6Loopback);
@@ -383,6 +504,16 @@ namespace QuicPunch.Helpers
                 DefaultKeyStorageFlags);
         }
 
+        public static X509Certificate2 GenerateIdentityCertificate(string peerId, ECDiffieHellman ecdh)
+        {
+            if (peerId.Contains('@'))
+            {
+                var parts = peerId.Split('@', 2);
+                return GenerateIdentityCertificate(parts[1], parts[0], ecdh);
+            }
+            return GenerateIdentityCertificate(peerId, "user", ecdh);
+        }
+
         public byte[] SessionNonce
         {
             get
@@ -402,7 +533,7 @@ namespace QuicPunch.Helpers
                 {
                     if (_ephemeralEcdh != null)
                         return _ephemeralEcdh;
-                    _ephemeralEcdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP384);
+                    _ephemeralEcdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
                     _ephemeralEcdhPublicKeyRaw = _ephemeralEcdh.ExportSubjectPublicKeyInfo();
                     return _ephemeralEcdh;
                 }
@@ -423,13 +554,33 @@ namespace QuicPunch.Helpers
             }
         }
 
+        public void CopySessionEntropyTo(global::QuicPunch.PeerInfo peer)
+        {
+            if (peer == null)
+                throw new ArgumentNullException(nameof(peer));
+
+            lock (_lock)
+            {
+                if (_isDisposed)
+                    throw new ObjectDisposedException(nameof(CertManager));
+
+                if (_ephemeralEcdh == null)
+                {
+                    _ephemeralEcdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+                    _ephemeralEcdhPublicKeyRaw = _ephemeralEcdh.ExportSubjectPublicKeyInfo();
+                }
+
+                peer.SetLocalEntropy(_sessionNonce, _ephemeralEcdh);
+            }
+        }
+
         public void RenewSessionEntropy()
         {
             lock (_lock)
             {
                 _sessionNonce = RandomNumberGenerator.GetBytes(32);
                 try { _ephemeralEcdh?.Dispose(); } catch { }
-                _ephemeralEcdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP384);
+                _ephemeralEcdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
                 _ephemeralEcdhPublicKeyRaw = _ephemeralEcdh.ExportSubjectPublicKeyInfo();
             }
         }
@@ -442,6 +593,12 @@ namespace QuicPunch.Helpers
                     return;
 
                 _isDisposed = true;
+                if (_nostrPrivateKey != null)
+                {
+                    CryptographicOperations.ZeroMemory(_nostrPrivateKey);
+                    _nostrPrivateKey = null;
+                }
+
                 _peerCertificate?.Dispose();
                 _peerCertificate = null;
                 _ecdhKey?.Dispose();

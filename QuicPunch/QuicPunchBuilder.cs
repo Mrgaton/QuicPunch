@@ -10,11 +10,35 @@ namespace QuicPunch
     {
         private byte[]? _poolId;
         private bool _autoDiscovery;
-        private string[]? _customTrackers;
+        private bool? _wanAutoDiscovery;
+        private bool? _torAutoDiscovery;
+        private string[]? _nostrRelays;
+        private string[]? _torNostrRelays;
+        private string? _peerName;
+        private string? _torPeerName;
         private ushort _discoveryPort;
         private byte[]? _connectionPassword;
         private bool _autoAcceptConnections = true;
+        private bool _enableUpnp = true;
         private CancellationTokenSource? _cts;
+
+        public QuicPunchBuilder WithUpnp(bool enable = true)
+        {
+            _enableUpnp = enable;
+            return this;
+        }
+
+        public QuicPunchBuilder WithPeerName(string? peerName)
+        {
+            _peerName = peerName;
+            return this;
+        }
+
+        public QuicPunchBuilder WithTorPeerName(string? torPeerName)
+        {
+            _torPeerName = torPeerName;
+            return this;
+        }
 
         public QuicPunchBuilder UsePool(string poolNameOrHash)
         {
@@ -43,16 +67,38 @@ namespace QuicPunch
             return this;
         }
 
-        public QuicPunchBuilder WithAutoDiscovery(bool enableTrackers = true, string[]? customTrackers = null)
+        public QuicPunchBuilder WithAutoDiscovery(bool enabled = true, string[]? nostrRelays = null)
         {
-            _autoDiscovery = enableTrackers;
-            _customTrackers = customTrackers;
+            _autoDiscovery = enabled;
+            _wanAutoDiscovery = enabled;
+            _torAutoDiscovery = enabled;
+            _nostrRelays = nostrRelays;
             return this;
         }
 
-        public QuicPunchBuilder WithCustomTrackers(string[]? trackers)
+        public QuicPunchBuilder WithWanNostrDiscovery(bool enabled = true, string[]? nostrRelays = null)
         {
-            _customTrackers = trackers;
+            _wanAutoDiscovery = enabled;
+            if (nostrRelays != null) _nostrRelays = nostrRelays;
+            return this;
+        }
+
+        public QuicPunchBuilder WithTorNostrDiscovery(bool enabled = true, string[]? torNostrRelays = null)
+        {
+            _torAutoDiscovery = enabled;
+            if (torNostrRelays != null) _torNostrRelays = torNostrRelays;
+            return this;
+        }
+
+        public QuicPunchBuilder WithNostrRelays(string[]? relays)
+        {
+            _nostrRelays = relays;
+            return this;
+        }
+
+        public QuicPunchBuilder WithTorNostrRelays(string[]? relays)
+        {
+            _torNostrRelays = relays;
             return this;
         }
 
@@ -104,18 +150,41 @@ namespace QuicPunch
 
         public QuicPunch Build(CancellationToken cancellationToken = default)
         {
-            var discoveryId = _autoDiscovery ? _poolId : null;
-            var quicPunch = new QuicPunch(cancellationToken.CanBeCanceled ? cancellationToken : _cancellationToken, discoveryId, _connectionPassword, _autoAcceptConnections, _discoveryPort, appDataPath: _appDataPath);
+            bool wanEnabled = _wanAutoDiscovery ?? _autoDiscovery;
+            bool torEnabled = _torAutoDiscovery ?? _autoDiscovery;
+            var discoveryId = (wanEnabled || torEnabled) ? _poolId : null;
+            var quicPunch = new QuicPunch(cancellationToken.CanBeCanceled ? cancellationToken : _cancellationToken, discoveryId, _connectionPassword, _autoAcceptConnections, _discoveryPort, appDataPath: _appDataPath)
+            {
+                WanNostrDiscoveryEnabled = wanEnabled,
+                TorNostrDiscoveryEnabled = torEnabled
+            };
 
             if (_poolId != null)
             {
                 quicPunch.PoolId = _poolId;
             }
 
-            if (_customTrackers != null && _customTrackers.Length > 0)
+            if (_nostrRelays != null && _nostrRelays.Length > 0)
             {
-                quicPunch.CustomTrackers = _customTrackers;
+                quicPunch.NostrRelays = _nostrRelays;
             }
+
+            if (_torNostrRelays != null && _torNostrRelays.Length > 0)
+            {
+                quicPunch.TorNostrRelays = _torNostrRelays;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_peerName))
+            {
+                quicPunch.CurrentPeer.Name = _peerName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_torPeerName))
+            {
+                quicPunch.TorCurrentPeer.Name = _torPeerName;
+            }
+
+            quicPunch.EnableUpnp = _enableUpnp;
 
             return quicPunch;
         }

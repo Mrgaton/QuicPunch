@@ -1,106 +1,150 @@
 # QuicPunch
 
-A decentralized, serverless P2P networking library for .NET that combines UDP hole punching with QUIC (TLS 1.3). 
+A high-performance, decentralized P2P networking and virtual overlay mesh library for .NET 11.
 
-QuicPunch allows two peers behind NATs to discover each other using public BitTorrent trackers, punch through their firewalls, and establish a highly secure, multiplexed QUIC connection without relying on a central signaling server.
+**QuicPunch** enables secure, authenticated peer-to-peer tunnels across the Internet without dedicated infrastructure. It uses **dual-stack transport** combining **UDP Hole Punching + QUIC (TLS 1.3)** with automatic fallback to **Tor v3 Onion Services**, coordinated through **Nostr decentralized signaling** and **cascaded gateway port mapping (PCP / NAT-PMP / UPnP)**.
 
-## Features
+---
 
-- **Zero Infrastructure**: Uses public UDP BitTorrent trackers for peer discovery. No need to host your own signaling, STUN, or TURN servers.
-- **QUIC / TLS 1.3**: All data is transported over QUIC, providing built-in encryption, forward secrecy, and bidirectional stream multiplexing.
-- **Anti-MitM Security**: Cryptographic identity is tied to auto-generated X.509 certificates. Certificate hashes are bundled into shareable tokens to guarantee MITM-proof connections (Certificate Pinning).
-- **Protocol Multiplexing**: Register multiple custom protocols (`IProtocolHandler`) on a single P2P connection. Handle chats, file transfers, or RPCs simultaneously.
-- **Resilient**: Built-in per-IP rate limiting and robust socket lifecycle management to prevent deadlocks and CPU spikes.
+## Key Features
 
-## How it works
+- **Dual-Stack P2P Transport**: Direct UDP hole punching using RFC 5389 STUN candidates with native `System.Net.Quic` (mTLS 1.3), paired with an embedded **Tor v3 Onion Service** multiplexer for symmetric NATs and firewalls.
+- **MsQuic Low-Level Native Engine Tuning & Real-Time Telemetry**:
+  - Runtime dynamic switching to **BBR Congestion Control** (`QuicCongestionAlgorithm.Bbr`).
+  - **DSCP QoS prioritization** (Expedited Forwarding 46 for Voice, AF41 34 for Video).
+  - Microsecond-precision **real-time telemetry** via native `QUIC_STATISTICS_V2` (RTT, loss ratio, CWND, path MTU, wire throughput).
+  - **RFC 9221 Unreliable QUIC Datagrams** with configuration cache injection and zero head-of-line blocking.
+  - Cross-platform native endpoint resolution (`AF_INET` and `AF_INET6` on both Linux and Windows).
+- **Cascaded Gateway Port Mapping**: Automatic port forward negotiation with fallback cascade:
+  1. **PCP** (Port Control Protocol - RFC 6887, sub-millisecond, IPv4/IPv6 & CGNAT aware)
+  2. **NAT-PMP** (RFC 6886, sub-millisecond, Apple/OpenWrt/pfSense)
+  3. **UPnP IGD** (SSDP discovery + SOAP XML WANIPConnection/WANPPPConnection)
+- **Dynamic NAT Pinhole Coordination**: Burst STUN probing across 32+ servers for port-range learning, symmetric NAT classification, and periodic pinhole keepalives.
+- **Serverless Nostr Signaling**: Decentralized discovery using Nostr relays (Kind 27227) with a pure C# **BIP-340 Schnorr signature engine on secp256k1**.
+- **Anti-MitM & Zero-Trust Architecture**:
+  - Auto-generated ECDSA (NIST P-256) X.509 certificates.
+  - Strict Certificate Pinning (`CertHash`) embedded in compact shareable endpoint tokens.
+  - Granular **`PeerAccessController`** with certificate whitelist/blacklist and conditional auto-acceptance.
+  - Directional session encryption with **AES-GCM-256** and **2-Party HKDF-SHA256**.
+  - **RFC 6479 128-Packet Sliding Anti-Replay Filter**.
+- **Opus Real-Time Voice Streaming**: Concentus pure C# Opus audio encoding/decoding (60ms 48kHz frames) over QUIC Datagrams.
+- **Asynchronous Rotating File Logger**: High-throughput non-blocking channel logger with 50MB size thresholds, date rolling, and background gzip compression.
+- **Dynamic Subservice Controls**: Activate, stop, or rebind **WAN UDP** and **Tor Onion** services on the fly via code or the embedded dashboard.
+- **Modular WebUI & Desktop GUI**: Built-in HTTP server, modular REST APIs, async WebSocket hub, real-time QUIC telemetry dashboard with polling, and native Photino window.
+- **Multi-Protocol Multiplexing**: Register custom protocols (`IProtocolHandler`) on a single authenticated tunnel. Included out-of-the-box:
+  - **Direct Chat**: Structured JSON messaging with delivery receipts.
+  - **Voice Calls**: Low-latency encrypted Opus audio streaming plane over QUIC datagrams.
+  - **Virtual LAN**: Wintun L3 TUN adapter for seamless virtual private networks.
+  - **RelayDrive**: Chunked ephemeral file shelf with SHA-256 integrity validation.
 
-1. **Identity Generation**: On first run, QuicPunch generates a self-signed ECDSA X.509 certificate.
-2. **Discovery**: Peers join a specific "pool" (infohash) on public BitTorrent trackers.
-3. **Signaling & Hole Punching**: When peers find each other, they exchange UDP handshakes to negotiate ports and punch through NATs.
-4. **QUIC Upgrade**: Once the NAT is open, a QUIC connection is established over the punched ports. TLS 1.3 mutual authentication ensures the peer's certificate matches the expected hash.
+---
+
+## Documentation
+
+For detailed architectural diagrams, protocol specs, cryptographic proofs, and API references, see the **[QuicPunch Documentation Hub](doc/README.md)**:
+
+- **[Architecture Overview](doc/architecture/overview.md)**: Dual WAN/Tor transport layer & glare arbitration.
+- **[MsQuic Native Telemetry & Dynamic Congestion Tuning](doc/core/quic-telemetry-and-tuning.md)**: `QUIC_STATISTICS_V2`, BBR/CUBIC switching, and Web UI polling.
+- **[Cryptography & Security](doc/architecture/cryptography-and-security.md)**: Certificate pinning, key derivation, replay protection.
+- **[Lifecycle & State Machine](doc/architecture/lifecycle-and-state-machine.md)**: Monotonic generational tracking & dynamic WAN/Tor lifecycles.
+- **[Core Facade](doc/core/quicpunch-facade.md)**: `QuicPunch`, `QuicPunchBuilder`, `PeerInfo`, and memory limits.
+- **[STUN & NAT Traversal](doc/discovery/stun-and-nat.md)**: Binary RFC 5389 STUN parser & ICE candidate racing.
+- **[Nostr Signaling](doc/discovery/nostr-signaling.md)**: Pure C# BIP-340 Schnorr on secp256k1 & ephemeral rendezvous.
+- **[Tor Subsystem](doc/tor/tor-subsystem.md)**: Managed Tor runtime, SOCKS5, and v3 hidden services.
+- **[WebUI & REST APIs](doc/webui-and-apps/webui-backend-and-gui.md)**: Embedded web server, WebSocket hub, dashboard controls.
+- **[Testing Suite](doc/testing/test-suite.md)**: 47+ automated security, anti-replay, and lifecycle test specs.
+
+---
 
 ## Quick Start
 
-### 1. Initialize the Core
+### 1. Fluent Builder Initialization
 
 ```csharp
-var cts = new CancellationTokenSource();
+using QuicPunch;
 
-// Pool ID is a 20-byte hash used for discovery on trackers
-byte[] poolId = Convert.FromHexString("1234567890ABCDEF1234567890ABCDEF12345678");
+// Create and start a node with Nostr discovery and dynamic UDP port
+var quicPunch = await QuicPunch.CreateBuilder()
+    .UsePool("my-p2p-room")                     // SHA-256 derived room tag on Nostr
+    .WithPort(0)                               // Dynamic UDP listener port
+    .WithAutoDiscovery(enabled: true)          // Enables STUN and Nostr signaling
+    .WithNostrRelays(new[] { "wss://relay.damus.io", "wss://nos.lol" })
+    .BuildAndStartAsync();
 
-// Initialize with a dynamic port (0)
-using var qcc = new QuicPunchCore(cts, poolId, 0);
-
-Console.WriteLine($"My Token: {await qcc.GetToken()}");
+// Retrieve shareable Base64 tokens
+string? wanToken = quicPunch.GetWanToken();
+string? torToken = quicPunch.GetTorToken();
+Console.WriteLine($"WAN Token: {wanToken}");
 ```
 
-### 2. Register a Protocol Handler
-
-Define what happens when a QUIC connection is established.
+### 2. Register a Custom Protocol Handler
 
 ```csharp
-public class ChatHandler : QuicPunchCore.IProtocolHandler
+public class EchoProtocol : QuicPunch.IProtocolHandler
 {
-    public Guid ProtocolId => Guid.Parse("11111111-1111-1111-1111-111111111111");
+    public Guid ProtocolId => Guid.Parse("11111111-2222-3333-4444-555555555555");
     public ushort PreferredPort => 0;
-    public string ProtocolName => "Chat";
+    public string ProtocolName => "Echo";
 
     public async Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct)
     {
-        // Handle your bidirectional stream here
         using var reader = new StreamReader(stream);
         using var writer = new StreamWriter(stream) { AutoFlush = true };
-        
-        await writer.WriteLineAsync("Hello from P2P!");
+
+        string? line = await reader.ReadLineAsync(ct);
+        await writer.WriteLineAsync($"Echo: {line}");
     }
 }
 
-var chatHandler = new ChatHandler();
-qcc.RegisterProtocol(chatHandler);
+quicPunch.RegisterProtocol(new EchoProtocol());
 ```
 
-### 3. Connect to a Peer
-
-When a peer is found on the tracker, initiate the connection.
+### 3. Connect via Shareable Token
 
 ```csharp
-qcc.TrackerScanner.OnPeerFound += (peerEndpoint) =>
-{
-    // Start UDP hole punching
-    _ = qcc.PeerInterrogation(peerEndpoint, cts.Token);
-};
+// Import peer token and establish encrypted session
+await quicPunch.ConnectTokenAsync(remoteToken);
 
-qcc.OnPeerAvailable += async (peer) =>
-{
-    // Once the peer responds to hole punching, establish QUIC
-    await qcc.InitQuicConnection(
-        chatHandler.ProtocolId, 
-        peer, 
-        localPort: (ushort)Random.Shared.Next(1024, 65535), 
-        cancellationToken: cts.Token
-    );
-};
+// Connect protocol stream to available peer
+await quicPunch.InitQuicConnection(
+    protocolId: Guid.Parse("11111111-2222-3333-4444-555555555555"),
+    peer: targetPeer,
+    cancellationToken: CancellationToken.None
+);
 ```
 
-## Security Model & Trust Architecture
+---
 
-QuicPunch cleanly separates **Discovery** from **Authorization**:
+## Running Tests
 
-1. **Discovery ≠ Trust**:
-   - Trackers, LAN multicast, and Tor discovery only facilitate IP reachability and cryptographic session negotiation.
-   - When a peer is discovered, its self-signed certificate and ECDSA signatures are cryptographically verified to establish secure, encrypted UDP signaling (`AvailablePeers`).
-   - However, **discovery does not grant trust or protocol access**. An unknown peer discovered on a public tracker is considered an untrusted stranger.
+```bash
+# Run Security, Discovery & Lifecycle Test Suite:
+dotnet run --project QuicPunchTests -- --test-security
 
-2. **Authorization via Out-of-Band Tokens**:
-   - High security is achieved by exchanging a **Token** out-of-band (e.g. via QR code, encrypted messenger, or direct configuration).
-   - The token contains the peer's pinned `CertHash`. Importing a token (`SavePeer`, `PeerInterrogation`) registers the hash in `ExpectedPeerCerts` and designates the peer as **Trusted**.
+# Run RFC 6479 Anti-Replay Sliding Window Tests:
+dotnet run --project QuicPunchTests -- --test-antireplay
 
-3. **Trust-Gated Protocol Authorization**:
-   - When a peer attempts to open an application protocol (e.g. Virtual LAN, Chat, File Share), incoming handshakes are gated:
-     - **Trusted Peers** (those matching an expected token or saved record) are automatically accepted (`AutoAcceptConnections = true`).
-     - **Untrusted Strangers** (discovered via trackers or LAN without a token) are **not** auto-accepted. Their connection requests trigger the `HandshakeRequested` event, requiring explicit user/application approval.
-   - During TLS 1.3 QUIC connection establishment, `RemoteCertificateValidationCallback` strictly enforces certificate pinning against the expected hash, preventing Man-in-the-Middle (MitM) attacks.
+# Run MsQuic Dynamic BBR Congestion Control Test:
+dotnet run --project QuicPunchTests -- --test-quic-bbr
+
+# Run MsQuic Unreliable Datagrams RFC 9221 Test:
+dotnet run --project QuicPunchTests -- --test-quic-datagrams
+
+# Run MsQuic Advanced Native Telemetry & DSCP Test:
+dotnet run --project QuicPunchTests -- --test-quic-telemetry
+
+# Run Cascaded Port Openers Test (PCP / NAT-PMP / UPnP):
+dotnet run --project QuicPunchTests -- --test-port-openers
+
+# Run Opus Voice Codec Test:
+dotnet run --project QuicPunchTests -- --test-opus
+
+# Run End-to-End Tor Multi-Lane File Transfer Test:
+dotnet run --project QuicPunchTests -- --test-tor
+```
+
+---
 
 ## License
+
 MIT License.

@@ -17,6 +17,7 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
     private readonly TorOnionService _service;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly ConcurrentDictionary<Guid, RouteState> _routes = new();
+    private readonly ConcurrentDictionary<Guid, TaskCompletionSource<RouteState>> _pendingRouteWaiters = new();
     private readonly Channel<TorIncomingPeerConnection> _incomingConnections;
     private readonly Task _acceptLoop;
     private int _disposed;
@@ -90,6 +91,9 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
         if (!_routes.TryAdd(connectionId, route))
             throw new InvalidOperationException($"ConnectionId {connectionId} is already registered in this Tor hub.");
 
+        if (_pendingRouteWaiters.TryRemove(connectionId, out var waiter))
+            waiter.TrySetResult(route);
+
         return route;
     }
 
@@ -115,6 +119,10 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
         foreach (RouteState route in _routes.Values)
             route.Close();
         _routes.Clear();
+
+        foreach (var waiter in _pendingRouteWaiters.Values)
+            waiter.TrySetCanceled();
+        _pendingRouteWaiters.Clear();
 
         await _service.DisposeAsync().ConfigureAwait(false);
         _shutdown.Dispose();
@@ -228,6 +236,9 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
             return false;
         }
 
+        if (_pendingRouteWaiters.TryRemove(preface.ConnectionId, out var waiter))
+            waiter.TrySetResult(route);
+
         var incoming = new TorIncomingPeerConnection(
             preface.ConnectionId,
             preface.SenderServiceId + ".onion",
@@ -248,15 +259,36 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        DateTime deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (_routes.TryGetValue(connectionId, out RouteState? route))
-                return route;
+        if (_routes.TryGetValue(connectionId, out RouteState? route))
+            return route;
 
-            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+        var tcs = _pendingRouteWaiters.GetOrAdd(connectionId, _ =>
+            new TaskCompletionSource<RouteState>(TaskCreationOptions.RunContinuationsAsynchronously));
+
+        if (_routes.TryGetValue(connectionId, out route))
+        {
+            _pendingRouteWaiters.TryRemove(connectionId, out _);
+            return route;
         }
-        return null;
+
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(timeout);
+            return await tcs.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (TimeoutException)
+        {
+            return null;
+        }
+        finally
+        {
+            _pendingRouteWaiters.TryRemove(connectionId, out _);
+        }
     }
 
     private void ThrowIfDisposed() =>

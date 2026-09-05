@@ -75,7 +75,7 @@ internal static class TorPeerTransportProtocol
         CancellationToken cancellationToken)
     {
         byte[] buffer = new byte[PrefaceLength];
-        await TorManager.ReadExactlyAsync(stream, buffer, cancellationToken).ConfigureAwait(false);
+        await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
 
         if (!buffer.AsSpan(0, 4).SequenceEqual(Magic))
             throw new InvalidDataException("Unknown Tor peer transport magic.");

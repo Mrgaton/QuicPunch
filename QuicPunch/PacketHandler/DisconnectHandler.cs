@@ -28,7 +28,7 @@ namespace QuicPunch.PacketHandler
 
                 long nowTicks = PreciseTime.GetCorrectTime().Ticks;
                 long diffTicks = nowTicks - ticks;
-                if (Math.Abs(diffTicks) > 300_000_000) // 30 seconds maximum clock drift tolerance
+                if (Math.Abs(diffTicks) > 30_000_000) // 3 seconds maximum clock drift tolerance
                 {
                     QuicPunch.WriteLine($"[DisconnectHandler] Packet from {remoteEndPoint} rejected: timestamp drifted by {diffTicks / 10_000.0}ms.");
                     return;

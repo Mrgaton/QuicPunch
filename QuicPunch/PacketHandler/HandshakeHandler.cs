@@ -36,17 +36,27 @@ namespace QuicPunch.PacketHandler
             var guid = new Guid(guidBytes);
 
             var remoteCandidates = new List<CandidateEndpoint>();
+            const int CandidateWireSize = 1 + 4 + 2 + 4;
             int remainingBytes = (int)(r.BaseStream.Length - r.BaseStream.Position);
             if (remainingBytes > CertManager.SignatureLength)
             {
+                if (remainingBytes < 1 + CertManager.SignatureLength)
+                    return;
+
                 byte cCount = r.ReadByte();
-                for (int i = 0; i < cCount && (r.BaseStream.Length - r.BaseStream.Position > CertManager.SignatureLength); i++)
+                long requiredBytes = (long)cCount * CandidateWireSize + CertManager.SignatureLength;
+                if (r.BaseStream.Length - r.BaseStream.Position != requiredBytes)
+                    return;
+
+                for (int i = 0; i < cCount; i++)
                 {
                     var cType = (CandidateType)r.ReadByte();
-                    var ip = new IPAddress(r.ReadBytes(4));
+                    byte[] ipBytes = r.ReadBytes(4);
+                    if (ipBytes.Length != 4) return;
+                    var ip = new IPAddress(ipBytes);
                     var port = r.ReadUInt16();
                     var prio = r.ReadUInt32();
-                    if (Utilities.IsValidPeerAddress(ip))
+                    if (port > 0 && Utilities.IsValidPeerAddress(ip))
                     {
                         remoteCandidates.Add(new CandidateEndpoint(new IPEndPoint(ip, port), cType, prio));
                     }
@@ -153,15 +163,22 @@ namespace QuicPunch.PacketHandler
                                 HandshakeDecision decision;
 
                                 bool isTrusted = qc.IsTrustedPeer(handshakePeer);
-                                bool isAutoAccepted = (qc.AutoAcceptConnections && isTrusted)
-                                    || qc.AutoAcceptUntrustedConnections
-                                    || wasYielded
-                                    || qc.IsPeerAutoAccepted(peerId)
-                                    || (handshakePeer.CertHash != null && qc.IsPeerAutoAccepted(handshakePeer.CertHash));
+                                bool isAutoAccepted = qc.AutoAcceptUntrustedConnections
+                                    || (isTrusted && (
+                                        qc.AutoAcceptConnections
+                                        || wasYielded
+                                        || qc.IsPeerAutoAccepted(peerId)));
 
                                 if (isAutoAccepted)
                                 {
                                     decision = new HandshakeDecision(true, (ushort)0, CancellationToken.None);
+                                }
+                                else if (!isTrusted && !qc.AutoAcceptUntrustedConnections)
+                                {
+                                    // A UI/callback is not allowed to turn discovery into trust.
+                                    // Untrusted identities are rejected by the core before any
+                                    // application-level decision handler is invoked.
+                                    decision = new HandshakeDecision(false, null, CancellationToken.None);
                                 }
                                 else
                                 {

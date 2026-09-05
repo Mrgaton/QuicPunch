@@ -30,27 +30,42 @@ namespace QuicPunch.PacketHandler
                     return;
                 }
 
+                long nowTicks = PreciseTime.GetCorrectTime().Ticks;
+                long diffTicks = nowTicks - timestamp;
+
                 if (isResponse)
                 {
+                    // Discard responses with future timestamps or taking longer than 5 seconds (50,000,000 ticks)
+                    if (diffTicks < 0 || diffTicks > 50_000_000)
+                    {
+                        return;
+                    }
+
                     if (timestamp <= peer.LastSeenPingTimestamp)
                     {
                         return;
                     }
                     peer.LastSeenPingTimestamp = timestamp;
 
-                    long now = Stopwatch.GetTimestamp();
-                    double elapsedMs = (now - timestamp) * 1000.0 / Stopwatch.Frequency;
+                    double elapsedMs = diffTicks / 10_000.0;
 
-                    if (elapsedMs >= 0 && elapsedMs < 60000)
+                    if (elapsedMs >= 0 && elapsedMs <= 5000)
                     {
                         peer.Ping = TimeSpan.FromMilliseconds(Math.Max(0.1, Math.Round(elapsedMs, 1)));
-                        peer.LastSeen = PreciseTime.GetCorrectTime();
+                        peer.LastPingResponseUtc = DateTime.UtcNow;
                     }
                 }
                 else
                 {
-                    peer.LastSeen = PreciseTime.GetCorrectTime();
+                    // Discard incoming ping requests whose timestamp drifts more than 5 seconds from current time
+                    if (Math.Abs(diffTicks) > 50_000_000)
+                    {
+                        return;
+                    }
 
+                    // Ping is intentionally lightweight and unauthenticated, so it must
+                    // never keep a discovered peer alive. Authenticated Hello/Data/handshake
+                    // traffic is responsible for liveness.
                     byte[] pingResp = qc.BuildPingPacket(timestamp, true, transport);
                     _ = qc.SendResponseAsync(pingResp, remoteEndPoint, transport, torChannel);
                 }

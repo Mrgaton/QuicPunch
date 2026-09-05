@@ -1,11 +1,5 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
 using QuicPunch.Helpers;
 
 namespace QuicPunch
@@ -38,132 +32,104 @@ namespace QuicPunch
             "https://raw.githubusercontent.com/pradt2/always-online-stun/refs/heads/master/valid_hosts.txt"
         };
 
+        /// <summary>
+        /// Fast path used by node startup. Fresh/stale cache and built-in servers
+        /// are sufficient to become operational; remote catalog downloads are only
+        /// performed by an explicit/periodic force refresh.
+        /// </summary>
         public static async Task<ConcurrentBag<IPEndPoint>> GatherStunEndpoints(bool forceRefresh = false, CancellationToken ct = default)
         {
-            var servers = new ConcurrentBag<IPEndPoint>();
+            if (!forceRefresh && EndpointCache.TryRead(StunEndpointsCachePath, CacheTtl, out var fresh, checkTtl: true) && fresh.Count > 0)
+                return ToBag(fresh);
 
-            if (!forceRefresh && EndpointCache.TryRead(StunEndpointsCachePath, CacheTtl, out var cachedEndpoints, checkTtl: true))
+            if (!forceRefresh)
             {
-                foreach (var ep in cachedEndpoints)
-                {
-                    servers.Add(ep);
-                }
-                if (!servers.IsEmpty)
-                {
-                    return servers;
-                }
+                if (EndpointCache.TryRead(StunEndpointsCachePath, CacheTtl, out var stale, checkTtl: false) && stale.Count > 0)
+                    return ToBag(stale);
+
+                var builtIns = ResolveBuiltIns(ct);
+                if (!builtIns.IsEmpty)
+                    EndpointCache.Save(StunEndpointsCachePath, builtIns);
+                return builtIns;
             }
 
-            if (File.Exists(StunEndpointsCachePath) && new FileInfo(StunEndpointsCachePath).Length == 0)
+            var remote = await ResolveRemoteCatalogsAsync(ct).ConfigureAwait(false);
+            if (!remote.IsEmpty)
             {
-                // Explicit empty cache file: fall back to built-in seeds immediately as expected by recovery tests
-                foreach (var host in BuiltInStunHosts)
-                {
-                    try
-                    {
-                        var resolved = Utilities.ResolveEndpoint(host);
-                        if (resolved != null)
-                        {
-                            foreach (var ep in resolved)
-                            {
-                                servers.Add(ep);
-                            }
-                        }
-                    }
-                    catch { }
-                }
-
-                if (!servers.IsEmpty)
-                {
-                    EndpointCache.Save(StunEndpointsCachePath, servers);
-                    return servers;
-                }
+                EndpointCache.Save(StunEndpointsCachePath, remote);
+                return remote;
             }
 
+            if (EndpointCache.TryRead(StunEndpointsCachePath, CacheTtl, out var fallbackCache, checkTtl: false) && fallbackCache.Count > 0)
+                return ToBag(fallbackCache);
+
+            var fallback = ResolveBuiltIns(ct);
+            if (!fallback.IsEmpty)
+                EndpointCache.Save(StunEndpointsCachePath, fallback);
+            return fallback;
+        }
+
+        private static ConcurrentBag<IPEndPoint> ResolveBuiltIns(CancellationToken ct)
+        {
+            var result = new ConcurrentBag<IPEndPoint>();
+            foreach (string host in BuiltInStunHosts)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var endpoints = Utilities.ResolveEndpoint(host);
+                    if (endpoints == null) continue;
+                    foreach (var endpoint in endpoints)
+                        result.Add(endpoint);
+                }
+                catch { }
+            }
+            return Deduplicate(result);
+        }
+
+        private static async Task<ConcurrentBag<IPEndPoint>> ResolveRemoteCatalogsAsync(CancellationToken ct)
+        {
+            var parsed = new ConcurrentBag<string>();
             try
             {
-                var parsedEndpoints = new ConcurrentBag<string>();
-                var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct };
-
-                await Parallel.ForEachAsync(RemoteStunUrls, parallelOptions, async (url, token) =>
+                var options = new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct };
+                await Parallel.ForEachAsync(RemoteStunUrls, options, async (url, token) =>
                 {
                     try
                     {
-                        var data = await Utilities.client.GetStringAsync(url, token).ConfigureAwait(false);
-                        foreach (var line in data.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        string data = await Utilities.client.GetStringAsync(url, token).ConfigureAwait(false);
+                        foreach (string line in data.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                         {
-                            if (!line.StartsWith("#") && !string.IsNullOrWhiteSpace(line))
-                            {
-                                parsedEndpoints.Add(line);
-                            }
+                            if (!line.StartsWith('#') && !string.IsNullOrWhiteSpace(line))
+                                parsed.Add(line);
                         }
                     }
                     catch { }
                 }).ConfigureAwait(false);
-
-                var uniqueList = parsedEndpoints.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-                if (uniqueList.Length > 0)
-                {
-                    Parallel.ForEach(uniqueList, new ParallelOptions { MaxDegreeOfParallelism = 16, CancellationToken = ct }, line =>
-                    {
-                        try
-                        {
-                            var ep = Utilities.ResolveEndpoint(line);
-                            if (ep != null)
-                            {
-                                foreach (var e in ep)
-                                {
-                                    servers.Add(e);
-                                }
-                            }
-                        }
-                        catch { }
-                    });
-                }
             }
+            catch (OperationCanceledException) { throw; }
             catch { }
 
-            if (!servers.IsEmpty)
+            var result = new ConcurrentBag<IPEndPoint>();
+            foreach (string item in parsed.Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                EndpointCache.Save(StunEndpointsCachePath, servers);
-                return servers;
-            }
-
-            if (EndpointCache.TryRead(StunEndpointsCachePath, CacheTtl, out var staleCache, checkTtl: false))
-            {
-                foreach (var ep in staleCache)
-                {
-                    servers.Add(ep);
-                }
-                if (!servers.IsEmpty)
-                {
-                    EndpointCache.Save(StunEndpointsCachePath, servers);
-                    return servers;
-                }
-            }
-
-            foreach (var host in BuiltInStunHosts)
-            {
+                ct.ThrowIfCancellationRequested();
                 try
                 {
-                    var resolved = Utilities.ResolveEndpoint(host);
-                    if (resolved != null)
-                    {
-                        foreach (var ep in resolved)
-                        {
-                            servers.Add(ep);
-                        }
-                    }
+                    var endpoints = Utilities.ResolveEndpoint(item);
+                    if (endpoints == null) continue;
+                    foreach (var endpoint in endpoints)
+                        result.Add(endpoint);
                 }
                 catch { }
             }
-
-            if (!servers.IsEmpty)
-            {
-                EndpointCache.Save(StunEndpointsCachePath, servers);
-            }
-
-            return servers;
+            return Deduplicate(result);
         }
+
+        private static ConcurrentBag<IPEndPoint> ToBag(IEnumerable<IPEndPoint> endpoints) =>
+            new(endpoints.Distinct().ToArray());
+
+        private static ConcurrentBag<IPEndPoint> Deduplicate(IEnumerable<IPEndPoint> endpoints) =>
+            new(endpoints.Distinct().ToArray());
     }
 }

@@ -12,7 +12,15 @@ public static class PreciseTime
     private static bool _syncTriggered;
     private static readonly object _syncLock = new();
 
-    public static async Task SyncWithNtpAsync()
+    private static readonly string[] HttpsTimeServers = new[]
+    {
+        "https://1.1.1.1",
+        "https://www.google.com",
+        "https://www.cloudflare.com",
+        "https://www.microsoft.com"
+    };
+
+    public static async Task<bool> SyncWithNtpAsync()
     {
         try
         {
@@ -40,10 +48,49 @@ public static class PreciseTime
                 .AddMilliseconds(sw.ElapsedMilliseconds / 2.0);
 
             _offset = ntpTime - DateTime.UtcNow;
+            QuicPunchLog.Info($"[PreciseTime] Synchronized via NTP (pool.ntp.org) with offset {_offset.TotalMilliseconds:F1}ms");
+            return true;
         }
         catch
         {
-            // Graceful fallback to system clock when offline or firewalled
+            return false;
+        }
+    }
+
+    public static async Task<bool> SyncWithHttpsAsync()
+    {
+        using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        foreach (var url in HttpsTimeServers)
+        {
+            try
+            {
+                var sw = Stopwatch.StartNew();
+                using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Head, url);
+                using var response = await client.SendAsync(request, System.Net.Http.HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+                sw.Stop();
+
+                if (response.Headers.Date.HasValue)
+                {
+                    DateTime serverTime = response.Headers.Date.Value.UtcDateTime.AddMilliseconds(sw.ElapsedMilliseconds / 2.0);
+                    _offset = serverTime - DateTime.UtcNow;
+                    QuicPunchLog.Info($"[PreciseTime] Synchronized via HTTPS fallback ({url}) with offset {_offset.TotalMilliseconds:F1}ms");
+                    return true;
+                }
+            }
+            catch
+            {
+                // Graceful fallback to next server
+            }
+        }
+        return false;
+    }
+
+    public static async Task SyncTimeAsync()
+    {
+        bool ok = await SyncWithNtpAsync().ConfigureAwait(false);
+        if (!ok)
+        {
+            await SyncWithHttpsAsync().ConfigureAwait(false);
         }
     }
 
@@ -56,7 +103,7 @@ public static class PreciseTime
                 if (!_syncTriggered)
                 {
                     _syncTriggered = true;
-                    _ = Task.Run(SyncWithNtpAsync);
+                    _ = Task.Run(SyncTimeAsync);
                 }
             }
         }

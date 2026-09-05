@@ -101,4 +101,31 @@ namespace QuicPunch
             Task = Task.CompletedTask;
         }
     }
+
+    /// <summary>
+    /// Represents point-in-time telemetry and connection metadata for an active application protocol session.
+    /// </summary>
+    public sealed class QuicSessionTelemetryInfo
+    {
+        /// <summary>Gets the unique identifier of the remote peer.</summary>
+        public Guid PeerId { get; init; }
+
+        /// <summary>Gets the display name of the remote peer.</summary>
+        public string? PeerName { get; init; }
+
+        /// <summary>Gets the protocol identifier associated with the active session.</summary>
+        public Guid ProtocolId { get; init; }
+
+        /// <summary>Gets the human-readable registered name of the protocol.</summary>
+        public string? ProtocolName { get; init; }
+
+        /// <summary>Gets the underlying transport layer classification (WAN or Tor).</summary>
+        public QuicPunch.TransportType TransportType { get; init; }
+
+        /// <summary>Gets the comprehensive telemetry metrics queried directly from the native MsQuic engine.</summary>
+        public Helpers.QuicConnectionTelemetry Telemetry { get; init; } = null!;
+
+        /// <summary>Gets the UTC timestamp at which this telemetry snapshot was captured.</summary>
+        public DateTime SampleTimeUtc { get; init; } = DateTime.UtcNow;
+    }
 }

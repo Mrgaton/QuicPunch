@@ -1,1086 +1,163 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QuicPunch Voice Call Studio</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #0b0f17;
-            --header-bg: #0f1624;
-            --card-bg: #111827;
-            --card-border: #1e293b;
-            --card-hover: #334155;
-            --item-bg: #090e18;
-            --accent: #38bdf8;
-            --accent-btn: #0284c7;
-            --emerald: #10b981;
-            --emerald-btn: #059669;
-            --rose: #f43f5e;
-            --rose-btn: #e11d48;
-            --indigo: #818cf8;
-            --text-primary: #f1f5f9;
-            --text-secondary: #94a3b8;
-            --text-muted: #64748b;
-        }
-
-        * { 
-            box-sizing: border-box; 
-            margin: 0; 
-            padding: 0; 
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
-        }
-
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.12);
-            border-radius: 2px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.25);
-        }
-
-        ::-webkit-scrollbar-corner {
-            background: transparent;
-        }
-
-        body {
-            background-color: var(--bg);
-            color: var(--text-primary);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        header {
-            background: var(--header-bg);
-            border-bottom: 1px solid var(--card-border);
-            padding: 8px 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            height: 48px;
-        }
-
-        .logo-box { display: flex; align-items: center; gap: 8px; }
-        .logo-icon { width: 26px; height: 26px; background: var(--accent-btn); border: 1px solid #0369a1; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #fff; }
-        .logo-title { font-size: 15px; font-weight: 700; }
-
-        .nav-links { display: flex; gap: 8px; }
-        .nav-link { color: var(--text-secondary); text-decoration: none; padding: 4px 10px; border-radius: 3px; font-size: 12px; font-weight: 500; transition: all 0.15s ease; border: 1px solid transparent; }
-        .nav-link:hover, .nav-link.active { color: var(--text-primary); background: #1e293b; border-color: #334155; }
-
-        main { flex: 1; padding: 20px 24px; max-width: 1300px; margin: 0 auto; width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-        .full-width { grid-column: span 2; }
-
-        .card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 4px;
-            padding: 16px 20px;
-            transition: border-color 0.15s ease;
-        }
-        .card:hover { border-color: var(--card-hover); }
-
-        .card-title { font-size: 13.5px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.2px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
-
-        .config-badge-group { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
-        .config-badge { background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); color: var(--accent); padding: 4px 8px; border-radius: 3px; font-size: 11px; font-weight: 500; font-family: 'JetBrains Mono', monospace; }
-
-        .input-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-        .input-label { font-size: 10.5px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-        .input-text {
-            background: var(--item-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 3px;
-            padding: 7px 10px;
-            color: #fff;
-            font-size: 12.5px;
-            font-family: 'JetBrains Mono', monospace;
-            outline: none;
-            transition: border-color 0.15s ease;
-        }
-        .input-text:focus { border-color: var(--accent); }
-
-        .btn {
-            background: var(--accent-btn);
-            color: #fff;
-            border: 1px solid #0369a1;
-            padding: 6px 14px;
-            border-radius: 3px;
-            font-weight: 500;
-            font-size: 12.5px;
-            cursor: pointer;
-            transition: background-color 0.15s ease, border-color 0.15s ease;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            outline: none;
-        }
-        .btn:hover { background: #0369a1; }
-        .btn:active { background: #075985; }
-
-        .btn-emerald { background: var(--emerald-btn); border: 1px solid #047857; }
-        .btn-emerald:hover { background: #047857; }
-        .btn-emerald:active { background: #065f46; }
-
-        .btn-rose { background: var(--rose-btn); border: 1px solid #be123c; }
-        .btn-rose:hover { background: #be123c; }
-        .btn-rose:active { background: #9f1239; }
-
-        .btn-secondary { background: #1e293b; color: var(--text-primary); border: 1px solid #334155; }
-        .btn-secondary:hover { background: #334155; border-color: #475569; }
-        .btn-secondary:active { background: #0f172a; }
-
-        .peers-list { display: flex; flex-direction: column; gap: 8px; }
-        .peer-card {
-            background: var(--item-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 3px;
-            padding: 12px 14px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .visualizer-canvas { width: 100%; height: 90px; background: #050811; border-radius: 3px; border: 1px solid var(--card-border); margin-bottom: 12px; }
-
-        .modal-overlay {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px);
-            display: flex; align-items: center; justify-content: center;
-            z-index: 1000; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
-        }
-        .modal-overlay.active { opacity: 1; pointer-events: auto; }
-        .modal-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 5px; padding: 24px; width: 400px; text-align: center; }
-
-        .toast {
-            position: fixed; bottom: 20px; right: 20px; background: var(--card-bg); color: #fff; padding: 10px 16px; border-radius: 3px; border: 1px solid var(--card-border); font-size: 12px; font-weight: 500; transform: translateY(10px); opacity: 0; transition: all 0.2s ease;
-        }
-        .toast.show { transform: translateY(0); opacity: 1; }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0d1117">
+  <title>Voice Studio · QuicPunch</title>
+  <link rel="stylesheet" href="/app.css">
+  <script defer src="/app.js"></script>
+  <script defer src="/voice.js"></script>
 </head>
-<body>
-    <header>
-        <div class="logo-box">
-            <div class="logo-icon">🎙️</div>
-            <div class="logo-title">Voice Studio</div>
-        </div>
-        <div class="nav-links">
-            <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:500; color:var(--text-secondary); cursor:pointer; background:#1e293b; padding:4px 8px; border-radius:3px; border:1px solid #334155;" title="Automatically accept all incoming protocol connections">
-                <input type="checkbox" id="globalAutoAcceptToggle" onchange="toggleGlobalAutoAccept(this.checked)" style="cursor:pointer; accent-color:var(--emerald);">
-                <span>⚡ Auto-Accept All</span>
-            </label>
-            <a href="/" class="nav-link">🏠 Library Manager</a>
-            <a href="/chat.html" class="nav-link">💬 Direct Chat</a>
-            <a href="/call.html" class="nav-link active">🎙️ Voice Studio</a>
-        </div>
-    </header>
-
-    <main>
-        <div class="card">
-            <div class="card-title">Audio Settings</div>
-
-            <div class="input-group">
-                <div class="input-label">Microphone</div>
-                <select id="micSelect" class="input-text">
-                    <option value="">Detecting microphones...</option>
-                </select>
-            </div>
-
-            <div class="input-group">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <div class="input-label" style="margin:0;">Opus Target Bitrate</div>
-                    <span id="bitrateValueBadge" class="badge" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); color: var(--accent); font-weight: 600; font-size: 11px; padding: 2px 8px; border-radius: 6px;">
-                        64 kbps - High Quality Voice
-                    </span>
-                </div>
-                
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <input type="range" id="bitrateRange" min="6" max="320" value="64" step="1" 
-                           style="flex: 1; accent-color: var(--accent); cursor: pointer; height: 6px;"
-                           oninput="onBitrateInput(this.value)">
-                    <input type="number" id="bitrateNumber" min="6" max="320" value="64" 
-                           class="input-text" style="width: 75px; text-align: center; padding: 4px 6px; font-size: 13px; font-weight: 600;"
-                           oninput="onBitrateInput(this.value)">
-                    <span style="font-size: 12px; color: var(--text-muted); font-weight: 500;">kbps</span>
-                </div>
-
-                <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-                    <span>6 kbps - Min</span>
-                    <span>64 kbps - Voice</span>
-                    <span>128 kbps - Music</span>
-                    <span>320 kbps - Max</span>
-                </div>
-            </div>
-
-            <button id="testMicBtn" class="btn btn-secondary" style="width: 100%; margin-top: 8px;" onclick="initAudioPreview()">🎙️ Test Microphone Preview</button>
-            
-            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--card-border);">
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; color: var(--text-primary);">
-                    <input type="checkbox" id="audioProcessingToggle" checked style="accent-color: var(--accent); cursor: pointer;">
-                    <span>🎧 Echo Cancellation & Noise Suppression</span>
-                </label>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-title">
-                <span>Active Call Participants <span id="activeCallCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                    <span id="callTimerTag" style="font-size:12px; color: var(--accent); font-family: 'JetBrains Mono', monospace; display: none;">00:00:00</span>
-                    <span id="callStatusTag" style="font-size:12px; color: var(--text-muted);">Idle</span>
-                </div>
-            </div>
-
-            <div id="activePeerBanner" style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;">No active voice call</div>
-
-            <canvas id="visualizer" class="visualizer-canvas"></canvas>
-
-            <div id="activeCallsContainer" style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
-                <div style="color: var(--text-muted); text-align: center; padding: 16px;">No active voice calls.</div>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px;">
-                <button id="muteBtn" class="btn btn-secondary" onclick="toggleMute()" disabled>🎙️ Mute Mic</button>
-                <button id="endCallBtn" class="btn btn-rose" onclick="endAllVoiceCalls()" disabled>🔴 Hang Up All</button>
-            </div>
-        </div>
-
-        <div class="card full-width">
-            <div class="card-title">
-                <span>Available Peers <span id="peerCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
-                <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="fetchStatus()">🔄 Refresh List</button>
-            </div>
-
-            <div id="peersContainer" class="peers-list">
-                <div style="color: var(--text-muted); text-align: center; padding: 24px;">Scanning for available peers...</div>
-            </div>
-        </div>
-    </main>
-
-    <div id="incomingModal" class="modal-overlay">
-        <div class="modal-card">
-            <div style="font-size: 48px; margin-bottom: 12px; animation: pulse 1.5s infinite;">📞</div>
-            <h2 style="font-size: 20px; margin-bottom: 8px; color: var(--text-primary);">Incoming Voice Call</h2>
-            <p id="incomingCallerName" style="color: var(--accent); font-weight: 600; margin-bottom: 24px;">Peer</p>
-            <div style="display: flex; gap: 12px; justify-content: center;">
-                <button class="btn btn-emerald" style="flex:1;" onclick="acceptCall()">✅ Accept</button>
-                <button class="btn btn-rose" style="flex:1;" onclick="declineCall()">❌ Decline</button>
-            </div>
-        </div>
+<body data-page="voice">
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand"><div class="brand-mark">QP</div><strong>QuicPunch</strong><span>Voice Studio</span></div>
+    <div class="top-actions">
+      <span class="badge" id="voiceBadge">0 activas</span>
+      <span class="opus-badge" id="topOpusBadge">Opus VoIP · 96 kbps · Buffer 60ms</span>
+      <button class="btn sm" id="globalMicBtn" title="Mutear / Desmutear micrófono para todos">Micro activo</button>
+      <button class="btn sm" id="globalDeafenBtn" title="Ensordecer / Escuchar llamadas">Audio activo</button>
     </div>
+  </div>
+</header>
+<div class="nav-wrap">
+  <nav class="nav">
+    <a class="nav-link" data-page="dashboard" href="/">Network</a>
+    <a class="nav-link" data-page="chat" href="/chat.html">Direct Chat</a>
+    <a class="nav-link" data-page="voice" href="/call.html">Voice Studio</a>
+    <a class="nav-link" data-page="vpn" href="/vpn.html">LAN Bridge</a>
+    <a class="nav-link" data-page="files" href="/files.html">RelayDrive</a>
+  </nav>
+</div>
+<main class="workspace">
+  <header class="page-head compact-head">
+    <div>
+      <h1>Voice Studio</h1>
+      <p>Llamadas simultáneas P2P en tiempo real con códec Opus VoIP a 48 kHz / 60 ms y control individual por interlocutor.</p>
+    </div>
+  </header>
+
+  <div id="audioUnlockBanner" class="attention space-top hidden" style="border-left: 4px solid var(--accent); background: rgba(88, 166, 255, 0.12); padding: 12px 18px; border-radius: 8px; margin-bottom: 14px; cursor: pointer;">
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span>Audio</span>
+        <div>
+          <strong style="color: var(--accent); font-size: 13.5px; display: block;">Activar reproducción de audio</strong>
+          <span style="color: var(--muted); font-size: 12px;">Haz clic aquí para desbloquear la salida de audio en el navegador.</span>
+        </div>
+      </div>
+      <button class="btn accent sm" style="font-weight: 600;">Activar Audio</button>
+    </div>
+  </div>
+
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <h2>Llamadas activas</h2>
+        <p>Sesión de audio independiente para cada peer conectado.</p>
+      </div>
+    </div>
+    <div class="section-body"><div id="activeCalls" class="call-list voice-call-list"></div></div>
+  </section>
+
+  <div class="split-2">
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Micrófono y Captura</h2>
+          <p>La captura se codifica en Opus y se distribuye a los usuarios autorizados.</p>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="field"><label>Dispositivo de entrada</label><select class="select" id="micSelect"></select></div>
+        <div class="service-row single-service space-top">
+          <div class="service">
+            <div><strong>Procesamiento de audio</strong><span>Cancelación de eco, supresión de ruido y control de ganancia.</span></div>
+            <label class="switch"><input id="processingToggle" type="checkbox" checked><span class="switch-track"></span></label>
+          </div>
+        </div>
+        <div class="field space-top"><label>Nivel de entrada</label><div class="meter"><span id="micMeter"></span></div></div>
+        <div class="toolbar space-top">
+          <button class="btn" id="testMicBtn">Probar micrófono</button>
+          <button class="btn accent" id="advancedOpusBtn">Opciones avanzadas</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Iniciar llamada</h2>
+          <p>Contactos de confianza disponibles para llamada de voz.</p>
+        </div>
+      </div>
+      <div class="section-body"><div id="voicePeers" class="peer-list voice-peer-list"></div></div>
+    </section>
+  </div>
+</main>
+
+<!-- Modal de Opciones Avanzadas de Opus -->
+<div id="opusModal" class="modal-backdrop hidden">
+  <div class="modal-card" style="max-width: 520px;">
+    <div class="modal-head">
+      <div>
+        <h2>Configuración de Codificación Opus</h2>
+        <p>Ajustes de calidad y transmisión para llamadas VoIP.</p>
+      </div>
+      <button class="btn sm" id="closeOpusModalBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="opusBitrateSelect">Bitrate de audio (calidad vs ancho de banda)</label>
+        <select class="select" id="opusBitrateSelect">
+          <option value="16000">16 kbps · Ahorro de datos (Muy bajo ancho de banda)</option>
+          <option value="24000">24 kbps · Voz estándar eficiente</option>
+          <option value="32000">32 kbps · Buena claridad VoIP</option>
+          <option value="48000">48 kbps · Alta fidelidad</option>
+          <option value="64000">64 kbps · Calidad premium</option>
+          <option value="96000" selected>96 kbps · Calidad estudio VoIP (Recomendado)</option>
+          <option value="128000">128 kbps · Ultra alta fidelidad / Música</option>
+        </select>
+      </div>
+
+      <div class="service-row single-service space-top">
+        <div class="service">
+          <div>
+            <strong>Buffer anti-cortes de 60ms (Jitter Buffer)</strong>
+            <span>Guarda 1 frame (60 ms) de audio en cola antes de reproducirlo para evitar cortes y ruidos si hay variaciones de red.</span>
+          </div>
+          <label class="switch">
+            <input id="jitterBufferToggle" type="checkbox" checked>
+            <span class="switch-track"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="opus-specs-grid">
+        <div class="opus-spec-item">
+          <label>Modo de aplicación</label>
+          <strong>VoIP (Tiempo real)</strong>
+        </div>
+        <div class="opus-spec-item">
+          <label>Ventana de audio</label>
+          <strong>60 ms (2880 samples)</strong>
+        </div>
+        <div class="opus-spec-item">
+          <label>Buffer anti-cortes</label>
+          <strong id="modalJitterStatus">60 ms (1 frame)</strong>
+        </div>
+      </div>
+
+      <p class="inline-help space-top">
+        La configuración VoIP a 60 ms y el buffer anti-cortes minimizan la sobrecarga de encabezados UDP y absorben fluctuaciones de latencia en conexiones P2P.
+      </p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn primary" id="saveOpusModalBtn">Guardar cambios</button>
+    </div>
+  </div>
+</div>
 
-    <div id="toast" class="toast">Notification</div>
-
-    <script>
-        let currentStatus = null;
-        let activeCallPeerId = null;
-        let pendingIncomingPeerId = null;
-        let mediaStream = null;
-        let scriptProcessor = null;
-        let audioCtx = null;
-        let outputAudioCtx = null;
-        let analyser = null;
-        let isMuted = false;
-        let isCallActive = false;
-
-        let peerCallStartTimes = new Map();
-        let callTimerInterval = null;
-        let callStartTime = null;
-        let mutedRemotePeers = new Set();
-
-        let isTestingMic = false;
-        let testAudioStream = null;
-
-        async function initAudioPreview() {
-            if (isTestingMic) {
-                stopAudioPreview();
-                return;
-            }
-            try {
-                const deviceId = document.getElementById('micSelect').value;
-                const constraints = {
-                    audio: (deviceId && deviceId.length > 0) ? { deviceId: { exact: deviceId } } : true
-                };
-                testAudioStream = await navigator.mediaDevices.getUserMedia(constraints);
-                
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                if (audioCtx.state === 'suspended') {
-                    await audioCtx.resume();
-                }
-                const source = audioCtx.createMediaStreamSource(testAudioStream);
-                analyser = audioCtx.createAnalyser();
-                analyser.fftSize = 64;
-                
-                source.connect(analyser);
-                // Note: Do NOT connect analyser to audioCtx.destination to prevent acoustic feedback loop!
-                
-                isTestingMic = true;
-                const btn = document.getElementById('testMicBtn');
-                btn.innerText = '🔴 Stop Preview';
-                btn.classList.replace('btn-secondary', 'btn-rose');
-                drawVisualizer();
-                showToast('Microphone preview active.');
-            } catch (err) {
-                showToast('Microphone test failed: ' + (err.message || err.name));
-            }
-        }
-
-        function stopAudioPreview() {
-            if (testAudioStream) {
-                testAudioStream.getTracks().forEach(t => t.stop());
-                testAudioStream = null;
-            }
-            if (analyser) {
-                try { analyser.disconnect(); } catch (e) {}
-            }
-            if (audioCtx) {
-                try { audioCtx.close(); } catch (e) {}
-                audioCtx = null;
-            }
-            isTestingMic = false;
-            const btn = document.getElementById('testMicBtn');
-            if (btn) btn.innerText = '🎙️ Test Microphone Preview';
-            document.getElementById('callStatusTag').innerText = 'Idle';
-            document.getElementById('callStatusTag').style.color = 'var(--text-muted)';
-            showToast('Microphone test stopped.');
-        }
-
-        let bitrateDebounceTimer = null;
-        let currentConfiguredBitrate = 64;
-
-        function getBitrateDescription(kbps) {
-            if (kbps <= 15) return `${kbps} kbps - Low Bandwidth`;
-            if (kbps <= 32) return `${kbps} kbps - Speech VoIP`;
-            if (kbps <= 96) return `${kbps} kbps - High Quality Voice`;
-            if (kbps <= 192) return `${kbps} kbps - Opus Music`;
-            return `${kbps} kbps - Studio Opus`;
-        }
-
-        function onBitrateInput(val) {
-            let kbps = parseInt(val);
-            if (isNaN(kbps)) kbps = 64;
-            kbps = Math.max(6, Math.min(320, kbps));
-
-            const rangeEl = document.getElementById('bitrateRange');
-            const numEl = document.getElementById('bitrateNumber');
-            const badgeEl = document.getElementById('bitrateValueBadge');
-
-            if (rangeEl && rangeEl.value != kbps) rangeEl.value = kbps;
-            if (numEl && numEl.value != kbps) numEl.value = kbps;
-            if (badgeEl) badgeEl.innerText = getBitrateDescription(kbps);
-
-            if (bitrateDebounceTimer) {
-                clearTimeout(bitrateDebounceTimer);
-            }
-
-            bitrateDebounceTimer = setTimeout(() => {
-                applyBitrateChange(kbps);
-            }, 1000);
-        }
-
-        function applyBitrateChange(kbps) {
-            currentConfiguredBitrate = kbps;
-            localStorage.setItem('voice_target_bitrate', kbps);
-            showToast(`Applied Opus target bitrate: ${kbps} kbps`);
-        }
-
-        function loadSavedBitrate() {
-            const saved = localStorage.getItem('voice_target_bitrate');
-            if (saved) {
-                onBitrateInput(saved);
-                if (bitrateDebounceTimer) {
-                    clearTimeout(bitrateDebounceTimer);
-                    currentConfiguredBitrate = parseInt(saved);
-                }
-            }
-        }
-
-        async function initDevices() {
-            loadSavedBitrate();
-            try {
-                await navigator.mediaDevices.getUserMedia({ audio: true });
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                const inputs = devices.filter(d => d.kind === 'audioinput');
-                const micSelect = document.getElementById('micSelect');
-                if (inputs.length > 0) {
-                    micSelect.innerHTML = inputs.map((d, i) => `<option value="${d.deviceId}">${d.label || 'Microphone ' + (i + 1)}</option>`).join('');
-                } else {
-                    micSelect.innerHTML = '<option value="">Default Microphone</option>';
-                }
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        document.getElementById('micSelect').addEventListener('change', async () => {
-            if (isCallActive) {
-                showToast('Switching microphone device...');
-                endVoiceCall();
-                await startAudioEngine();
-            }
-        });
-
-        let currentPetitionId = null;
-
-        async function fetchStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                currentStatus = data;
-
-                const autoAcceptToggle = document.getElementById('globalAutoAcceptToggle');
-                if (autoAcceptToggle && data.autoAcceptAll !== undefined) {
-                    autoAcceptToggle.checked = !!data.autoAcceptAll;
-                }
-
-                renderPeers(data);
-                checkAutoCall(data);
-                checkPendingPetitions(data);
-                updateActiveCallsBanner(data);
-            } catch (err) {}
-        }
-
-        let autoCallInitiated = false;
-        function checkAutoCall(data) {
-            if (autoCallInitiated || isCallActive) return;
-            const urlParams = new URLSearchParams(window.location.search);
-            const peerIdParam = urlParams.get('peerId') || urlParams.get('peer');
-            if (!peerIdParam) return;
-
-            const availablePeers = data.availablePeers || [];
-            const activeCalls = data.activeVoiceCalls || [];
-            const isAlreadyInCall = activeCalls.some(c => c.peerId === peerIdParam);
-
-            if (isAlreadyInCall) {
-                autoCallInitiated = true;
-                activeCallPeerId = peerIdParam;
-                if (!mediaStream) {
-                    startAudioEngine();
-                }
-                return;
-            }
-
-            const peerObj = availablePeers.find(p => p.id === peerIdParam);
-            if (peerObj) {
-                autoCallInitiated = true;
-                initiateCall(peerObj.id, peerObj.name || 'Peer');
-            }
-        }
-
-        function checkPendingPetitions(data) {
-            const petitions = data.pendingPetitions || [];
-            const modal = document.getElementById('incomingModal');
-            const voicePetition = petitions.find(p => p.protocolId === '00000000-0000-0000-0000-000000000003' || p.protocolName === 'VoiceCall');
-            if (voicePetition) {
-                currentPetitionId = voicePetition.requestId;
-                pendingIncomingPeerId = voicePetition.peerId;
-                document.getElementById('incomingCallerName').innerText = voicePetition.peerName + ' (Voice Call)';
-                modal.classList.add('active');
-            } else {
-                modal.classList.remove('active');
-                currentPetitionId = null;
-                pendingIncomingPeerId = null;
-            }
-        }
-
-        async function acceptCall() {
-            if (!currentPetitionId) return;
-            try {
-                await fetch('/api/respond-petition', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId: currentPetitionId, accept: true })
-                });
-                document.getElementById('incomingModal').classList.remove('active');
-                if (pendingIncomingPeerId && pendingIncomingPeerId !== '00000000-0000-0000-0000-000000000000') {
-                    activeCallPeerId = pendingIncomingPeerId;
-                }
-                showToast('Accepted voice call!');
-                startAudioEngine();
-                fetchStatus();
-            } catch (err) {
-                showToast('Error accepting call.');
-            }
-        }
-
-        async function declineCall() {
-            if (!currentPetitionId) return;
-            try {
-                await fetch('/api/respond-petition', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId: currentPetitionId, accept: false })
-                });
-                document.getElementById('incomingModal').classList.remove('active');
-                showToast('Declined voice call.');
-                fetchStatus();
-            } catch (err) {
-                showToast('Error declining call.');
-            }
-        }
-
-        async function toggleGlobalAutoAccept(checked) {
-            try {
-                await fetch('/api/settings/auto-accept', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ autoAcceptAll: checked })
-                });
-                showToast(checked ? '✅ Auto-accept enabled for all connections' : 'ℹ️ Auto-accept disabled (manual approval required)');
-                fetchStatus();
-            } catch (err) {
-                showToast('Failed to update setting');
-            }
-        }
-
-        async function togglePeerAutoAccept(peerId, autoAccept) {
-            try {
-                const res = await fetch('/api/peer/auto-accept', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId, autoAccept })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(autoAccept ? '🛡️ Peer added to auto-accept' : 'ℹ️ Peer removed from auto-accept');
-                    fetchStatus();
-                } else {
-                    showToast('Failed to update peer auto-accept: ' + (data.error || 'Unknown error'));
-                }
-            } catch (err) {
-                showToast('Error updating peer auto-accept');
-            }
-        }
-
-        function updateActiveCallsBanner(data) {
-            const banner = document.getElementById('activePeerBanner');
-            const statusTag = document.getElementById('callStatusTag');
-            const timerTag = document.getElementById('callTimerTag');
-            const countTag = document.getElementById('activeCallCount');
-            const container = document.getElementById('activeCallsContainer');
-            const calls = data.activeVoiceCalls || [];
-
-            if (countTag) countTag.innerText = calls.length;
-
-            if (calls.length > 0) {
-                isCallActive = true;
-                const peerNames = calls.map(c => c.peerName).join(', ');
-                if (banner) banner.innerText = 'Connected: ' + peerNames;
-                if (statusTag) {
-                    statusTag.innerText = `Active Call (${calls.length})`;
-                    statusTag.style.color = '#10b981';
-                }
-                if (timerTag) timerTag.style.display = 'inline-block';
-                if (!callStartTime) {
-                    callStartTime = Date.now();
-                    callTimerInterval = setInterval(updateCallTimer, 1000);
-                }
-                document.getElementById('muteBtn').disabled = false;
-                document.getElementById('endCallBtn').disabled = false;
-
-                if (container) {
-                    container.innerHTML = calls.map(c => `
-                        <div class="peer-card" style="padding: 10px 14px; border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.06);">
-                            <div class="peer-info-main">
-                                <div style="font-weight: 600; font-size: 13px; color: var(--text-primary);">🎙️ ${escapeHtml(c.peerName)}</div>
-                            </div>
-                            <div style="display: flex; gap: 6px;">
-                                <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="toggleMuteRemotePeer('${c.peerId}')">
-                                    ${mutedRemotePeers.has(c.peerId) ? '🔊 Unmute' : '🔇 Mute'}
-                                </button>
-                                <button class="btn btn-rose" style="padding: 4px 8px; font-size: 11px;" onclick="hangupPeerCall('${c.peerId}')">🔴 End</button>
-                            </div>
-                        </div>
-                    `).join('');
-                }
-            } else if (!isTestingMic) {
-                if (banner) banner.innerText = 'No active voice call';
-                if (statusTag) {
-                    statusTag.innerText = 'Idle';
-                    statusTag.style.color = 'var(--text-muted)';
-                }
-                if (timerTag) timerTag.style.display = 'none';
-                stopCallTimer();
-                if (container) {
-                    container.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 16px;">No active voice calls.</div>';
-                }
-            }
-        }
-
-        function updateCallTimer() {
-            if (!callStartTime) return;
-            const elapsedSeconds = Math.floor((Date.now() - callStartTime) / 1000);
-            const hrs = String(Math.floor(elapsedSeconds / 3600)).padStart(2, '0');
-            const mins = String(Math.floor((elapsedSeconds % 3600) / 60)).padStart(2, '0');
-            const secs = String(elapsedSeconds % 60).padStart(2, '0');
-            const timerTag = document.getElementById('callTimerTag');
-            if (timerTag) timerTag.innerText = `${hrs}:${mins}:${secs}`;
-        }
-
-        function stopCallTimer() {
-            if (callTimerInterval) clearInterval(callTimerInterval);
-            callTimerInterval = null;
-            callStartTime = null;
-            const timerTag = document.getElementById('callTimerTag');
-            if (timerTag) timerTag.innerText = '00:00:00';
-        }
-
-        let autoCallHandled = false;
-        function checkAutoCall(data) {
-            if (autoCallHandled) return;
-            const urlParams = new URLSearchParams(window.location.search);
-            const peerIdParam = urlParams.get('peerId') || urlParams.get('peer');
-            if (peerIdParam && data.availablePeers) {
-                const peerObj = data.availablePeers.find(p => p.id === peerIdParam);
-                if (peerObj) {
-                    autoCallHandled = true;
-                    initiateCall(peerObj.id, peerObj.name);
-                }
-            }
-        }
-
-        function renderPeers(data) {
-            const peersContainer = document.getElementById('peersContainer');
-            const availablePeers = data.availablePeers || [];
-            const activeCalls = data.activeVoiceCalls || [];
-            const activeIds = new Set(activeCalls.map(c => c.peerId));
-
-            const allPeerMap = new Map();
-            availablePeers.forEach(p => allPeerMap.set(p.id, { 
-                id: p.id, 
-                name: p.name, 
-                ping: p.ping, 
-                activeEndPoint: p.isTor ? (p.onionAddress || 'Tor Onion') : p.activeEndPoint, 
-                isTor: p.isTor,
-                isConnected: activeIds.has(p.id) 
-            }));
-            activeCalls.forEach(c => {
-                if (!allPeerMap.has(c.peerId)) {
-                    allPeerMap.set(c.peerId, { id: c.peerId, name: c.peerName, ping: 0, activeEndPoint: 'Active Stream', isTor: false, isConnected: true });
-                } else {
-                    allPeerMap.get(c.peerId).isConnected = true;
-                }
-            });
-
-            const sortedPeers = Array.from(allPeerMap.values());
-            sortedPeers.sort((a, b) => (b.isConnected ? 1 : 0) - (a.isConnected ? 1 : 0));
-
-            const peerCountEl = document.getElementById('peerCount');
-            if (peerCountEl) peerCountEl.innerText = sortedPeers.length;
-
-            if (sortedPeers.length === 0) {
-                peersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 24px;">No peers available to call.</div>';
-            } else {
-                peersContainer.innerHTML = sortedPeers.map(p => {
-                    const isMutedPeer = mutedRemotePeers.has(p.id);
-                    const transportBadge = p.isTor
-                        ? `<span style="font-size:9.5px; padding:1px 5px; border-radius:2px; font-weight:600; font-family:'JetBrains Mono',monospace; background:rgba(168,85,247,0.1); color:#c084fc; border:1px solid rgba(168,85,247,0.25);">🧅 Tor</span>`
-                        : `<span style="font-size:9.5px; padding:1px 5px; border-radius:2px; font-weight:600; font-family:'JetBrains Mono',monospace; background:rgba(56,189,248,0.1); color:#38bdf8; border:1px solid rgba(56,189,248,0.25);">🌐 WAN</span>`;
-
-                    const isAutoAccepted = (currentStatus && currentStatus.autoAcceptedPeers && currentStatus.autoAcceptedPeers.includes(p.id));
-                    const trustBtnHtml = `<button class="btn ${isAutoAccepted ? 'btn-emerald' : 'btn-secondary'}" style="padding: 5px 10px; font-size: 11.5px;" onclick="togglePeerAutoAccept('${p.id}', ${!isAutoAccepted})" title="${isAutoAccepted ? 'Peer is trusted and auto-accepted' : 'Auto-accept connections from this peer'}">${isAutoAccepted ? '🛡️ Trusted' : '🛡️ Trust'}</button>`;
-
-                    const peerRaw = (currentStatus && currentStatus.availablePeers) ? currentStatus.availablePeers.find(x => x.id === p.id) : null;
-                    const isSaved = peerRaw && peerRaw.isSaved;
-                    const saveBtnHtml = `<button class="btn ${isSaved ? 'btn-emerald' : 'btn-secondary'}" style="padding: 5px 10px; font-size: 11.5px;" onclick="toggleSavePeer('${p.id}', ${!isSaved})" title="${isSaved ? 'Remove peer from saved database' : 'Save peer to database'}">${isSaved ? '💾 Saved' : '💾 Save'}</button>`;
-
-                    if (p.isConnected) {
-                        return `
-                            <div class="peer-card" style="border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.05);">
-                                <div class="peer-info-main">
-                                    <div class="peer-name" style="display:flex; align-items:center; gap:6px;">
-                                        ${escapeHtml(p.name)} 
-                                        ${isSaved ? '<span title="Saved in database" style="font-size:11px;">💾</span>' : ''}
-                                        ${isAutoAccepted ? '<span title="Auto-accepted peer" style="font-size:11px;">🛡️</span>' : ''}
-                                        ${transportBadge}
-                                        <span style="font-size:10px; background: rgba(16, 185, 129, 0.15); color: var(--emerald); padding: 2px 6px; border-radius: 2px; font-weight:600; font-family:'JetBrains Mono',monospace;">🟢 Connected</span>
-                                    </div>
-                                    <div class="peer-meta">Endpoint: ${escapeHtml(p.activeEndPoint)}</div>
-                                </div>
-                                <div style="display:flex; gap:6px; align-items: center; flex-wrap: wrap;">
-                                    ${saveBtnHtml}
-                                    ${trustBtnHtml}
-                                    <button class="btn btn-secondary" style="padding: 5px 10px; font-size:11.5px;" onclick="toggleMuteRemotePeer('${p.id}')">
-                                        ${isMutedPeer ? '🔊 Unmute' : '🔇 Mute'}
-                                    </button>
-                                    <button class="btn btn-rose" style="padding: 5px 10px; font-size:11.5px;" onclick="hangupPeerCall('${p.id}')">🔴 Hangup</button>
-                                </div>
-                            </div>
-                        `;
-                    } else {
-                        return `
-                            <div class="peer-card">
-                                <div class="peer-info-main">
-                                    <div class="peer-name" style="display:flex; align-items:center; gap:6px;">
-                                        ${escapeHtml(p.name)} 
-                                        ${isSaved ? '<span title="Saved in database" style="font-size:11px;">💾</span>' : ''}
-                                        ${isAutoAccepted ? '<span title="Auto-accepted peer" style="font-size:11px;">🛡️</span>' : ''}
-                                        ${transportBadge}
-                                        ${p.ping >= 0 ? `<span style="font-size:12px; color: var(--emerald);">⚡ ${p.ping} ms</span>` : ''}
-                                    </div>
-                                    <div class="peer-meta">Endpoint: ${escapeHtml(p.activeEndPoint)}</div>
-                                </div>
-                                <div style="display:flex; gap:6px; align-items: center; flex-wrap: wrap;">
-                                    ${saveBtnHtml}
-                                    ${trustBtnHtml}
-                                    <button class="btn btn-emerald" onclick="initiateCall('${p.id}', '${escapeHtml(p.name)}')">📞 Call Peer</button>
-                                </div>
-                            </div>
-                        `;
-                    }
-                }).join('');
-            }
-        }
-
-        async function toggleSavePeer(peerId, shouldSave) {
-            try {
-                const res = await fetch('/api/save-peer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId, save: shouldSave, autoConnect: true })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(shouldSave ? '💾 Peer saved to database' : '🗑️ Peer removed from saved database');
-                    fetchStatus();
-                } else {
-                    showToast('Failed to update saved peer: ' + (data.error || 'Unknown error'));
-                }
-            } catch (err) {
-                showToast('Error updating saved peer');
-            }
-        }
-
-        async function saveConnectedPeer(peerId, shouldSave) {
-            await toggleSavePeer(peerId, shouldSave);
-        }
-
-        function toggleMuteRemotePeer(peerId) {
-            if (mutedRemotePeers.has(peerId)) {
-                mutedRemotePeers.delete(peerId);
-                showToast('Unmuted peer audio output.');
-            } else {
-                mutedRemotePeers.add(peerId);
-                showToast('Muted peer audio output.');
-            }
-            if (currentStatus) renderPeers(currentStatus);
-        }
-
-        async function hangupPeerCall(peerId) {
-            try {
-                await fetch('/api/voice-hangup', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId })
-                });
-                showToast('Disconnected call.');
-                endVoiceCall();
-            } catch (err) {
-                showToast('Failed to hang up call.');
-            }
-        }
-
-        async function initiateCall(peerId, peerName) {
-            activeCallPeerId = peerId;
-            showToast('Dialing ' + peerName + '...');
-
-            try {
-                await fetch('/api/connect-peer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId, protocol: '00000000-0000-0000-0000-000000000003' })
-                });
-                startAudioEngine();
-            } catch (err) {
-                showToast('Call initiation failed.');
-            }
-        }
-
-        async function endAllVoiceCalls() {
-            if (!currentStatus || !currentStatus.activeVoiceCalls) return;
-            for (const c of currentStatus.activeVoiceCalls) {
-                try {
-                    await fetch('/api/voice-hangup', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ peerId: c.peerId })
-                    });
-                } catch (e) {}
-            }
-            showToast('Ended all voice calls.');
-            fetchStatus();
-        }
-
-        class AudioRingBuffer {
-            constructor(capacity = 32768) {
-                this.buffer = new Float32Array(capacity);
-                this.capacity = capacity;
-                this.readIndex = 0;
-                this.writeIndex = 0;
-                this.available = 0;
-            }
-
-            push(samples) {
-                for (let i = 0; i < samples.length; i++) {
-                    this.buffer[this.writeIndex] = samples[i];
-                    this.writeIndex = (this.writeIndex + 1) % this.capacity;
-                    if (this.available < this.capacity) {
-                        this.available++;
-                    } else {
-                        this.readIndex = (this.readIndex + 1) % this.capacity;
-                    }
-                }
-            }
-
-            read(outputArray) {
-                const count = outputArray.length;
-                for (let i = 0; i < count; i++) {
-                    if (this.available > 0) {
-                        outputArray[i] = this.buffer[this.readIndex];
-                        this.readIndex = (this.readIndex + 1) % this.capacity;
-                        this.available--;
-                    } else {
-                        outputArray[i] = 0.0;
-                    }
-                }
-            }
-
-            clear() {
-                this.readIndex = 0;
-                this.writeIndex = 0;
-                this.available = 0;
-            }
-        }
-
-        const ringBuffer = new AudioRingBuffer(65536);
-
-        async function startAudioEngine() {
-            if (isTestingMic) stopAudioPreview();
-            if (isCallActive && mediaStream) return;
-
-            try {
-                const deviceId = document.getElementById('micSelect').value;
-                const useProcessing = document.getElementById('audioProcessingToggle') ? document.getElementById('audioProcessingToggle').checked : true;
-
-                const constraints = {
-                    audio: {
-                        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-                        echoCancellation: useProcessing,
-                        noiseSuppression: useProcessing,
-                        autoGainControl: useProcessing
-                    }
-                };
-
-                mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-                
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                if (audioCtx.state === 'suspended') {
-                    await audioCtx.resume();
-                }
-                const source = audioCtx.createMediaStreamSource(mediaStream);
-                analyser = audioCtx.createAnalyser();
-                analyser.fftSize = 64;
-                source.connect(analyser);
-
-                scriptProcessor = audioCtx.createScriptProcessor(1024, 1, 1);
-                source.connect(scriptProcessor);
-                scriptProcessor.connect(audioCtx.destination);
-
-                scriptProcessor.onaudioprocess = (e) => {
-                    if (!isCallActive || isMuted) return;
-                    const inputBuffer = e.inputBuffer.getChannelData(0);
-                    const pcm16 = new Int16Array(inputBuffer.length);
-                    for (let i = 0; i < inputBuffer.length; i++) {
-                        let s = Math.max(-1, Math.min(1, inputBuffer[i]));
-                        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                    }
-                    
-                    fetch('/api/voice-send', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/octet-stream',
-                            'X-Peer-Id': activeCallPeerId || 'all'
-                        },
-                        body: pcm16.buffer
-                    }).catch(() => {});
-                };
-
-                drawVisualizer();
-                isCallActive = true;
-                document.getElementById('muteBtn').disabled = false;
-                document.getElementById('endCallBtn').disabled = false;
-                fetchStatus();
-            } catch (err) {
-                showToast('Failed to access microphone: ' + (err.message || err.name));
-            }
-        }
-
-        async function pollVoiceDatagrams() {
-            try {
-                const res = await fetch('/api/voice-poll');
-                const data = await res.json();
-
-                if (data.signals) {
-                    for (const s of data.signals) {
-                        if (s.signal === 'call-established' && !isCallActive) {
-                            activeCallPeerId = s.peerId;
-                            startAudioEngine();
-                        } else if (s.signal === 'call-ended') {
-                            endVoiceCall();
-                        }
-                    }
-                }
-
-                if (data.chunks && data.chunks.length > 0) {
-                    for (const c of data.chunks) {
-                        if (!mutedRemotePeers.has(c.peerId)) {
-                            playRemoteAudioChunk(c.data);
-                        }
-                    }
-                }
-            } catch (err) {}
-        }
-
-        let outputScriptNode = null;
-
-        function initOutputAudioEngine() {
-            if (outputAudioCtx) return;
-
-            outputAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-            if (outputAudioCtx.state === 'suspended') {
-                outputAudioCtx.resume();
-            }
-
-            outputScriptNode = outputAudioCtx.createScriptProcessor(2048, 1, 1);
-            outputScriptNode.onaudioprocess = (e) => {
-                const output = e.outputBuffer.getChannelData(0);
-                ringBuffer.read(output);
-            };
-            outputScriptNode.connect(outputAudioCtx.destination);
-        }
-
-        function playRemoteAudioChunk(base64Data) {
-            try {
-                initOutputAudioEngine();
-                if (outputAudioCtx.state === 'suspended') {
-                    outputAudioCtx.resume();
-                }
-
-                const binary = atob(base64Data);
-                const bytes = new Uint8Array(binary.length);
-                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                const int16Samples = new Int16Array(bytes.buffer);
-                const float32Samples = new Float32Array(int16Samples.length);
-
-                for (let i = 0; i < int16Samples.length; i++) {
-                    float32Samples[i] = int16Samples[i] / 32768.0;
-                }
-
-                ringBuffer.push(float32Samples);
-            } catch (err) {
-                console.error('Error playing remote audio chunk:', err);
-            }
-        }
-
-        function toggleMute() {
-            if (!mediaStream) return;
-            isMuted = !isMuted;
-            document.getElementById('muteBtn').innerText = isMuted ? '🔇 Unmute Mic' : '🎙️ Mute Mic';
-            showToast(isMuted ? 'Microphone muted' : 'Microphone unmuted');
-        }
-
-        function endVoiceCall() {
-            ringBuffer.clear();
-            if (scriptProcessor) {
-                try { scriptProcessor.disconnect(); } catch (e) {}
-                scriptProcessor = null;
-            }
-            if (mediaStream) {
-                mediaStream.getTracks().forEach(t => t.stop());
-                mediaStream = null;
-            }
-            if (audioCtx) {
-                try { audioCtx.close(); } catch (e) {}
-                audioCtx = null;
-            }
-            if (outputAudioCtx) {
-                try { outputAudioCtx.close(); } catch (e) {}
-                outputAudioCtx = null;
-            }
-            stopCallTimer();
-            isCallActive = false;
-            activeCallPeerId = null;
-            document.getElementById('activePeerBanner').innerText = 'No active voice call';
-            document.getElementById('callStatusTag').innerText = 'Idle';
-            document.getElementById('callStatusTag').style.color = 'var(--text-muted)';
-            document.getElementById('muteBtn').disabled = true;
-            document.getElementById('endCallBtn').disabled = true;
-            fetchStatus();
-        }
-
-        function drawVisualizer() {
-            const canvas = document.getElementById('visualizer');
-            const ctx = canvas.getContext('2d');
-            canvas.width = canvas.clientWidth;
-            canvas.height = canvas.clientHeight;
-            const bufferLength = analyser ? analyser.frequencyBinCount : 32;
-            const dataArray = new Uint8Array(bufferLength);
-
-            function render() {
-                if (!isCallActive && !isTestingMic) return;
-                requestAnimationFrame(render);
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                if (analyser) {
-                    analyser.getByteFrequencyData(dataArray);
-                }
-                const barWidth = (canvas.width / bufferLength) * 2.5;
-                let x = 0;
-                let maxVal = 0;
-                for (let i = 0; i < bufferLength; i++) {
-                    if (dataArray[i] > maxVal) maxVal = dataArray[i];
-                    const barHeight = (dataArray[i] / 255) * canvas.height;
-                    ctx.fillStyle = `rgb(56, 189, ${Math.min(255, barHeight + 100)})`;
-                    ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-                    x += barWidth + 2;
-                }
-
-                const peakRatio = maxVal / 255;
-                ctx.fillStyle = peakRatio > 0.85 ? '#f43f5e' : (peakRatio > 0.5 ? '#f59e0b' : '#10b981');
-                ctx.fillRect(0, 0, canvas.width * peakRatio, 4);
-            }
-            render();
-        }
-
-        function showToast(msg) {
-            const t = document.getElementById('toast');
-            t.innerText = msg;
-            t.classList.add('show');
-            setTimeout(() => t.classList.remove('show'), 2500);
-        }
-
-        function escapeHtml(str) {
-            return (str || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        }
-
-        initDevices();
-        setInterval(fetchStatus, 250);
-        setInterval(pollVoiceDatagrams, 60);
-        fetchStatus();
-    </script>
 </body>
 </html>

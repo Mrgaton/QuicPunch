@@ -2,6 +2,7 @@ using QuicPunch.Helpers;
 using System.Buffers.Binary;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -48,11 +49,21 @@ namespace QuicPunch.PacketHandler
 
                 var peersCopy = qp.AvailablePeers.ToArray();
 
-                w.Write(sharePeers ? (ushort)peersCopy.Length : (ushort)0);
+                var sharedPeers = sharePeers
+                    ? peersCopy.Select(p => p.Value)
+                        .Where(qp.IsTrustedPeer)
+                        .Where(p => transport == TransportType.Tor
+                            ? (p.NetworkType == QuicPunch.NetworkType.Tor || p.ActiveTransport == TransportType.Tor || !string.IsNullOrEmpty(p.OnionAddress))
+                            : (p.NetworkType != QuicPunch.NetworkType.Tor && p.ActiveTransport != TransportType.Tor && p.Addresses != null && p.Addresses.Length > 0))
+                        .Take(32)
+                        .ToArray()
+                    : Array.Empty<PeerInfo>();
+
+                w.Write((ushort)sharedPeers.Length);
 
                 if (sharePeers)
                 {
-                    foreach (var peer in peersCopy.Select(p => p.Value))
+                    foreach (var peer in sharedPeers)
                     {
                         PackedFlags pf = new PackedFlags()
                         {
@@ -61,10 +72,23 @@ namespace QuicPunch.PacketHandler
 
                         w.Write((byte)pf.RawValue);
 
-                        w.Write((byte)peer.Addresses.Length);
-                        foreach (var e in peer.Addresses)
+                        if (transport == TransportType.Tor)
                         {
-                            w.Write(e.GetAddressBytes());
+                            // Over Tor transport, do not leak or advertise WAN addresses
+                            w.Write((byte)0);
+                        }
+                        else
+                        {
+                            var sharedAddresses = (peer.Addresses ?? Array.Empty<IPAddress>())
+                                .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && Utilities.IsValidPeerAddress(a))
+                                .Distinct()
+                                .Take(32)
+                                .ToArray();
+                            w.Write((byte)sharedAddresses.Length);
+                            foreach (var e in sharedAddresses)
+                            {
+                                w.Write(e.GetAddressBytes());
+                            }
                         }
 
                         w.Write((ushort)peer.MinPort);
@@ -91,6 +115,17 @@ namespace QuicPunch.PacketHandler
             var currentPeer = qp.GetCurrentPeer(transport);
             var certMgr = qp.GetCertManager(transport);
 
+            using var genericEntropyPeer = targetPeer == null ? new PeerInfo() : null;
+            if (targetPeer != null)
+                targetPeer.EnsureLocalEntropy();
+            else
+                certMgr.CopySessionEntropyTo(genericEntropyPeer!);
+
+            PeerInfo entropyPeer = targetPeer ?? genericEntropyPeer!;
+            byte[] sessionNonce = entropyPeer.LocalSessionNonce!;
+            byte[] ephemeralEcdhRaw = entropyPeer.LocalEphemeralEcdhPublicKeyRaw;
+            ECDiffieHellman localEphemeralEcdh = entropyPeer.LocalEphemeralEcdh!;
+
             byte[] effectiveChallengeNonce;
             if (challengeNonce != null && challengeNonce.Length == 24)
             {
@@ -98,7 +133,11 @@ namespace QuicPunch.PacketHandler
             }
             else if (type == MessageType.Interrogation)
             {
-                effectiveChallengeNonce = qp.CreatePendingChallenge();
+                effectiveChallengeNonce = qp.CreatePendingChallenge(
+                    targetPeer?.ActiveEndPoint,
+                    sessionNonce,
+                    localEphemeralEcdh,
+                    targetPeer != null && targetPeer.TryGetCertificateHash(out var expectedCertHash) ? expectedCertHash : null);
             }
             else
             {
@@ -118,7 +157,11 @@ namespace QuicPunch.PacketHandler
                 };
                 w.Write((byte)pf.RawValue);
 
-                var addresses = currentPeer.Addresses ?? Array.Empty<IPAddress>();
+                var addresses = (currentPeer.Addresses ?? Array.Empty<IPAddress>())
+                    .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && Utilities.IsValidPeerAddress(a))
+                    .Distinct()
+                    .Take(32)
+                    .ToArray();
                 w.Write((byte)addresses.Length);
                 foreach (var address in addresses)
                 {
@@ -133,6 +176,8 @@ namespace QuicPunch.PacketHandler
                 w.Write(maxPort);
 
                 var nameBytes = Encoding.UTF8.GetBytes(currentPeer.Name ?? "");
+                if (nameBytes.Length > byte.MaxValue)
+                    nameBytes = nameBytes[..byte.MaxValue];
                 w.Write((byte)nameBytes.Length);
                 w.Write(nameBytes);
 
@@ -158,9 +203,7 @@ namespace QuicPunch.PacketHandler
                     w.Write(pop);
                 }
 
-                byte[] sessionNonce = targetPeer?.LocalSessionNonce ?? certMgr.SessionNonce;
                 w.Write(sessionNonce);
-                var ephemeralEcdhRaw = targetPeer?.LocalEphemeralEcdhPublicKeyRaw ?? certMgr.EphemeralEcdhPublicKeyRaw;
                 w.Write((ushort)ephemeralEcdhRaw.Length);
                 if (ephemeralEcdhRaw.Length > 0)
                 {
@@ -209,8 +252,11 @@ namespace QuicPunch.PacketHandler
                 w.Write(protocolId.ToByteArray());
                 w.Write(connectionGuid.ToByteArray());
 
-                var cList = candidates ?? Array.Empty<CandidateEndpoint>();
-                w.Write((byte)cList.Count);
+                var cList = (candidates ?? Array.Empty<CandidateEndpoint>())
+                    .Where(c => c.EndPoint.Address.AddressFamily == AddressFamily.InterNetwork && c.EndPoint.Port > 0)
+                    .Take(32)
+                    .ToArray();
+                w.Write((byte)cList.Length);
                 foreach (var c in cList)
                 {
                     w.Write((byte)c.Type);

@@ -136,21 +136,24 @@ namespace QuicPunch
             await Task.WhenAll(targets.Select(server => SendRequestSafeAsync(server, cancellationToken)));
         }
 
-        public bool TryProcessIncoming(byte[] buffer, IPEndPoint remoteEndPoint)
+        public bool TryProcessIncoming(byte[] buffer, IPEndPoint remoteEndPoint) =>
+            TryProcessIncoming(buffer.AsSpan(), remoteEndPoint);
+
+        public bool TryProcessIncoming(ReadOnlySpan<byte> buffer, IPEndPoint remoteEndPoint)
         {
             try
             {
                 if (buffer.Length < 20) return false;
                 if ((buffer[0] & 0xC0) != 0) return false;
 
-                ushort msgType = BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(0, 2));
+                ushort msgType = BinaryPrimitives.ReadUInt16BigEndian(buffer.Slice(0, 2));
                 if (msgType != BindingSuccessResponse) return false;
 
-                uint cookie = BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(4, 4));
+                uint cookie = BinaryPrimitives.ReadUInt32BigEndian(buffer.Slice(4, 4));
                 if (cookie != MagicCookie) return false;
 
-                ulong p1 = BinaryPrimitives.ReadUInt64BigEndian(buffer.AsSpan(8, 8));
-                uint p2 = BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(16, 4));
+                ulong p1 = BinaryPrimitives.ReadUInt64BigEndian(buffer.Slice(8, 8));
+                uint p2 = BinaryPrimitives.ReadUInt32BigEndian(buffer.Slice(16, 4));
                 var txId = new TxId(p1, p2);
 
                 PendingRequest req;
@@ -364,16 +367,7 @@ namespace QuicPunch
             return false;
         }
 
-        public static readonly IReadOnlyList<IPEndPoint> DefaultStunServers = new List<IPEndPoint>
-        {
-            new IPEndPoint(IPAddress.Parse("74.125.250.129"), 19302), // stun.l.google.com
-            new IPEndPoint(IPAddress.Parse("142.250.31.127"), 19302), // stun1.l.google.com
-            new IPEndPoint(IPAddress.Parse("142.250.218.127"), 19302), // stun2.l.google.com
-            new IPEndPoint(IPAddress.Parse("64.233.161.127"), 19302), // stun3.l.google.com
-            new IPEndPoint(IPAddress.Parse("108.177.14.127"), 19302), // stun4.l.google.com
-            new IPEndPoint(IPAddress.Parse("18.192.32.170"), 3478),
-            new IPEndPoint(IPAddress.Parse("34.221.255.43"), 3478)
-        };
+
 
         public static async Task<List<CandidateEndpoint>> GatherCandidatesAsync(
             UdpClient udp, ushort localPort, IReadOnlyList<IPEndPoint>? servers = null, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
@@ -400,22 +394,49 @@ namespace QuicPunch
 
             try
             {
-                var stunServers = (servers != null && servers.Count > 0) ? servers : DefaultStunServers;
+                var stunServers = (servers != null && servers.Count > 0)
+                    ? servers
+                    : (IReadOnlyList<IPEndPoint>)StunGatherer.BuiltInStunHosts
+                        .SelectMany(h => Utilities.ResolveEndpoint(h) ?? Enumerable.Empty<IPEndPoint>())
+                        .Distinct()
+                        .ToList();
                 if (stunServers != null && stunServers.Count > 0)
                 {
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    cts.CancelAfter(timeout ?? TimeSpan.FromMilliseconds(800));
-                    byte[] reqBytes = new byte[20];
-                    BinaryPrimitives.WriteUInt16BigEndian(reqBytes.AsSpan(0, 2), BindingRequest);
-                    BinaryPrimitives.WriteUInt16BigEndian(reqBytes.AsSpan(2, 2), 0);
-                    BinaryPrimitives.WriteUInt32BigEndian(reqBytes.AsSpan(4, 4), MagicCookie);
-                    RandomNumberGenerator.Fill(reqBytes.AsSpan(8, 12));
+                    cts.CancelAfter(timeout ?? TimeSpan.FromMilliseconds(1000));
 
-                    int count = Math.Min(stunServers.Count, 8);
-                    for (int i = 0; i < count; i++)
+                    int count = Math.Min(stunServers.Count, 32);
+
+                    async Task SendStunBurstAsync(CancellationToken ct)
                     {
-                        try { await udp.SendAsync(reqBytes, stunServers[i], cts.Token).ConfigureAwait(false); } catch { }
+                        byte[] buffer = new byte[20];
+                        BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(0, 2), BindingRequest);
+                        BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(2, 2), 0);
+                        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(4, 4), MagicCookie);
+
+                        for (int i = 0; i < count; i++)
+                        {
+                            if (ct.IsCancellationRequested) break;
+                            RandomNumberGenerator.Fill(buffer.AsSpan(8, 12));
+                            try { await udp.SendAsync(buffer, stunServers[i], ct).ConfigureAwait(false); } catch { }
+                        }
                     }
+
+                    _ = SendStunBurstAsync(cts.Token);
+
+                    // Retransmission watchdog: if no ServerReflexive candidate arrives after 300ms, re-burst
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(300, cts.Token).ConfigureAwait(false);
+                            if (!candidates.Any(c => c.Type == CandidateType.ServerReflexive))
+                            {
+                                await SendStunBurstAsync(cts.Token).ConfigureAwait(false);
+                            }
+                        }
+                        catch { }
+                    }, cts.Token);
 
                     while (!cts.IsCancellationRequested)
                     {

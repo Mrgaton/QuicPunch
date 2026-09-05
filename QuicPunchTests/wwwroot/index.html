@@ -1,1389 +1,477 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QuicPunch Node Manager</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #0b0f17;
-            --header-bg: #0f1624;
-            --card-bg: #111827;
-            --card-border: #1e293b;
-            --card-hover: #334155;
-            --item-bg: #090e18;
-            --accent: #38bdf8;
-            --accent-btn: #0284c7;
-            --emerald: #10b981;
-            --emerald-btn: #059669;
-            --amber: #f59e0b;
-            --purple: #a855f7;
-            --purple-btn: #7c3aed;
-            --rose: #f43f5e;
-            --rose-btn: #e11d48;
-            --text-primary: #f1f5f9;
-            --text-secondary: #94a3b8;
-            --text-muted: #64748b;
-        }
-
-        * { 
-            box-sizing: border-box; 
-            margin: 0; 
-            padding: 0; 
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
-        }
-
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.12);
-            border-radius: 2px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.25);
-        }
-
-        ::-webkit-scrollbar-corner {
-            background: transparent;
-        }
-
-        body {
-            background-color: var(--bg);
-            color: var(--text-primary);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        header {
-            background: var(--header-bg);
-            border-bottom: 1px solid var(--card-border);
-            padding: 10px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            gap: 16px;
-        }
-
-        .logo-box { display: flex; align-items: center; gap: 10px; }
-        .logo-icon {
-            width: 28px; height: 28px;
-            background: var(--accent-btn);
-            border: 1px solid #0369a1;
-            border-radius: 3px;
-            display: flex; align-items: center; justify-content: center;
-            font-weight: 700; font-size: 13px; color: #fff;
-        }
-        .logo-title { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; }
-        .logo-sub { font-size: 11px; color: var(--text-muted); font-weight: 400; font-family: 'JetBrains Mono', monospace; }
-
-        .header-actions { display: flex; align-items: center; gap: 8px; }
-
-        .app-link-btn {
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 5px 11px;
-            font-size: 12px;
-            font-weight: 500;
-            border-radius: 3px;
-            background: #1e293b;
-            border: 1px solid #334155;
-            color: var(--text-primary);
-            transition: background-color 0.15s ease, border-color 0.15s ease;
-        }
-        .app-link-chat { color: #34d399; }
-        .app-link-chat:hover { background: #334155; }
-        .app-link-voice { color: #38bdf8; }
-        .app-link-voice:hover { background: #334155; }
-
-        .status-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            background: rgba(16, 185, 129, 0.1);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            color: var(--emerald);
-            padding: 4px 10px;
-            border-radius: 3px;
-            font-size: 11.5px;
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-        }
-        .pulse-dot { width: 6px; height: 6px; background: var(--emerald); border-radius: 50%; }
-
-        main {
-            flex: 1;
-            padding: 20px 24px;
-            max-width: 1440px;
-            margin: 0 auto;
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            align-items: stretch;
-        }
-
-        @media (max-width: 950px) {
-            .dashboard-grid { grid-template-columns: 1fr; }
-            header { flex-direction: column; gap: 10px; align-items: stretch; }
-            .header-actions { justify-content: space-between; }
-        }
-
-        .col { display: flex; flex-direction: column; gap: 16px; }
-        .full-width { width: 100%; }
-
-        .card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 4px;
-            padding: 16px 18px;
-            transition: border-color 0.15s ease;
-        }
-        .card:hover { border-color: var(--card-hover); }
-
-        .card-title {
-            font-size: 13.5px;
-            font-weight: 700;
-            margin-bottom: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            color: var(--text-primary);
-            letter-spacing: -0.2px;
-        }
-
-        .info-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 8px;
-        }
-
-        .info-item {
-            background: var(--item-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 3px;
-            padding: 8px 12px;
-        }
-        .info-label { font-size: 10px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
-        .info-value { font-size: 12px; font-weight: 600; color: var(--text-primary); word-break: break-all; font-family: 'JetBrains Mono', monospace; }
-
-        .token-box {
-            background: var(--item-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 3px;
-            padding: 10px 12px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            color: var(--accent);
-            word-break: break-all;
-            user-select: all;
-            margin-bottom: 10px;
-            max-height: 85px;
-            overflow-y: auto;
-        }
-
-        .btn {
-            background: var(--accent-btn);
-            color: #fff;
-            border: 1px solid #0369a1;
-            padding: 6px 12px;
-            border-radius: 3px;
-            font-size: 12px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background-color 0.15s ease, border-color 0.15s ease;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            outline: none;
-        }
-        .btn:hover { background: #0369a1; }
-        .btn:active { background: #075985; }
-
-        .btn-secondary {
-            background: #1e293b;
-            color: #e2e8f0;
-            border: 1px solid #334155;
-        }
-        .btn-secondary:hover { background: #334155; border-color: #475569; }
-        .btn-secondary:active { background: #0f172a; }
-
-        .btn-emerald {
-            background: var(--emerald-btn);
-            border: 1px solid #047857;
-            color: #fff;
-        }
-        .btn-emerald:hover { background: #047857; }
-        .btn-emerald:active { background: #065f46; }
-
-        .btn-purple {
-            background: var(--purple-btn);
-            border: 1px solid #6d28d9;
-            color: #fff;
-        }
-        .btn-purple:hover { background: #6d28d9; }
-        .btn-purple:active { background: #5b21b6; }
-
-        .btn-rose {
-            background: var(--rose-btn);
-            border: 1px solid #be123c;
-            color: #fff;
-        }
-        .btn-rose:hover { background: #be123c; }
-        .btn-rose:active { background: #9f1239; }
-
-        .input-group { display: flex; gap: 6px; }
-        .input-text {
-            flex: 1;
-            background: var(--item-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 3px;
-            padding: 6px 10px;
-            color: var(--text-primary);
-            font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-            outline: none;
-            transition: border-color 0.15s ease;
-        }
-        .input-text:focus { border-color: var(--accent); }
-
-        .peers-list { display: flex; flex-direction: column; gap: 6px; }
-        .peer-card {
-            background: var(--item-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 3px;
-            padding: 10px 14px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        .peer-info-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 200px; }
-        .peer-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-        .peer-name { font-weight: 700; font-size: 13px; color: var(--text-primary); }
-        .peer-meta { font-size: 11px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
-
-        .transport-badge {
-            font-size: 9.5px;
-            font-weight: 600;
-            padding: 2px 5px;
-            border-radius: 2px;
-            text-transform: uppercase;
-            font-family: 'JetBrains Mono', monospace;
-        }
-        .transport-wan { background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25); }
-        .transport-tor { background: rgba(168, 85, 247, 0.1); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.25); }
-
-        .select-protocol {
-            background: var(--item-bg);
-            border: 1px solid var(--card-border);
-            color: var(--text-primary);
-            padding: 5px 8px;
-            border-radius: 3px;
-            font-size: 11.5px;
-            font-family: 'JetBrains Mono', monospace;
-            outline: none;
-        }
-
-        .terminal {
-            background: #050811;
-            border: 1px solid var(--card-border);
-            border-radius: 3px;
-            padding: 10px 12px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 11.5px;
-            color: #38bdf8;
-            height: 200px;
-            max-height: 200px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 3px;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(56, 189, 248, 0.25) transparent;
-        }
-
-        .terminal > div {
-            white-space: pre-wrap;
-            word-break: break-all;
-            line-height: 1.4;
-        }
-
-        .terminal::-webkit-scrollbar {
-            width: 5px;
-        }
-
-        .terminal::-webkit-scrollbar-track {
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 2px;
-        }
-
-        .terminal::-webkit-scrollbar-thumb {
-            background: rgba(56, 189, 248, 0.25);
-            border-radius: 2px;
-        }
-
-        .terminal::-webkit-scrollbar-thumb:hover {
-            background: rgba(56, 189, 248, 0.5);
-        }
-
-        .petition-banner {
-            background: #1c1917;
-            border: 1px solid #78350f;
-            border-radius: 3px;
-            padding: 10px 14px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .modal-overlay {
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0, 0, 0, 0.7);
-            backdrop-filter: blur(4px);
-            display: none;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-        }
-        .modal-overlay.active { display: flex; }
-        .modal-content {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 5px;
-            padding: 20px;
-            max-width: 480px;
-            width: 90%;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: var(--card-bg);
-            color: #fff;
-            padding: 10px 16px;
-            border-radius: 3px;
-            border: 1px solid var(--card-border);
-            font-size: 12px;
-            font-weight: 500;
-            opacity: 0;
-            transform: translateY(10px);
-            transition: all 0.2s ease;
-            z-index: 2000;
-            pointer-events: none;
-        }
-        .toast.show { opacity: 1; transform: translateY(0); }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0d1117">
+  <title>Network · QuicPunch</title>
+  <link rel="stylesheet" href="/app.css">
+  <script defer src="/app.js"></script>
+  <script defer src="/dashboard.js"></script>
+  <script defer src="/chat.js"></script>
+  <script defer src="/voice.js"></script>
+  <script defer src="/vpn.js"></script>
+  <script defer src="/files.js"></script>
 </head>
-<body>
-    <header>
-        <div class="logo-box">
-            <div class="logo-icon">QP</div>
-            <div>
-                <div class="logo-title">QuicPunch Node Manager</div>
-                <div class="logo-sub">P2P QUIC Transport & Mesh Console</div>
-            </div>
-        </div>
-
-        <div class="header-actions">
-            <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:500; color:var(--text-secondary); cursor:pointer; background:#1e293b; padding:5px 9px; border-radius:3px; border:1px solid #334155;" title="Automatically accept all incoming protocol connections">
-                <input type="checkbox" id="globalAutoAcceptToggle" onchange="toggleGlobalAutoAccept(this.checked)" style="cursor:pointer; accent-color:var(--emerald);">
-                <span>⚡ Auto-Accept All</span>
-            </label>
-            <a href="/chat.html" class="app-link-btn app-link-chat">💬 Direct Chat</a>
-            <a href="/call.html" class="app-link-btn app-link-voice">🎙️ Voice Studio</a>
-            <div id="topStatusBadge" class="status-badge">
-                <div class="pulse-dot"></div>
-                <span id="topStatusText">Node Online</span>
-            </div>
-        </div>
-    </header>
-
-    <main>
-        <div id="petitionBannerContainer" style="display: none;"></div>
-
-        <div class="dashboard-grid">
-            <div class="col">
-                <div class="card">
-                    <div class="card-title">
-                        <span>Node Identity & Transports</span>
-                        <span id="torStateTag" class="transport-badge transport-wan">🌐 UDP WAN</span>
-                    </div>
-                    
-                    <div class="info-grid">
-                        <div class="info-item">
-                            <div class="info-label">Node Identifier</div>
-                            <div class="info-value" id="nodeName">Loading...</div>
-                        </div>
-                        <div class="info-item">
-                            <div class="info-label">NAT & STUN Range</div>
-                            <div class="info-value"><span id="natType">...</span> (<span id="portRange">...</span>)</div>
-                        </div>
-                        <div class="info-item" style="grid-column: span 2;">
-                            <div class="info-label">Public / LAN Endpoints</div>
-                            <div class="info-value" id="publicEndpoints">Loading...</div>
-                        </div>
-                    </div>
-
-                    <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--card-border);">
-                        <div class="info-label" style="margin-bottom: 6px;">Local UDP Listener Port</div>
-                        <div class="input-group">
-                            <input type="number" id="listenerPortInput" class="input-text" placeholder="Port (e.g. 49152)" min="1" max="65535">
-                            <button class="btn btn-secondary" onclick="changeListenerPort()">⚙️ Change Port</button>
-                        </div>
-                    </div>
-
-                    <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--card-border);">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <div class="info-label" style="margin-bottom: 0;">Tor Hidden Service (.onion)</div>
-                            <span id="torStatusIndicator" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">Inactive</span>
-                        </div>
-                        <div class="info-value" id="torOnionDisplay" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c084fc; margin-bottom: 10px;">
-                            Tor Service Stopped
-                        </div>
-                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                            <button id="torToggleBtn" class="btn btn-purple" onclick="toggleTorRuntime()">🧅 Start Tor Service</button>
-                            <button id="torNewNymBtn" class="btn btn-secondary" style="display: none;" onclick="requestNewCircuits()">🔄 New Circuits (NEWNYM)</button>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-title">
-                        <span>Connection Tokens</span>
-                    </div>
-
-                    <div style="margin-bottom: 14px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                            <div class="info-label" style="margin-bottom: 0;">🌐 WAN Connection Token (UDP/STUN)</div>
-                            <span class="transport-badge transport-wan">WAN</span>
-                        </div>
-                        <div class="token-box" id="wanTokenBox">Generating WAN token...</div>
-                        <div style="display: flex; gap: 8px;">
-                            <button class="btn" style="padding: 6px 12px; font-size: 12px;" onclick="copyWanToken()">📋 Copy WAN Token</button>
-                            <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="copyQuickLink()">🔗 Copy Link</button>
-                        </div>
-                    </div>
-
-                    <div style="margin-bottom: 16px; padding-top: 12px; border-top: 1px solid var(--card-border);">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                            <div class="info-label" style="margin-bottom: 0;">🧅 Tor Connection Token (Onion v3)</div>
-                            <span class="transport-badge transport-tor">Tor</span>
-                        </div>
-                        <div class="token-box" id="torTokenBox" style="border-color: rgba(168, 85, 247, 0.35); color: #c084fc;">Tor Service Inactive</div>
-                        <div style="display: flex; gap: 8px;">
-                            <button id="copyTorTokenBtn" class="btn btn-purple" style="padding: 6px 12px; font-size: 12px;" onclick="copyTorToken()" disabled>📋 Copy Tor Token</button>
-                        </div>
-                    </div>
-
-                    <div style="padding-top: 14px; border-top: 1px solid var(--card-border);">
-                        <div class="info-label" style="margin-bottom: 6px;">Connect to Peer (WAN or Tor Token / URI)</div>
-                        <div class="input-group">
-                            <input type="text" id="connectTokenInput" class="input-text" placeholder="Paste QP:// token (WAN/Tor) or URI here...">
-                            <button class="btn btn-emerald" onclick="connectByToken()">⚡ Connect</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col">
-                <div class="card">
-                    <div class="card-title">
-                        <span>Active Hole Punching <span id="interrogationCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
-                    </div>
-                    <div id="interrogationsContainer" class="peers-list">
-                        <div style="color: var(--text-muted); text-align: center; padding: 14px; font-size: 13px;">No active hole punching attempts in progress.</div>
-                    </div>
-                </div>
-
-                <div class="card" style="display: flex; flex-direction: column; min-height: 0;">
-                    <div class="card-title">
-                        <span>Real-Time Node Logs</span>
-                        <button class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px;" onclick="clearLogs()">Clear</button>
-                    </div>
-                    <div class="terminal" id="terminalLogs">
-                        <div>[00:00:00] Node logging initialized. Monitoring mesh network...</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="card full-width">
-            <div class="card-title">
-                <span>Discovered & Connected Peers <span id="peerCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
-                <div style="display: flex; gap: 8px;">
-                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11.5px;" onclick="saveAllConnectedPeers()">💾 Save All Peers</button>
-                    <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="fetchStatus()">🔄 Refresh</button>
-                </div>
-            </div>
-            
-            <div id="peersContainer" class="peers-list">
-                <div style="color: var(--text-muted); text-align: center; padding: 24px;">Scanning for mesh peers...</div>
-            </div>
-        </div>
-
-        <div class="card full-width" style="border-color: rgba(56, 189, 248, 0.25);">
-            <div class="card-title" style="color: var(--accent); font-size: 16px; margin-bottom: 18px;">
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 20px;">🎮</span>
-                    <span>Shared Virtual LAN - FriendsLAN Wintun</span>
-                </div>
-                <div id="lanAdapterStatusBadge">
-                    <span class="status-badge" style="font-size:12px;">Checking Wintun Adapter...</span>
-                </div>
-            </div>
-
-            <div class="info-grid" style="grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));">
-                <div class="info-item" style="background: rgba(0, 0, 0, 0.35); border-color: rgba(56, 189, 248, 0.2);">
-                    <div class="info-label">Virtual IP Address</div>
-                    <div class="input-group" style="margin-top: 6px;">
-                        <input type="text" id="virtualIpInput" class="input-text" style="font-weight: 700; color: var(--accent);" placeholder="10.0.0.2">
-                        <button class="btn btn-emerald" style="padding: 6px 12px; font-size: 12px;" onclick="configureVirtualIp()">Apply</button>
-                    </div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">Network Mask & MTU</div>
-                    <div class="info-value"><span id="lanSubnet">255.0.0.0</span> | MTU <span id="lanMtu">9000</span></div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">LAN Packets (RX / TX)</div>
-                    <div class="info-value"><span id="lanRxPkts">0</span> / <span id="lanTxPkts">0</span></div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">Broadcast Relay</div>
-                    <div class="info-value" style="color: var(--emerald);">Active (Mesh Bridge)</div>
-                </div>
-            </div>
-
-            <div style="margin-top: 14px;">
-                <div class="info-label" style="margin-bottom: 8px;">
-                    Connected LAN Peers <span id="activeLanCount" style="font-size:11px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span>
-                </div>
-                <div id="activeLanPeersContainer" class="peers-list">
-                    <div style="color: var(--text-muted); text-align: center; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 10px; font-size: 13px;">
-                        No peers connected to Virtual LAN. Connect via FriendsLAN protocol above to join the mesh network!
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="card full-width">
-            <div class="card-title">
-                <span>Saved Peers Database <span id="savedPeerCount" style="font-size:12px; color:var(--text-muted); font-weight:600; margin-left:4px;">0</span></span>
-                <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;" onclick="openAddSavedPeerModal()">➕ Add Saved Peer</button>
-            </div>
-            <div id="savedPeersContainer" class="peers-list">
-                <div style="color: var(--text-muted); text-align: center; padding: 14px; font-size: 13px;">No saved peers in database.</div>
-            </div>
-        </div>
-    </main>
-
-    <div id="editPeerModal" class="modal-overlay">
-        <div class="modal-content">
-            <h3 style="font-size: 16px; font-weight: 700; color: var(--text-primary);">Edit Saved Peer</h3>
-            <div>
-                <label class="info-label">Peer Name</label>
-                <input type="text" id="editName" class="input-text" placeholder="e.g. My Laptop, Desktop, Peer Node" style="width: 100%; margin-top: 4px;">
-            </div>
-            <div>
-                <label class="info-label">Certificate Hash (Base64)</label>
-                <input type="text" id="editCertHash" class="input-text" readonly style="opacity: 0.7; width: 100%; margin-top: 4px;">
-            </div>
-            <div style="display: flex; gap: 12px;">
-                <div style="flex: 1;">
-                    <label class="info-label">Min Port</label>
-                    <input type="number" id="editMinPort" class="input-text" min="1" max="65535" style="width: 100%; margin-top: 4px;">
-                </div>
-                <div style="flex: 1;">
-                    <label class="info-label">Max Port</label>
-                    <input type="number" id="editMaxPort" class="input-text" min="1" max="65535" style="width: 100%; margin-top: 4px;">
-                </div>
-            </div>
-            <div>
-                <label class="info-label">IP Addresses (comma separated)</label>
-                <input type="text" id="editAddresses" class="input-text" placeholder="192.168.1.50, 85.12.34.56" style="width: 100%; margin-top: 4px;">
-            </div>
-            <div>
-                <label class="info-label">Tor Onion Address (optional)</label>
-                <input type="text" id="editOnionAddress" class="input-text" placeholder="abcdef...onion" style="width: 100%; margin-top: 4px;">
-            </div>
-            <div style="margin-top: 6px;">
-                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; color: var(--text-primary);">
-                    <input type="checkbox" id="editAutoConnect" style="accent-color: var(--emerald);">
-                    <span>⚡ Auto-Connect on Startup (interrogate automatically when node starts)</span>
-                </label>
-            </div>
-            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px;">
-                <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
-                <button class="btn btn-emerald" onclick="savePeerUpdates()">Save Changes</button>
-            </div>
-        </div>
+<body data-page="dashboard">
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand"><div class="brand-mark">QP</div><strong>QuicPunch</strong><span id="topbarSubtitle">Private peer network</span></div>
+    <div class="top-actions">
+      <span class="badge" id="nodeBadge"><span class="status-dot"></span>Starting</span>
+      <span class="badge hidden" id="chatStatusBadge">No conversation</span>
+      <span class="badge hidden" id="voiceBadge">0 activas</span>
+      <span class="opus-badge hidden" id="topOpusBadge">Opus VoIP · 96 kbps · Buffer 60ms</span>
+      <span class="badge hidden" id="lanStatusBadge">Stopped</span>
+      <span class="badge hidden" id="driveBadge">0 mounted</span>
     </div>
+  </div>
+</header>
 
-    <div id="toast" class="toast">Notification</div>
+<!-- Persistent Global Active Call Bar (Discord / Telegram style) -->
+<div id="globalActiveCallBar" class="global-call-bar hidden">
+  <div class="call-bar-left" id="globalCallBarInfo" title="Haz clic para volver a Voice Studio">
+    <div class="live-dot-pulse"></div>
+    <div class="avatar sm" id="globalCallAvatar">QP</div>
+    <div>
+      <strong id="globalCallPeerName">Peer</strong>
+      <span id="globalCallMeta">En llamada VoIP · Opus 96 kbps</span>
+    </div>
+  </div>
+  <div class="call-bar-controls">
+    <button class="btn sm ghost" id="globalCallMicBtn" title="Mutear / Desmutear mi micrófono">Micro on</button>
+    <button class="btn sm ghost" id="globalCallDeafenBtn" title="Ensordecer / Escuchar audio">Audio on</button>
+    <button class="call-btn-round hangup-red sm-hangup" id="globalCallHangupBtn" title="Colgar llamada">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="transform: rotate(135deg); display: block;"><path d="M6.62 10.79a15.05 15.05 0 006.59 6.59l2.2-2.2a1 1 0 011.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 011 1V20a1 1 0 01-1 1A17 17 0 013 4a1 1 0 011-1h3.5a1 1 0 011 1c0 1.25.2 2.45.57 3.57a1 1 0 01-.25 1.02l-2.2 2.2z"/></svg>
+    </button>
+    <button class="btn sm accent" id="globalCallGoToVoiceBtn" title="Abrir Voice Studio">Voice Studio</button>
+  </div>
+</div>
 
-    <script>
-        let currentStatus = null;
-        const selectedPeerProtocols = new Map(); // peerId -> protocolId
+<div class="nav-wrap"><nav class="nav">
+  <a class="nav-link active" data-page="dashboard" href="/">Network</a>
+  <a class="nav-link" data-page="chat" href="/chat.html">Direct Chat</a>
+  <a class="nav-link" data-page="voice" href="/call.html">Voice Studio</a>
+  <a class="nav-link" data-page="vpn" href="/vpn.html">LAN Bridge</a>
+  <a class="nav-link" data-page="files" href="/files.html">RelayDrive</a>
+</nav></div>
 
-        async function fetchStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                currentStatus = data;
-                renderStatus(data);
-            } catch (err) {
-                console.error("Status fetch error:", err);
-            }
-        }
+<div id="spaContainer">
+  <!-- 1. DASHBOARD VIEW (Network) -->
+  <div id="view-dashboard" class="spa-view">
+    <main class="workspace">
+      <header class="page-head compact-head">
+        <div><h1>Network</h1><p>Identity, STUN mappings, discovery, trust, connection attempts, saved peers and application sessions.</p></div>
+        <div class="toolbar"><button class="btn sm" id="refreshBtn">Refresh</button></div>
+      </header>
 
-        function formatPortRange(minPort, maxPort) {
-            if (!minPort && !maxPort) return '0';
-            if (!maxPort || minPort === maxPort) return `${minPort || maxPort}`;
-            return `${minPort}-${maxPort}`;
-        }
+      <section id="requestsPanel" class="section attention hidden">
+        <div class="section-head"><div><h2>Connection Requests</h2><p>Incoming application sessions that require a decision.</p></div></div>
+        <div class="section-body"><div id="requestsList" class="peer-list"></div></div>
+      </section>
 
-        function renderStatus(data) {
-            if (!data) return;
+      <section class="section">
+        <div class="section-head"><div><h2>Local Node</h2><p>Runtime identity and network information.</p></div></div>
+        <div class="section-body no-pad">
+          <table class="detail-table local-node-table"><tbody>
+            <tr><th>Node name</th><td id="nodeName">—</td><th>Network type</th><td id="nodeNetwork">—</td></tr>
+            <tr><th>Listener port</th><td><div class="inline-form"><input class="input mono short-input" id="listenerPortInput" type="number" min="1" max="65535"><button class="btn sm" id="applyPortBtn">Apply</button></div></td><th>Auto-accept peers</th><td><div class="service-state"><label class="inline-toggle"><input id="autoAcceptToggle" type="checkbox"><span>Enabled</span></label></div></td></tr>
+            <tr><th>WAN service</th><td><div class="service-state"><label class="inline-toggle"><input id="wanToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="wanMeta"></span></div></td><th>WAN Nostr discovery</th><td><div class="service-state"><label class="inline-toggle"><input id="discoveryToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="discoveryMeta"></span></div></td></tr>
+            <tr><th>Tor service</th><td><div class="service-state"><label class="inline-toggle"><input id="torToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="torMeta"></span></div></td><th>Tor Nostr discovery</th><td><div class="service-state"><label class="inline-toggle"><input id="torDiscoveryToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="torDiscoveryMeta"></span></div></td></tr>
+          </tbody></table>
+        </div>
+      </section>
 
-            document.getElementById('nodeName').textContent = data.nodeName || 'LocalNode';
-            document.getElementById('natType').textContent = data.networkType || 'Unknown';
-            document.getElementById('portRange').textContent = formatPortRange(data.minPort, data.maxPort);
+      <section class="section">
+        <div class="section-head"><div><h2>STUN / Public Mapping</h2><p>Public addresses and ports currently observed through STUN. Exact mappings are shown separately from the predictive port range.</p></div></div>
+        <div class="section-body no-pad">
+          <table class="detail-table stun-table"><tbody>
+            <tr><th>Public IP address(es)</th><td id="stunAddresses" class="mono wrap">Discovering…</td><th>Observed port(s)</th><td id="stunPorts" class="mono">—</td></tr>
+            <tr><th>Exact STUN mappings</th><td colspan="3" class="stun-cell"><div class="stun-mappings-cell"><span id="stunMappings" class="mono stun-mappings-text" title="Click to view all STUN mappings">No exact mapping yet</span><button type="button" class="btn sm stun-dots-btn hidden" id="openStunModalBtn" title="View all STUN responses">…</button></div></td></tr>
+            <tr><th>Local addresses</th><td id="localAddresses" class="mono wrap">—</td><th>STUN servers loaded</th><td id="stunServerCount">0</td></tr>
+          </tbody></table>
+        </div>
+      </section>
 
-            const autoAcceptToggle = document.getElementById('globalAutoAcceptToggle');
-            if (autoAcceptToggle && data.autoAcceptAll !== undefined) {
-                autoAcceptToggle.checked = !!data.autoAcceptAll;
-            }
-            
-            const addrs = data.publicEndpoints || [];
-            document.getElementById('publicEndpoints').textContent = addrs.length > 0 ? addrs.join(', ') : 'Discovering...';
-            
-            const wanToken = data.wanToken || data.token || '';
-            const wanTokenEl = document.getElementById('wanTokenBox');
-            if (wanTokenEl) wanTokenEl.textContent = wanToken ? `QP://${wanToken}` : 'Generating WAN token...';
+      <section class="section">
+        <div class="section-head"><div><h2>Connection Tokens</h2><p>Complete tokens include the <span class="mono">QP://</span> scheme and can be pasted directly into another node.</p></div></div>
+        <div class="section-body token-stack">
+          <div class="token-line"><div class="token-label"><strong>WAN token</strong><span>Direct UDP / WAN identity</span></div><div class="code-box selectable" id="wanTokenBox">Generating…</div><div class="toolbar"><button class="btn" id="copyWanInline">Copy</button><button class="btn" id="copyQuickLinkBtn">Copy share link</button></div></div>
+          <div class="token-line"><div class="token-label"><strong>Tor token</strong><span>Hidden-service transport for the same peer identity</span></div><div class="code-box selectable" id="torTokenBox">Tor service inactive</div><div class="toolbar"><button class="btn" id="copyTorInline">Copy</button><button class="btn" id="torNewNymBtn">New circuits</button></div></div>
+          <div class="manual-connect"><input class="input mono" id="tokenInput" placeholder="Paste QP:// token"><button class="btn primary" id="connectTokenBtn">Connect token</button></div>
+        </div>
+      </section>
 
-            const tor = data.torStatus || {};
-            const isTorStarted = tor.isStarted;
-            const onionAddr = tor.onionAddress || '';
-            
-            const torToken = data.torToken || '';
-            const torTokenEl = document.getElementById('torTokenBox');
-            const copyTorBtn = document.getElementById('copyTorTokenBtn');
-            if (torTokenEl) {
-                if (torToken) {
-                    torTokenEl.textContent = `QP://${torToken}`;
-                    if (copyTorBtn) copyTorBtn.removeAttribute('disabled');
-                } else {
-                    torTokenEl.textContent = isTorStarted ? 'Generating Tor token...' : 'Tor Service Inactive (Start Tor above)';
-                    if (copyTorBtn) copyTorBtn.setAttribute('disabled', 'true');
-                }
-            }
-            
-            const torIndicator = document.getElementById('torStatusIndicator');
-            const torOnionDisplay = document.getElementById('torOnionDisplay');
-            const torToggleBtn = document.getElementById('torToggleBtn');
-            const torNewNymBtn = document.getElementById('torNewNymBtn');
-            const torStateTag = document.getElementById('torStateTag');
+      <section class="section">
+        <div class="section-head"><div><h2>Discovered Peers</h2><p>Peers discovered via Nostr rendezvous signaling. Connect manually to initiate UDP hole-punching or Tor connection.</p></div><div class="toolbar"><button class="btn sm" id="connectAllDiscoveredBtn">Connect all</button></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Source / type</th><th>Addresses / Tor</th><th>Port range</th><th>Discovered</th><th>Actions</th></tr></thead><tbody id="discoveredPeersBody"></tbody></table></div></div>
+      </section>
 
-            if (isTorStarted) {
-                torIndicator.textContent = tor.bootstrapStatus || 'Active (100%)';
-                torIndicator.style.color = '#c084fc';
-                torOnionDisplay.textContent = onionAddr ? `${onionAddr}:${tor.virtualPort || 443}` : 'Publishing hidden service...';
-                torToggleBtn.textContent = '🛑 Stop Tor Service';
-                torToggleBtn.className = 'btn btn-rose';
-                torNewNymBtn.style.display = 'inline-flex';
-                torStateTag.textContent = '🧅 Tor + WAN Active';
-                torStateTag.className = 'transport-badge transport-tor';
-            } else {
-                torIndicator.textContent = 'Inactive';
-                torIndicator.style.color = 'var(--text-muted)';
-                torOnionDisplay.textContent = 'Tor Service Stopped';
-                torToggleBtn.textContent = '🧅 Start Tor Service';
-                torToggleBtn.className = 'btn btn-purple';
-                torNewNymBtn.style.display = 'none';
-                torStateTag.textContent = '🌐 UDP WAN';
-                torStateTag.className = 'transport-badge transport-wan';
-            }
+      <section class="section">
+        <div class="section-head"><div><h2>Connecting Peers</h2><p>Active hole-punching / interrogation attempts.</p></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Candidate addresses</th><th>Port range</th><th>Started</th><th></th></tr></thead><tbody id="interrogationsBody"></tbody></table></div></div>
+      </section>
 
-            const interContainer = document.getElementById('interrogationsContainer');
-            const interList = data.activeInterrogations || [];
-            document.getElementById('interrogationCount').textContent = interList.length;
-            if (interList.length === 0) {
-                interContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 14px; font-size: 13px;">No active hole punching attempts in progress.</div>';
-            } else {
-                interContainer.innerHTML = interList.map(item => `
-                    <div class="peer-card" style="border-left: 3px solid var(--amber);">
-                        <div class="peer-info-main">
-                            <div class="peer-name">🎯 ${escapeHtml(item.peerName)}</div>
-                            <div class="peer-meta">Endpoints: ${(item.addresses || []).join(', ')} (${formatPortRange(item.minPort, item.maxPort)})</div>
-                            <div class="peer-meta">Started at ${item.startTime}</div>
-                        </div>
-                        <div>
-                            <button class="btn btn-rose" style="padding: 4px 10px; font-size: 12px;" onclick="cancelInterrogation('${item.id}')">Cancel</button>
-                        </div>
-                    </div>
-                `).join('');
-            }
+      <section class="section">
+        <div class="section-head"><div><h2>Connected Peers</h2><p>Trusted identities currently available. Open any registered application for each peer.</p></div><button class="btn sm" id="saveAllBtn">Save all connected</button></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table connected-table"><thead><tr><th>Peer</th><th>Transport / endpoint</th><th>Ping</th><th>Session</th><th>Trust settings</th><th>Application</th><th></th></tr></thead><tbody id="connectedPeers"></tbody></table></div></div>
+      </section>
 
-            const petContainer = document.getElementById('petitionBannerContainer');
-            const petitions = data.pendingPetitions || [];
-            if (petitions.length > 0) {
-                petContainer.style.display = 'block';
-                petContainer.innerHTML = petitions.map(p => `
-                    <div class="petition-banner" style="margin-bottom: 12px;">
-                        <div>
-                            <div style="font-weight: 700; font-size: 15px; color: var(--amber);">⚡ Incoming ${escapeHtml(p.protocolName)} Connection</div>
-                            <div style="font-size: 13px; color: var(--text-primary); margin-top: 2px;">Peer <strong>${escapeHtml(p.peerName)}</strong> requests a direct ${escapeHtml(p.protocolName)} session.</div>
-                        </div>
-                        <div style="display: flex; gap: 10px;">
-                            <button class="btn btn-emerald" onclick="respondPetition('${p.requestId}', true, '${p.protocolName}', '${p.peerId}')">✅ Accept & Open</button>
-                            <button class="btn btn-rose" onclick="respondPetition('${p.requestId}', false)">❌ Decline</button>
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                petContainer.style.display = 'none';
-                petContainer.innerHTML = '';
-            }
+      <section class="section">
+        <div class="section-head"><div><h2>Untrusted Peers</h2><p>Authenticated identities not yet allowed to open application protocols.</p></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Transport</th><th>Endpoint</th><th>Last seen</th><th>Certificate</th><th></th></tr></thead><tbody id="untrustedPeers"></tbody></table></div></div>
+      </section>
 
-            const peers = data.availablePeers || [];
-            const peerCountEl = document.getElementById('peerCount');
-            if (peerCountEl) peerCountEl.textContent = peers.length;
-            const peersContainer = document.getElementById('peersContainer');
-            if (peers.length === 0) {
-                peersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 24px;">No mesh peers discovered. Share your token or connect to someone!</div>';
-            } else {
-                const initialPlaceholder = peersContainer.querySelector('div[style*="text-align: center"]');
-                if (initialPlaceholder && peersContainer.children.length === 1) {
-                    peersContainer.innerHTML = '';
-                }
+      <section class="section">
+        <div class="section-head"><div><h2>Saved Peers Database</h2><p>Persistent identities. Offline peers can be edited, reconnected, removed and configured for auto-connect.</p></div><div class="toolbar"><button class="btn sm" id="addSavedPeerBtn">Add saved peer</button></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table saved-table"><thead><tr><th>Name</th><th>Certificate / type</th><th>Addresses / Tor</th><th>Port range</th><th>Auto-connect</th><th>Status</th><th>Actions</th></tr></thead><tbody id="savedPeersBody"></tbody></table></div></div>
+      </section>
 
-                const currentPeerIds = new Set(peers.map(p => p.id));
+      <section class="section">
+        <div class="section-head"><div><h2>Active Application Sessions</h2><p>Protocols currently open with trusted peers.</p></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Application</th><th>Details</th><th></th></tr></thead><tbody id="activeAppsBody"></tbody></table></div></div>
+      </section>
 
-                Array.from(peersContainer.children).forEach(cardEl => {
-                    if (cardEl.id && cardEl.id.startsWith('peer_card_')) {
-                        const pid = cardEl.id.replace('peer_card_', '');
-                        if (!currentPeerIds.has(pid)) {
-                            cardEl.remove();
-                        }
-                    }
-                });
+      <section class="section" id="quicTelemetrySection">
+        <div class="section-head">
+          <div>
+            <h2>QUIC Protocol Telemetry &amp; Performance Metrics</h2>
+            <p>Real-time microsecond transport telemetry, congestion control state, packet loss metrics, and TLS metadata queried directly from the native MsQuic engine.</p>
+          </div>
+          <div class="toolbar">
+            <span class="badge" id="quicTelemetryStatusBadge"><span class="status-dot"></span>0 active connections</span>
+          </div>
+        </div>
+        <div class="section-body">
+          <div class="telemetry-kpi-grid">
+            <div class="kpi-card">
+              <span class="kpi-label">Active Connections</span>
+              <strong class="kpi-value" id="kpiQuicConnections">0</strong>
+              <span class="kpi-sub" id="kpiQuicTransports">WAN / Tor</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">Round-Trip Time (RTT)</span>
+              <strong class="kpi-value" id="kpiQuicRtt">—</strong>
+              <span class="kpi-sub" id="kpiQuicRttRange">Min: — · Max: — · Var: —</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">Packet Loss Ratio</span>
+              <strong class="kpi-value" id="kpiQuicLoss">0.00%</strong>
+              <span class="kpi-sub" id="kpiQuicLossDetails">0 lost · 0 retrans</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">Congestion Control (CWND)</span>
+              <strong class="kpi-value" id="kpiQuicCwnd">—</strong>
+              <span class="kpi-sub" id="kpiQuicAlgorithm">Algorithm: BBR / CUBIC · MTU: —</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">Network Throughput</span>
+              <strong class="kpi-value" id="kpiQuicThroughput">—</strong>
+              <span class="kpi-sub" id="kpiQuicPackets">Tx: 0 pkts · Rx: 0 pkts</span>
+            </div>
+          </div>
+          <div class="table-wrap borderless space-top">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Peer / Identity</th>
+                  <th>Protocol / Transport</th>
+                  <th>Congestion Control</th>
+                  <th>RTT (Min / Avg / Max)</th>
+                  <th>Loss %</th>
+                  <th>CWND / Path MTU</th>
+                  <th>Wire Transfer (Tx / Rx)</th>
+                  <th>Security / ALPN</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="quicTelemetryBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
 
-                peers.forEach(p => {
-                    let card = document.getElementById(`peer_card_${p.id}`);
-                    if (!card) {
-                        card = document.createElement('div');
-                        card.id = `peer_card_${p.id}`;
-                        card.className = 'peer-card';
-                        card.innerHTML = buildPeerCardInnerHtml(p, data.registeredProtocols || []);
-                        peersContainer.appendChild(card);
-                    } else {
-                        updatePeerCardInPlace(card, p);
-                    }
-                });
-            }
+      <section class="section">
+        <div class="section-head"><div><h2>Recent Activity</h2><p>Local runtime events and diagnostics.</p></div><div class="toolbar"><button class="btn sm" id="clearLogsBtn">Clear view</button></div></div>
+        <div class="section-body"><div class="log-list" id="logs"></div></div>
+      </section>
+    </main>
+  </div>
 
-            const lan = data.lanStatus || {};
-            const adapterBadge = document.getElementById('lanAdapterStatusBadge');
-            const isActive = lan.adapterStatus === 'Active';
-            adapterBadge.innerHTML = isActive 
-                ? `<span class="status-badge"><div class="pulse-dot"></div> Wintun Active (${lan.localVirtualIp})</span>`
-                : `<span class="status-badge" style="background:rgba(244,63,94,0.1); border-color:rgba(244,63,94,0.3); color:#f43f5e;">${escapeHtml(lan.adapterStatus || 'Not Started')}</span>`;
+  <!-- 2. DIRECT CHAT VIEW -->
+  <div id="view-chat" class="spa-view hidden">
+    <main class="workspace chat-workspace">
+      <div class="discord-chat">
+        <aside class="dm-pane">
+          <div class="dm-head"><div><strong>Direct messages</strong><span>Trusted peers</span></div></div>
+          <div class="dm-search"><input class="input" id="chatPeerSearch" placeholder="Find a peer"></div>
+          <div id="chatPeers" class="dm-list"></div>
+        </aside>
+        <section class="conversation-pane">
+          <header class="conversation-head"><div class="conversation-identity"><div class="avatar large" id="chatAvatar">—</div><div><strong id="chatPeerName">Choose a peer</strong><span id="chatPeerMeta">Select someone from the left</span></div></div><button class="btn primary" id="chatConnectBtn" disabled>Connect chat</button></header>
+          <div id="messages" class="messages discord-messages"><div class="empty">Choose a trusted peer from the left.</div></div>
+          <div class="composer discord-composer"><button class="btn" id="attachBtn" disabled>+</button><textarea id="messageInput" class="textarea" placeholder="Message selected peer" disabled></textarea><button class="btn primary" id="sendBtn" disabled>Send</button><input id="fileInput" type="file" hidden></div>
+        </section>
+      </div>
+    </main>
+  </div>
 
-            if (lan.localVirtualIp && !document.getElementById('virtualIpInput').value) {
-                document.getElementById('virtualIpInput').value = lan.localVirtualIp;
-            }
-            document.getElementById('lanSubnet').textContent = lan.subnetMask || '255.0.0.0';
-            document.getElementById('lanMtu').textContent = lan.mtu || 9000;
-            document.getElementById('lanRxPkts').textContent = `${lan.totalRxPackets || 0} (${formatBytes(lan.totalRxBytes || 0)})`;
-            document.getElementById('lanTxPkts').textContent = `${lan.totalTxPackets || 0} (${formatBytes(lan.totalTxBytes || 0)})`;
+  <!-- 3. VOICE STUDIO VIEW -->
+  <div id="view-voice" class="spa-view hidden">
+    <main class="workspace">
+      <div class="page-head">
+        <div>
+          <h1>Voice Studio</h1>
+          <p>Llamadas de voz bidireccionales en tiempo real punto a punto con Opus VoIP a 96 kbps.</p>
+        </div>
+      </div>
 
-            const lanPeersContainer = document.getElementById('activeLanPeersContainer');
-            const lanPeers = lan.activePeers || [];
-            const activeLanCountEl = document.getElementById('activeLanCount');
-            if (activeLanCountEl) activeLanCountEl.textContent = lanPeers.length;
-            if (lanPeers.length === 0) {
-                lanPeersContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 12px; background: var(--item-bg); border: 1px solid var(--card-border); border-radius: 3px; font-size: 12px;">No peers connected to Virtual LAN. Connect via FriendsLAN protocol above to join the mesh network!</div>';
-            } else {
-                lanPeersContainer.innerHTML = lanPeers.map(p => `
-                    <div class="peer-card">
-                        <div class="peer-info-main">
-                            <div class="peer-name">🎮 ${escapeHtml(p.peerName)}</div>
-                            <div class="peer-meta">Virtual IP: <strong style="color:var(--accent);">${escapeHtml(p.virtualIp)}</strong> | Joined: ${p.connectedAt}</div>
-                        </div>
-                        <div style="font-size: 11.5px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace;">
-                            RX: ${p.rxPackets} (${formatBytes(p.rxBytes)}) | TX: ${p.txPackets} (${formatBytes(p.txBytes)})
-                        </div>
-                    </div>
-                `).join('');
-            }
+      <div id="audioUnlockBanner" class="attention space-top hidden" style="border-left: 4px solid var(--accent); background: rgba(56, 139, 253, 0.12); padding: 14px 18px; border-radius: 8px; margin-bottom: 16px; cursor: pointer;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+          <div>
+            <strong style="color: #79b8ff; font-size: 14px; display: block; margin-bottom: 3px;">Audio en espera de interacción</strong>
+            <span style="color: var(--muted); font-size: 12.5px;">Haz clic aquí para activar los altavoces/auriculares para escuchar la llamada.</span>
+          </div>
+          <button class="btn accent sm" style="font-weight: 600; padding: 6px 14px;">Activar Audio</button>
+        </div>
+      </div>
 
-            const savedContainer = document.getElementById('savedPeersContainer');
-            const savedPeers = data.savedPeers || [];
-            const savedPeerCountEl = document.getElementById('savedPeerCount');
-            if (savedPeerCountEl) savedPeerCountEl.textContent = savedPeers.length;
-            if (savedPeers.length === 0) {
-                savedContainer.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 12px; font-size: 12px;">No saved peers in database.</div>';
-            } else {
-                savedContainer.innerHTML = savedPeers.map(sp => {
-                    const isTorSaved = !stringIsNullOrEmpty(sp.onionAddress);
-                    const transportBadge = isTorSaved
-                        ? `<span class="transport-badge transport-tor">🧅 Tor</span>`
-                        : `<span class="transport-badge transport-wan">🌐 WAN</span>`;
+      <div class="split-2">
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Llamadas activas</h2>
+              <p>Controles de volumen, silenciamiento y colgado individual por peer.</p>
+            </div>
+          </div>
+          <div class="section-body"><div id="activeCalls" class="active-calls-grid"></div></div>
+        </section>
 
-                    const epDisplay = isTorSaved
-                        ? (sp.onionAddress + (sp.minPort ? ':' + sp.minPort : ''))
-                        : (sp.addresses && sp.addresses.length > 0 ? `${sp.addresses.join(', ')} (${formatPortRange(sp.minPort, sp.maxPort)})` : 'No IP');
-
-                    return `
-                        <div class="peer-card">
-                            <div class="peer-info-main">
-                                <div class="peer-name-row">
-                                    <span class="peer-name">${escapeHtml(sp.name || 'Saved Peer')}</span>
-                                    ${transportBadge}
-                                    <label style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; background: var(--item-bg); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--card-border);" title="Toggle auto-connect on application start">
-                                        <input type="checkbox" ${sp.autoConnect ? 'checked' : ''} onchange="toggleSavedPeerAutoConnect('${sp.certHash}', this.checked)" style="cursor: pointer; accent-color: var(--emerald);">
-                                        <span style="color: ${sp.autoConnect ? 'var(--emerald)' : 'var(--text-muted)'}; font-weight: 600;">⚡ Auto-Connect</span>
-                                    </label>
-                                </div>
-                                <div class="peer-meta">Endpoints: <strong style="color:var(--text-primary);">${escapeHtml(epDisplay)}</strong></div>
-                                <div class="peer-meta">Cert: ${escapeHtml(sp.certHash.substring(0, 24))}...</div>
-                            </div>
-                            <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-                                <button class="btn btn-emerald" style="padding: 4px 8px; font-size: 11.5px;" onclick="connectSavedPeer('${sp.certHash}', this)" title="Interrogate and connect right now">⚡ Reconnect</button>
-                                <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11.5px;" onclick='openEditModal(${JSON.stringify(sp)})'>✏️ Edit</button>
-                                <button class="btn btn-rose" style="padding: 4px 8px; font-size: 11.5px;" onclick="deleteSavedPeer('${sp.certHash}')">🗑️ Delete</button>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-            }
-
-            const logs = data.logs || [];
-            const termEl = document.getElementById('terminalLogs');
-            if (termEl) {
-                termEl.innerHTML = logs.map(l => `<div>${escapeHtml(l)}</div>`).join('');
-                termEl.scrollTop = termEl.scrollHeight;
-            }
-        }
-
-        function stringIsNullOrEmpty(s) {
-            return !s || s.trim().length === 0;
-        }
-
-        function buildPingBadgeHtml(peer) {
-            return peer.hasPing && peer.ping >= 0
-                ? `<span style="font-size: 10px; padding: 2px 5px; border-radius: 2px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.25); color: #34d399; font-weight: 600; font-family: 'JetBrains Mono', monospace;">⚡ ${peer.ping} ms</span>`
-                : `<span style="font-size: 10px; padding: 2px 5px; border-radius: 2px; background: var(--item-bg); border: 1px solid var(--card-border); color: #94a3b8; font-family: 'JetBrains Mono', monospace;">no ping</span>`;
-        }
-
-        function buildTransportBadgeHtml(peer) {
-            return peer.isTor
-                ? `<span class="transport-badge transport-tor">🧅 Tor</span>`
-                : `<span class="transport-badge transport-wan">🌐 WAN</span>`;
-        }
-
-        function buildEndpointDisplay(peer) {
-            return peer.isTor 
-                ? (peer.onionAddress || peer.activeEndPoint)
-                : `${peer.activeEndPoint} (${(peer.addresses || []).join(', ')})`;
-        }
-
-        function buildPeerCardInnerHtml(peer, protocols) {
-            const pingBadge = buildPingBadgeHtml(peer);
-            const transportBadge = buildTransportBadgeHtml(peer);
-            const epDisplay = buildEndpointDisplay(peer);
-            const lastSeenBadge = formatLastSeenBadge(peer.lastSeenSecondsAgo, peer.lastSeenFormatted);
-            
-            const savedProto = selectedPeerProtocols.get(peer.id);
-            const defaultProto = protocols.length > 0 ? protocols[0].id : '';
-            const currentSelectedProto = savedProto || defaultProto;
-
-            const protoOptions = protocols.map(pr => 
-                `<option value="${pr.id}" ${pr.id === currentSelectedProto ? 'selected' : ''}>${escapeHtml(pr.name)}</option>`
-            ).join('');
-
-            const isAutoAccepted = !!peer.isAutoAccepted;
-            const trustBtnHtml = `<button id="peer_trust_btn_${peer.id}" class="btn ${isAutoAccepted ? 'btn-emerald' : 'btn-secondary'}" style="padding: 5px 8px; font-size: 11.5px;" onclick="togglePeerAutoAccept('${peer.id}', ${!isAutoAccepted})" title="${isAutoAccepted ? 'Peer is trusted and auto-accepted' : 'Auto-accept connections from this peer'}">${isAutoAccepted ? '🛡️ Trusted' : '🛡️ Trust'}</button>`;
-
-            const isSaved = !!peer.isSaved;
-            const saveBtnHtml = `<button id="peer_save_btn_${peer.id}" class="btn ${isSaved ? 'btn-emerald' : 'btn-secondary'}" style="padding: 5px 8px; font-size: 11.5px;" onclick="toggleSavePeer('${peer.id}', ${!isSaved})" title="${isSaved ? 'Remove peer from saved database' : 'Save peer to database'}">${isSaved ? '💾 Saved' : '💾 Save'}</button>`;
-
-            return `
-                <div class="peer-info-main">
-                    <div class="peer-name-row">
-                        <span class="peer-name">${escapeHtml(peer.name || 'Peer')}</span>
-                        <span id="peer_saved_badge_${peer.id}">${isSaved ? '<span title="Saved in database" style="font-size:11px;">💾</span>' : ''}</span>
-                        <span id="peer_trust_badge_${peer.id}">${isAutoAccepted ? '<span title="Auto-accepted peer" style="font-size:11px;">🛡️</span>' : ''}</span>
-                        <span id="peer_transport_${peer.id}">${transportBadge}</span>
-                        <span id="peer_ping_${peer.id}">${pingBadge}</span>
-                        <span id="peer_seen_${peer.id}">${lastSeenBadge}</span>
-                    </div>
-                    <div class="peer-meta">ID: ${peer.id}</div>
-                    <div class="peer-meta">Endpoint: <strong id="peer_ep_${peer.id}" style="color:var(--text-primary);">${escapeHtml(epDisplay)}</strong></div>
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Audio local & Dispositivos</h2>
+              <p>Selecciona tu micrófono y revisa el nivel de modulación en tiempo real.</p>
+            </div>
+          </div>
+          <div class="section-body">
+            <div class="field"><label for="micSelect">Micrófono</label><select class="select" id="micSelect"></select></div>
+            <div class="service-row single-service space-top">
+              <div class="service">
+                <div>
+                  <strong>Procesamiento de voz del navegador</strong>
+                  <span>Cancelación de eco acústico (AEC), supresión de ruido de fondo y AGC.</span>
                 </div>
-                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-                    <select id="proto_${peer.id}" class="select-protocol" onchange="selectedPeerProtocols.set('${peer.id}', this.value)">
-                        ${protoOptions}
-                    </select>
-                    <button class="btn btn-emerald" style="padding: 5px 10px; font-size: 11.5px;" onclick="connectPeerProtocol('${peer.id}', this)">⚡ Connect</button>
-                    ${saveBtnHtml}
-                    ${trustBtnHtml}
-                    <button class="btn btn-secondary" style="padding: 5px 8px; font-size: 11.5px;" onclick="disconnectPeer('${peer.id}')">🚫 Disconnect</button>
-                </div>
-            `;
-        }
+                <label class="switch"><input id="processingToggle" type="checkbox" checked><span class="switch-track"></span></label>
+              </div>
+            </div>
+            <div class="field space-top"><label>Nivel de entrada</label><div class="meter"><span id="micMeter"></span></div></div>
+            <div class="toolbar space-top">
+              <button class="btn" id="testMicBtn">Probar micrófono</button>
+              <button class="btn accent" id="advancedOpusBtn">Opciones avanzadas</button>
+            </div>
+          </div>
+        </section>
 
-        function updatePeerCardInPlace(card, peer) {
-            const pingEl = document.getElementById(`peer_ping_${peer.id}`);
-            if (pingEl) pingEl.innerHTML = buildPingBadgeHtml(peer);
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Iniciar llamada</h2>
+              <p>Contactos de confianza disponibles para llamada de voz.</p>
+            </div>
+          </div>
+          <div class="section-body"><div id="voicePeers" class="peer-list voice-peer-list"></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
 
-            const seenEl = document.getElementById(`peer_seen_${peer.id}`);
-            if (seenEl) seenEl.innerHTML = formatLastSeenBadge(peer.lastSeenSecondsAgo, peer.lastSeenFormatted);
+  <!-- 4. LAN BRIDGE VIEW -->
+  <div id="view-vpn" class="spa-view hidden">
+    <main class="workspace">
+      <div class="page-head"><div><h1>LAN Bridge</h1><p>Private virtual IPv4 LAN for trusted peers and LAN game discovery.</p></div></div>
+      <div id="adminRequiredBanner" class="attention space-top hidden" style="border-left: 4px solid var(--danger); background: rgba(248, 81, 73, 0.12); padding: 14px 18px; border-radius: 8px; margin-bottom: 16px;"><div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;"><div style="display: flex; align-items: center; gap: 12px;"><span style="font-size: 24px;"></span><div><strong style="color: #ff7b72; font-size: 14px; display: block; margin-bottom: 3px;">Permisos de administrador requeridos</strong><span style="color: var(--muted); font-size: 12.5px;">El adaptador virtual Wintun requiere permisos de administrador (o root en Linux) para crear el adaptador y enrutar paquetes en la LAN virtual.</span></div></div><button class="btn danger" id="restartAdminBtn" style="font-weight: 600; padding: 8px 16px; cursor: pointer;">Reiniciar con permisos de administrador</button></div></div>
+      <section class="summary-line"><div class="summary-item"><label>Virtual IP</label><strong class="mono" id="virtualIp">—</strong><small id="addressMode">Automatic assignment</small></div><div class="summary-item"><label>LAN peers</label><strong id="lanPeerCount">0</strong><small>Active sessions</small></div><div class="summary-item"><label>Traffic</label><strong id="lanTraffic">0 B</strong><small>Combined RX + TX</small></div></section>
+      <div class="split-2">
+        <section class="section"><div class="section-head"><div><h2>Adapter configuration</h2><p>Automatic mode derives a stable private address.</p></div></div><div class="section-body"><div class="service-row" style="grid-template-columns:1fr 1fr"><div class="service"><div><strong>Enable LAN Bridge</strong><span>Register and start the Wintun adapter.</span></div><label class="switch"><input id="lanEnabled" type="checkbox"><span class="switch-track"></span></label></div><div class="service"><div><strong>Automatic IP assignment</strong><span>No DHCP coordinator required.</span></div><label class="switch"><input id="autoAssign" type="checkbox"><span class="switch-track"></span></label></div></div><div class="form-row space-top" style="grid-template-columns:1fr 1fr"><div class="field"><label>Virtual IPv4</label><input class="input mono" id="lanIp" placeholder="10.x.x.x"></div><div class="field"><label>Subnet mask</label><input class="input mono" id="lanMask" value="255.255.255.0"></div></div><div class="field space-top"><label>MTU</label><input class="input" id="lanMtu" type="number" min="1200" max="9000"></div><div class="toolbar space-top"><button class="btn primary" id="applyLanBtn">Apply settings</button></div><div class="inline-help space-top" id="lanError"></div></div></section>
+        <section class="section"><div class="section-head"><div><h2>Connected trusted peers</h2><p>Add peers to the virtual LAN.</p></div></div><div class="section-body"><div id="vpnPeers" class="peer-list"></div></div></section>
+      </div>
+      <section class="section"><div class="section-head"><div><h2>Active LAN sessions</h2><p>Virtual addresses and traffic counters.</p></div></div><div class="section-body"><div class="table-wrap"><table><thead><tr><th>Peer</th><th>Virtual IP</th><th>Connected</th><th>RX</th><th>TX</th></tr></thead><tbody id="lanSessions"></tbody></table></div></div></section>
+    </main>
+  </div>
 
-            const transEl = document.getElementById(`peer_transport_${peer.id}`);
-            if (transEl) transEl.innerHTML = buildTransportBadgeHtml(peer);
+  <!-- 5. RELAYDRIVE VIEW -->
+  <div id="view-files" class="spa-view hidden">
+    <main class="workspace">
+      <div class="page-head"><div><h1>RelayDrive</h1><p>Virtual file shelf for trusted peers. Metadata syncs first; bytes move only when you materialize a file.</p></div></div>
+      <div class="split-2">
+        <section class="section"><div class="section-head"><div><h2>Temporary Outbox</h2><p>Files offered from this computer.</p></div><button class="btn sm" id="openOutboxBtn">Open folder</button></div><div class="section-body"><div class="code-box" id="outboxPath">Loading…</div><label class="file-drop space-top" id="fileDrop"><strong>Drop files here</strong><span>or click to copy them into the temporary Outbox</span><input id="driveFileInput" type="file" multiple hidden></label><div id="uploadState" class="inline-help space-top"></div><div id="publishedFiles" class="drive-list space-top"></div></div></section>
+        <section class="section"><div class="section-head"><div><h2>Remote shelf</h2><p>Remote entries remain virtual until requested.</p></div><span class="badge blue">On demand</span></div><div class="section-body"><div id="remoteFiles" class="drive-list"></div></div></section>
+      </div>
+      <div class="split-2">
+        <section class="section"><div class="section-head"><div><h2>Connected trusted peers</h2><p>Mount RelayDrive sessions.</p></div></div><div class="section-body"><div id="drivePeers" class="peer-list"></div></div></section>
+        <section class="section"><div class="section-head"><div><h2>Materialized cache</h2><p>Verified downloads stored temporarily.</p></div><button class="btn sm" id="openCacheBtn">Open folder</button></div><div class="section-body"><div class="code-box" id="cachePath">Loading…</div><div id="cachedFiles" class="drive-list space-top"></div></div></section>
+      </div>
+    </main>
+  </div>
+</div>
 
-            const saveBadgeEl = document.getElementById(`peer_saved_badge_${peer.id}`);
-            if (saveBadgeEl) saveBadgeEl.innerHTML = peer.isSaved ? '<span title="Saved in database" style="font-size:11px;">💾</span>' : '';
+<!-- MODALS -->
+<div class="modal-backdrop hidden" id="savedPeerModal">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="savedPeerModalTitle">
+    <div class="modal-head"><div><h2 id="savedPeerModalTitle">Edit Saved Peer</h2><p>Changes are written to the local peer database.</p></div><button class="btn sm ghost" id="closeSavedPeerModalBtn">Close</button></div>
+    <div class="modal-body">
+      <div class="form-grid two-col">
+        <div class="field"><label>Name</label><input class="input" id="savedName" maxlength="128"></div>
+        <div class="field"><label>Network type</label><select class="select" id="savedNetworkType"><option>Static</option><option>DynamicPort</option><option>DynamicAddress</option><option>DynamicPortAndAddress</option><option>Tor</option></select></div>
+      </div>
+      <div class="field space-top"><label>Certificate hash (Base64)</label><input class="input mono" id="savedCertHash" autocomplete="off"></div>
+      <div class="field space-top"><label>IP addresses <span class="muted">comma, whitespace or one per line</span></label><textarea class="textarea mono compact-area" id="savedAddresses" placeholder="203.0.113.10&#10;198.51.100.20"></textarea></div>
+      <div class="field space-top"><label>Onion address</label><input class="input mono" id="savedOnion" placeholder="example.onion"></div>
+      <div class="form-grid two-col space-top"><div class="field"><label>Minimum port</label><input class="input mono" id="savedMinPort" type="number" min="1" max="65535"></div><div class="field"><label>Maximum port</label><input class="input mono" id="savedMaxPort" type="number" min="1" max="65535"></div></div>
+      <label class="check-line space-top"><input id="savedAutoConnect" type="checkbox"><span>Reconnect automatically on startup</span></label>
+      <div class="modal-error hidden" id="savedPeerModalError"></div>
+    </div>
+    <div class="modal-foot"><button class="btn" id="cancelSavedPeerBtn">Cancel</button><button class="btn primary" id="saveSavedPeerBtn">Save changes</button></div>
+  </div>
+</div>
 
-            const trustBadgeEl = document.getElementById(`peer_trust_badge_${peer.id}`);
-            if (trustBadgeEl) trustBadgeEl.innerHTML = peer.isAutoAccepted ? '<span title="Auto-accepted peer" style="font-size:11px;">🛡️</span>' : '';
+<div class="modal-backdrop hidden" id="stunModal">
+  <div class="modal-card stun-modal-card" role="dialog" aria-modal="true" aria-labelledby="stunModalTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="stunModalTitle">Exact STUN Mappings</h2>
+        <p id="stunModalSubtitle">All observed public endpoints from STUN servers.</p>
+      </div>
+      <button class="btn sm ghost" id="closeStunModalBtn">Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="stun-modal-stats" id="stunModalStats"></div>
+      <div class="table-wrap borderless stun-modal-table-wrap">
+        <table class="data-table stun-modal-table">
+          <thead>
+            <tr>
+              <th style="width:50px">#</th>
+              <th>Endpoint</th>
+              <th style="width:130px">STUN Hits</th>
+              <th style="width:70px"></th>
+            </tr>
+          </thead>
+          <tbody id="stunModalList"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="copyAllStunBtn">Copy all</button>
+      <button class="btn primary" id="closeStunModalFootBtn">Close</button>
+    </div>
+  </div>
+</div>
 
-            const epEl = document.getElementById(`peer_ep_${peer.id}`);
-            if (epEl) epEl.innerText = buildEndpointDisplay(peer);
+<div class="modal-backdrop hidden" id="tokenConflictModal">
+  <div class="modal-card" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <div>
+        <h2 id="tokenConflictTitle">Actualizar información de peer guardado</h2>
+        <p>El token corresponde a un peer que ya tienes guardado, pero su información de red es diferente.</p>
+      </div>
+      <button class="btn sm ghost" id="closeTokenConflictBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Nombre / Alias guardado</label>
+        <input class="input" id="conflictPeerName">
+      </div>
+      <div class="field space-top">
+        <label>Certificado (Identidad fija)</label>
+        <div class="mono peer-sub" id="conflictCertHash" style="word-break:break-all;"></div>
+      </div>
+      
+      <div class="comparison-grid space-top">
+        <div class="comparison-col">
+          <div class="comparison-title">Información actual guardada</div>
+          <div class="mono comparison-box" id="conflictSavedInfo"></div>
+        </div>
+        <div class="comparison-col">
+          <div class="comparison-title">Nueva información del token</div>
+          <div class="mono comparison-box highlight" id="conflictNewInfo"></div>
+        </div>
+      </div>
 
-            const saveBtn = document.getElementById(`peer_save_btn_${peer.id}`);
-            if (saveBtn) {
-                saveBtn.className = `btn ${peer.isSaved ? 'btn-emerald' : 'btn-secondary'}`;
-                saveBtn.innerText = peer.isSaved ? '💾 Saved' : '💾 Save';
-                saveBtn.title = peer.isSaved ? 'Remove peer from saved database' : 'Save peer to database';
-                saveBtn.onclick = () => toggleSavePeer(peer.id, !peer.isSaved);
-            }
+      <label class="check-line space-top">
+        <input id="conflictAutoConnect" type="checkbox">
+        <span>Reconectar automáticamente al iniciar la aplicación (Auto-connect)</span>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="conflictCancelBtn">Cancelar</button>
+      <button class="btn ghost" id="conflictConnectOnlyBtn">Conectar sin actualizar</button>
+      <button class="btn primary" id="conflictUpdateConnectBtn">Reemplazar datos y Conectar</button>
+    </div>
+  </div>
+</div>
 
-            const trustBtn = document.getElementById(`peer_trust_btn_${peer.id}`);
-            if (trustBtn) {
-                trustBtn.className = `btn ${peer.isAutoAccepted ? 'btn-emerald' : 'btn-secondary'}`;
-                trustBtn.innerText = peer.isAutoAccepted ? '🛡️ Trusted' : '🛡️ Trust';
-                trustBtn.title = peer.isAutoAccepted ? 'Peer is trusted and auto-accepted' : 'Auto-accept connections from this peer';
-                trustBtn.onclick = () => togglePeerAutoAccept(peer.id, !peer.isAutoAccepted);
-            }
-        }
+<!-- Modal de Opciones Avanzadas de Opus -->
+<div id="opusModal" class="modal-backdrop hidden">
+  <div class="modal-card" style="max-width: 520px;">
+    <div class="modal-head">
+      <div>
+        <h2>Configuración de Codificación Opus</h2>
+        <p>Ajustes de calidad y transmisión para llamadas VoIP.</p>
+      </div>
+      <button class="btn sm ghost" id="closeOpusModalBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="opusBitrateSelect">Bitrate de audio (calidad vs ancho de banda)</label>
+        <select class="select" id="opusBitrateSelect">
+          <option value="16000">16 kbps · Ahorro de datos (Muy bajo ancho de banda)</option>
+          <option value="24000">24 kbps · Voz estándar eficiente</option>
+          <option value="32000">32 kbps · Buena claridad VoIP</option>
+          <option value="48000">48 kbps · Alta fidelidad</option>
+          <option value="64000">64 kbps · Calidad premium</option>
+          <option value="96000" selected>96 kbps · Calidad estudio VoIP (Recomendado)</option>
+          <option value="128000">128 kbps · Ultra alta fidelidad / Música</option>
+        </select>
+      </div>
 
-        function formatLastSeenBadge(secAgo, formattedTime) {
-            if (secAgo < 6) {
-                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 5px; border-radius:2px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); color:#10b981; font-weight:600; font-family: 'JetBrains Mono', monospace;"><span style="width:4px; height:4px; border-radius:50%; background:#10b981; display:inline-block;"></span> Active</span>`;
-            } else if (secAgo < 45) {
-                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 5px; border-radius:2px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); color:#f59e0b; font-weight:600; font-family: 'JetBrains Mono', monospace;">Active ${secAgo}s ago</span>`;
-            } else {
-                return `<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 5px; border-radius:2px; background:var(--item-bg); border:1px solid var(--card-border); color:#94a3b8; font-weight:400; font-family: 'JetBrains Mono', monospace;">Seen ${formattedTime}</span>`;
-            }
-        }
+      <div class="service-row single-service space-top">
+        <div class="service">
+          <div>
+            <strong>Buffer anti-cortes de 60ms (Jitter Buffer)</strong>
+            <span>Guarda 1 frame (60 ms) de audio en cola antes de reproducirlo para evitar cortes y ruidos si hay variaciones de red.</span>
+          </div>
+          <label class="switch">
+            <input id="jitterBufferToggle" type="checkbox" checked>
+            <span class="switch-track"></span>
+          </label>
+        </div>
+      </div>
 
-        function formatBytes(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-        }
+      <div class="opus-specs-grid">
+        <div class="opus-spec-item">
+          <label>Modo de aplicación</label>
+          <strong>VoIP (Tiempo real)</strong>
+        </div>
+        <div class="opus-spec-item">
+          <label>Ventana de audio</label>
+          <strong>60 ms (2880 samples)</strong>
+        </div>
+        <div class="opus-spec-item">
+          <label>Buffer anti-cortes</label>
+          <strong id="modalJitterStatus">60 ms (1 frame)</strong>
+        </div>
+      </div>
 
-        function escapeHtml(str) {
-            if (!str) return '';
-            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-        }
+      <p class="inline-help space-top">
+        La configuración VoIP a 60 ms y el buffer anti-cortes minimizan la sobrecarga de encabezados UDP y absorben fluctuaciones de latencia en conexiones P2P.
+      </p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn primary" id="saveOpusModalBtn">Guardar cambios</button>
+    </div>
+  </div>
+</div>
 
-        function showToast(msg) {
-            const toast = document.getElementById('toast');
-            toast.textContent = msg;
-            toast.classList.add('show');
-            setTimeout(() => toast.classList.remove('show'), 3000);
-        }
-
-        function copyWanToken() {
-            const token = currentStatus?.wanToken || currentStatus?.token;
-            if (token) {
-                navigator.clipboard.writeText(`QP://${token}`);
-                showToast("WAN Token (QP://) copied to clipboard!");
-            }
-        }
-
-        function copyTorToken() {
-            const token = currentStatus?.torToken;
-            if (token) {
-                navigator.clipboard.writeText(`QP://${token}`);
-                showToast("Tor Token (QP://) copied to clipboard!");
-            } else {
-                showToast("Tor service is not active. Start Tor first.");
-            }
-        }
-
-        function copyToken() {
-            copyWanToken();
-        }
-
-        function copyQuickLink() {
-            if (currentStatus?.quickUri) {
-                navigator.clipboard.writeText(currentStatus.quickUri);
-                showToast("Quick share link copied!");
-            }
-        }
-
-        async function connectByToken() {
-            const input = document.getElementById('connectTokenInput');
-            const token = input.value.trim();
-            if (!token) return;
-
-            try {
-                const res = await fetch('/api/connect-token', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token })
-                });
-                const data = await res.json();
-                if (res.ok && data.success) {
-                    showToast("Connection initiated!");
-                    input.value = '';
-                    setTimeout(fetchStatus, 600);
-                } else {
-                    showToast(data.error || "Connection error");
-                }
-            } catch (err) {
-                console.error(err);
-                showToast("Connection error: " + err.message);
-            }
-        }
-
-        async function toggleTorRuntime() {
-            const isStarted = currentStatus?.torStatus?.isStarted;
-            try {
-                if (isStarted) {
-                    showToast("Stopping Tor runtime...");
-                    await fetch('/api/tor-stop', { method: 'POST' });
-                } else {
-                    showToast("Starting Tor runtime & hidden service...");
-                    await fetch('/api/tor-start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: 0 }) });
-                }
-                setTimeout(fetchStatus, 800);
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        async function requestNewCircuits() {
-            try {
-                showToast("Requesting new Tor circuits (NEWNYM)...");
-                const res = await fetch('/api/tor-newnym', { method: 'POST' });
-                const json = await res.json();
-                if (json.success) showToast("New Tor circuits assigned!");
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        async function connectPeerProtocol(peerId, btnEl) {
-            const sel = document.getElementById(`proto_${peerId}`);
-            const protocolId = sel ? sel.value : selectedPeerProtocols.get(peerId);
-            if (!protocolId) return;
-
-            const originalText = btnEl ? btnEl.innerText : '⚡ Connect';
-            if (btnEl) {
-                btnEl.disabled = true;
-                btnEl.innerText = '⏳ Connecting...';
-            }
-
-            try {
-                showToast("Negotiating QUIC connection...");
-                const res = await fetch('/api/connect-peer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId, protocolId, protocol: protocolId })
-                });
-                const data = await res.json();
-
-                const selText = (sel && sel.selectedIndex >= 0) ? sel.options[sel.selectedIndex].text.toLowerCase() : '';
-                if (selText.includes('chat') || protocolId === '00000000-0000-0000-0000-000000000001') {
-                    window.location.href = `/chat.html?peerId=${peerId}`;
-                } else if (selText.includes('voice') || selText.includes('call') || protocolId === '00000000-0000-0000-0000-000000000003') {
-                    window.location.href = `/call.html?peerId=${peerId}`;
-                } else {
-                    showToast("Connected via " + (selText || "protocol") + "!");
-                    fetchStatus();
-                }
-            } catch (err) {
-                console.error(err);
-                showToast("Connection negotiation failed.");
-            } finally {
-                if (btnEl) {
-                    setTimeout(() => {
-                        btnEl.disabled = false;
-                        btnEl.innerText = originalText;
-                    }, 4000);
-                }
-            }
-        }
-
-        async function respondPetition(requestId, accept, protocolName, peerId) {
-            try {
-                await fetch('/api/respond-petition', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ requestId, accept })
-                });
-                showToast(accept ? "Connection accepted!" : "Connection declined.");
-                setTimeout(fetchStatus, 500);
-
-                if (accept && protocolName) {
-                    if (protocolName.toLowerCase().includes('chat')) {
-                        window.location.href = `/chat.html?peerId=${peerId}`;
-                    } else if (protocolName.toLowerCase().includes('voice') || protocolName.toLowerCase().includes('call')) {
-                        window.location.href = `/call.html?peerId=${peerId}`;
-                    }
-                }
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        async function cancelInterrogation(id) {
-            try {
-                await fetch('/api/cancel-interrogation', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id })
-                });
-                showToast("Hole punching attempt canceled.");
-                fetchStatus();
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        async function toggleGlobalAutoAccept(checked) {
-            try {
-                await fetch('/api/settings/auto-accept', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ autoAcceptAll: checked })
-                });
-                showToast(checked ? '✅ Auto-accept enabled for all connections' : 'ℹ️ Auto-accept disabled (manual approval required)');
-                fetchStatus();
-            } catch (err) {
-                showToast('Failed to update auto-accept setting');
-            }
-        }
-
-        async function togglePeerAutoAccept(peerId, autoAccept) {
-            try {
-                const res = await fetch('/api/peer/auto-accept', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId, autoAccept })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(autoAccept ? '🛡️ Peer added to auto-accept' : 'ℹ️ Peer removed from auto-accept');
-                    fetchStatus();
-                } else {
-                    showToast('Failed to update peer auto-accept: ' + (data.error || 'Unknown error'));
-                }
-            } catch (err) {
-                showToast('Error updating peer auto-accept');
-            }
-        }
-
-        async function toggleSavePeer(peerId, shouldSave) {
-            try {
-                const res = await fetch('/api/save-peer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ peerId, save: shouldSave, autoConnect: true })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(shouldSave ? '💾 Peer saved to database' : '🗑️ Peer removed from saved database');
-                    fetchStatus();
-                } else {
-                    showToast('Failed to update saved peer: ' + (data.error || 'Unknown error'));
-                }
-            } catch (err) {
-                showToast('Error updating saved peer');
-            }
-        }
-
-        async function saveConnectedPeer(peerId, shouldSave) {
-            await toggleSavePeer(peerId, shouldSave);
-        }
-
-        async function saveAllConnectedPeers() {
-            try {
-                const res = await fetch('/api/save-all-peers', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(`💾 Saved ${data.savedCount} peer(s) to database`);
-                    fetchStatus();
-                }
-            } catch (err) {
-                showToast('Error saving all peers');
-            }
-        }
-
-        async function toggleSavedPeerAutoConnect(certHash, autoConnect) {
-            try {
-                const res = await fetch('/api/toggle-saved-peer-autoconnect', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ certHash, autoConnect })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(autoConnect ? '⚡ Auto-connect on startup enabled' : 'ℹ️ Auto-connect on startup disabled');
-                    fetchStatus();
-                }
-            } catch (err) {
-                showToast('Error toggling auto-connect');
-            }
-        }
-
-        async function connectSavedPeer(certHash, btnEl) {
-            const originalText = btnEl ? btnEl.innerText : '⚡ Reconnect';
-            if (btnEl) {
-                btnEl.disabled = true;
-                btnEl.innerText = '⏳ Connecting...';
-            }
-
-            try {
-                const res = await fetch('/api/connect-saved-peer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ certHash })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast('⚡ Initiated connection to saved peer!');
-                    fetchStatus();
-                } else {
-                    showToast('Failed to connect: ' + (data.error || 'Unknown'));
-                }
-            } catch (err) {
-                showToast('Error connecting to saved peer');
-            } finally {
-                if (btnEl) {
-                    setTimeout(() => {
-                        btnEl.disabled = false;
-                        btnEl.innerText = originalText;
-                    }, 4000);
-                }
-            }
-        }
-
-        function openEditModal(peer) {
-            document.getElementById('editName').value = peer.name || '';
-            document.getElementById('editCertHash').value = peer.certHash;
-            document.getElementById('editMinPort').value = peer.minPort || 1024;
-            document.getElementById('editMaxPort').value = peer.maxPort || 65535;
-            document.getElementById('editAddresses').value = (peer.addresses || []).join(', ');
-            document.getElementById('editOnionAddress').value = peer.onionAddress || '';
-            document.getElementById('editAutoConnect').checked = peer.autoConnect !== false;
-            document.getElementById('editPeerModal').classList.add('active');
-        }
-
-        function closeEditModal() {
-            document.getElementById('editPeerModal').classList.remove('active');
-        }
-
-        async function savePeerUpdates() {
-            const name = document.getElementById('editName').value.trim();
-            const certHash = document.getElementById('editCertHash').value;
-            const minPort = parseInt(document.getElementById('editMinPort').value);
-            const maxPort = parseInt(document.getElementById('editMaxPort').value);
-            const addresses = document.getElementById('editAddresses').value;
-            const onionAddress = document.getElementById('editOnionAddress').value.trim();
-            const autoConnect = document.getElementById('editAutoConnect').checked;
-
-            try {
-                await fetch('/api/saved-peer-update', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ certHash, name, onionAddress, autoConnect, minPort, maxPort, addresses })
-                });
-                showToast("Saved peer updated in peers.db!");
-                closeEditModal();
-                fetchStatus();
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        async function deleteSavedPeer(certHash) {
-            if (!confirm("Are you sure you want to remove this peer from the database?")) return;
-            try {
-                await fetch('/api/saved-peer-delete', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ certHash })
-                });
-                showToast("Saved peer removed.");
-                fetchStatus();
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        function openAddSavedPeerModal() {
-            const token = prompt("Enter peer token or URI to store in peers.db:");
-            if (token) {
-                fetch('/api/connect-token', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token })
-                }).then(() => {
-                    showToast("Peer registered!");
-                    setTimeout(fetchStatus, 800);
-                });
-            }
-        }
-
-        function clearLogs() {
-            const term = document.getElementById('terminalLogs');
-            if (term) term.innerHTML = '<div>Logs cleared.</div>';
-        }
-
-        fetchStatus();
-        setInterval(fetchStatus, 1500);
-    </script>
 </body>
 </html>
