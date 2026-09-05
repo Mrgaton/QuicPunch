@@ -30,6 +30,7 @@ public sealed class TorManager : IAsyncDisposable
     public TorRuntimeManager Runtime => _runtime;
     public int SocksPort => _runtime.SocksPort;
     public int ControlPort => _runtime.ControlPort;
+    public TorTransportTier ActiveTransport => _runtime.ActiveTransport;
 
     public static async ValueTask<TorManager> StartPortableAsync(
         TorRuntimeOptions? options = null,
@@ -69,7 +70,7 @@ public sealed class TorManager : IAsyncDisposable
             {
                 await stream.WriteAsync(new byte[] { 0x05, 0x01, 0x00 }, cancellationToken).ConfigureAwait(false);
                 byte[] selection = new byte[2];
-                await ReadExactlyAsync(stream, selection, cancellationToken).ConfigureAwait(false);
+                await stream.ReadExactlyAsync(selection, cancellationToken).ConfigureAwait(false);
                 if (selection[0] != 0x05 || selection[1] != 0x00)
                     throw new IOException($"Tor SOCKS5 rejected no-auth negotiation (method 0x{selection[1]:X2}).");
             }
@@ -84,7 +85,7 @@ public sealed class TorManager : IAsyncDisposable
 
                 await stream.WriteAsync(new byte[] { 0x05, 0x01, 0x02 }, cancellationToken).ConfigureAwait(false);
                 byte[] selection = new byte[2];
-                await ReadExactlyAsync(stream, selection, cancellationToken).ConfigureAwait(false);
+                await stream.ReadExactlyAsync(selection, cancellationToken).ConfigureAwait(false);
                 if (selection[0] != 0x05 || selection[1] != 0x02)
                     throw new IOException($"Tor SOCKS5 rejected username/password isolation negotiation (method 0x{selection[1]:X2}).");
 
@@ -99,7 +100,7 @@ public sealed class TorManager : IAsyncDisposable
 
                 await stream.WriteAsync(auth, cancellationToken).ConfigureAwait(false);
                 byte[] authReply = new byte[2];
-                await ReadExactlyAsync(stream, authReply, cancellationToken).ConfigureAwait(false);
+                await stream.ReadExactlyAsync(authReply, cancellationToken).ConfigureAwait(false);
                 if (authReply[0] != 0x01 || authReply[1] != 0x00)
                     throw new IOException("Tor SOCKS5 stream-isolation authentication failed.");
             }
@@ -118,7 +119,7 @@ public sealed class TorManager : IAsyncDisposable
             await stream.WriteAsync(request, cancellationToken).ConfigureAwait(false);
 
             byte[] header = new byte[4];
-            await ReadExactlyAsync(stream, header, cancellationToken).ConfigureAwait(false);
+            await stream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
             if (header[0] != 0x05)
                 throw new IOException("Invalid SOCKS5 response version from Tor.");
             if (header[1] != 0x00)
@@ -323,40 +324,12 @@ public sealed class TorManager : IAsyncDisposable
         if (addressLength == -1)
         {
             byte[] length = new byte[1];
-            await ReadExactlyAsync(stream, length, cancellationToken).ConfigureAwait(false);
+            await stream.ReadExactlyAsync(length, cancellationToken).ConfigureAwait(false);
             addressLength = length[0];
         }
 
         byte[] tail = new byte[addressLength + 2]; // address + port
-        await ReadExactlyAsync(stream, tail, cancellationToken).ConfigureAwait(false);
-    }
-
-    internal static async ValueTask ReadExactlyAsync(
-        Stream stream,
-        Memory<byte> destination,
-        CancellationToken cancellationToken)
-    {
-        if (stream == null)
-            throw new ArgumentNullException(nameof(stream));
-
-        int offset = 0;
-        while (offset < destination.Length)
-        {
-            int read;
-            try
-            {
-                read = await stream.ReadAsync(destination[offset..], cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is NullReferenceException or ObjectDisposedException or SocketException or IOException)
-            {
-                read = 0;
-            }
-
-            if (read == 0)
-                throw new EndOfStreamException("Stream closed before the requested bytes were received.");
-
-            offset += read;
-        }
+        await stream.ReadExactlyAsync(tail, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async ValueTask WriteAllAsync(

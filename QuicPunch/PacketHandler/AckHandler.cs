@@ -24,9 +24,17 @@ namespace QuicPunch.PacketHandler
 
                 if (qc.AvailablePeers.TryGetValue(peerId, out PeerInfo ackPeer))
                 {
+                    if (!qc.IsTrustedPeer(ackPeer))
+                    {
+                        QuicPunchLog.Info($"ACK: Ignored shared-peer list from untrusted peer {peerId}.");
+                        return;
+                    }
+
                     var peersCount = r.ReadUInt16();
-                    int clampedCount = Math.Min((int)peersCount, MaxSharedPeersPerAck);
-                    List<PeerInfo> remotePeers = new List<PeerInfo>(clampedCount);
+                    if (peersCount > MaxSharedPeersPerAck)
+                        throw new InvalidDataException($"ACK shared-peer count exceeds maximum allowed ({peersCount} > {MaxSharedPeersPerAck}).");
+
+                    List<PeerInfo> remotePeers = new List<PeerInfo>(peersCount);
 
                     for (int i = 0; i < peersCount; i++)
                     {
@@ -36,24 +44,30 @@ namespace QuicPunch.PacketHandler
                         pi.NetworkType = pf.NetworkType;
 
                         byte addressCount = r.ReadByte();
+                        if (addressCount > 32)
+                            throw new InvalidDataException($"Shared peer advertises too many addresses: {addressCount}.");
 
-                        IPAddress[] addresses = new IPAddress[addressCount];
+                        var addresses = new List<IPAddress>(addressCount);
                         for (int e = 0 ; e < addressCount; e++)
                         {
-                            addresses[e] = new IPAddress(r.ReadBytes(4));
+                            byte[] rawAddress = r.ReadBytes(4);
+                            if (rawAddress.Length != 4)
+                                throw new InvalidDataException("Truncated shared-peer address.");
+                            var address = new IPAddress(rawAddress);
+                            if (Utilities.IsValidPeerAddress(address) && !addresses.Contains(address))
+                                addresses.Add(address);
                         }
 
-                        pi.Addresses = addresses;
+                        pi.Addresses = addresses.ToArray();
 
                         pi.MinPort = r.ReadUInt16();
                         pi.MaxPort = r.ReadUInt16();
 
-                        pi.SetCertificateHash(r.ReadBytes(qc.GetCurrentPeer(transport).CertHash.Length));
-                        
-                        if (i < clampedCount)
-                        {
-                            remotePeers.Add(pi);
-                        }
+                        byte[] sharedCertHash = r.ReadBytes(32);
+                        if (sharedCertHash.Length != 32)
+                            throw new InvalidDataException("Truncated shared-peer certificate hash.");
+                        pi.SetCertificateHash(sharedCertHash);
+                        remotePeers.Add(pi);
                     }
 
                     long receivedTicks = r.ReadInt64();
@@ -86,9 +100,28 @@ namespace QuicPunch.PacketHandler
 
                     foreach (var peer in remotePeers)
                     {
-                        if (peer.CertHash != null && !qc.AvailablePeers.Values.Any(availablePeer => availablePeer.CertHash != null && CryptographicOperations.FixedTimeEquals(availablePeer.CertHash, peer.CertHash)))
+                        if (transport == TransportType.Tor)
                         {
-                            _ = qc.PeerInterrogation(peer);
+                            // If received over Tor, reject any shared peer claiming WAN addresses
+                            if (peer.Addresses != null && peer.Addresses.Length > 0)
+                                continue;
+                            peer.NetworkType = QuicPunch.NetworkType.Tor;
+                            peer.ActiveTransport = TransportType.Tor;
+                        }
+                        else
+                        {
+                            // If received over WAN, reject Tor peers or peers without valid endpoints
+                            if (peer.NetworkType == QuicPunch.NetworkType.Tor || peer.Addresses == null || peer.Addresses.Length == 0)
+                                continue;
+                            peer.ActiveTransport = TransportType.Wan;
+                        }
+
+                        if (peer.TryGetCertificateHash(out var peerHash) &&
+                            !qc.AvailablePeers.Values.Any(availablePeer => availablePeer.TryGetCertificateHash(out var availableHash) && CryptographicOperations.FixedTimeEquals(availableHash, peerHash)))
+                        {
+                            // A trusted introducer may suggest a peer, but the suggested
+                            // peer remains untrusted until the user explicitly trusts it.
+                            _ = qc.PeerInterrogationDiscovered(peer);
                         }
                     }
                 }

@@ -12,14 +12,26 @@ namespace QuicPunch.PacketHandler
 {
     internal class HelloHandler
     {
-        internal static void HandleHello(QuicPunch qc, BinaryReader r, UdpClient? udp, EndPoint remoteEndPoint, byte[] buffer, byte messageType, TransportType transport = TransportType.Wan, TorQuicConnectionManager? torChannel = null) {
+        private const int MaxHelloAddresses = 32;
+        private const int MaxCertificateBytes = 16 * 1024;
+        private const int MaxEphemeralKeyBytes = 1024;
+
+        private static byte[] ReadRequiredBytes(BinaryReader reader, int count)
+        {
+            byte[] value = reader.ReadBytes(count);
+            if (value.Length != count)
+                throw new InvalidDataException($"Truncated Hello payload: expected {count} bytes, received {value.Length}.");
+            return value;
+        }
+
+        internal static void HandleHello(QuicPunch qc, BinaryReader r, UdpClient? udp, EndPoint remoteEndPoint, byte[] buffer, byte messageType, TransportType transport = TransportType.Wan, TorQuicConnectionManager? torChannel = null, bool isLanDiscovery = false) {
             try
             {
                 if (qc.LifecycleState == QuicPunch.QuicPunchLifecycleState.Disposed || qc.LifecycleState == QuicPunch.QuicPunchLifecycleState.Stopped)
                     return;
 
                 QuicPunchLog.Info($"[HELLO HANDLER] Node '{qc.GetCurrentPeer(transport).Name}' received messageType {(MessageType)messageType} from {remoteEndPoint} over {transport}");
-                var certHash = r.ReadBytes(qc.GetCurrentPeer(transport).CertHash.Length);
+                var certHash = ReadRequiredBytes(r, qc.GetCurrentPeer(transport).CertHash.Length);
 
                 if ((qc.CurrentPeer.CertHash != null && CryptographicOperations.FixedTimeEquals(certHash, qc.CurrentPeer.CertHash)) ||
                     (qc.TorCurrentPeer?.CertHash != null && CryptographicOperations.FixedTimeEquals(certHash, qc.TorCurrentPeer.CertHash)))
@@ -33,11 +45,14 @@ namespace QuicPunch.PacketHandler
                 PackedFlags pf = new PackedFlags(r.ReadByte());
 
                 var addressesAmount = r.ReadByte();
-                var validAddresses = new List<IPAddress>(Math.Min((int)addressesAmount, 32));
+                if (addressesAmount > MaxHelloAddresses)
+                    throw new InvalidDataException($"Hello advertises too many addresses: {addressesAmount}.");
+
+                var validAddresses = new List<IPAddress>(addressesAmount);
                 for (int i = 0; i < addressesAmount; i++)
                 {
-                    var ip = new IPAddress(r.ReadBytes(4));
-                    if (validAddresses.Count < 32 && Utilities.IsValidPeerAddress(ip) && !validAddresses.Contains(ip))
+                    var ip = new IPAddress(ReadRequiredBytes(r, 4));
+                    if (Utilities.IsValidPeerAddress(ip) && !validAddresses.Contains(ip))
                     {
                         validAddresses.Add(ip);
                     }
@@ -54,7 +69,7 @@ namespace QuicPunch.PacketHandler
                 IPEndPoint targetControlEndPoint;
                 if (remoteEndPoint is IPEndPoint remoteIpEp)
                 {
-                    if (senderControlPort > 0 && (remoteIpEp.Port == qc.LanDiscoveryPort || IPAddress.Broadcast.Equals(remoteIpEp.Address)))
+                    if (senderControlPort > 0 && (isLanDiscovery || remoteIpEp.Port == qc.LanDiscoveryPort || IPAddress.Broadcast.Equals(remoteIpEp.Address)))
                     {
                         targetControlEndPoint = new IPEndPoint(remoteIpEp.Address, senderControlPort);
                     }
@@ -69,10 +84,55 @@ namespace QuicPunch.PacketHandler
                 }
 
                 byte nameSize = r.ReadByte();
-                var nameBytes = r.ReadBytes(nameSize);
+                var nameBytes = ReadRequiredBytes(r, nameSize);
 
                 var certSize = r.ReadUInt16();
-                var certBytes = r.ReadBytes(certSize);
+                if (certSize == 0 || certSize > MaxCertificateBytes)
+                    throw new InvalidDataException($"Invalid certificate size in Hello: {certSize}.");
+                var certBytes = ReadRequiredBytes(r, certSize);
+
+                var remoteTicks = r.ReadInt64();
+                long nowTicks = PreciseTime.GetCorrectTime().Ticks;
+                long diffTicks = nowTicks - remoteTicks;
+
+                if (Math.Abs(diffTicks) > 30_000_000)
+                {
+                    QuicPunchLog.Info($"HELLO: Packet from {remoteEndPoint} rejected. Timestamp drifted by {diffTicks / 10_000.0}ms.");
+                    return;
+                }
+
+                var challengeNonce = ReadRequiredBytes(r, 24);
+                var passwordConnection = r.ReadByte() > 0;
+
+                byte[]? passwordNonce = null;
+                byte[]? remotePop = null;
+                if (passwordConnection && qc.PasswordHash == null)
+                {
+                    QuicPunchLog.Info("Peer has password connection but current instance doesn't");
+                    return;
+                }
+                else if (passwordConnection)
+                {
+                    passwordNonce = ReadRequiredBytes(r, 24);
+                    remotePop = ReadRequiredBytes(r, 256 / 8);
+                }
+                else if (qc.PasswordHash != null)
+                {
+                    QuicPunchLog.Info("Instance requires password authentication, but peer didn't send proof. Requesting re-authentication from " + remoteEndPoint);
+                    var challengePayload = qc.GenerateHelloPayload(MessageType.Interrogation, true, transport: transport, targetPeer: peer);
+                    _ = qc.SendResponseAsync(challengePayload, targetControlEndPoint, transport, torChannel);
+                    return;
+                }
+
+                byte[] remoteSessionNonce = ReadRequiredBytes(r, 32);
+                ushort ephemeralKeyLen = r.ReadUInt16();
+                if (ephemeralKeyLen == 0 || ephemeralKeyLen > MaxEphemeralKeyBytes)
+                    throw new InvalidDataException($"Invalid ephemeral ECDH key size in Hello: {ephemeralKeyLen}.");
+                byte[] remoteEphemeralKey = ReadRequiredBytes(r, ephemeralKeyLen);
+
+                int payloadLength = (int)r.BaseStream.Position;
+                byte[] signature = new byte[CertManager.SignatureLength];
+                r.ReadExactly(signature);
 
                 X509Certificate2? cert = null;
                 bool certTransferred = false;
@@ -103,44 +163,6 @@ namespace QuicPunch.PacketHandler
                         }
                     }
 
-                    var remoteTicks = r.ReadInt64();
-                    var challengeNonce = r.ReadBytes(24);
-                    var passwordConnection = r.ReadByte() > 0;
-
-                    if (passwordConnection && qc.PasswordHash == null)
-                    {
-                        QuicPunchLog.Info("Peer has password connection but current instance doesn't");
-                        return;
-                    }
-                    else if (passwordConnection)
-                    {
-                        byte[] nonce = r.ReadBytes(24);
-                        byte[] remotePop = r.ReadBytes(256 / 8);
-
-                        byte[] pop = HMACSHA3_256.HashData(Utilities.Combine(challengeNonce, nonce, certHash), qc.PasswordHash!);
-
-                        if (!CryptographicOperations.FixedTimeEquals(pop, remotePop))
-                        {
-                            QuicPunchLog.Info("Error: the peer could not prove password ownership.");
-                            return;
-                        }
-                    }
-                    else if (qc.PasswordHash != null)
-                    {
-                        QuicPunchLog.Info("Instance requires password authentication, but peer didn't send proof. Requesting re-authentication from " + remoteEndPoint);
-                        var challengePayload = qc.GenerateHelloPayload(MessageType.Interrogation, true, transport: transport, targetPeer: peer);
-                        _ = qc.SendResponseAsync(challengePayload, targetControlEndPoint, transport, torChannel);
-                        return;
-                    }
-
-                    byte[] remoteSessionNonce = r.ReadBytes(32);
-                    ushort ephemeralKeyLen = r.ReadUInt16();
-                    byte[] remoteEphemeralKey = ephemeralKeyLen > 0 ? r.ReadBytes(ephemeralKeyLen) : Array.Empty<byte>();
-
-                    int payloadLength = (int)r.BaseStream.Position;
-                    byte[] signature = new byte[CertManager.SignatureLength];
-                    r.ReadExactly(signature);
-
                     using (var ecdsa = (isKnownPeer ? peer!.Certificate : cert!).GetECDsaPublicKey())
                     {
                         if (ecdsa == null || !ecdsa.VerifyData(buffer.AsSpan(0, payloadLength), signature, HashAlgorithmName.SHA3_256))
@@ -150,7 +172,24 @@ namespace QuicPunch.PacketHandler
                         }
                     }
 
-                    bool isChallengeFresh = qc.ValidateAndConsumeChallenge(challengeNonce);
+                    if (passwordConnection && qc.PasswordHash != null && passwordNonce != null && remotePop != null)
+                    {
+                        byte[] pop = HMACSHA3_256.HashData(Utilities.Combine(challengeNonce, passwordNonce, certHash), qc.PasswordHash!);
+                        if (!CryptographicOperations.FixedTimeEquals(pop, remotePop))
+                        {
+                            QuicPunchLog.Info("Error: the peer could not prove password ownership.");
+                            return;
+                        }
+                    }
+
+                    using var pendingChallenge = qc.ConsumePendingChallenge(challengeNonce);
+                    bool isChallengeFresh = pendingChallenge != null;
+                    if (pendingChallenge?.ExpectedCertHash is { Length: > 0 } expectedCertHash &&
+                        !CryptographicOperations.FixedTimeEquals(expectedCertHash, certHash))
+                    {
+                        QuicPunchLog.Info($"HELLO: certificate identity did not match the token used for interrogation from {remoteEndPoint}.");
+                        return;
+                    }
 
                     if (!isKnownPeer)
                     {
@@ -172,13 +211,19 @@ namespace QuicPunch.PacketHandler
 
                         try
                         {
+                            // If this Hello answers one of our interrogations, reuse the
+                            // exact local entropy that was sent in that challenge.
+                            pendingChallenge?.ApplyLocalEntropy(peerInfo);
                             peerInfo.InitSession(qc, transport);
+                            peerInfo.MarkSeen();
 
-                            if (qc.AvailablePeers.TryAdd(peerId, peerInfo))
+                            if (qc.TryAddAvailablePeer(peerId, peerInfo))
                             {
                                 certTransferred = true;
                                 QuicPunchLog.Info($"[HELLO HANDLER] Node '{qc.GetCurrentPeer(transport).Name}' added peer {peerId} ({peerInfo.Name}) to AvailablePeers!");
                                 qc.RaisePeerAvailable(peerInfo);
+                                qc.CancelMatchingInterrogations(peerInfo);
+                                qc.UpdateSavedPeerIfPresent(peerInfo);
 
                                 var responseHello = qc.GenerateHelloPayload(MessageType.Hello, true, challengeNonce, transport, targetPeer: peerInfo);
                                 _ = qc.SendResponseAsync(responseHello, targetControlEndPoint, transport, torChannel);
@@ -209,6 +254,11 @@ namespace QuicPunch.PacketHandler
 
                         peer!.LastSeenHelloTicks = remoteTicks;
 
+                        // A known peer may be answering a mobility/rebind challenge.
+                        // Reuse the exact local entropy that was advertised with that
+                        // challenge before deriving the replacement session keys.
+                        pendingChallenge?.ApplyLocalEntropy(peer);
+
                         peer.ActiveEndPoint = targetControlEndPoint;
                         peer.ActiveTransport = transport;
                         if (addresses != null && addresses.Length > 0)
@@ -219,8 +269,12 @@ namespace QuicPunch.PacketHandler
                         if (maxPort > 0) peer.MaxPort = maxPort;
                         if (pf.NetworkType != QuicPunch.NetworkType.Unknown) peer.NetworkType = pf.NetworkType;
 
-                        if (torChannel != null && (peer.TorChannel == null || peer.TorChannel.IsClosed))
+                        if (torChannel != null && (peer.TorChannel == null || peer.TorChannel.IsClosed || !ReferenceEquals(peer.TorChannel, torChannel)))
                         {
+                            if (peer.TorChannel != null && !ReferenceEquals(peer.TorChannel, torChannel))
+                            {
+                                try { peer.TorChannel.Dispose(); } catch { }
+                            }
                             peer.TorChannel = torChannel;
                             peer.OnionAddress = torChannel.RemoteOnion;
                         }
@@ -248,7 +302,8 @@ namespace QuicPunch.PacketHandler
                             _ = qc.SendResponseAsync(responseHello, targetControlEndPoint, transport, torChannel);
                         }
 
-                        peer.LastSeen = PreciseTime.GetCorrectTime();
+                        peer.MarkSeen();
+                        qc.UpdateSavedPeerIfPresent(peer);
                     }
 
                     _ = qc.SendResponseAsync(qc.GenerateAck(qc.SharePeers, transport), remoteEndPoint, transport, torChannel);
@@ -260,6 +315,10 @@ namespace QuicPunch.PacketHandler
                         cert.Dispose();
                     }
                 }
+            }
+            catch (ObjectDisposedException)
+            {
+                QuicPunchLog.Info($"[HELLO HANDLER] Packet from {remoteEndPoint} ignored: local cryptographic context or peer already disposed.");
             }
             catch (Exception ex)
             {

@@ -5,7 +5,7 @@
     <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <PublishAot>false</PublishAot>
+    <PublishAot>False</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
@@ -18,7 +18,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\QuicPunch\QuicPunch.csproj" />
-    <ProjectReference Include="..\Wintun\Wintun.csproj" />
+    <ProjectReference Include="..\QuicPunch.Vpn\QuicPunch.Vpn.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="QuicPunchTests.Protocols" />
+    <Using Include="QuicPunchTests.Settings" />
+    <Using Include="QuicPunchTests.Helpers" />
+    <Using Include="QuicPunchTests.WebUi" />
   </ItemGroup>
 
   <ItemGroup>

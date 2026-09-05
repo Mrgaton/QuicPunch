@@ -153,8 +153,8 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
             maxMessageBytes);
     }
 
-    public QuicConnection CreateQuicConnection() =>
-        QuicConnection.CreateDummy(this, Role, ConnectionId);
+    public QuicConnection CreateQuicConnection(bool leaveOpen = true) =>
+        QuicConnection.CreateDummy(this, Role, ConnectionId, leaveProviderOpen: leaveOpen);
 
     public static async ValueTask<(QuicConnection Connection, TorQuicConnectionManager Manager)>
         AcceptQuicConnectionAsync(
@@ -312,7 +312,7 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
     {
         try
         {
-            Task.Run(async () => await DisposeAsync().ConfigureAwait(false)).GetAwaiter().GetResult();
+            _ = DisposeAsync().AsTask();
         }
         catch { }
     }
@@ -404,7 +404,7 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
 
             while (!_shutdown.IsCancellationRequested)
             {
-                await TorManager.ReadExactlyAsync(stream, header, _shutdown.Token).ConfigureAwait(false);
+                await stream.ReadExactlyAsync(header, _shutdown.Token).ConfigureAwait(false);
 
                 TorMessageFrameType type = header[0] switch
                 {
@@ -418,7 +418,7 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
                     throw new InvalidDataException("Tor message-lane frame exceeds configured maximum.");
 
                 byte[] payload = new byte[length];
-                await TorManager.ReadExactlyAsync(stream, payload, _shutdown.Token).ConfigureAwait(false);
+                await stream.ReadExactlyAsync(payload, _shutdown.Token).ConfigureAwait(false);
 
                 if (type == TorMessageFrameType.ConnectionClose)
                 {

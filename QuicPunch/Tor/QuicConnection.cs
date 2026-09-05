@@ -80,6 +80,12 @@ public interface IQuicStreamTransport : IDisposable, IAsyncDisposable
 
     byte Priority { get; set; }
 
+    ushort Priority16
+    {
+        get => (ushort)((Priority << 8) | Priority);
+        set => Priority = (byte)(value >> 8);
+    }
+
     void CompleteWrites();
 
     void Abort(
@@ -142,18 +148,191 @@ public sealed class QuicConnection : IAsyncDisposable
     public NativeQuicConnection? NativeConnection =>
         (_transport as NativeConnectionTransport)?.InnerConnection;
 
+    private Helpers.MsQuicDatagramChannel? _datagramChannel;
+
+    /// <summary>
+    /// Gets the native MsQuic RFC 9221 unreliable datagram channel attached to this connection.
+    /// </summary>
+    public Helpers.MsQuicDatagramChannel? DatagramChannel
+    {
+        get
+        {
+            if (_datagramChannel == null && NativeConnection != null && Helpers.MsQuicDatagramChannel.IsSupported)
+            {
+                try { _datagramChannel = Helpers.MsQuicDatagramChannel.Attach(NativeConnection); } catch { }
+            }
+            return _datagramChannel;
+        }
+    }
+
+    /// <summary>
+    /// Transmits an unreliable QUIC datagram over this connection without retransmissions or head-of-line blocking.
+    /// </summary>
+    public bool SendDatagram(ReadOnlySpan<byte> datagram)
+    {
+        return DatagramChannel?.Send(datagram) ?? false;
+    }
+
+    /// <summary>
+    /// Queries real-time performance telemetry and protocol metadata from this connection.
+    /// </summary>
+    /// <param name="telemetry">When this method returns, contains the populated <see cref="Helpers.QuicConnectionTelemetry"/>, or <c>null</c> if the query failed.</param>
+    /// <returns><c>true</c> if telemetry was successfully retrieved; otherwise, <c>false</c>.</returns>
+    public bool TryGetTelemetry(out Helpers.QuicConnectionTelemetry telemetry)
+    {
+        telemetry = null!;
+        if (NativeConnection != null && Helpers.MsQuicTuner.TryGetTelemetry(NativeConnection, out telemetry))
+        {
+            string? alpnStr = null;
+            try
+            {
+                if (!NegotiatedApplicationProtocol.Protocol.IsEmpty)
+                {
+                    alpnStr = System.Text.Encoding.UTF8.GetString(NegotiatedApplicationProtocol.Protocol.Span);
+                }
+            }
+            catch { }
+
+            telemetry = telemetry with
+            {
+                CipherSuite = NegotiatedCipherSuite != 0 ? NegotiatedCipherSuite.ToString() : telemetry.CipherSuite,
+                Alpn = alpnStr ?? telemetry.Alpn,
+                SslProtocol = SslProtocol != SslProtocols.None ? SslProtocol.ToString() : telemetry.SslProtocol,
+                TargetHostName = !string.IsNullOrEmpty(TargetHostName) ? TargetHostName : telemetry.TargetHostName,
+                NativeLocalEndPoint = telemetry.NativeLocalEndPoint ?? (LocalEndPoint as System.Net.IPEndPoint),
+                NativeRemoteEndPoint = telemetry.NativeRemoteEndPoint ?? (RemoteEndPoint as System.Net.IPEndPoint)
+            };
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Sets the DSCP QoS prioritization byte on the underlying socket (Voice = EF/46, Video = AF41/34).
+    /// </summary>
+    public bool TrySetDscp(Helpers.QuicDscpPriority priority)
+    {
+        return NativeConnection != null && Helpers.MsQuicTuner.TrySetDscp(NativeConnection, priority);
+    }
+
+    /// <summary>
+    /// Dynamically switches congestion control algorithm (e.g. to BBR).
+    /// </summary>
+    public bool TrySetCongestionControl(Helpers.QuicCongestionAlgorithm algorithm)
+    {
+        return NativeConnection != null && Helpers.MsQuicTuner.TrySetCongestionControl(NativeConnection, algorithm);
+    }
+
+    /// <summary>
+    /// Queries the active congestion control algorithm of this connection.
+    /// </summary>
+    public bool TryGetCongestionControl(out Helpers.QuicCongestionAlgorithm algorithm) =>
+        Helpers.MsQuicTuner.TryGetCongestionControl(this, out algorithm);
+
+    /// <summary>
+    /// Sets the stream scheduling scheme on this connection (FIFO or RoundRobin).
+    /// </summary>
+    public bool TrySetStreamSchedulingScheme(Helpers.QuicStreamSchedulingScheme scheme) =>
+        Helpers.MsQuicTuner.TrySetStreamSchedulingScheme(this, scheme);
+
+    /// <summary>
+    /// Queries the active stream scheduling scheme of this connection.
+    /// </summary>
+    public bool TryGetStreamSchedulingScheme(out Helpers.QuicStreamSchedulingScheme scheme) =>
+        Helpers.MsQuicTuner.TryGetStreamSchedulingScheme(this, out scheme);
+
+    /// <summary>
+    /// Configures Path MTU Discovery bounds and timing parameters on this connection.
+    /// </summary>
+    public bool TrySetPathMtuDiscovery(ushort minMtu = 1280, ushort maxMtu = 1500, ulong timeoutUs = 600_000_000UL, byte missingProbeCount = 3) =>
+        Helpers.MsQuicTuner.TrySetPathMtuDiscovery(this, minMtu, maxMtu, timeoutUs, missingProbeCount);
+
+    /// <summary>
+    /// Gets the current dynamically discovered Path MTU in bytes (e.g. 1280 to 1500, or up to 9000 for Jumbo Frames).
+    /// </summary>
+    public ushort PathMtu => Helpers.MsQuicTuner.TryGetPathMtu(this, out var mtu) ? mtu : (ushort)1500;
+
+    /// <summary>
+    /// Attempts to retrieve the dynamically discovered Path MTU in bytes for this connection.
+    /// </summary>
+    public bool TryGetPathMtu(out ushort pathMtu) => Helpers.MsQuicTuner.TryGetPathMtu(this, out pathMtu);
+
+    /// <summary>
+    /// Cached 0-RTT session resumption ticket for fast reconnects.
+    /// </summary>
+    public byte[]? ResumptionTicket { get; set; }
+
+    /// <summary>
+    /// Dynamically tunes the flow control window sizes on this connection.
+    /// </summary>
+    public bool TrySetFlowControlWindows(uint connWindow = 16 * 1024 * 1024, uint streamWindow = 4 * 1024 * 1024) =>
+        Helpers.MsQuicTuner.TrySetFlowControlWindows(this, connWindow, streamWindow);
+
+    /// <summary>
+    /// Dynamically sets the native transport keepalive interval.
+    /// </summary>
+    public bool TrySetKeepAlive(TimeSpan interval) =>
+        Helpers.MsQuicTuner.TrySetKeepAliveInterval(this, (uint)Math.Clamp(interval.TotalMilliseconds, 0, uint.MaxValue));
+
+    /// <summary>
+    /// Sends an immediate native transport PING / keepalive signal.
+    /// </summary>
+    public bool TrySendTransportPing() =>
+        Helpers.MsQuicTuner.TrySendTransportPing(this);
+
+    /// <summary>
+    /// Attempts to retrieve the TLS 1.3 0-RTT session resumption ticket from this connection.
+    /// </summary>
+    public bool TryGetResumptionTicket(out byte[] ticket)
+    {
+        if (Helpers.MsQuicTuner.TryGetResumptionTicket(this, out ticket))
+        {
+            ResumptionTicket = ticket;
+            return true;
+        }
+        ticket = ResumptionTicket ?? Array.Empty<byte>();
+        return ResumptionTicket != null;
+    }
+
+    /// <summary>
+    /// Sets a TLS 1.3 0-RTT session resumption ticket on this connection prior to connecting.
+    /// </summary>
+    public bool TrySetResumptionTicket(ReadOnlySpan<byte> ticket)
+    {
+        ResumptionTicket = ticket.ToArray();
+        return Helpers.MsQuicTuner.TrySetResumptionTicket(this, ticket);
+    }
+
+    /// <summary>
+    /// Atomically applies optimal native MsQuic tunings (BBR, Pacing, HyStart, PMTUD, 16MB/4MB flow control, and 5s keepalive) to this connection.
+    /// </summary>
+    public bool ApplyOptimalTuning() =>
+        NativeConnection != null && Helpers.MsQuicTuner.TryApplyOptimalTuning(NativeConnection);
+
     public static async ValueTask<QuicConnection> ConnectAsync(
         NativeQuicClientConnectionOptions options,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
 
+        Helpers.MsQuicTuner.EnsureOptimalConfiguration();
+
+        if (Helpers.MsQuicDatagramChannel.IsSupported)
+        {
+            Helpers.MsQuicDatagramChannel.EnableDatagramsOnConfigurationCache();
+        }
+
         IQuicConnectionTransport transport =
             await TransportFactory
                 .ConnectAsync(options, cancellationToken)
                 .ConfigureAwait(false);
 
-        return new QuicConnection(transport);
+        var conn = new QuicConnection(transport);
+        if (conn.NativeConnection != null)
+        {
+            conn.ApplyOptimalTuning();
+        }
+        return conn;
     }
 
     public static async ValueTask<QuicConnection> ConnectAsync(
@@ -169,13 +348,19 @@ public sealed class QuicConnection : IAsyncDisposable
                 .ConnectAsync(options, cancellationToken)
                 .ConfigureAwait(false);
 
-        return new QuicConnection(transport);
+        var conn = new QuicConnection(transport);
+        if (conn.NativeConnection != null)
+        {
+            conn.ApplyOptimalTuning();
+        }
+        return conn;
     }
 
     public static QuicConnection CreateDummy(
         IDummyQuicLaneProvider provider,
         QuicConnectionRole role,
-        Guid? connectionId = null)
+        Guid? connectionId = null,
+        bool leaveProviderOpen = false)
     {
         ArgumentNullException.ThrowIfNull(provider);
 
@@ -183,7 +368,8 @@ public sealed class QuicConnection : IAsyncDisposable
             new DummyQuicConnectionTransport(
                 provider,
                 role,
-                connectionId));
+                connectionId,
+                leaveProviderOpen));
     }
 
     public static QuicConnection CreateDummy(
@@ -220,8 +406,11 @@ public sealed class QuicConnection : IAsyncDisposable
         NativeQuicConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        return new QuicConnection(
+        Helpers.MsQuicTuner.EnsureOptimalConfiguration();
+        Helpers.MsQuicTuner.TryApplyOptimalTuning(connection);
+        var conn = new QuicConnection(
             new NativeConnectionTransport(connection));
+        return conn;
     }
 
     public static implicit operator QuicConnection(
@@ -262,6 +451,11 @@ public sealed class QuicConnection : IAsyncDisposable
         return new QuicStream(stream);
     }
 
+    public ValueTask<QuicStream> AcceptInboundStreamAsync(
+        NativeQuicStreamType type,
+        CancellationToken cancellationToken = default) =>
+        AcceptInboundStreamAsync(cancellationToken);
+
     public ValueTask CloseAsync(
         long errorCode,
         CancellationToken cancellationToken = default)
@@ -275,6 +469,7 @@ public sealed class QuicConnection : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        _datagramChannel?.Dispose();
         await _transport.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -386,6 +581,24 @@ public sealed class QuicStream : Stream
     {
         get => _transport.Priority;
         set => _transport.Priority = value;
+    }
+
+    /// <summary>
+    /// Gets or sets the 16-bit stream priority (0x0000 to 0xFFFF) mapped to native MsQuic QUIC_PARAM_STREAM_PRIORITY.
+    /// </summary>
+    public ushort Priority16
+    {
+        get => _transport.Priority16;
+        set => _transport.Priority16 = value;
+    }
+
+    /// <summary>
+    /// Gets or sets the stream priority enum level (Lowest to Critical).
+    /// </summary>
+    public Helpers.QuicStreamPriority QuicPriority
+    {
+        get => (Helpers.QuicStreamPriority)_transport.Priority16;
+        set => _transport.Priority16 = (ushort)value;
     }
 
     public override bool CanRead =>
@@ -647,10 +860,15 @@ public sealed class NativeQuicConnectionFactory :
     {
         ArgumentNullException.ThrowIfNull(options);
 
+        Helpers.MsQuicTuner.EnsureOptimalConfiguration();
+
         NativeQuicConnection connection =
             await NativeQuicConnection
                 .ConnectAsync(options, cancellationToken)
                 .ConfigureAwait(false);
+
+        Helpers.MsQuicTuner.EnsureOptimalConfiguration();
+        Helpers.MsQuicTuner.TryApplyOptimalTuning(connection);
 
         return new NativeConnectionTransport(connection);
     }
@@ -806,10 +1024,27 @@ internal sealed class NativeStreamTransport :
     public Task WritesClosed =>
         _stream.WritesClosed;
 
+    public ushort Priority16
+    {
+        get
+        {
+            if (Helpers.MsQuicTuner.TryGetStreamPriority(_stream, out ushort prio))
+            {
+                return prio;
+            }
+            return (ushort)((_fallbackPriority << 8) | _fallbackPriority);
+        }
+        set
+        {
+            _fallbackPriority = (byte)(value >> 8);
+            Helpers.MsQuicTuner.TrySetStreamPriority(_stream, value);
+        }
+    }
+
     public byte Priority
     {
-        get => _fallbackPriority;
-        set => _fallbackPriority = value;
+        get => (byte)(Priority16 >> 8);
+        set => Priority16 = (ushort)((value << 8) | value);
     }
 
     public void CompleteWrites()

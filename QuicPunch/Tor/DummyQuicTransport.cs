@@ -68,6 +68,7 @@ public sealed class DummyQuicConnectionTransport : IQuicConnectionTransport
 
     private readonly IDummyQuicLaneProvider _provider;
     private readonly QuicConnectionRole _role;
+    private readonly bool _leaveProviderOpen;
     private readonly ConcurrentDictionary<long, byte> _seenInboundIds = new();
 
     private long _nextBidirectionalIndex = -1;
@@ -78,10 +79,12 @@ public sealed class DummyQuicConnectionTransport : IQuicConnectionTransport
     public DummyQuicConnectionTransport(
         IDummyQuicLaneProvider provider,
         QuicConnectionRole role,
-        Guid? connectionId = null)
+        Guid? connectionId = null,
+        bool leaveProviderOpen = false)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         _role = role;
+        _leaveProviderOpen = leaveProviderOpen;
         ConnectionId = connectionId ?? Guid.NewGuid();
     }
 
@@ -178,7 +181,10 @@ public sealed class DummyQuicConnectionTransport : IQuicConnectionTransport
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        await _provider.DisposeAsync().ConfigureAwait(false);
+        if (!_leaveProviderOpen)
+        {
+            await _provider.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     public static long GetFirstRemoteStreamId(
@@ -304,7 +310,7 @@ public sealed class DummyQuicConnectionTransport : IQuicConnectionTransport
 internal sealed class DummyQuicStreamTransport : IQuicStreamTransport
 {
     private readonly IDummyQuicLane _lane;
-    private byte _priority = QuicStream.DefaultPriority;
+    private ushort _priority16 = (ushort)Helpers.QuicStreamPriority.Normal;
     private int _disposed;
 
     public DummyQuicStreamTransport(
@@ -331,10 +337,16 @@ internal sealed class DummyQuicStreamTransport : IQuicStreamTransport
 
     public Task WritesClosed => _lane.WritesClosed;
 
+    public ushort Priority16
+    {
+        get => _priority16;
+        set => _priority16 = value;
+    }
+
     public byte Priority
     {
-        get => _priority;
-        set => _priority = value;
+        get => (byte)(_priority16 >> 8);
+        set => _priority16 = (ushort)((value << 8) | value);
     }
 
     public void CompleteWrites()

@@ -10,6 +10,8 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
 
 namespace QuicPunch.Helpers
 {
@@ -80,23 +82,7 @@ namespace QuicPunch.Helpers
             catch { }
             return list;
         }
-        /*public static async Task BigSendAsync( this UdpClient udp, byte[] data, PeerInfo peerInfo)
-           {
-               if (peerInfo.MinPort > peerInfo.MaxPort || peerInfo.MinPort - peerInfo.MaxPort > ushort.MaxValue / 2)
-                   throw new ArgumentException("Invalid port range.", nameof(peerInfo));
 
-               var tasks = new List<Task>();
-
-               foreach (var address in peerInfo.Addresses)
-               {
-                   for (int port = peerInfo.MinPort; port <= peerInfo.MaxPort; port++)
-                   {
-                       tasks.Add(udp.SendAsync(data, data.Length, new IPEndPoint(address, port)));
-                   }
-               }
-
-               await Task.WhenAll(tasks);
-           }*/
         public static int GetMostUsedPort(IEnumerable<KeyValuePair<IPEndPoint, int>> responses)
         {
             return responses
@@ -108,14 +94,28 @@ namespace QuicPunch.Helpers
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool TryIpToUint(IPAddress? ip, out uint result)
+        {
+            result = 0;
+            if (ip == null) return false;
+            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+            if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
+
+            Span<byte> bytes = stackalloc byte[4];
+            if (!ip.TryWriteBytes(bytes, out int written) || written != 4)
+                return false;
+
+            result = BinaryPrimitives.ReadUInt32BigEndian(bytes);
+            return true;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint IpToUint(IPAddress ip)
         {
-            Span<byte> bytes = stackalloc byte[4];
+            if (TryIpToUint(ip, out uint result))
+                return result;
 
-            if (!ip.TryWriteBytes(bytes, out int written) || written != 4)
-                throw new ArgumentException("IPv4 only");
-
-            return BinaryPrimitives.ReadUInt32BigEndian(bytes);
+            throw new ArgumentException("IPv4 only", nameof(ip));
         }
         public static bool IsValidPeerAddress(IPAddress? ip)
         {
@@ -154,73 +154,71 @@ namespace QuicPunch.Helpers
 
         public static async Task BigSendAsync(this UdpClient udp, ReadOnlyMemory<byte> data, PeerInfo peerInfo)
         {
-            if (peerInfo.ActiveEndPoint != null)
+            if (peerInfo.ActiveEndPoint is { } active &&
+                IsValidPeerAddress(active.Address) && active.Port is >= 1 and <= 65535)
             {
                 try
                 {
-                    await udp.SendAsync(data, peerInfo.ActiveEndPoint).ConfigureAwait(false);
+                    await udp.SendAsync(data, active).ConfigureAwait(false);
                 }
                 catch (SocketException) { }
                 catch (ObjectDisposedException) { }
                 return;
             }
 
-            if (peerInfo.Addresses == null || peerInfo.Addresses.Length == 0)
-                return;
+            const int MaxEndpointsPerBurst = 32;
+            var targets = new HashSet<IPEndPoint>();
+            var addresses = (peerInfo.Addresses ?? Array.Empty<IPAddress>())
+                .Where(IsValidPeerAddress)
+                .Distinct()
+                .Take(32)
+                .ToArray();
 
-            int minPort = Math.Clamp(peerInfo.MinPort > 0 ? peerInfo.MinPort : 4002, 1, 65535);
-            int maxPort = Math.Clamp(peerInfo.MaxPort > 0 ? peerInfo.MaxPort : minPort, 1, 65535);
-
-            if (minPort > maxPort)
-                (minPort, maxPort) = (maxPort, minPort);
-
-            const int MaxPortsPerBurst = 64;
-            int portSpan = maxPort - minPort + 1;
-
-            int[] targetPorts;
-            if (portSpan <= MaxPortsPerBurst)
+            if (addresses.Length > 0 && targets.Count < MaxEndpointsPerBurst)
             {
-                targetPorts = new int[portSpan];
-                for (int i = 0; i < portSpan; i++)
-                    targetPorts[i] = minPort + i;
-            }
-            else
-            {
-                var portSet = new HashSet<int>(MaxPortsPerBurst);
-                portSet.Add(minPort);
-                portSet.Add(maxPort);
-                portSet.Add(minPort + (portSpan / 2));
+                int minPort = Math.Clamp(peerInfo.MinPort > 0 ? peerInfo.MinPort : 4002, 1, 65535);
+                int maxPort = Math.Clamp(peerInfo.MaxPort > 0 ? peerInfo.MaxPort : minPort, 1, 65535);
+                if (minPort > maxPort)
+                    (minPort, maxPort) = (maxPort, minPort);
 
-                for (int d = 1; d <= 12 && portSet.Count < MaxPortsPerBurst; d++)
+                int portSpan = maxPort - minPort + 1;
+                long exhaustiveCount = (long)addresses.Length * portSpan;
+
+                if (exhaustiveCount + targets.Count <= MaxEndpointsPerBurst)
                 {
-                    if (minPort + d <= 65535) portSet.Add(minPort + d);
-                    if (minPort - d >= 1) portSet.Add(minPort - d);
-                    if (maxPort + d <= 65535) portSet.Add(maxPort + d);
-                    if (maxPort - d >= 1) portSet.Add(maxPort - d);
-                }
-
-                while (portSet.Count < MaxPortsPerBurst)
-                {
-                    portSet.Add(Random.Shared.Next(minPort, maxPort + 1));
-                }
-
-                targetPorts = portSet.ToArray();
-            }
-
-            foreach (var address in peerInfo.Addresses)
-            {
-                if (!IsValidPeerAddress(address))
-                    continue;
-
-                for (int i = 0; i < targetPorts.Length; i++)
-                {
-                    try
+                    foreach (var address in addresses)
                     {
-                        await udp.SendAsync(data, new IPEndPoint(address, targetPorts[i])).ConfigureAwait(false);
+                        for (int port = minPort; port <= maxPort && targets.Count < MaxEndpointsPerBurst; port++)
+                            targets.Add(new IPEndPoint(address, port));
                     }
-                    catch (SocketException) { }
-                    catch (ObjectDisposedException) { return; }
                 }
+                else
+                {
+                    foreach (var address in addresses)
+                    {
+                        if (targets.Count >= MaxEndpointsPerBurst) break;
+                        int port = portSpan == 1 ? minPort : Random.Shared.Next(minPort, maxPort + 1);
+                        targets.Add(new IPEndPoint(address, port));
+                    }
+
+                    int attempts = 0;
+                    while (targets.Count < MaxEndpointsPerBurst && attempts++ < MaxEndpointsPerBurst * 8)
+                    {
+                        var address = addresses[Random.Shared.Next(addresses.Length)];
+                        int port = portSpan == 1 ? minPort : Random.Shared.Next(minPort, maxPort + 1);
+                        targets.Add(new IPEndPoint(address, port));
+                    }
+                }
+            }
+
+            foreach (var target in targets)
+            {
+                try
+                {
+                    await udp.SendAsync(data, target).ConfigureAwait(false);
+                }
+                catch (SocketException) { }
+                catch (ObjectDisposedException) { return; }
             }
         }
 
@@ -333,13 +331,19 @@ namespace QuicPunch.Helpers
             return QuicPunch.NetworkType.DynamicPortAndAddress;
         }
 
+        public const int TorTokenBinaryLength = 70; // 1 byte flags + 35 bytes onion raw + 2 bytes port + 32 bytes cert hash
+        public const int EndpointTokenSignatureLength = 64;
+
         public static string Base32Encode(ReadOnlySpan<byte> data)
         {
+            if (data.IsEmpty) return string.Empty;
             const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-            var output = new System.Text.StringBuilder((data.Length * 8 + 4) / 5);
+            int outputLength = (data.Length * 8 + 4) / 5;
+            Span<char> chars = outputLength <= 128 ? stackalloc char[outputLength] : new char[outputLength];
 
             int buffer = 0;
             int bitsLeft = 0;
+            int charIdx = 0;
 
             foreach (byte b in data)
             {
@@ -349,31 +353,42 @@ namespace QuicPunch.Helpers
                 while (bitsLeft >= 5)
                 {
                     bitsLeft -= 5;
-                    output.Append(alphabet[(buffer >> bitsLeft) & 31]);
+                    chars[charIdx++] = alphabet[(buffer >> bitsLeft) & 31];
                 }
             }
 
             if (bitsLeft > 0)
-                output.Append(alphabet[(buffer << (5 - bitsLeft)) & 31]);
+            {
+                chars[charIdx++] = alphabet[(buffer << (5 - bitsLeft)) & 31];
+            }
 
-            return output.ToString();
+            return new string(chars[..charIdx]);
         }
 
-        public static byte[] Base32Decode(string input)
+        public static bool TryBase32Decode(ReadOnlySpan<char> input, Span<byte> destination, out int bytesWritten)
         {
-            if (string.IsNullOrWhiteSpace(input)) return Array.Empty<byte>();
-            input = input.Trim().ToUpperInvariant();
-            if (input.EndsWith(".ONION")) input = input[..^6];
+            bytesWritten = 0;
+            input = input.Trim();
+            if (input.EndsWith(".onion", StringComparison.OrdinalIgnoreCase))
+                input = input[..^6];
 
-            const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-            var bytes = new List<byte>();
+            if (input.IsEmpty) return false;
+
             int buffer = 0;
             int bitsLeft = 0;
+            int written = 0;
 
             foreach (char c in input)
             {
-                int val = alphabet.IndexOf(c);
-                if (val < 0) continue;
+                int val = c switch
+                {
+                    >= 'a' and <= 'z' => c - 'a',
+                    >= 'A' and <= 'Z' => c - 'A',
+                    >= '2' and <= '7' => c - '2' + 26,
+                    _ => -1
+                };
+
+                if (val < 0) return false;
 
                 buffer = (buffer << 5) | val;
                 bitsLeft += 5;
@@ -381,86 +396,124 @@ namespace QuicPunch.Helpers
                 if (bitsLeft >= 8)
                 {
                     bitsLeft -= 8;
-                    bytes.Add((byte)(buffer >> bitsLeft));
+                    if (written >= destination.Length) return false;
+                    destination[written++] = (byte)(buffer >> bitsLeft);
                 }
             }
 
-            return bytes.ToArray();
+            bytesWritten = written;
+            return true;
         }
 
-        private const byte TokenVersionByte = 1;
+        public static byte[] Base32Decode(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return Array.Empty<byte>();
+            Span<byte> dest = stackalloc byte[(input.Length * 5) / 8 + 1];
+            if (TryBase32Decode(input.AsSpan(), dest, out int written))
+                return dest[..written].ToArray();
+            return Array.Empty<byte>();
+        }
+
+        private const int MaxEndpointTokenAddresses = 32;
+        private const int EndpointTokenCertificateHashLength = 32;
+        private const int MaxEndpointTokenBytes = 4096;
+
         public static string EncodeEndpointToken(PeerInfo p)
         {
             if (p == null)
                 throw new ArgumentNullException(nameof(p), "PeerInfo cannot be null when encoding endpoint token.");
 
-            using (var ms = new MemoryStream())
-            using (var w = new BinaryWriter(ms))
+            if (p.NetworkType == QuicPunch.NetworkType.Tor)
             {
-                PackedFlags pf = new PackedFlags()
-                {
-                    NetworkType = p.NetworkType
-                };
+                if (string.IsNullOrWhiteSpace(p.OnionAddress))
+                    throw new ArgumentException("OnionAddress cannot be null or empty for Tor network type.", nameof(p));
 
-                w.Write((byte)pf.RawValue);
+                if (!p.TryGetCertificateHash(out var torCertHash) || torCertHash.Length != EndpointTokenCertificateHashLength)
+                    throw new ArgumentException("Peer certificate hash must be exactly 32 bytes.", nameof(p));
 
-                if (p.NetworkType == QuicPunch.NetworkType.Tor)
-                {
-                    if (string.IsNullOrWhiteSpace(p.OnionAddress))
-                        throw new ArgumentException("OnionAddress cannot be null or empty for Tor network type.", nameof(p));
+                int torPort = p.MinPort > 0 ? p.MinPort : 443;
+                if (torPort is < 1 or > 65535)
+                    throw new ArgumentOutOfRangeException(nameof(p), "Tor port must be in the range 1..65535.");
 
-                    byte[] rawOnion = Base32Decode(p.OnionAddress);
-                    if (rawOnion.Length != 35)
-                        throw new ArgumentException($"Invalid Tor v3 onion address '{p.OnionAddress}': decoded length must be exactly 35 bytes (got {rawOnion.Length}).", nameof(p));
+                Span<byte> tokenBytes = stackalloc byte[TorTokenBinaryLength];
 
-                    if (p.CertHash == null || p.CertHash.Length != 32)
-                        throw new ArgumentException($"Invalid CertHash: must be exactly 32 bytes (got {p.CertHash?.Length ?? 0}).", nameof(p));
+                // Offset 0: Flags (NetworkType = Tor)
+                tokenBytes[0] = (byte)new PackedFlags { NetworkType = QuicPunch.NetworkType.Tor }.RawValue;
 
-                    w.Write(rawOnion);
-                    w.Write((ushort)(p.MinPort > 0 ? p.MinPort : 443));
-                    w.Write(p.CertHash);
-                    return Base64Url.EncodeToString(ms.ToArray());
-                }
+                // Offset 1..35: Raw 35 bytes of Onion address decoded directly from Base32
+                if (!TryBase32Decode(p.OnionAddress.AsSpan(), tokenBytes.Slice(1, 35), out int decodedLen) || decodedLen != 35)
+                    throw new ArgumentException($"Invalid Tor v3 onion address '{p.OnionAddress}': expected 35 decoded bytes (56 base32 characters).", nameof(p));
 
-                var addresses = p.Addresses ?? Array.Empty<IPAddress>();
+                BinaryPrimitives.WriteUInt16LittleEndian(tokenBytes.Slice(36, 2), (ushort)torPort);
 
-                if (p.NetworkType == QuicPunch.NetworkType.DynamicAddress || p.NetworkType == QuicPunch.NetworkType.DynamicPortAndAddress)
-                {
-                    w.Write((byte)addresses.Length);
+                // Offset 38..69: Certificate Hash (32 bytes)
+                torCertHash.CopyTo(tokenBytes.Slice(38, EndpointTokenCertificateHashLength));
 
-                    for (int i = 0; i < addresses.Length; i++)
-                    {
-                        w.Write(addresses[i].GetAddressBytes());
-                    }
-                }
-                else
-                {
-                    var primaryAddress = addresses.Length > 0 ? addresses[0] : IPAddress.Any;
-                    w.Write(primaryAddress.GetAddressBytes());
-                }
-
-                if (pf.NetworkType == QuicPunch.NetworkType.DynamicPort || pf.NetworkType == QuicPunch.NetworkType.DynamicPortAndAddress)
-                {
-                    w.Write((short)p.MinPort);
-                    w.Write((short)p.MaxPort);
-                }
-                else
-                {
-                    w.Write((ushort)p.MinPort);
-                }
-
-                var localIps = GetValidLocalIPAddresses().Where(ip => !addresses.Contains(ip)).ToList();
-                w.Write((byte)localIps.Count);
-                for (int i = 0; i < localIps.Count; i++)
-                {
-                    w.Write(localIps[i].GetAddressBytes());
-                }
-
-                byte[] certHash = p.CertHash ?? Array.Empty<byte>();
-                w.Write(certHash);
-
-                return Base64Url.EncodeToString(ms.ToArray());
+                return Base64Url.EncodeToString(tokenBytes);
             }
+
+            using var ms = new MemoryStream();
+            using var w = new BinaryWriter(ms);
+
+            var rawAddresses = p.Addresses ?? Array.Empty<IPAddress>();
+            var addresses = rawAddresses.Length > 0
+                ? rawAddresses.Take(MaxEndpointTokenAddresses).ToList()
+                : GetValidLocalIPAddresses().Take(MaxEndpointTokenAddresses).ToList();
+
+            if (addresses.Count == 0)
+                throw new InvalidOperationException("Peer has no valid IPv4 address to publish in an endpoint token.");
+
+            var localIps = GetValidLocalIPAddresses()
+                .Where(ip => !addresses.Contains(ip))
+                .Take(Math.Max(0, MaxEndpointTokenAddresses - addresses.Count))
+                .ToList();
+            int minPort = p.MinPort > 0 ? p.MinPort : p.MaxPort;
+            int maxPort = p.MaxPort > 0 ? p.MaxPort : p.MinPort;
+            if (minPort is < 1 or > 65535 || maxPort is < 1 or > 65535 || minPort > maxPort)
+                throw new InvalidOperationException("Peer endpoint token requires a valid port or port range in 1..65535.");
+
+
+            bool multipleAddresses = addresses.Count > 1;
+            bool portRange = minPort != maxPort;
+            QuicPunch.NetworkType networkType = multipleAddresses
+                ? (portRange ? QuicPunch.NetworkType.DynamicPortAndAddress : QuicPunch.NetworkType.DynamicAddress)
+                : (portRange ? QuicPunch.NetworkType.DynamicPort : QuicPunch.NetworkType.Static);
+
+            var flags = new PackedFlags { NetworkType = networkType };
+            w.Write((byte)flags.RawValue);
+
+            if (multipleAddresses)
+            {
+                w.Write((byte)addresses.Count);
+                foreach (IPAddress address in addresses)
+                    w.Write(address.GetAddressBytes());
+            }
+            else
+            {
+                w.Write(addresses[0].GetAddressBytes());
+            }
+
+            if (portRange)
+            {
+                w.Write((ushort)minPort);
+                w.Write((ushort)maxPort);
+            }
+            else
+            {
+                w.Write((ushort)minPort);
+            }
+
+            w.Write((byte)localIps.Count);
+            foreach (IPAddress localIp in localIps)
+                w.Write(localIp.GetAddressBytes());
+
+            if (!p.TryGetCertificateHash(out var certHash) || certHash.Length != EndpointTokenCertificateHashLength)
+                throw new ArgumentException("Peer certificate hash must be exactly 32 bytes.", nameof(p));
+
+            w.Write(certHash);
+
+            byte[] payloadBytes = ms.ToArray();
+            return Base64Url.EncodeToString(payloadBytes);
         }
 
         public static PeerInfo DecodeEndpointToken(string t)
@@ -475,6 +528,7 @@ namespace QuicPunch.Helpers
                 var uriParam = t.Substring(t.IndexOf("protred?uri=", StringComparison.OrdinalIgnoreCase) + 12);
                 t = System.Web.HttpUtility.UrlDecode(System.Web.HttpUtility.UrlDecode(uriParam));
             }
+
 
             if (t.StartsWith("qp://", StringComparison.OrdinalIgnoreCase))
                 t = t.Substring(5);
@@ -491,97 +545,245 @@ namespace QuicPunch.Helpers
                 var parts = t.Split(':');
                 onionPeer.OnionAddress = parts[0];
                 int port = 443;
-                if (parts.Length > 1 && int.TryParse(parts[1], out int p)) port = p;
+                if (parts.Length > 1 && int.TryParse(parts[1], out int parsedPort)) port = parsedPort;
+                if (port is < 1 or > 65535)
+                    throw new InvalidDataException("Tor endpoint port must be in the range 1..65535.");
                 onionPeer.MinPort = onionPeer.MaxPort = port;
                 return onionPeer;
             }
 
-            var peer = new PeerInfo();
+            byte[] rawToken = Base64Url.DecodeFromChars(t);
+            if (rawToken.Length == 0 || rawToken.Length > MaxEndpointTokenBytes)
+                throw new InvalidDataException($"Endpoint token size is invalid ({rawToken.Length} bytes).");
 
-            using (var ms = new MemoryStream(Base64Url.DecodeFromChars(t)))
-            using (var r = new BinaryReader(ms))
+            var flags = new PackedFlags(rawToken[0]);
+            if (flags.NetworkType == QuicPunch.NetworkType.Tor)
             {
-                PackedFlags pf = new PackedFlags(r.ReadByte());
-                peer.NetworkType = pf.NetworkType;
+                if (rawToken.Length != TorTokenBinaryLength)
+                    throw new InvalidDataException($"Invalid Tor endpoint token size: expected {TorTokenBinaryLength} bytes, got {rawToken.Length}.");
 
-                if (pf.NetworkType == QuicPunch.NetworkType.Tor)
+                ReadOnlySpan<byte> span = rawToken.AsSpan();
+                var torPeer = new PeerInfo { NetworkType = QuicPunch.NetworkType.Tor };
+
+                // Offset 1..35: Raw 35 bytes of Onion address
+                ReadOnlySpan<byte> rawOnion = span.Slice(1, 35);
+                torPeer.OnionAddress = Base32Encode(rawOnion).ToLowerInvariant() + ".onion";
+
+                // Offset 36..37: Virtual Port
+                ushort port = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(36, 2));
+                if (port == 0)
+                    throw new InvalidDataException("Tor endpoint token contains port 0.");
+                torPeer.MinPort = torPeer.MaxPort = port;
+
+                // Offset 38..69: Certificate Hash (32 bytes)
+                byte[] torHash = span.Slice(38, EndpointTokenCertificateHashLength).ToArray();
+                torPeer.SetCertificateHash(torHash);
+
+                return torPeer;
+            }
+
+            const int MinWanTokenLength = 1 + 4 + 2 + 1 + EndpointTokenCertificateHashLength;
+            if (rawToken.Length < MinWanTokenLength)
+                throw new InvalidDataException($"WAN endpoint token size is too short ({rawToken.Length} < {MinWanTokenLength} bytes).");
+
+            var peer = new PeerInfo();
+            try
+            {
+                ReadOnlySpan<byte> span = rawToken.AsSpan();
+                peer.NetworkType = flags.NetworkType;
+                if (peer.NetworkType is not QuicPunch.NetworkType.Static
+                    and not QuicPunch.NetworkType.DynamicPort
+                    and not QuicPunch.NetworkType.DynamicAddress
+                    and not QuicPunch.NetworkType.DynamicPortAndAddress)
                 {
-                    byte[] rawOnion = r.ReadBytes(35);
-                    if (rawOnion.Length != 35)
-                        throw new InvalidDataException($"Truncated Tor token: expected 35 bytes for onion address, got {rawOnion.Length}.");
-
-                    peer.OnionAddress = Base32Encode(rawOnion).ToLowerInvariant() + ".onion";
-                    peer.MinPort = peer.MaxPort = r.ReadUInt16();
-
-                    var cHash = r.ReadBytes(256 / 8);
-                    if (cHash.Length != 32)
-                        throw new InvalidDataException($"Truncated Tor token: expected 32 bytes for certificate hash, got {cHash.Length}.");
-
-                    peer.SetCertificateHash(cHash);
-                    return peer;
+                    throw new InvalidDataException($"Unsupported endpoint token network type: {(byte)peer.NetworkType}.");
                 }
 
+                int offset = 1;
                 var allAddresses = new List<IPAddress>();
+                int addressCount = peer.NetworkType is QuicPunch.NetworkType.DynamicAddress or QuicPunch.NetworkType.DynamicPortAndAddress
+                    ? span[offset++]
+                    : 1;
 
-                if (pf.NetworkType == QuicPunch.NetworkType.DynamicAddress || pf.NetworkType == QuicPunch.NetworkType.DynamicPortAndAddress)
-                {
-                    var addressesLength = r.ReadByte();
-                    if (addressesLength > 32)
-                        throw new InvalidDataException($"Token address count exceeds maximum allowed ({addressesLength} > 32).");
+                if (addressCount is < 1 or > MaxEndpointTokenAddresses)
+                    throw new InvalidDataException($"Token address count exceeds maximum allowed ({addressCount}).");
 
-                    for (int i = 0; i < addressesLength; i++)
-                    {
-                        var ip = new IPAddress(r.ReadBytes(4));
-                        if (!IsValidPeerAddress(ip))
-                            throw new InvalidDataException($"Invalid, reserved or dangerous peer address '{ip}'.");
-                        allAddresses.Add(ip);
-                    }
-                }
-                else
+                for (int i = 0; i < addressCount; i++)
                 {
-                    var ip = new IPAddress(r.ReadBytes(4));
+                    if (offset + 4 > span.Length)
+                        throw new InvalidDataException("Truncated peer address in endpoint token.");
+                    var ip = new IPAddress(span.Slice(offset, 4));
+                    offset += 4;
                     if (!IsValidPeerAddress(ip))
                         throw new InvalidDataException($"Invalid, reserved or dangerous peer address '{ip}'.");
-                    allAddresses.Add(ip);
+                    if (!allAddresses.Contains(ip))
+                        allAddresses.Add(ip);
                 }
 
-                if (pf.NetworkType == QuicPunch.NetworkType.DynamicPort || pf.NetworkType == QuicPunch.NetworkType.DynamicPortAndAddress)
+                if (peer.NetworkType is QuicPunch.NetworkType.DynamicPort or QuicPunch.NetworkType.DynamicPortAndAddress)
                 {
-                    peer.MinPort = r.ReadUInt16();
-                    peer.MaxPort = r.ReadUInt16();
+                    if (offset + 4 > span.Length)
+                        throw new InvalidDataException("Truncated port range in endpoint token.");
+                    peer.MinPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                    offset += 2;
+                    peer.MaxPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                    offset += 2;
                 }
                 else
                 {
-                    peer.MinPort = peer.MaxPort = r.ReadUInt16();
+                    if (offset + 2 > span.Length)
+                        throw new InvalidDataException("Truncated port in endpoint token.");
+                    peer.MinPort = peer.MaxPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                    offset += 2;
                 }
 
-                if (r.BaseStream.Position < r.BaseStream.Length - (256 / 8))
+                if (peer.MinPort is < 1 or > 65535 || peer.MaxPort is < 1 or > 65535 || peer.MinPort > peer.MaxPort)
+                    throw new InvalidDataException("Endpoint token contains an invalid port range.");
+
+                if (offset + 1 + EndpointTokenCertificateHashLength > span.Length)
+                    throw new InvalidDataException("Endpoint token is missing its local-address count or certificate hash.");
+
+                int localIpCount = span[offset++];
+                if (localIpCount > MaxEndpointTokenAddresses)
+                    throw new InvalidDataException($"Token local IP count exceeds maximum allowed ({localIpCount} > {MaxEndpointTokenAddresses}).");
+
+                for (int i = 0; i < localIpCount; i++)
                 {
-                    var localIpCount = r.ReadByte();
-                    if (localIpCount > 32)
-                        throw new InvalidDataException($"Token local IP count exceeds maximum allowed ({localIpCount} > 32).");
-
-                    for (int i = 0; i < localIpCount; i++)
-                    {
-                        var localIp = new IPAddress(r.ReadBytes(4));
-                        if (!IsValidPeerAddress(localIp))
-                            throw new InvalidDataException($"Invalid, reserved or dangerous peer local address '{localIp}'.");
-
-                        if (!allAddresses.Contains(localIp))
-                        {
-                            allAddresses.Add(localIp);
-                        }
-                    }
+                    if (offset + 4 > span.Length)
+                        throw new InvalidDataException("Truncated local peer address in endpoint token.");
+                    var localIp = new IPAddress(span.Slice(offset, 4));
+                    offset += 4;
+                    if (!IsValidPeerAddress(localIp))
+                        throw new InvalidDataException($"Invalid, reserved or dangerous peer local address '{localIp}'.");
+                    if (!allAddresses.Contains(localIp))
+                        allAddresses.Add(localIp);
                 }
 
-                var certHash = r.ReadBytes(256 / 8);
+                if (offset + EndpointTokenCertificateHashLength != span.Length)
+                    throw new InvalidDataException("Endpoint token format mismatch or contains unexpected trailing data.");
+
+                byte[] certHash = span.Slice(offset, EndpointTokenCertificateHashLength).ToArray();
+                offset += EndpointTokenCertificateHashLength;
+
                 peer.SetCertificateHash(certHash);
-
                 peer.Addresses = allAddresses.ToArray();
-
                 return peer;
             }
+            catch
+            {
+                peer.Dispose();
+                throw;
+            }
         }
+
+        public static byte[] SignToken(string token, X509Certificate2? cert)
+        {
+            if (string.IsNullOrWhiteSpace(token) || cert == null)
+                return Array.Empty<byte>();
+
+            using var ecdsa = cert.GetECDsaPrivateKey();
+            if (ecdsa == null)
+                return Array.Empty<byte>();
+
+            byte[] dataToSign = Encoding.UTF8.GetBytes(token.Trim());
+            return ecdsa.SignData(dataToSign, HashAlgorithmName.SHA256);
+        }
+
+        public static bool TryCreateECDsaFromPublicKey(ReadOnlySpan<byte> publicKeyBytes, out ECDsa? ecdsa)
+        {
+            ecdsa = null;
+            try
+            {
+                if (publicKeyBytes.Length == 65 && publicKeyBytes[0] == 0x04)
+                {
+                    var parameters = new ECParameters
+                    {
+                        Curve = ECCurve.NamedCurves.nistP256,
+                        Q = new ECPoint
+                        {
+                            X = publicKeyBytes.Slice(1, 32).ToArray(),
+                            Y = publicKeyBytes.Slice(33, 32).ToArray()
+                        }
+                    };
+                    ecdsa = ECDsa.Create(parameters);
+                    return true;
+                }
+
+                var e = ECDsa.Create();
+                e.ImportSubjectPublicKeyInfo(publicKeyBytes, out _);
+                ecdsa = e;
+                return true;
+            }
+            catch
+            {
+                ecdsa?.Dispose();
+                ecdsa = null;
+                return false;
+            }
+        }
+
+        public static bool TryVerifyTokenCertificate(string token, ReadOnlySpan<byte> certPublicKey, ReadOnlySpan<byte> signature, out byte[]? certHash)
+        {
+            certHash = null;
+            if (string.IsNullOrWhiteSpace(token) || certPublicKey.IsEmpty || signature.IsEmpty)
+                return false;
+
+            try
+            {
+                using var decodedPeer = DecodeEndpointToken(token);
+                if (!decodedPeer.TryGetCertificateHash(out var expectedHash))
+                    return false;
+
+                byte[] computedHash = SHA3_256.HashData(certPublicKey);
+                if (!CryptographicOperations.FixedTimeEquals(computedHash, expectedHash))
+                    return false;
+
+                certHash = computedHash;
+
+                if (!TryCreateECDsaFromPublicKey(certPublicKey, out var ecdsa) || ecdsa == null)
+                    return false;
+
+                using (ecdsa)
+                {
+                    byte[] dataToVerify = Encoding.UTF8.GetBytes(token.Trim());
+                    return ecdsa.VerifyData(dataToVerify, signature, HashAlgorithmName.SHA256);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static string ToCanonicalPeerId(byte[]? certHash)
+        {
+            if (certHash == null || certHash.Length == 0) return "";
+            return Convert.ToHexString(certHash)[..Math.Min(16, Convert.ToHexString(certHash).Length)].ToLowerInvariant();
+        }
+
+        public static string ToCanonicalPeerId(string? base64OrHex)
+        {
+            if (string.IsNullOrWhiteSpace(base64OrHex)) return "";
+            try
+            {
+                if (base64OrHex.Length == 64 && base64OrHex.All(Uri.IsHexDigit))
+                    return base64OrHex[..16].ToLowerInvariant();
+
+                if (base64OrHex.Length == 16 && base64OrHex.All(Uri.IsHexDigit))
+                    return base64OrHex.ToLowerInvariant();
+
+                if (Guid.TryParse(base64OrHex, out var guid))
+                    return guid.ToString("N")[..16].ToLowerInvariant();
+
+                var bytes = Convert.FromBase64String(base64OrHex);
+                return ToCanonicalPeerId(bytes);
+            }
+            catch
+            {
+                return base64OrHex.Length >= 16 ? base64OrHex[..16].ToLowerInvariant() : base64OrHex.ToLowerInvariant();
+            }
+        }
+
         public sealed class ByteArrayComparer : IEqualityComparer<byte[]>
         {
             public static ByteArrayComparer Instance { get; } = new();
@@ -605,6 +807,56 @@ namespace QuicPunch.Helpers
 
                 return hash.ToHashCode();
             }
+        }
+
+        private static readonly string[] IdentityAdjectives =
+        [
+            "swift", "bold", "quiet", "silent", "shadow", "solar", "lunar", "cyber", "amber", "frost",
+            "nova", "iron", "storm", "bright", "mystic", "zenith", "vector", "quantum", "hyper", "alpha",
+            "cosmic", "delta", "echo", "pixel", "phantom", "rapid", "silver", "vivid", "wild", "zephyr",
+            "astral", "blaze", "crimson", "drift", "emerald", "flare", "glacier", "horizon", "indigo", "jade",
+            "kinetic", "laser", "matrix", "nexus", "orbit", "prism", "quasar", "radiant", "sonic", "vortex"
+        ];
+
+        private static readonly string[] IdentityNouns =
+        [
+            "fox", "wolf", "hawk", "eagle", "bear", "lion", "runner", "pilot", "ranger", "voyager",
+            "seeker", "driver", "scout", "falcon", "tiger", "dragon", "phoenix", "rider", "walker", "coder",
+            "spark", "pulse", "tracer", "weaver", "hunter", "drifter", "keeper", "cadet", "sentinel", "operator",
+            "beacon", "cipher", "daemon", "engine", "flux", "guardian", "harbor", "matrix", "navigator", "orbit",
+            "pioneer", "rover", "signal", "titan", "vector", "warden", "zenith", "specter", "strider", "vanguard"
+        ];
+
+        private static readonly string[] HostnamePrefixes =
+        [
+            "DESKTOP", "LAPTOP", "PC", "NODE", "HOST", "WORKSTATION"
+        ];
+
+        public static string GenerateRandomHostname()
+        {
+            string prefix = HostnamePrefixes[RandomNumberGenerator.GetInt32(HostnamePrefixes.Length)];
+            const string chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            Span<char> suffix = stackalloc char[7];
+            for (int i = 0; i < suffix.Length; i++)
+            {
+                suffix[i] = chars[RandomNumberGenerator.GetInt32(chars.Length)];
+            }
+            return $"{prefix}-{new string(suffix)}";
+        }
+
+        public static string GenerateRandomUsername()
+        {
+            string adj = IdentityAdjectives[RandomNumberGenerator.GetInt32(IdentityAdjectives.Length)];
+            string noun = IdentityNouns[RandomNumberGenerator.GetInt32(IdentityNouns.Length)];
+            int num = RandomNumberGenerator.GetInt32(10, 100);
+            return $"{adj}_{noun}{num}";
+        }
+
+        public static (string Username, string Hostname, string FullName) GenerateRandomIdentityNames()
+        {
+            string username = GenerateRandomUsername();
+            string hostname = GenerateRandomHostname();
+            return (username, hostname, $"{username}@{hostname}");
         }
     }
 }

@@ -52,6 +52,16 @@ namespace QuicPunch
             QuicPunch? qc, PeerInfo ownPeer, UdpClient nudp, PeerInfo remotePeer, IReadOnlyList<CandidateEndpoint>? remoteCandidates,
             ushort peerPort, Guid connectionGuid, X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
         {
+            MsQuicTuner.EnsureOptimalConfiguration();
+
+            if (remotePeer.ResumptionTicket == null && qc?.PeerStore != null && remotePeer.CertHash.Length > 0)
+            {
+                if (qc.PeerStore.TryGetResumptionTicket(remotePeer.CertHash, out var cachedTicket) && cachedTicket != null)
+                {
+                    remotePeer.ResumptionTicket = cachedTicket;
+                }
+            }
+
             using var openPortCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             using var openPortLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt, openPortCts.Token);
 
@@ -95,7 +105,7 @@ namespace QuicPunch
                         QuicPunchLog.Info($"[QUIC CLIENT] Awaiting QUIC_READY signal from server {remotePeer.Name}...");
                         try
                         {
-                            await qc.WaitForQuicReadyAsync(connectionGuid, TimeSpan.FromSeconds(10), linkedCts.Token).ConfigureAwait(false);
+                            await qc.WaitForQuicReadyAsync(connectionGuid, remotePeer.Id, TimeSpan.FromSeconds(10), linkedCts.Token).ConfigureAwait(false);
                             QuicPunchLog.Info($"[QUIC CLIENT] Received QUIC_READY signal from server {remotePeer.Name}. Proceeding to connect...");
                         }
                         catch (OperationCanceledException) { }
@@ -109,12 +119,42 @@ namespace QuicPunch
                         }
                     }
 
-                    (connection, stream) = await TryRunClient(udpResult.remoteEndpoint, ownCertificate, remotePeer.CertHash, localPort, nudp, linkedCts.Token, "quic-punch").ConfigureAwait(false);
+                    (connection, stream) = await TryRunClient(udpResult.remoteEndpoint, ownCertificate, remotePeer.CertHash, localPort, nudp, linkedCts.Token).ConfigureAwait(false);
                 }
 
                 if (connection != null && stream != null)
                 {
-                    QuicPunchLog.Info($"[SUCCESS] QUIC connection established with {remotePeer.Name ?? "Peer"} ({udpResult.remoteEndpoint})!");
+                    connection.ApplyOptimalTuning();
+                    QuicPunchLog.Info($"[SUCCESS] QUIC connection established with {remotePeer.Name ?? "Peer"} ({udpResult.remoteEndpoint})! Path MTU: {connection.PathMtu} bytes (BBR & PMTUD active)");
+
+                    // Cache TLS 1.3 0-RTT session resumption ticket if available
+                    if (connection.TryGetResumptionTicket(out var ticket) && ticket is { Length: > 0 })
+                    {
+                        remotePeer.ResumptionTicket = ticket;
+                        if (qc != null)
+                        {
+                            try { qc.PeerStore?.SetResumptionTicket(remotePeer.CertHash, ticket, save: true); } catch { }
+                        }
+                    }
+
+                    // Hook connection migration so IP roaming seamlessly updates peer routing
+                    if (connection.DatagramChannel != null)
+                    {
+                        connection.DatagramChannel.OnPeerAddressChanged += newEp =>
+                        {
+                            QuicPunchLog.Info($"[CONNECTION MIGRATION] Peer {remotePeer.Name} shifted to new endpoint: {newEp}");
+                            remotePeer.ActiveEndPoint = newEp;
+                            if (qc != null)
+                            {
+                                try { qc.PeerStore?.AddOrUpdate(remotePeer); } catch { }
+                            }
+                        };
+                    }
+
+                    if (connection.TryGetTelemetry(out var telem))
+                    {
+                        remotePeer.LastTelemetry = telem;
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -158,31 +198,39 @@ namespace QuicPunch
             connectionGuid.ToByteArray().CopyTo(ackBody.AsSpan(QuicPunch.MagicHeader.Length + 1, 16));
             ownPeer.IdRaw.CopyTo(ackBody.AsSpan(QuicPunch.MagicHeader.Length + 1 + 16, 16));
 
-            while (!token.IsCancellationRequested)
+            byte[] receiveBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(65536);
+            try
             {
-                try
+                while (!token.IsCancellationRequested)
                 {
-                    var result = await udp.ReceiveAsync(token);
-
-                    if (result.Buffer.Length < QuicPunch.MagicHeader.Length + 1 + 16 + 16)
-                        continue;
-
-                    for (int i = 0; i < QuicPunch.MagicHeader.Length; i++)
+                    try
                     {
-                        if (result.Buffer[i] != QuicPunch.MagicHeader[i])
-                            goto nextLoop;
-                    }
+                        EndPoint remoteEndPoint = udp.Client.AddressFamily == AddressFamily.InterNetworkV6
+                            ? new IPEndPoint(IPAddress.IPv6Any, 0)
+                            : new IPEndPoint(IPAddress.Any, 0);
 
-                    using (MemoryStream ms = new MemoryStream(result.Buffer))
-                    using (BinaryReader r = new BinaryReader(ms))
-                    {
-                        r.BaseStream.Position = QuicPunch.MagicHeader.Length;
-                        var messageType = (QuicPunchStructures.MessageType)r.ReadByte();
+                        SocketReceiveFromResult result = await udp.Client.ReceiveFromAsync(
+                            receiveBuffer.AsMemory(0, 65536),
+                            SocketFlags.None,
+                            remoteEndPoint,
+                            token).ConfigureAwait(false);
+
+                        int bytesRead = result.ReceivedBytes;
+                        if (bytesRead < QuicPunch.MagicHeader.Length + 1 + 16 + 16)
+                            continue;
+
+                        ReadOnlySpan<byte> span = receiveBuffer.AsSpan(0, bytesRead);
+                        if (!span.Slice(0, QuicPunch.MagicHeader.Length).SequenceEqual(QuicPunch.MagicHeader))
+                            continue;
+
+                        int offset = QuicPunch.MagicHeader.Length;
+                        var messageType = (QuicPunchStructures.MessageType)span[offset++];
 
                         if (messageType == QuicPunchStructures.MessageType.FinalHandshake || messageType == QuicPunchStructures.MessageType.Ack)
                         {
-                            var recvGuid = new Guid(r.ReadBytes(16));
-                            var senderId = new Guid(r.ReadBytes(16));
+                            var recvGuid = new Guid(span.Slice(offset, 16));
+                            offset += 16;
+                            var senderId = new Guid(span.Slice(offset, 16));
 
                             if (recvGuid != connectionGuid)
                                 continue;
@@ -190,40 +238,43 @@ namespace QuicPunch
                             if (senderId != remotePeer.Id)
                                 continue;
 
+                            var senderEp = (IPEndPoint)result.RemoteEndPoint;
                             for (int a = 0; a < 4; a++)
                             {
-                                try { await udp.SendAsync(ackBody, result.RemoteEndPoint, token).ConfigureAwait(false); } catch { }
+                                try { await udp.SendAsync(ackBody, senderEp, token).ConfigureAwait(false); } catch { }
                             }
 
-                            return result.RemoteEndPoint;
+                            return senderEp;
                         }
                     }
-
-                    nextLoop:;
-                }
-                catch (ObjectDisposedException)
-                {
-                    break;
-                }
-                catch (SocketException ex) when (ex.SocketErrorCode is SocketError.OperationAborted
-                                                     or SocketError.Interrupted)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    QuicPunchLog.Error($"Error in ReceiveLoopAsync: {ex.Message}");
-                    if (token.IsCancellationRequested)
-                        break;
-                    try
-                    {
-                        await Task.Delay(20, token);
-                    }
-                    catch
+                    catch (ObjectDisposedException)
                     {
                         break;
                     }
+                    catch (SocketException ex) when (ex.SocketErrorCode is SocketError.OperationAborted
+                                                         or SocketError.Interrupted)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        QuicPunchLog.Error($"Error in ReceiveLoopAsync: {ex.Message}");
+                        if (token.IsCancellationRequested)
+                            break;
+                        try
+                        {
+                            await Task.Delay(20, token);
+                        }
+                        catch
+                        {
+                            break;
+                        }
+                    }
                 }
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(receiveBuffer);
             }
 
             return null;
@@ -235,17 +286,11 @@ namespace QuicPunch
         {
             try
             {
-                byte[] payload;
-
-                using (MemoryStream ms = new MemoryStream())
-                using (BinaryWriter w = new BinaryWriter(ms))
-                {
-                    w.Write(QuicPunch.MagicHeader);
-                    w.Write((byte)QuicPunchStructures.MessageType.FinalHandshake);
-                    w.Write(connectionGuid.ToByteArray());
-                    w.Write(ownPeer.IdRaw);
-                    payload = ms.ToArray();
-                }
+                byte[] payload = new byte[QuicPunch.MagicHeader.Length + 1 + 16 + 16];
+                Buffer.BlockCopy(QuicPunch.MagicHeader, 0, payload, 0, QuicPunch.MagicHeader.Length);
+                payload[QuicPunch.MagicHeader.Length] = (byte)QuicPunchStructures.MessageType.FinalHandshake;
+                connectionGuid.ToByteArray().CopyTo(payload.AsSpan(QuicPunch.MagicHeader.Length + 1, 16));
+                ownPeer.IdRaw.CopyTo(payload.AsSpan(QuicPunch.MagicHeader.Length + 1 + 16, 16));
 
                 var targetEndPoints = new HashSet<IPEndPoint>();
                 if (remoteCandidates != null && remoteCandidates.Count > 0)
@@ -259,6 +304,7 @@ namespace QuicPunch
                     }
                 }
 
+                // Always include known active and public endpoints from PeerInfo
                 if (peer.ActiveEndPoint != null)
                 {
                     targetEndPoints.Add(peer.ActiveEndPoint);
@@ -309,16 +355,16 @@ namespace QuicPunch
             }
         }
 
-        public static readonly List<SslApplicationProtocol> SupportedProtocols = new List<SslApplicationProtocol> { new SslApplicationProtocol("quic-punch") };
+        public const string DefaultDisguiseHost = "cloudflare-quic.com";
+        public static readonly List<SslApplicationProtocol> SupportedProtocols = new List<SslApplicationProtocol>
+        {
+            new SslApplicationProtocol("h3"),          // RFC 9114 HTTP/3 standard ALPN (looks like normal web traffic to DPI)
+            new SslApplicationProtocol("h3-29"),       // HTTP/3 draft 29 fallback
+            new SslApplicationProtocol("quic-punch")   // Legacy backwards-compatible fallback
+        };
         public static async Task<(QuicConnection? Connection, QuicStream? Stream)> TryRunServer(
             int localPort, X509Certificate2 ownCertificate, byte[] peerCertificate, UdpClient? holePunchUdp, CancellationToken token, Func<Task>? onListening = null)
         {
-            if (holePunchUdp != null)
-            {
-                try { holePunchUdp.Close(); holePunchUdp.Dispose(); } catch { }
-                await Task.Delay(20, token).ConfigureAwait(false);
-            }
-
             var options = new QuicListenerOptions
             {
                 ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
@@ -334,22 +380,7 @@ namespace QuicPunch
                         ClientCertificateRequired = true,
 
                         RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
-                        {
-                            if (certificate == null || peerCertificate == null)
-                            {
-                                QuicPunchLog.Info($"[SERVER TLS] Validation rejected: certificate is null ({certificate == null}), peerCertificate is null ({peerCertificate == null})");
-                                return false;
-                            }
-
-                            byte[] clientPublicKey = certificate.GetPublicKey();
-                            byte[] clientHash = SHA3_256.HashData(clientPublicKey);
-
-                            var valid = CryptographicOperations.FixedTimeEquals(clientHash, peerCertificate);
-
-                            QuicPunchLog.Info("Client cert hash: " + Convert.ToHexString(clientHash) + " valid: " + valid);
-
-                            return valid;
-                        }
+                            ValidateRemotePeerCertificate(certificate, peerCertificate, "SERVER")
                     },
 
                     MaxInboundBidirectionalStreams = 512,
@@ -365,14 +396,30 @@ namespace QuicPunch
             {
                 try
                 {
+                    // Zero-dead-window overlapping bind: bind listener while holePunchUdp is still open
                     listener = await QuicListener.ListenAsync(options, token);
+                    MsQuicTuner.EnsureOptimalConfiguration();
+                    if (holePunchUdp != null)
+                    {
+                        try { holePunchUdp.Close(); holePunchUdp.Dispose(); holePunchUdp = null; } catch { }
+                    }
                     break;
                 }
                 catch when (bindTries < 9 && !token.IsCancellationRequested)
                 {
                     bindTries++;
+                    // Fallback for platforms/configurations that forbid overlapping listener binds:
+                    if (holePunchUdp != null)
+                    {
+                        try { holePunchUdp.Close(); holePunchUdp.Dispose(); holePunchUdp = null; } catch { }
+                    }
                     await Task.Delay(20, token);
                 }
+            }
+
+            if (holePunchUdp != null)
+            {
+                try { holePunchUdp.Close(); holePunchUdp.Dispose(); holePunchUdp = null; } catch { }
             }
 
             if (listener == null)
@@ -387,6 +434,7 @@ namespace QuicPunch
                 }
 
                 var nativeConn = await listener.AcceptConnectionAsync(token);
+                MsQuicTuner.TryApplyOptimalTuning(nativeConn);
 
                 try
                 {
@@ -406,7 +454,7 @@ namespace QuicPunch
         }
 
         public static async Task<(QuicConnection? Connection, QuicStream? Stream)> TryRunClient(
-            IPEndPoint targetPeer, X509Certificate2 ownCertificate, byte[] peerCertificate, int localPort, UdpClient? holePunchUdp, CancellationToken token, string? targetHost = null)
+            IPEndPoint targetPeer, X509Certificate2 ownCertificate, byte[] peerCertificate, int localPort, UdpClient? holePunchUdp, CancellationToken token, string targetHost = DefaultDisguiseHost)
         {
             var options = new QuicClientConnectionOptions
             {
@@ -416,7 +464,7 @@ namespace QuicPunch
                 DefaultCloseErrorCode = 0,
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
                 {
-                    TargetHost = (!string.IsNullOrWhiteSpace(targetHost) && !targetHost.Contains('@')) ? targetHost : "quic-punch",
+                    TargetHost = string.IsNullOrWhiteSpace(targetHost) ? DefaultDisguiseHost : targetHost,
                     ApplicationProtocols = SupportedProtocols,
                     ClientCertificates = new X509Certificate2Collection(ownCertificate),
                     LocalCertificateSelectionCallback = (sender, targetHost, localCertificates, remoteCertificate, acceptableIssuers) =>
@@ -424,22 +472,7 @@ namespace QuicPunch
                         return ownCertificate;
                     },
                     RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
-                    {
-                        if (certificate == null || peerCertificate == null)
-                        {
-                            QuicPunchLog.Info($"[CLIENT TLS] Validation rejected: certificate is null ({certificate == null}), peerCertificate is null ({peerCertificate == null})");
-                            return false;
-                        }
-
-                        byte[] serverPublicKey = certificate.GetPublicKey();
-                        byte[] serverHash = SHA3_256.HashData(serverPublicKey);
-
-                        var valid = CryptographicOperations.FixedTimeEquals(serverHash, peerCertificate);
-
-                        QuicPunchLog.Info("Server cert hash: " + Convert.ToHexString(serverHash) + " valid: " + valid);
-
-                        return valid;
-                    }
+                        ValidateRemotePeerCertificate(certificate, peerCertificate, "CLIENT")
                 },
 
                 MaxInboundBidirectionalStreams = 512,
@@ -453,18 +486,17 @@ namespace QuicPunch
             QuicConnection? connection = null;
             int backoffMs = 50;
 
-            if (holePunchUdp != null)
-            {
-                try { holePunchUdp.Close(); holePunchUdp.Dispose(); } catch { }
-                await Task.Delay(20, token).ConfigureAwait(false);
-            }
-
             while (!token.IsCancellationRequested)
             {
                 try
                 {
                     connection = await QuicConnection.ConnectAsync(options, token).ConfigureAwait(false);
-                    QuicPunchLog.Info("[CLIENT] Connected successfully!");
+                    connection.ApplyOptimalTuning();
+                    QuicPunchLog.Info("[CLIENT] Connected successfully (BBR + PMTUD optimal tuning active)!");
+                    if (holePunchUdp != null)
+                    {
+                        try { holePunchUdp.Close(); holePunchUdp.Dispose(); holePunchUdp = null; } catch { }
+                    }
                     break;
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -473,6 +505,10 @@ namespace QuicPunch
                 }
                 catch (Exception ex)
                 {
+                    if (holePunchUdp != null)
+                    {
+                        try { holePunchUdp.Close(); holePunchUdp.Dispose(); holePunchUdp = null; } catch { }
+                    }
                     QuicPunchLog.Info($"[QUIC CLIENT ATTEMPT] Connect to {targetPeer} failed ({ex.GetType().Name}: {ex.Message}). Retrying in {backoffMs}ms...");
                     try
                     {
@@ -484,6 +520,11 @@ namespace QuicPunch
                         break;
                     }
                 }
+            }
+
+            if (holePunchUdp != null)
+            {
+                try { holePunchUdp.Close(); holePunchUdp.Dispose(); holePunchUdp = null; } catch { }
             }
 
             if (connection == null)
@@ -502,6 +543,22 @@ namespace QuicPunch
                 try { await connection.DisposeAsync().ConfigureAwait(false); } catch { }
                 throw;
             }
+        }
+
+        private static bool ValidateRemotePeerCertificate(X509Certificate? certificate, byte[]? peerCertificate, string role)
+        {
+            if (certificate == null || peerCertificate == null)
+            {
+                QuicPunchLog.Info($"[{role} TLS] Validation rejected: certificate is null ({certificate == null}), peerCertificate is null ({peerCertificate == null})");
+                return false;
+            }
+
+            byte[] publicKey = certificate.GetPublicKey();
+            byte[] hash = SHA3_256.HashData(publicKey);
+
+            var valid = CryptographicOperations.FixedTimeEquals(hash, peerCertificate);
+            QuicPunchLog.Info($"{role} cert hash: " + Convert.ToHexString(hash) + " valid: " + valid);
+            return valid;
         }
 
         public static bool AmIServer(PeerInfo ownPeer, PeerInfo remotePeer)
