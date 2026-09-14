@@ -9,17 +9,19 @@ public static class WebUiContext
 {
     public const int MaxConcurrentHttpRequests = 32;
     public const int MaxJsonBodyBytes = 128 * 1024;
-    public const int MaxChatBodyBytes = 16 * 1024 * 1024;
+    public const int MaxChatBodyBytes = 32 * 1024 * 1024;
     public const int MaxVoiceBodyBytes = 1024 * 1024;
-    public const long MaxRelayDriveUploadBytes = RelayDriveHandler.MaxFileBytes;
     public const int MaxClipboardChars = 64 * 1024;
-    public const long MaxChatHistoryBytes = 32L * 1024 * 1024;
+    public const long MaxChatHistoryBytes = 128L * 1024 * 1024;
+
+    public const int MaxScreenShareBodyBytes = 2 * 1024 * 1024; // 2MB max for high-res JPEG frame
 
     public static long GetRequestBodyLimit(string path) => path switch
     {
         "/api/voice-send" => MaxVoiceBodyBytes,
+        "/api/voice/screen-share/frame" => MaxScreenShareBodyBytes,
         "/api/chat-send" => MaxChatBodyBytes,
-        "/api/files/publish" => MaxRelayDriveUploadBytes,
+        "/api/chat/share-file" => 100L * 1024 * 1024 * 1024,
         _ => MaxJsonBodyBytes
     };
 

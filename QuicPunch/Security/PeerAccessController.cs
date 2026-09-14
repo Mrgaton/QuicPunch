@@ -7,39 +7,6 @@ using QuicPunch.Helpers;
 
 namespace QuicPunch.Security
 {
-    public class ExpectedPeerCertSet
-    {
-        private readonly ConcurrentDictionary<byte[], byte> _dict = new(Utilities.ByteArrayComparer.Instance);
-        public void Add(byte[] certHash) { if (certHash != null) _dict[certHash] = 0; }
-        public bool Contains(byte[] certHash) => certHash != null && _dict.ContainsKey(certHash);
-        public bool Remove(byte[] certHash) => certHash != null && _dict.TryRemove(certHash, out _);
-        public void Clear() => _dict.Clear();
-        public IReadOnlyCollection<byte[]> ToList() => _dict.Keys.ToList();
-    }
-
-    public interface IPeerAccessController
-    {
-        bool AutoAcceptConnections { get; set; }
-        bool AutoAcceptUntrustedConnections { get; set; }
-
-        void TrustPeer(byte[] certHash);
-        void UntrustPeer(byte[] certHash);
-        bool IsTrusted(byte[]? certHash);
-        bool IsTrusted(PeerInfo? peer);
-        bool IsTrusted(Guid peerId);
-
-        void SetAutoAcceptAll(bool autoAccept);
-        void SetPeerAutoAccept(Guid peerId, bool autoAccept);
-        void SetPeerAutoAccept(byte[] certHash, bool autoAccept);
-        bool IsAutoAccepted(Guid peerId);
-        bool IsAutoAccepted(byte[] certHash);
-        IReadOnlyList<Guid> GetAutoAcceptedPeers();
-
-        void EnsureAllowedForApplication(PeerInfo peer);
-    }
-
-    public delegate bool PeerByCertHashResolver(byte[] certHash, out PeerInfo? peer);
-
     public sealed class PeerAccessController : IPeerAccessController
     {
         private readonly Func<PeerStore?> _peerStoreProvider;
@@ -189,5 +156,38 @@ namespace QuicPunch.Security
             if (!AutoAcceptUntrustedConnections && !IsTrusted(peer))
                 throw new InvalidOperationException("Peer must be trusted before starting application connections.");
         }
+    }
+
+    public delegate bool PeerByCertHashResolver(byte[] certHash, out PeerInfo? peer);
+
+    public class ExpectedPeerCertSet
+    {
+        private readonly ConcurrentDictionary<byte[], byte> _dict = new(Utilities.ByteArrayComparer.Instance);
+        public void Add(byte[] certHash) { if (certHash != null) _dict[certHash] = 0; }
+        public bool Contains(byte[] certHash) => certHash != null && _dict.ContainsKey(certHash);
+        public bool Remove(byte[] certHash) => certHash != null && _dict.TryRemove(certHash, out _);
+        public void Clear() => _dict.Clear();
+        public IReadOnlyCollection<byte[]> ToList() => _dict.Keys.ToList();
+    }
+
+    public interface IPeerAccessController
+    {
+        bool AutoAcceptConnections { get; set; }
+        bool AutoAcceptUntrustedConnections { get; set; }
+
+        void TrustPeer(byte[] certHash);
+        void UntrustPeer(byte[] certHash);
+        bool IsTrusted(byte[]? certHash);
+        bool IsTrusted(PeerInfo? peer);
+        bool IsTrusted(Guid peerId);
+
+        void SetAutoAcceptAll(bool autoAccept);
+        void SetPeerAutoAccept(Guid peerId, bool autoAccept);
+        void SetPeerAutoAccept(byte[] certHash, bool autoAccept);
+        bool IsAutoAccepted(Guid peerId);
+        bool IsAutoAccepted(byte[] certHash);
+        IReadOnlyList<Guid> GetAutoAcceptedPeers();
+
+        void EnsureAllowedForApplication(PeerInfo peer);
     }
 }

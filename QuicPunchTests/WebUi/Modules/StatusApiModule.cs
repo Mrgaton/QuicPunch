@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Web;
+using QuicPunch;
 using QuicPunch.Helpers;
 using QuicPunchTests.Protocols;
 using QuicPunchTests.Settings;
@@ -13,7 +14,6 @@ internal sealed class StatusApiModule
     private readonly ChatHandler _chatHandler;
     private readonly VirtualLanHandler _lanHandler;
     private readonly VoiceCallHandler _voiceHandler;
-    private readonly RelayDriveHandler _relayDriveHandler;
     private readonly AppPreferencesStore _preferences;
     private readonly PeerApiModule _peerModule;
     private readonly ChatApiModule _chatModule;
@@ -23,7 +23,6 @@ internal sealed class StatusApiModule
         ChatHandler chatHandler,
         VirtualLanHandler lanHandler,
         VoiceCallHandler voiceHandler,
-        RelayDriveHandler relayDriveHandler,
         AppPreferencesStore preferences,
         PeerApiModule peerModule,
         ChatApiModule chatModule)
@@ -32,7 +31,6 @@ internal sealed class StatusApiModule
         _chatHandler = chatHandler;
         _lanHandler = lanHandler;
         _voiceHandler = voiceHandler;
-        _relayDriveHandler = relayDriveHandler;
         _preferences = preferences;
         _peerModule = peerModule;
         _chatModule = chatModule;
@@ -59,19 +57,57 @@ internal sealed class StatusApiModule
             sampleTime = s.SampleTimeUtc.ToString("o")
         }).ToList();
 
-        var peers = _qcc.AvailablePeers.Values.Select(peer =>
+        var peers = _qcc.AvailablePeers.Values
+            .Where(peer =>
+            {
+                if (!_qcc.TryGetPeerMultiplexer(peer.Id, out var m) || m == null || m.IsDisposed)
+                {
+                    if (!peer.IsConnectedAndResponsive(TimeSpan.FromMinutes(1)))
+                    {
+                        _ = Task.Run(() => _qcc.DisconnectPeer(peer.Id));
+                        return false;
+                    }
+                }
+                return true;
+            })
+            .Select(peer =>
         {
             string certHash = peer.TryGetCertificateHash(out var hash) ? Convert.ToBase64String(hash) : "";
             string canonId = Utilities.ToCanonicalPeerId(hash);
             savedByHash.TryGetValue(certHash, out var savedPeer);
             bool trusted = _qcc.IsTrustedPeer(peer);
-            int lastSeenSec = peer.LastSeen > DateTime.MinValue ? (int)Math.Max(0, (DateTime.UtcNow - peer.LastSeen).TotalSeconds) : 99999;
-            int? unresponsiveSec = peer.LastPingResponseUtc.HasValue
-                ? (int)Math.Max(0, (DateTime.UtcNow - peer.LastPingResponseUtc.Value).TotalSeconds)
-                : (lastSeenSec < 99999 ? lastSeenSec : (int?)null);
 
-            double? pingMs = peer.Ping.HasValue ? Math.Round(peer.Ping.Value.TotalMilliseconds, 1) : null;
-            bool isResponsive = pingMs.HasValue && unresponsiveSec.HasValue && unresponsiveSec.Value <= 10;
+            bool isQuicConnected = false;
+            QuicConnectionTelemetry? liveTelem = null;
+            if (_qcc.TryGetPeerMultiplexer(peer.Id, out var mux) && mux != null && !mux.IsDisposed)
+            {
+                isQuicConnected = true;
+                if (mux.TryGetTelemetry(out var muxTelem))
+                {
+                    liveTelem = muxTelem;
+                    peer.LastTelemetry = muxTelem;
+                    peer.Ping = TimeSpan.FromMilliseconds(Math.Max(0.1, Math.Round(muxTelem.RttMs, 1)));
+                    peer.LastPingResponseUtc = DateTime.UtcNow;
+                    peer.LastSeen = DateTime.UtcNow;
+                }
+            }
+            else if (peer.LastTelemetry != null)
+            {
+                liveTelem = peer.LastTelemetry;
+            }
+
+            int lastSeenSec = peer.LastSeen > DateTime.MinValue ? (int)Math.Max(0, (DateTime.UtcNow - peer.LastSeen).TotalSeconds) : 99999;
+            int? unresponsiveSec = isQuicConnected
+                ? 0
+                : (peer.LastPingResponseUtc.HasValue
+                    ? (int)Math.Max(0, (DateTime.UtcNow - peer.LastPingResponseUtc.Value).TotalSeconds)
+                    : (lastSeenSec < 99999 ? lastSeenSec : (int?)null));
+
+            double? pingMs = liveTelem != null
+                ? Math.Round(liveTelem.RttMs, 1)
+                : (peer.Ping.HasValue ? Math.Round(peer.Ping.Value.TotalMilliseconds, 1) : null);
+
+            bool isResponsive = isQuicConnected || (pingMs.HasValue && unresponsiveSec.HasValue && unresponsiveSec.Value <= 10);
             string displayName = !string.IsNullOrWhiteSpace(savedPeer?.Name) ? savedPeer.Name : (peer.Name ?? "Peer");
 
             return new
@@ -83,11 +119,13 @@ internal sealed class StatusApiModule
                 peerName = peer.Name,
                 ping = pingMs,
                 hasPing = isResponsive,
+                pingSource = isQuicConnected ? "QUIC RTT" : "UDP Ping",
+                isQuicConnected,
                 unresponsiveSeconds = unresponsiveSec ?? 99999,
                 endpoint = peer.ActiveEndPoint?.ToString() ?? "",
                 addresses = peer.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
-                minPort = peer.MinPort,
-                maxPort = peer.MaxPort,
+                ports = peer.PortArray ?? Array.Empty<ushort>(),
+                portMode = peer.ConnectionFlags?.PortMode.ToString() ?? "Single",
                 networkType = peer.NetworkType.ToString(),
                 isTor = peer.NetworkType == QuicPunch.QuicPunch.NetworkType.Tor || !string.IsNullOrWhiteSpace(peer.OnionAddress),
                 onionAddress = peer.OnionAddress ?? "",
@@ -98,7 +136,7 @@ internal sealed class StatusApiModule
                 autoConnectOnStartup = savedPeer?.AutoConnect ?? false,
                 isAutoAccepted = trusted && _qcc.IsPeerAutoAccepted(peer.Id),
                 lastSeenSecondsAgo = lastSeenSec,
-                telemetry = MapTelemetry(peer.LastTelemetry)
+                telemetry = MapTelemetry(liveTelem ?? peer.LastTelemetry)
             };
         }).OrderByDescending(p => p.isTrusted).ThenBy(p => p.name).ToList();
 
@@ -111,8 +149,8 @@ internal sealed class StatusApiModule
             autoConnect = item.AutoConnect,
             onionAddress = item.OnionAddress ?? "",
             addresses = item.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
-            minPort = item.MinPort,
-            maxPort = item.MaxPort,
+            ports = item.PortArray ?? Array.Empty<ushort>(),
+            portMode = item.ConnectionFlags?.PortMode.ToString() ?? "Single",
             networkType = item.NetworkType.ToString()
         }).ToList();
 
@@ -183,36 +221,40 @@ internal sealed class StatusApiModule
                 certHash = certHashB64,
                 peerName = !string.IsNullOrWhiteSpace(pName) ? pName : "Unknown",
                 addresses = item.Peer.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
-                minPort = item.Peer.MinPort,
-                maxPort = item.Peer.MaxPort,
+                ports = item.Peer.PortArray ?? Array.Empty<ushort>(),
+                portMode = item.Peer.ConnectionFlags?.PortMode.ToString() ?? "Single",
                 startTime = item.StartTime.ToString("HH:mm:ss")
             };
         }).ToList();
 
         var discovery = new
         {
-            enabled = _qcc.WanNostrDiscoveryEnabled,
+            enabled = _qcc.Discovery.WanNostrDiscoveryEnabled,
             desiredEnabled = prefs.WanNostrDiscoveryEnabled,
-            running = _qcc.WanNostrDiscovery?.IsRunning ?? false,
-            connectedRelays = _qcc.WanNostrDiscovery?.ConnectedRelayCount ?? 0,
-            relayCount = _qcc.NostrRelays?.Length ?? QuicPunch.NostrDiscovery.DefaultRelays.Length,
+            running = _qcc.Discovery.WanNostrDiscovery?.IsRunning ?? false,
+            connectedRelays = _qcc.Discovery.WanNostrDiscovery?.ConnectedRelayCount ?? 0,
+            relayCount = _qcc.Discovery.NostrRelays?.Length ?? QuicPunch.NostrDiscovery.DefaultRelays.Length,
 
             wan = new
             {
-                enabled = _qcc.WanNostrDiscoveryEnabled,
+                enabled = _qcc.Discovery.WanNostrDiscoveryEnabled,
                 desiredEnabled = prefs.WanNostrDiscoveryEnabled,
-                running = _qcc.WanNostrDiscovery?.IsRunning ?? false,
-                connectedRelays = _qcc.WanNostrDiscovery?.ConnectedRelayCount ?? 0,
-                relayCount = _qcc.NostrRelays?.Length ?? QuicPunch.NostrDiscovery.DefaultRelays.Length
+                running = _qcc.Discovery.WanNostrDiscovery?.IsRunning ?? false,
+                connectedRelays = _qcc.Discovery.WanNostrDiscovery?.ConnectedRelayCount ?? 0,
+                relayCount = _qcc.Discovery.NostrRelays?.Length ?? QuicPunch.NostrDiscovery.DefaultRelays.Length,
+                serviceRunning = _qcc.IsWanStarted,
+                serviceDesiredEnabled = prefs.WanEnabled
             },
 
             tor = new
             {
-                enabled = _qcc.TorNostrDiscoveryEnabled,
+                enabled = _qcc.Discovery.TorNostrDiscoveryEnabled,
                 desiredEnabled = prefs.TorNostrDiscoveryEnabled,
-                running = _qcc.TorNostrDiscovery?.IsRunning ?? false,
-                connectedRelays = _qcc.TorNostrDiscovery?.ConnectedRelayCount ?? 0,
-                relayCount = _qcc.TorNostrRelays?.Length ?? _qcc.NostrRelays?.Length ?? QuicPunch.NostrDiscovery.DefaultRelays.Length
+                running = _qcc.Discovery.TorNostrDiscovery?.IsRunning ?? false,
+                connectedRelays = _qcc.Discovery.TorNostrDiscovery?.ConnectedRelayCount ?? 0,
+                relayCount = _qcc.Discovery.TorNostrRelays?.Length ?? _qcc.Discovery.NostrRelays?.Length ?? QuicPunch.NostrDiscovery.DefaultRelays.Length,
+                serviceRunning = _qcc.IsTorStarted,
+                serviceDesiredEnabled = prefs.TorEnabled
             }
         };
 
@@ -269,7 +311,6 @@ internal sealed class StatusApiModule
             chat = new { active = ChatHandler.ActiveChats.Count, protocolId = _chatHandler.ProtocolId.ToString() },
             voice = new { active = VoiceCallHandler.ActiveCalls.Count, protocolId = _voiceHandler.ProtocolId.ToString() },
             lan = new { active = _lanHandler.ActivePeers.Count, protocolId = _lanHandler.ProtocolId.ToString() },
-            files = new { active = RelayDriveHandler.ActiveSessions.Count, protocolId = _relayDriveHandler.ProtocolId.ToString() },
             clipboard = new { active = _peerModule.ClipboardItems.Count, protocolId = "" }
         };
 
@@ -287,20 +328,81 @@ internal sealed class StatusApiModule
         {
             publicAddresses = _qcc.CurrentPeer?.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
             exactMappings = exactMappingsList.ToArray(),
-            minPort = _qcc.CurrentPeer?.MinPort ?? _qcc.LocalDiscoveryPort,
-            maxPort = _qcc.CurrentPeer?.MaxPort ?? _qcc.LocalDiscoveryPort,
+            ports = _qcc.CurrentPeer?.PortArray ?? Array.Empty<ushort>(),
+            portMode = _qcc.CurrentPeer?.ConnectionFlags?.PortMode.ToString() ?? "Single",
             localAddresses = Utilities.GetValidLocalIPAddresses().Select(a => a.ToString()).ToArray(),
             serverCount = _qcc.StunServerEndpoints?.Count ?? 0,
             networkType = _qcc.CurrentPeer?.NetworkType.ToString() ?? "Unknown"
         };
 
-        _qcc.PruneStaleDiscoveredPeers();
+        _qcc.Discovery.PruneStaleDiscoveredPeers();
         var activePeerCertHashes = new HashSet<string>(
             _qcc.AvailablePeers.Values.Select(p => p.TryGetCertificateHash(out var h) ? Convert.ToBase64String(h) : "").Where(s => !string.IsNullOrEmpty(s)),
             StringComparer.Ordinal);
+        var localWanHashB64 = _qcc.LocalWanCertHash != null ? Convert.ToBase64String(_qcc.LocalWanCertHash) : "";
+        var localTorHashB64 = _qcc.LocalTorCertHash != null ? Convert.ToBase64String(_qcc.LocalTorCertHash) : "";
+        var wanNostrPub = _qcc.WanNostrPublicKeyHex;
+        var torNostrPub = _qcc.TorNostrPublicKeyHex;
+        var localIps = Utilities.GetValidLocalIPAddresses();
+        var localName = _qcc.CurrentPeer?.Name;
+        var localPeerAddrs = _qcc.CurrentPeer?.Addresses;
+        var boundPort = _qcc.LocalDiscoveryPort;
 
-        var discoveredPeers = _qcc.DiscoveredPeers.Values
-            .Where(dp => !activePeerCertHashes.Contains(dp.CertHashBase64))
+        var discoveredPeers = _qcc.Discovery.DiscoveredPeers.Values
+            .Where(dp =>
+            {
+                if (activePeerCertHashes.Contains(dp.CertHashBase64)) return false;
+                if (!string.IsNullOrEmpty(localWanHashB64) && dp.CertHashBase64 == localWanHashB64) return false;
+                if (!string.IsNullOrEmpty(localTorHashB64) && dp.CertHashBase64 == localTorHashB64) return false;
+
+                if (!string.IsNullOrEmpty(dp.NostrPubKey))
+                {
+                    if (!string.IsNullOrEmpty(wanNostrPub) && string.Equals(dp.NostrPubKey, wanNostrPub, StringComparison.OrdinalIgnoreCase)) return false;
+                    if (!string.IsNullOrEmpty(torNostrPub) && string.Equals(dp.NostrPubKey, torNostrPub, StringComparison.OrdinalIgnoreCase)) return false;
+                }
+
+                if (dp.NetworkType != QuicPunch.QuicPunch.NetworkType.Tor)
+                {
+                    var parsed = dp.Addresses?.Select(a => IPAddress.TryParse(a, out var ip) ? ip : null).Where(a => a != null && !IPAddress.IsLoopback(a)).Cast<IPAddress>().ToList() ?? new List<IPAddress>();
+
+                    // Check: Contains both this machine's local private IP AND public WAN IP for self/unnamed ghost
+                    if (parsed.Count > 0 && localPeerAddrs != null && localPeerAddrs.Length > 0)
+                    {
+                        bool hasLocalIp = parsed.Any(a => localIps.Contains(a));
+                        var publicIps = localPeerAddrs.Where(a => !localIps.Contains(a)).ToList();
+                        bool hasPublicIp = publicIps.Count > 0 && parsed.Any(a => publicIps.Contains(a));
+                        bool isGhostOrSameName = string.IsNullOrWhiteSpace(dp.Name) || dp.Name == "Discovered Peer" ||
+                            (!string.IsNullOrWhiteSpace(localName) && string.Equals(localName, dp.Name, StringComparison.OrdinalIgnoreCase));
+                        if (hasLocalIp && hasPublicIp && isGhostOrSameName) return false;
+                    }
+
+                    bool nameMatches = !string.IsNullOrWhiteSpace(localName) && !string.IsNullOrWhiteSpace(dp.Name) &&
+                        string.Equals(localName, dp.Name, StringComparison.OrdinalIgnoreCase);
+
+                    if (nameMatches && parsed.Count > 0)
+                    {
+                        if (parsed.Any(a => localIps.Contains(a))) return false;
+                        if (localPeerAddrs != null && parsed.Any(a => localPeerAddrs.Contains(a))) return false;
+                    }
+
+                    if (parsed.Count > 0 && parsed.All(a => localIps.Contains(a)))
+                    {
+                        if (boundPort > 0 && dp.PortArray != null && dp.PortArray.Contains((ushort)boundPort))
+                            return false;
+                    }
+                }
+                else
+                {
+                    var localTorPeer = _qcc.TorCurrentPeer;
+                    if (!string.IsNullOrEmpty(localTorPeer?.OnionAddress) && !string.IsNullOrEmpty(dp.OnionAddress) &&
+                        string.Equals(localTorPeer.OnionAddress, dp.OnionAddress, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            })
             .Select(dp =>
             {
                 PeerStore.SavedPeer? savedPeer = null;
@@ -308,22 +410,13 @@ internal sealed class StatusApiModule
                 {
                     _qcc.PeerStore.TryGet(dp.CertHash, out savedPeer);
                 }
-                if (savedPeer == null && !string.IsNullOrEmpty(dp.NostrPubKey) && _qcc.PeerStore != null)
-                {
-                    _qcc.PeerStore.TryGetByNostrPubKey(dp.NostrPubKey, out savedPeer);
-                }
-                if (savedPeer == null && dp.Addresses != null && dp.Addresses.Length > 0 && _qcc.PeerStore != null)
-                {
-                    var parsedAddrs = dp.Addresses.Select(a => IPAddress.TryParse(a, out var ip) ? ip : null).Where(a => a != null && !IPAddress.IsLoopback(a)).Cast<IPAddress>();
-                    _qcc.PeerStore.TryGetByAddress(parsedAddrs, out savedPeer);
-                }
-                if (savedPeer == null && !string.IsNullOrEmpty(dp.OnionAddress) && _qcc.PeerStore != null)
-                {
-                    _qcc.PeerStore.TryGetByOnion(dp.OnionAddress, out savedPeer);
-                }
                 if (savedPeer == null)
                 {
                     savedByHash.TryGetValue(dp.CertHashBase64, out savedPeer);
+                }
+                if (savedPeer == null && !string.IsNullOrEmpty(dp.NostrPubKey) && _qcc.PeerStore != null)
+                {
+                    _qcc.PeerStore.TryGetByNostrPubKey(dp.NostrPubKey, out savedPeer);
                 }
 
                 string displayName = !string.IsNullOrWhiteSpace(savedPeer?.Name)
@@ -332,7 +425,7 @@ internal sealed class StatusApiModule
 
                 if (displayName == "Discovered Peer")
                 {
-                    var avail = _qcc.AvailablePeers.Values.FirstOrDefault(p => (dp.CertHash != null && p.TryGetCertificateHash(out var h) && CryptographicOperations.FixedTimeEquals(h, dp.CertHash)) || (p.Addresses != null && dp.Addresses != null && p.Addresses.Any(a => !IPAddress.IsLoopback(a) && dp.Addresses.Contains(a.ToString()))));
+                    var avail = _qcc.AvailablePeers.Values.FirstOrDefault(p => dp.CertHash != null && p.TryGetCertificateHash(out var h) && CryptographicOperations.FixedTimeEquals(h, dp.CertHash));
                     if (avail != null && !string.IsNullOrWhiteSpace(avail.Name) && avail.Name != "Peer" && avail.Name != "Discovered Peer")
                         displayName = avail.Name;
                 }
@@ -340,8 +433,7 @@ internal sealed class StatusApiModule
                 if (displayName == "Discovered Peer")
                 {
                     var act = _qcc.ActiveInterrogations.Values.FirstOrDefault(s =>
-                        (dp.CertHash != null && s.Peer.TryGetCertificateHash(out var h) && CryptographicOperations.FixedTimeEquals(h, dp.CertHash)) ||
-                        (s.Peer.Addresses != null && dp.Addresses != null && s.Peer.Addresses.Any(a => !IPAddress.IsLoopback(a) && dp.Addresses.Contains(a.ToString())))
+                        dp.CertHash != null && s.Peer.TryGetCertificateHash(out var h) && CryptographicOperations.FixedTimeEquals(h, dp.CertHash)
                     );
                     if (act != null && !string.IsNullOrWhiteSpace(act.Peer.Name) && act.Peer.Name != "Saved Peer" && act.Peer.Name != "Peer" && act.Peer.Name != "Unknown" && act.Peer.Name != "Discovered Peer")
                         displayName = act.Peer.Name;
@@ -353,8 +445,7 @@ internal sealed class StatusApiModule
                     var savedIps = new HashSet<string>((savedPeer.Addresses ?? Array.Empty<IPAddress>()).Select(a => a.ToString()), StringComparer.OrdinalIgnoreCase);
                     var dpIps = new HashSet<string>(dp.Addresses ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
                     endpointChanged = !savedIps.SetEquals(dpIps) ||
-                                      savedPeer.MinPort != dp.MinPort ||
-                                      savedPeer.MaxPort != dp.MaxPort ||
+                                      !(savedPeer.PortArray ?? Array.Empty<ushort>()).SequenceEqual(dp.PortArray ?? Array.Empty<ushort>()) ||
                                       (!string.IsNullOrEmpty(dp.OnionAddress) && !string.Equals(dp.OnionAddress, savedPeer.OnionAddress, StringComparison.OrdinalIgnoreCase)) ||
                                       (dp.CertHash != null && !CryptographicOperations.FixedTimeEquals(dp.CertHash, savedPeer.CertHash));
                 }
@@ -374,8 +465,8 @@ internal sealed class StatusApiModule
                     nostrPubKey = dp.NostrPubKey ?? "",
                     addresses = dp.Addresses,
                     onionAddress = dp.OnionAddress,
-                    minPort = dp.MinPort,
-                    maxPort = dp.MaxPort,
+                    ports = dp.PortArray ?? Array.Empty<ushort>(),
+                    portMode = dp.ConnectionFlags?.PortMode.ToString() ?? (dp.PortArray == null || dp.PortArray.Length <= 1 ? "Single" : (dp.PortArray.Length > 8 ? "Range" : "Multiple")),
                     networkType = dp.NetworkType.ToString(),
                     isTor = dp.NetworkType == QuicPunch.QuicPunch.NetworkType.Tor || !string.IsNullOrWhiteSpace(dp.OnionAddress),
                     source = dp.Source,
@@ -395,8 +486,8 @@ internal sealed class StatusApiModule
                 id = _qcc.CurrentPeer?.Id.ToString() ?? "",
                 canonicalId = _qcc.CurrentPeer?.TryGetCertificateHash(out var myHash) == true ? Utilities.ToCanonicalPeerId(myHash) : "",
                 listenerPort = _qcc.LocalDiscoveryPort,
-                minPort = _qcc.CurrentPeer?.MinPort ?? _qcc.LocalDiscoveryPort,
-                maxPort = _qcc.CurrentPeer?.MaxPort ?? _qcc.LocalDiscoveryPort,
+                ports = _qcc.CurrentPeer?.PortArray ?? Array.Empty<ushort>(),
+                portMode = _qcc.CurrentPeer?.ConnectionFlags?.PortMode.ToString() ?? "Single",
                 networkType = _qcc.CurrentPeer?.NetworkType.ToString() ?? "Unknown",
                 wanToken,
                 torToken,
@@ -446,7 +537,6 @@ internal sealed class StatusApiModule
             torStatus = tor,
             activeChats = ChatHandler.ActiveChats.Values.Select(s => new { peerId = s.Peer.Id.ToString(), peerName = s.Peer.Name ?? "" }).ToList(),
             activeVoiceCalls = VoiceCallHandler.ActiveCalls.Values.Select(s => new { peerId = s.Peer.Id.ToString(), peerName = s.Peer.Name ?? "" }).ToList(),
-            activeRelayDriveSessions = RelayDriveHandler.ActiveSessions.Values.Select(s => new { peerId = s.Peer.Id.ToString(), peerName = s.Peer.Name ?? "" }).ToList(),
             registeredProtocols = _qcc.ProtocolHandlers.Select(pair => new { id = pair.Key.ToString(), name = pair.Value.ProtocolName }).ToList()
         };
     }

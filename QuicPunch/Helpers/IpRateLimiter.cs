@@ -7,32 +7,6 @@ using System.Runtime.CompilerServices;
 
 namespace QuicPunch.Helpers
 {
-    public readonly record struct IpKey(ulong High, ulong Low)
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static IpKey FromUint(uint ip) => new(0, ip);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static IpKey FromIPAddress(IPAddress address)
-        {
-            if (address.IsIPv4MappedToIPv6)
-                address = address.MapToIPv4();
-
-            if (address.AddressFamily == AddressFamily.InterNetwork)
-            {
-                Span<byte> bytes = stackalloc byte[4];
-                address.TryWriteBytes(bytes, out _);
-                return new IpKey(0, BinaryPrimitives.ReadUInt32BigEndian(bytes));
-            }
-
-            Span<byte> v6Bytes = stackalloc byte[16];
-            address.TryWriteBytes(v6Bytes, out _);
-            return new IpKey(
-                BinaryPrimitives.ReadUInt64BigEndian(v6Bytes.Slice(0, 8)),
-                BinaryPrimitives.ReadUInt64BigEndian(v6Bytes.Slice(8, 8)));
-        }
-    }
-
     internal sealed class IpRateLimiter
     {
         private readonly int _maxPerSecond;
@@ -152,6 +126,32 @@ namespace QuicPunch.Helpers
         {
             if (address == null) return false;
             return IsAllowed(IpKey.FromIPAddress(address));
+        }
+    }
+
+    public readonly record struct IpKey(ulong High, ulong Low)
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IpKey FromUint(uint ip) => new(0, ip);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IpKey FromIPAddress(IPAddress address)
+        {
+            if (address.IsIPv4MappedToIPv6)
+                address = address.MapToIPv4();
+
+            if (address.AddressFamily == AddressFamily.InterNetwork)
+            {
+                Span<byte> bytes = stackalloc byte[4];
+                address.TryWriteBytes(bytes, out _);
+                return new IpKey(0, BinaryPrimitives.ReadUInt32BigEndian(bytes));
+            }
+
+            Span<byte> v6Bytes = stackalloc byte[16];
+            address.TryWriteBytes(v6Bytes, out _);
+            return new IpKey(
+                BinaryPrimitives.ReadUInt64BigEndian(v6Bytes.Slice(0, 8)),
+                BinaryPrimitives.ReadUInt64BigEndian(v6Bytes.Slice(8, 8)));
         }
     }
 }

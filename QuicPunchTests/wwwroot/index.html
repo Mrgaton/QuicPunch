@@ -11,7 +11,7 @@
   <script defer src="/chat.js"></script>
   <script defer src="/voice.js"></script>
   <script defer src="/vpn.js"></script>
-  <script defer src="/files.js"></script>
+  <script defer src="/speedtest.js"></script>
 </head>
 <body data-page="dashboard">
 <header class="topbar">
@@ -23,10 +23,23 @@
       <span class="badge hidden" id="voiceBadge">0 activas</span>
       <span class="opus-badge hidden" id="topOpusBadge">Opus VoIP · 96 kbps · Buffer 60ms</span>
       <span class="badge hidden" id="lanStatusBadge">Stopped</span>
-      <span class="badge hidden" id="driveBadge">0 mounted</span>
     </div>
   </div>
 </header>
+
+<!-- Global Incoming Call Alert Banner -->
+<div id="incomingCallBanner" class="incoming-call-banner hidden">
+  <div class="incoming-call-pulse"></div>
+  <div class="avatar sm incoming-call-avatar" id="incomingCallAvatar">📞</div>
+  <div class="incoming-call-info">
+    <strong id="incomingCallPeerName">Peer</strong>
+    <span class="incoming-call-sub">Llamada de voz entrante P2P…</span>
+  </div>
+  <div class="incoming-call-actions">
+    <button class="btn sm green" id="acceptIncomingCallBtn" title="Aceptar y abrir llamada">📞 Contestar</button>
+    <button class="btn sm danger" id="declineIncomingCallBtn" title="Rechazar llamada">❌ Rechazar</button>
+  </div>
+</div>
 
 <!-- Persistent Global Active Call Bar (Discord / Telegram style) -->
 <div id="globalActiveCallBar" class="global-call-bar hidden">
@@ -39,11 +52,9 @@
     </div>
   </div>
   <div class="call-bar-controls">
-    <button class="btn sm ghost" id="globalCallMicBtn" title="Mutear / Desmutear mi micrófono">Micro on</button>
-    <button class="btn sm ghost" id="globalCallDeafenBtn" title="Ensordecer / Escuchar audio">Audio on</button>
-    <button class="call-btn-round hangup-red sm-hangup" id="globalCallHangupBtn" title="Colgar llamada">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="transform: rotate(135deg); display: block;"><path d="M6.62 10.79a15.05 15.05 0 006.59 6.59l2.2-2.2a1 1 0 011.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 011 1V20a1 1 0 01-1 1A17 17 0 013 4a1 1 0 011-1h3.5a1 1 0 011 1c0 1.25.2 2.45.57 3.57a1 1 0 01-.25 1.02l-2.2 2.2z"/></svg>
-    </button>
+    <button class="btn sm ghost" id="globalCallMicBtn" title="Mutear / Desmutear mi micrófono">🎙️</button>
+    <button class="btn sm ghost" id="globalCallDeafenBtn" title="Ensordecer / Escuchar audio">🎧</button>
+    <button class="call-btn-round hangup-red sm-hangup" id="globalCallHangupBtn" title="Colgar llamada">🛑</button>
     <button class="btn sm accent" id="globalCallGoToVoiceBtn" title="Abrir Voice Studio">Voice Studio</button>
   </div>
 </div>
@@ -53,267 +64,15 @@
   <a class="nav-link" data-page="chat" href="/chat.html">Direct Chat</a>
   <a class="nav-link" data-page="voice" href="/call.html">Voice Studio</a>
   <a class="nav-link" data-page="vpn" href="/vpn.html">LAN Bridge</a>
-  <a class="nav-link" data-page="files" href="/files.html">RelayDrive</a>
+  <a class="nav-link" data-page="speedtest" href="/speedtest.html">Speed Test</a>
 </nav></div>
 
 <div id="spaContainer">
-  <!-- 1. DASHBOARD VIEW (Network) -->
-  <div id="view-dashboard" class="spa-view">
-    <main class="workspace">
-      <header class="page-head compact-head">
-        <div><h1>Network</h1><p>Identity, STUN mappings, discovery, trust, connection attempts, saved peers and application sessions.</p></div>
-        <div class="toolbar"><button class="btn sm" id="refreshBtn">Refresh</button></div>
-      </header>
-
-      <section id="requestsPanel" class="section attention hidden">
-        <div class="section-head"><div><h2>Connection Requests</h2><p>Incoming application sessions that require a decision.</p></div></div>
-        <div class="section-body"><div id="requestsList" class="peer-list"></div></div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Local Node</h2><p>Runtime identity and network information.</p></div></div>
-        <div class="section-body no-pad">
-          <table class="detail-table local-node-table"><tbody>
-            <tr><th>Node name</th><td id="nodeName">—</td><th>Network type</th><td id="nodeNetwork">—</td></tr>
-            <tr><th>Listener port</th><td><div class="inline-form"><input class="input mono short-input" id="listenerPortInput" type="number" min="1" max="65535"><button class="btn sm" id="applyPortBtn">Apply</button></div></td><th>Auto-accept peers</th><td><div class="service-state"><label class="inline-toggle"><input id="autoAcceptToggle" type="checkbox"><span>Enabled</span></label></div></td></tr>
-            <tr><th>WAN service</th><td><div class="service-state"><label class="inline-toggle"><input id="wanToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="wanMeta"></span></div></td><th>WAN Nostr discovery</th><td><div class="service-state"><label class="inline-toggle"><input id="discoveryToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="discoveryMeta"></span></div></td></tr>
-            <tr><th>Tor service</th><td><div class="service-state"><label class="inline-toggle"><input id="torToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="torMeta"></span></div></td><th>Tor Nostr discovery</th><td><div class="service-state"><label class="inline-toggle"><input id="torDiscoveryToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="torDiscoveryMeta"></span></div></td></tr>
-          </tbody></table>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>STUN / Public Mapping</h2><p>Public addresses and ports currently observed through STUN. Exact mappings are shown separately from the predictive port range.</p></div></div>
-        <div class="section-body no-pad">
-          <table class="detail-table stun-table"><tbody>
-            <tr><th>Public IP address(es)</th><td id="stunAddresses" class="mono wrap">Discovering…</td><th>Observed port(s)</th><td id="stunPorts" class="mono">—</td></tr>
-            <tr><th>Exact STUN mappings</th><td colspan="3" class="stun-cell"><div class="stun-mappings-cell"><span id="stunMappings" class="mono stun-mappings-text" title="Click to view all STUN mappings">No exact mapping yet</span><button type="button" class="btn sm stun-dots-btn hidden" id="openStunModalBtn" title="View all STUN responses">…</button></div></td></tr>
-            <tr><th>Local addresses</th><td id="localAddresses" class="mono wrap">—</td><th>STUN servers loaded</th><td id="stunServerCount">0</td></tr>
-          </tbody></table>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Connection Tokens</h2><p>Complete tokens include the <span class="mono">QP://</span> scheme and can be pasted directly into another node.</p></div></div>
-        <div class="section-body token-stack">
-          <div class="token-line"><div class="token-label"><strong>WAN token</strong><span>Direct UDP / WAN identity</span></div><div class="code-box selectable" id="wanTokenBox">Generating…</div><div class="toolbar"><button class="btn" id="copyWanInline">Copy</button><button class="btn" id="copyQuickLinkBtn">Copy share link</button></div></div>
-          <div class="token-line"><div class="token-label"><strong>Tor token</strong><span>Hidden-service transport for the same peer identity</span></div><div class="code-box selectable" id="torTokenBox">Tor service inactive</div><div class="toolbar"><button class="btn" id="copyTorInline">Copy</button><button class="btn" id="torNewNymBtn">New circuits</button></div></div>
-          <div class="manual-connect"><input class="input mono" id="tokenInput" placeholder="Paste QP:// token"><button class="btn primary" id="connectTokenBtn">Connect token</button></div>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Discovered Peers</h2><p>Peers discovered via Nostr rendezvous signaling. Connect manually to initiate UDP hole-punching or Tor connection.</p></div><div class="toolbar"><button class="btn sm" id="connectAllDiscoveredBtn">Connect all</button></div></div>
-        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Source / type</th><th>Addresses / Tor</th><th>Port range</th><th>Discovered</th><th>Actions</th></tr></thead><tbody id="discoveredPeersBody"></tbody></table></div></div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Connecting Peers</h2><p>Active hole-punching / interrogation attempts.</p></div></div>
-        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Candidate addresses</th><th>Port range</th><th>Started</th><th></th></tr></thead><tbody id="interrogationsBody"></tbody></table></div></div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Connected Peers</h2><p>Trusted identities currently available. Open any registered application for each peer.</p></div><button class="btn sm" id="saveAllBtn">Save all connected</button></div>
-        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table connected-table"><thead><tr><th>Peer</th><th>Transport / endpoint</th><th>Ping</th><th>Session</th><th>Trust settings</th><th>Application</th><th></th></tr></thead><tbody id="connectedPeers"></tbody></table></div></div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Untrusted Peers</h2><p>Authenticated identities not yet allowed to open application protocols.</p></div></div>
-        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Transport</th><th>Endpoint</th><th>Last seen</th><th>Certificate</th><th></th></tr></thead><tbody id="untrustedPeers"></tbody></table></div></div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Saved Peers Database</h2><p>Persistent identities. Offline peers can be edited, reconnected, removed and configured for auto-connect.</p></div><div class="toolbar"><button class="btn sm" id="addSavedPeerBtn">Add saved peer</button></div></div>
-        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table saved-table"><thead><tr><th>Name</th><th>Certificate / type</th><th>Addresses / Tor</th><th>Port range</th><th>Auto-connect</th><th>Status</th><th>Actions</th></tr></thead><tbody id="savedPeersBody"></tbody></table></div></div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Active Application Sessions</h2><p>Protocols currently open with trusted peers.</p></div></div>
-        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Application</th><th>Details</th><th></th></tr></thead><tbody id="activeAppsBody"></tbody></table></div></div>
-      </section>
-
-      <section class="section" id="quicTelemetrySection">
-        <div class="section-head">
-          <div>
-            <h2>QUIC Protocol Telemetry &amp; Performance Metrics</h2>
-            <p>Real-time microsecond transport telemetry, congestion control state, packet loss metrics, and TLS metadata queried directly from the native MsQuic engine.</p>
-          </div>
-          <div class="toolbar">
-            <span class="badge" id="quicTelemetryStatusBadge"><span class="status-dot"></span>0 active connections</span>
-          </div>
-        </div>
-        <div class="section-body">
-          <div class="telemetry-kpi-grid">
-            <div class="kpi-card">
-              <span class="kpi-label">Active Connections</span>
-              <strong class="kpi-value" id="kpiQuicConnections">0</strong>
-              <span class="kpi-sub" id="kpiQuicTransports">WAN / Tor</span>
-            </div>
-            <div class="kpi-card">
-              <span class="kpi-label">Round-Trip Time (RTT)</span>
-              <strong class="kpi-value" id="kpiQuicRtt">—</strong>
-              <span class="kpi-sub" id="kpiQuicRttRange">Min: — · Max: — · Var: —</span>
-            </div>
-            <div class="kpi-card">
-              <span class="kpi-label">Packet Loss Ratio</span>
-              <strong class="kpi-value" id="kpiQuicLoss">0.00%</strong>
-              <span class="kpi-sub" id="kpiQuicLossDetails">0 lost · 0 retrans</span>
-            </div>
-            <div class="kpi-card">
-              <span class="kpi-label">Congestion Control (CWND)</span>
-              <strong class="kpi-value" id="kpiQuicCwnd">—</strong>
-              <span class="kpi-sub" id="kpiQuicAlgorithm">Algorithm: BBR / CUBIC · MTU: —</span>
-            </div>
-            <div class="kpi-card">
-              <span class="kpi-label">Network Throughput</span>
-              <strong class="kpi-value" id="kpiQuicThroughput">—</strong>
-              <span class="kpi-sub" id="kpiQuicPackets">Tx: 0 pkts · Rx: 0 pkts</span>
-            </div>
-          </div>
-          <div class="table-wrap borderless space-top">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Peer / Identity</th>
-                  <th>Protocol / Transport</th>
-                  <th>Congestion Control</th>
-                  <th>RTT (Min / Avg / Max)</th>
-                  <th>Loss %</th>
-                  <th>CWND / Path MTU</th>
-                  <th>Wire Transfer (Tx / Rx)</th>
-                  <th>Security / ALPN</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="quicTelemetryBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Recent Activity</h2><p>Local runtime events and diagnostics.</p></div><div class="toolbar"><button class="btn sm" id="clearLogsBtn">Clear view</button></div></div>
-        <div class="section-body"><div class="log-list" id="logs"></div></div>
-      </section>
-    </main>
-  </div>
-
-  <!-- 2. DIRECT CHAT VIEW -->
-  <div id="view-chat" class="spa-view hidden">
-    <main class="workspace chat-workspace">
-      <div class="discord-chat">
-        <aside class="dm-pane">
-          <div class="dm-head"><div><strong>Direct messages</strong><span>Trusted peers</span></div></div>
-          <div class="dm-search"><input class="input" id="chatPeerSearch" placeholder="Find a peer"></div>
-          <div id="chatPeers" class="dm-list"></div>
-        </aside>
-        <section class="conversation-pane">
-          <header class="conversation-head"><div class="conversation-identity"><div class="avatar large" id="chatAvatar">—</div><div><strong id="chatPeerName">Choose a peer</strong><span id="chatPeerMeta">Select someone from the left</span></div></div><button class="btn primary" id="chatConnectBtn" disabled>Connect chat</button></header>
-          <div id="messages" class="messages discord-messages"><div class="empty">Choose a trusted peer from the left.</div></div>
-          <div class="composer discord-composer"><button class="btn" id="attachBtn" disabled>+</button><textarea id="messageInput" class="textarea" placeholder="Message selected peer" disabled></textarea><button class="btn primary" id="sendBtn" disabled>Send</button><input id="fileInput" type="file" hidden></div>
-        </section>
-      </div>
-    </main>
-  </div>
-
-  <!-- 3. VOICE STUDIO VIEW -->
-  <div id="view-voice" class="spa-view hidden">
-    <main class="workspace">
-      <div class="page-head">
-        <div>
-          <h1>Voice Studio</h1>
-          <p>Llamadas de voz bidireccionales en tiempo real punto a punto con Opus VoIP a 96 kbps.</p>
-        </div>
-      </div>
-
-      <div id="audioUnlockBanner" class="attention space-top hidden" style="border-left: 4px solid var(--accent); background: rgba(56, 139, 253, 0.12); padding: 14px 18px; border-radius: 8px; margin-bottom: 16px; cursor: pointer;">
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px;">
-          <div>
-            <strong style="color: #79b8ff; font-size: 14px; display: block; margin-bottom: 3px;">Audio en espera de interacción</strong>
-            <span style="color: var(--muted); font-size: 12.5px;">Haz clic aquí para activar los altavoces/auriculares para escuchar la llamada.</span>
-          </div>
-          <button class="btn accent sm" style="font-weight: 600; padding: 6px 14px;">Activar Audio</button>
-        </div>
-      </div>
-
-      <div class="split-2">
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <h2>Llamadas activas</h2>
-              <p>Controles de volumen, silenciamiento y colgado individual por peer.</p>
-            </div>
-          </div>
-          <div class="section-body"><div id="activeCalls" class="active-calls-grid"></div></div>
-        </section>
-
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <h2>Audio local & Dispositivos</h2>
-              <p>Selecciona tu micrófono y revisa el nivel de modulación en tiempo real.</p>
-            </div>
-          </div>
-          <div class="section-body">
-            <div class="field"><label for="micSelect">Micrófono</label><select class="select" id="micSelect"></select></div>
-            <div class="service-row single-service space-top">
-              <div class="service">
-                <div>
-                  <strong>Procesamiento de voz del navegador</strong>
-                  <span>Cancelación de eco acústico (AEC), supresión de ruido de fondo y AGC.</span>
-                </div>
-                <label class="switch"><input id="processingToggle" type="checkbox" checked><span class="switch-track"></span></label>
-              </div>
-            </div>
-            <div class="field space-top"><label>Nivel de entrada</label><div class="meter"><span id="micMeter"></span></div></div>
-            <div class="toolbar space-top">
-              <button class="btn" id="testMicBtn">Probar micrófono</button>
-              <button class="btn accent" id="advancedOpusBtn">Opciones avanzadas</button>
-            </div>
-          </div>
-        </section>
-
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <h2>Iniciar llamada</h2>
-              <p>Contactos de confianza disponibles para llamada de voz.</p>
-            </div>
-          </div>
-          <div class="section-body"><div id="voicePeers" class="peer-list voice-peer-list"></div></div>
-        </section>
-      </div>
-    </main>
-  </div>
-
-  <!-- 4. LAN BRIDGE VIEW -->
-  <div id="view-vpn" class="spa-view hidden">
-    <main class="workspace">
-      <div class="page-head"><div><h1>LAN Bridge</h1><p>Private virtual IPv4 LAN for trusted peers and LAN game discovery.</p></div></div>
-      <div id="adminRequiredBanner" class="attention space-top hidden" style="border-left: 4px solid var(--danger); background: rgba(248, 81, 73, 0.12); padding: 14px 18px; border-radius: 8px; margin-bottom: 16px;"><div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;"><div style="display: flex; align-items: center; gap: 12px;"><span style="font-size: 24px;"></span><div><strong style="color: #ff7b72; font-size: 14px; display: block; margin-bottom: 3px;">Permisos de administrador requeridos</strong><span style="color: var(--muted); font-size: 12.5px;">El adaptador virtual Wintun requiere permisos de administrador (o root en Linux) para crear el adaptador y enrutar paquetes en la LAN virtual.</span></div></div><button class="btn danger" id="restartAdminBtn" style="font-weight: 600; padding: 8px 16px; cursor: pointer;">Reiniciar con permisos de administrador</button></div></div>
-      <section class="summary-line"><div class="summary-item"><label>Virtual IP</label><strong class="mono" id="virtualIp">—</strong><small id="addressMode">Automatic assignment</small></div><div class="summary-item"><label>LAN peers</label><strong id="lanPeerCount">0</strong><small>Active sessions</small></div><div class="summary-item"><label>Traffic</label><strong id="lanTraffic">0 B</strong><small>Combined RX + TX</small></div></section>
-      <div class="split-2">
-        <section class="section"><div class="section-head"><div><h2>Adapter configuration</h2><p>Automatic mode derives a stable private address.</p></div></div><div class="section-body"><div class="service-row" style="grid-template-columns:1fr 1fr"><div class="service"><div><strong>Enable LAN Bridge</strong><span>Register and start the Wintun adapter.</span></div><label class="switch"><input id="lanEnabled" type="checkbox"><span class="switch-track"></span></label></div><div class="service"><div><strong>Automatic IP assignment</strong><span>No DHCP coordinator required.</span></div><label class="switch"><input id="autoAssign" type="checkbox"><span class="switch-track"></span></label></div></div><div class="form-row space-top" style="grid-template-columns:1fr 1fr"><div class="field"><label>Virtual IPv4</label><input class="input mono" id="lanIp" placeholder="10.x.x.x"></div><div class="field"><label>Subnet mask</label><input class="input mono" id="lanMask" value="255.255.255.0"></div></div><div class="field space-top"><label>MTU</label><input class="input" id="lanMtu" type="number" min="1200" max="9000"></div><div class="toolbar space-top"><button class="btn primary" id="applyLanBtn">Apply settings</button></div><div class="inline-help space-top" id="lanError"></div></div></section>
-        <section class="section"><div class="section-head"><div><h2>Connected trusted peers</h2><p>Add peers to the virtual LAN.</p></div></div><div class="section-body"><div id="vpnPeers" class="peer-list"></div></div></section>
-      </div>
-      <section class="section"><div class="section-head"><div><h2>Active LAN sessions</h2><p>Virtual addresses and traffic counters.</p></div></div><div class="section-body"><div class="table-wrap"><table><thead><tr><th>Peer</th><th>Virtual IP</th><th>Connected</th><th>RX</th><th>TX</th></tr></thead><tbody id="lanSessions"></tbody></table></div></div></section>
-    </main>
-  </div>
-
-  <!-- 5. RELAYDRIVE VIEW -->
-  <div id="view-files" class="spa-view hidden">
-    <main class="workspace">
-      <div class="page-head"><div><h1>RelayDrive</h1><p>Virtual file shelf for trusted peers. Metadata syncs first; bytes move only when you materialize a file.</p></div></div>
-      <div class="split-2">
-        <section class="section"><div class="section-head"><div><h2>Temporary Outbox</h2><p>Files offered from this computer.</p></div><button class="btn sm" id="openOutboxBtn">Open folder</button></div><div class="section-body"><div class="code-box" id="outboxPath">Loading…</div><label class="file-drop space-top" id="fileDrop"><strong>Drop files here</strong><span>or click to copy them into the temporary Outbox</span><input id="driveFileInput" type="file" multiple hidden></label><div id="uploadState" class="inline-help space-top"></div><div id="publishedFiles" class="drive-list space-top"></div></div></section>
-        <section class="section"><div class="section-head"><div><h2>Remote shelf</h2><p>Remote entries remain virtual until requested.</p></div><span class="badge blue">On demand</span></div><div class="section-body"><div id="remoteFiles" class="drive-list"></div></div></section>
-      </div>
-      <div class="split-2">
-        <section class="section"><div class="section-head"><div><h2>Connected trusted peers</h2><p>Mount RelayDrive sessions.</p></div></div><div class="section-body"><div id="drivePeers" class="peer-list"></div></div></section>
-        <section class="section"><div class="section-head"><div><h2>Materialized cache</h2><p>Verified downloads stored temporarily.</p></div><button class="btn sm" id="openCacheBtn">Open folder</button></div><div class="section-body"><div class="code-box" id="cachePath">Loading…</div><div id="cachedFiles" class="drive-list space-top"></div></div></section>
-      </div>
-    </main>
-  </div>
+  <!-- @include views/dashboard.html -->
+  <!-- @include views/chat.html -->
+  <!-- @include views/voice.html -->
+  <!-- @include views/vpn.html -->
+  <!-- @include views/speedtest.html -->
 </div>
 
 <!-- MODALS -->
@@ -323,12 +82,12 @@
     <div class="modal-body">
       <div class="form-grid two-col">
         <div class="field"><label>Name</label><input class="input" id="savedName" maxlength="128"></div>
-        <div class="field"><label>Network type</label><select class="select" id="savedNetworkType"><option>Static</option><option>DynamicPort</option><option>DynamicAddress</option><option>DynamicPortAndAddress</option><option>Tor</option></select></div>
+        <div class="field"><label>Transport</label><select class="select" id="savedNetworkType"><option>Wan</option><option>Tor</option></select></div>
       </div>
       <div class="field space-top"><label>Certificate hash (Base64)</label><input class="input mono" id="savedCertHash" autocomplete="off"></div>
       <div class="field space-top"><label>IP addresses <span class="muted">comma, whitespace or one per line</span></label><textarea class="textarea mono compact-area" id="savedAddresses" placeholder="203.0.113.10&#10;198.51.100.20"></textarea></div>
       <div class="field space-top"><label>Onion address</label><input class="input mono" id="savedOnion" placeholder="example.onion"></div>
-      <div class="form-grid two-col space-top"><div class="field"><label>Minimum port</label><input class="input mono" id="savedMinPort" type="number" min="1" max="65535"></div><div class="field"><label>Maximum port</label><input class="input mono" id="savedMaxPort" type="number" min="1" max="65535"></div></div>
+      <div class="field space-top"><label>Port(s) <span class="muted">single (443), list (5000, 5002), or range (5000-5010)</span></label><input class="input mono" id="savedPorts" placeholder="443, 5000-5010"></div>
       <label class="check-line space-top"><input id="savedAutoConnect" type="checkbox"><span>Reconnect automatically on startup</span></label>
       <div class="modal-error hidden" id="savedPeerModalError"></div>
     </div>
@@ -411,35 +170,35 @@
   </div>
 </div>
 
-<!-- Modal de Opciones Avanzadas de Opus -->
+<!-- Opus Audio Configuration Modal -->
 <div id="opusModal" class="modal-backdrop hidden">
   <div class="modal-card" style="max-width: 520px;">
     <div class="modal-head">
       <div>
-        <h2>Configuración de Codificación Opus</h2>
-        <p>Ajustes de calidad y transmisión para llamadas VoIP.</p>
+        <h2>Opus VoIP Audio Settings</h2>
+        <p>Quality and transmission tuning for peer voice sessions.</p>
       </div>
       <button class="btn sm ghost" id="closeOpusModalBtn">&times;</button>
     </div>
     <div class="modal-body">
       <div class="field">
-        <label for="opusBitrateSelect">Bitrate de audio (calidad vs ancho de banda)</label>
+        <label for="opusBitrateSelect">Audio Bitrate (Quality vs Bandwidth)</label>
         <select class="select" id="opusBitrateSelect">
-          <option value="16000">16 kbps · Ahorro de datos (Muy bajo ancho de banda)</option>
-          <option value="24000">24 kbps · Voz estándar eficiente</option>
-          <option value="32000">32 kbps · Buena claridad VoIP</option>
-          <option value="48000">48 kbps · Alta fidelidad</option>
-          <option value="64000">64 kbps · Calidad premium</option>
-          <option value="96000" selected>96 kbps · Calidad estudio VoIP (Recomendado)</option>
-          <option value="128000">128 kbps · Ultra alta fidelidad / Música</option>
+          <option value="16000">16 kbps · Low bandwidth data saver</option>
+          <option value="24000">24 kbps · Standard VoIP</option>
+          <option value="32000">32 kbps · Clear speech</option>
+          <option value="48000">48 kbps · High fidelity voice</option>
+          <option value="64000">64 kbps · Premium broadcast quality</option>
+          <option value="96000" selected>96 kbps · Studio VoIP (Recommended)</option>
+          <option value="128000">128 kbps · Ultra fidelity / Music</option>
         </select>
       </div>
 
       <div class="service-row single-service space-top">
         <div class="service">
           <div>
-            <strong>Buffer anti-cortes de 60ms (Jitter Buffer)</strong>
-            <span>Guarda 1 frame (60 ms) de audio en cola antes de reproducirlo para evitar cortes y ruidos si hay variaciones de red.</span>
+            <strong>60ms Anti-jitter Buffer</strong>
+            <span>Queues 1 audio frame (60 ms) before playback to smooth network jitter and packet loss.</span>
           </div>
           <label class="switch">
             <input id="jitterBufferToggle" type="checkbox" checked>
@@ -450,25 +209,110 @@
 
       <div class="opus-specs-grid">
         <div class="opus-spec-item">
-          <label>Modo de aplicación</label>
-          <strong>VoIP (Tiempo real)</strong>
+          <label>Mode</label>
+          <strong>VoIP (Real-time)</strong>
         </div>
         <div class="opus-spec-item">
-          <label>Ventana de audio</label>
-          <strong>60 ms (2880 samples)</strong>
+          <label>Frame Size</label>
+          <strong>20 ms (960 samples)</strong>
         </div>
         <div class="opus-spec-item">
-          <label>Buffer anti-cortes</label>
-          <strong id="modalJitterStatus">60 ms (1 frame)</strong>
+          <label>Buffer</label>
+          <strong id="modalJitterStatus">20 ms (1 frame)</strong>
         </div>
       </div>
 
       <p class="inline-help space-top">
-        La configuración VoIP a 60 ms y el buffer anti-cortes minimizan la sobrecarga de encabezados UDP y absorben fluctuaciones de latencia en conexiones P2P.
+        RFC 9221 datagram voice transmission minimizes header overhead and eliminates head-of-line blocking on P2P connections.
       </p>
     </div>
     <div class="modal-foot">
-      <button class="btn primary" id="saveOpusModalBtn">Guardar cambios</button>
+      <button class="btn primary" id="saveOpusModalBtn">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Screen Share Configuration Modal (Video Codec, FPS, Bitrate, Resolution) -->
+<div id="screenShareSettingsModal" class="modal-backdrop hidden">
+  <div class="modal-card" style="max-width: 540px;">
+    <div class="modal-head">
+      <div>
+        <h2>Screen Share Video Settings</h2>
+        <p>Configure video codec, refresh rate (FPS), capture resolution, and max bitrate.</p>
+      </div>
+      <button class="btn sm ghost" id="closeScreenModalBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="screenCodecSelect">Video Compression Codec (GPU Accelerated)</label>
+        <select class="select" id="screenCodecSelect">
+          <option value="h264" selected>H.264 / AVC · Universal GPU Hardware Acceleration (NVENC / AMF / Intel QSV)</option>
+          <option value="hevc">H.265 / HEVC · Modern GPU Encoding (High efficiency for 120/144 FPS)</option>
+          <option value="vp9">VP9 · Chromium & GPU Accelerated (High sharpness for 1440p / 4K)</option>
+          <option value="av1">AV1 · Next-Gen GPU Compression (Modern open standard)</option>
+          <option value="jpeg">Universal Real-Time Frame Streaming (Ultra-low latency, zero decode error)</option>
+        </select>
+      </div>
+
+      <div class="field space-top">
+        <label for="screenResolutionSelect">Capture Resolution</label>
+        <select class="select" id="screenResolutionSelect">
+          <option value="720">720p HD (1280 × 720) · Low bandwidth connections</option>
+          <option value="1080" selected>1080p Full HD (1920 × 1080) · Recommended for eSports/Gaming</option>
+          <option value="1440">1440p Quad HD 2K (2560 × 1440) · High DPI gaming monitors</option>
+          <option value="2160">2160p 4K Ultra HD (3840 × 2160) · Maximum definition</option>
+          <option value="native">Native monitor resolution</option>
+        </select>
+      </div>
+
+      <div class="split-2 space-top">
+        <div class="field">
+          <label for="screenFpsSelect">Refresh Rate (FPS)</label>
+          <select class="select" id="screenFpsSelect">
+            <option value="15">15 FPS · Presentations & documents</option>
+            <option value="30">30 FPS · Standard desktop</option>
+            <option value="60" selected>60 FPS · Smooth gaming & video</option>
+            <option value="90">90 FPS · High refresh rate (90Hz+ monitors)</option>
+            <option value="120">120 FPS · Ultra smooth eSports (120Hz+ monitors)</option>
+            <option value="144">144 FPS · Maximum competitive rate (144Hz+ monitors)</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="screenBitrateSelect">Max Video Bitrate</label>
+          <select class="select" id="screenBitrateSelect">
+            <option value="2000000">2.0 Mbps · Slow connections</option>
+            <option value="4000000">4.0 Mbps · Standard quality (1080p 30fps)</option>
+            <option value="8000000">8.0 Mbps · High quality (1080p 60fps)</option>
+            <option value="12000000" selected>12.0 Mbps · High fidelity (1080p/1440p 60-120fps)</option>
+            <option value="18000000">18.0 Mbps · Ultra high quality (1440p 120-144fps)</option>
+            <option value="25000000">25.0 Mbps · Master quality / Competitive 144fps</option>
+            <option value="30000000">30.0 Mbps · Max bandwidth (perceptually lossless)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="opus-specs-grid space-top">
+        <div class="opus-spec-item">
+          <label>HW Acceleration</label>
+          <strong id="modalHwAccelStatus">GPU Active (NVENC)</strong>
+        </div>
+        <div class="opus-spec-item">
+          <label>Max Refresh</label>
+          <strong>Up to 144 FPS</strong>
+        </div>
+        <div class="opus-spec-item">
+          <label>Max Bitrate</label>
+          <strong>Up to 30 Mbps</strong>
+        </div>
+      </div>
+
+      <p class="inline-help space-top">
+        Hardware accelerated encoding (NVIDIA NVENC, AMD AMF, Intel QSV) streams at up to 144 FPS with zero frame drops or gaming performance impact, routed over high-priority QUIC streams.
+      </p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn primary" id="saveScreenModalBtn">Save Settings</button>
     </div>
   </div>
 </div>

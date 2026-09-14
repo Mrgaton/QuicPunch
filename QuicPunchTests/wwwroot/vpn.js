@@ -1,28 +1,62 @@
 let vpnStatus = null, settingsDirty = false;
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('applyLanBtn').addEventListener('click', applyLan);
-  document.getElementById('connectAllBtn').addEventListener('click', connectAll);
-  document.getElementById('autoAssign').addEventListener('change', () => {
+  document.getElementById('applyLanBtn')?.addEventListener('click', applyLan);
+  document.getElementById('connectAllBtn')?.addEventListener('click', connectAll);
+  
+  const setOptimalMtu = () => {
+    const el = document.getElementById('lanMtu');
+    if (el) {
+      el.value = 1420;
+      settingsDirty = true;
+      QP.toast('MTU ajustado al valor óptimo (1420)');
+    }
+  };
+  document.getElementById('resetMtuBtn')?.addEventListener('click', setOptimalMtu);
+  document.getElementById('optimalMtuBadge')?.addEventListener('click', setOptimalMtu);
+
+  document.getElementById('autoAssign')?.addEventListener('change', () => {
     settingsDirty = true;
     updateManualFields();
   });
   
-  const restartBtn = document.getElementById('restartAdminBtn');
-  if (restartBtn) restartBtn.addEventListener('click', restartAsAdmin);
+  document.querySelectorAll('#restartAdminBtn, .btn-restart-admin').forEach(btn => {
+    btn.addEventListener('click', restartAsAdmin);
+  });
 
   ['lanEnabled', 'lanIp', 'lanMask', 'lanMtu'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', () => settingsDirty = true);
   });
 
-  refreshVpn();
-  setInterval(refreshVpn, 1200);
+  if (window.QP && typeof QP.on === 'function') {
+    QP.on('status_updated', data => {
+      vpnStatus = data;
+      renderVpn();
+    });
+    QP.on('view_changed', data => {
+      if (data && data.page === 'vpn') {
+        if (QP.state && QP.state.status) {
+          vpnStatus = QP.state.status;
+          renderVpn();
+        } else {
+          refreshVpn();
+        }
+      }
+    });
+  }
+
+  if (window.QP && QP.state && QP.state.status) {
+    vpnStatus = QP.state.status;
+    renderVpn();
+  } else {
+    refreshVpn();
+  }
 });
 
 async function refreshVpn() {
   try {
-    vpnStatus = await QP.api('/api/status');
+    vpnStatus = await (QP.getStatus ? QP.getStatus() : QP.api('/api/status'));
     renderVpn();
   } catch (e) {
     QP.toast(e.message, 'error');
@@ -44,7 +78,9 @@ function renderVpn() {
     else banner.classList.add('hidden');
   }
 
-  document.getElementById('connectAllBtn').disabled = !lan.active;
+  const connectAllBtn = document.getElementById('connectAllBtn');
+  if (connectAllBtn) connectAllBtn.disabled = !lan.active;
+
   QP.setText('virtualIp', lan.localIp || '—');
   QP.setText('addressMode', `${lan.autoAssign ? 'Automatic' : 'Manual'} · ${lan.subnetMask || '255.255.255.0'}`);
   QP.setText('lanPeerCount', (lan.activePeers || []).length);
@@ -53,11 +89,16 @@ function renderVpn() {
   QP.setText('lanError', lan.lastError || '');
 
   if (!settingsDirty) {
-    document.getElementById('lanEnabled').checked = !!lan.desiredEnabled;
-    document.getElementById('autoAssign').checked = !!lan.autoAssign;
-    document.getElementById('lanIp').value = lan.localIp || '';
-    document.getElementById('lanMask').value = lan.subnetMask || '255.255.255.0';
-    document.getElementById('lanMtu').value = lan.mtu || 1500;
+    const lanEnabled = document.getElementById('lanEnabled');
+    if (lanEnabled) lanEnabled.checked = !!lan.desiredEnabled;
+    const autoAssign = document.getElementById('autoAssign');
+    if (autoAssign) autoAssign.checked = !!lan.autoAssign;
+    const lanIp = document.getElementById('lanIp');
+    if (lanIp) lanIp.value = lan.localIp || '';
+    const lanMask = document.getElementById('lanMask');
+    if (lanMask) lanMask.value = lan.subnetMask || '255.255.255.0';
+    const lanMtu = document.getElementById('lanMtu');
+    if (lanMtu) lanMtu.value = (lan.mtu && lan.mtu !== 1500) ? lan.mtu : 1420;
     updateManualFields();
   }
 
@@ -66,13 +107,18 @@ function renderVpn() {
 }
 
 function updateManualFields() {
-  const auto = document.getElementById('autoAssign').checked;
-  document.getElementById('lanIp').disabled = auto;
-  document.getElementById('lanMask').disabled = auto;
+  const autoEl = document.getElementById('autoAssign');
+  if (!autoEl) return;
+  const auto = autoEl.checked;
+  const lanIp = document.getElementById('lanIp');
+  if (lanIp) lanIp.disabled = auto;
+  const lanMask = document.getElementById('lanMask');
+  if (lanMask) lanMask.disabled = auto;
 }
 
 function renderPeers() {
   const box = document.getElementById('vpnPeers');
+  if (!box) return;
   QP.clear(box);
   const peers = QP.trusted(vpnStatus);
   if (!peers.length) {
@@ -103,6 +149,7 @@ function renderPeers() {
 
 function renderSessions() {
   const body = document.getElementById('lanSessions');
+  if (!body) return;
   QP.clear(body);
   const items = vpnStatus.lan.activePeers || [];
   if (!items.length) {
@@ -133,12 +180,40 @@ function renderSessions() {
 }
 
 async function applyLan() {
+  const lanEnabled = document.getElementById('lanEnabled');
+  const autoAssign = document.getElementById('autoAssign');
+  const lanIp = document.getElementById('lanIp');
+  const lanMask = document.getElementById('lanMask');
+  const lanMtu = document.getElementById('lanMtu');
+  if (!lanEnabled || !autoAssign || !lanIp || !lanMask || !lanMtu) return;
+
+  // 1. Avisar si estás conectado a alguien de que la conexión se va a restablecer
+  let activePeers = vpnStatus?.lan?.activePeers || [];
+  if (!activePeers.length && QP?.state?.status?.lan?.activePeers) {
+    activePeers = QP.state.status.lan.activePeers;
+  }
+  if (activePeers.length > 0) {
+    const peerNames = activePeers.map(p => p.peerName || 'Peer').join(', ');
+    const count = activePeers.length;
+    const msg = `Actualmente tienes ${count} peer(s) conectado(s) en la LAN virtual (${peerNames}).\n\nAl aplicar la nueva configuración, el adaptador virtual se reiniciará y la conexión con estos peers se va a restablecer.\n\n¿Estás seguro de que deseas continuar?`;
+    if (!window.confirm(msg)) {
+      return;
+    }
+  }
+
+  // 2. Establecer automáticamente el MTU al valor óptimo (1420) si no está definido o es inválido/legacy
+  let mtu = Number(lanMtu.value);
+  if (!mtu || mtu < 1200 || mtu > 9000 || mtu === 1500) {
+    mtu = 1420;
+    lanMtu.value = 1420;
+  }
+
   const payload = {
-    enabled: document.getElementById('lanEnabled').checked,
-    autoAssign: document.getElementById('autoAssign').checked,
-    ip: document.getElementById('lanIp').value.trim(),
-    subnetMask: document.getElementById('lanMask').value.trim(),
-    mtu: Number(document.getElementById('lanMtu').value)
+    enabled: lanEnabled.checked,
+    autoAssign: autoAssign.checked,
+    ip: lanIp.value.trim(),
+    subnetMask: lanMask.value.trim(),
+    mtu: mtu
   };
   try {
     await QP.api('/api/lan-settings', {
@@ -147,7 +222,7 @@ async function applyLan() {
       body: JSON.stringify(payload)
     });
     settingsDirty = false;
-    QP.toast('LAN settings saved', 'success');
+    QP.toast('Configuración de LAN aplicada correctamente', 'ok');
     refreshVpn();
   } catch (e) {
     QP.toast(e.message, 'error');
@@ -183,32 +258,34 @@ async function connectAll() {
 }
 
 async function restartAsAdmin() {
-  const btn = document.getElementById('restartAdminBtn');
-  if (btn) {
+  const btns = document.querySelectorAll('#restartAdminBtn, .btn-restart-admin');
+  btns.forEach(btn => {
     btn.disabled = true;
-    btn.textContent = '⏳ Solicitando permisos (UAC)...';
-  }
+    btn.dataset.originalText = btn.textContent;
+    btn.textContent = '⏳ Solicitando elevación...';
+  });
+
   QP.toast('Solicitando permisos de administrador en el sistema...', 'warn');
   try {
     const res = await QP.api('/api/restart-as-admin', { method: 'POST' });
     if (res && res.success) {
-      if (btn) btn.textContent = 'Reiniciando como Administrador...';
+      btns.forEach(btn => btn.textContent = 'Reiniciando como Administrador...');
       QP.toast('Reiniciando aplicación con permisos de Administrador...', 'success');
       setTimeout(() => {
         window.location.reload();
       }, 2500);
     } else {
-      if (btn) {
+      btns.forEach(btn => {
         btn.disabled = false;
-        btn.textContent = 'Reiniciar con permisos de administrador';
-      }
-      QP.toast('No se pudo elevar los permisos. Intenta ejecutar la app como Administrador manualmente.', 'error');
+        btn.textContent = btn.dataset.originalText || 'Reiniciar con permisos de administrador';
+      });
+      QP.toast('No se pudo elevar los permisos. Confirma la elevación en el aviso del sistema o ejecuta la app como administrador.', 'error');
     }
   } catch (e) {
-    if (btn) {
+    btns.forEach(btn => {
       btn.disabled = false;
-      btn.textContent = 'Reiniciar con permisos de administrador';
-    }
+      btn.textContent = btn.dataset.originalText || 'Reiniciar con permisos de administrador';
+    });
     QP.toast(e.message || 'Error al solicitar elevación', 'error');
   }
 }

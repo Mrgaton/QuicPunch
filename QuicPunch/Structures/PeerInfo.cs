@@ -88,6 +88,7 @@ namespace QuicPunch
         public string? Name;
 
         public QuicPunch.NetworkType NetworkType;
+        public ConnectionFlags ConnectionFlags = new();
 
         public string? OnionAddress;
 
@@ -96,9 +97,32 @@ namespace QuicPunch
         public Helpers.QuicConnectionTelemetry? LastTelemetry;
 
         public IPAddress[] Addresses = Array.Empty<IPAddress>();
-
-        public int MinPort;
-        public int MaxPort;
+        private ushort[] _portArray = Array.Empty<ushort>();
+        public ushort[] PortArray
+        {
+            get => _portArray;
+            set
+            {
+                _portArray = value ?? Array.Empty<ushort>();
+                if (_portArray.Length <= 1)
+                {
+                    ConnectionFlags.PortMode = PortMode.Single;
+                }
+                else if (ConnectionFlags.PortMode == PortMode.Single)
+                {
+                    bool isContiguous = true;
+                    for (int i = 1; i < _portArray.Length; i++)
+                    {
+                        if (_portArray[i] != _portArray[i - 1] + 1)
+                        {
+                            isContiguous = false;
+                            break;
+                        }
+                    }
+                    ConnectionFlags.PortMode = (isContiguous || _portArray.Length > 8) ? PortMode.Range : PortMode.Multiple;
+                }
+            }
+        }
 
         public DateTime LastSeen;
         public long LastActivityTimestampMonotonic { get; private set; } = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -360,7 +384,7 @@ namespace QuicPunch
                     var currentPeer = qp.GetCurrentPeer(transport);
                     bool isInitiator = currentPeer != null && currentPeer.Id.CompareTo(this.Id) > 0;
 
-                    byte[] localNonce = LocalSessionNonce;
+                    byte[] localNonce = LocalSessionNonce ?? Array.Empty<byte>();
                     byte[] remoteNonce = SessionNonce ?? Array.Empty<byte>();
 
                     byte[] nonceA = isInitiator ? localNonce : remoteNonce;
@@ -402,7 +426,7 @@ namespace QuicPunch
                         RxSalt = saltAtoB.ToArray();
                     }
 
-                    ActiveLocalSessionNonce = (byte[])LocalSessionNonce.Clone();
+                    ActiveLocalSessionNonce = (byte[])LocalSessionNonce!.Clone();
                     ActiveRemoteSessionNonce = (byte[])remoteNonce.Clone();
                     ActiveSessionKeyId = SHA256.HashData(Utilities.Combine(saltAtoB.ToArray(), saltBtoA.ToArray()));
                     InboundReplayFilter.Reset();
@@ -418,6 +442,14 @@ namespace QuicPunch
                     CryptographicOperations.ZeroMemory(keyMaterial);
                 }
             }
+        }
+
+        public override string ToString()
+        {
+            if (!string.IsNullOrWhiteSpace(Name)) return Name;
+            if (TryGetCertificateHash(out var hash) && hash.Length > 0) return Convert.ToHexString(hash)[..8];
+            if (ActiveEndPoint != null) return ActiveEndPoint.ToString();
+            return "UnknownPeer";
         }
 
         public void Dispose()
@@ -445,27 +477,5 @@ namespace QuicPunch
                 InboundReplayFilter.Reset();
             }
         }
-    }
-
-    public sealed class DiscoveredPeerInfo
-    {
-        public string Id { get; set; } = "";
-        public string Name { get; set; } = "Discovered Peer";
-        public string Token { get; set; } = "";
-        public byte[] CertHash { get; set; } = Array.Empty<byte>();
-        public string CertHashBase64 { get; set; } = "";
-        public string[] Addresses { get; set; } = Array.Empty<string>();
-        public string OnionAddress { get; set; } = "";
-        public int MinPort { get; set; }
-        public int MaxPort { get; set; }
-        public QuicPunch.NetworkType NetworkType { get; set; } = QuicPunch.NetworkType.Static;
-        public string? NostrPubKey { get; set; }
-        public string Source { get; set; } = "Nostr";
-        public DateTime DiscoveredAt { get; set; } = DateTime.UtcNow;
-        public DateTime LastSeen { get; set; } = DateTime.UtcNow;
-        public bool IsTor => NetworkType == QuicPunch.NetworkType.Tor || !string.IsNullOrEmpty(OnionAddress);
-        public bool IsCertVerified { get; set; }
-        public byte[]? CertPublicKey { get; set; }
-        public string? CertPublicKeyBase64 { get; set; }
     }
 }

@@ -19,7 +19,7 @@ public sealed class LinuxVpnAdapter : IVpnAdapter
     public bool IsActive => _tunFd >= 0 && !_disposed;
     public IPAddress? LocalIp { get; private set; }
     public string? SubnetMask { get; private set; }
-    public int Mtu { get; private set; } = 1500;
+    public int Mtu { get; private set; } = 1420;
 
     public LinuxVpnAdapter(string name = "qp-tun0")
     {

@@ -30,7 +30,7 @@ public static class QuicDatagramTests
         using var rsa = RSA.Create(2048);
         var certReq = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using var tempCert = certReq.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1));
-        using var cert = new X509Certificate2(tempCert.Export(X509ContentType.Pfx));
+        using var cert = X509CertificateLoader.LoadPkcs12(tempCert.Export(X509ContentType.Pfx), null);
 
         var alpn = new List<SslApplicationProtocol> { new("qdatagram") };
 

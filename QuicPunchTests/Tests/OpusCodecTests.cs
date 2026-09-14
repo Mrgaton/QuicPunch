@@ -16,6 +16,7 @@ public static class OpusCodecTests
         TestBitrateReconfiguration();
         TestPacketLossConcealment();
         TestPcmFallbackDecoding();
+        TestFramedOpusWithSequenceAndPLC();
 
         Console.WriteLine("==================================================");
         Console.WriteLine("       ALL OPUS CODEC TESTS PASSED!               ");
@@ -128,6 +129,43 @@ public static class OpusCodecTests
             if (decoded[i] != rawPcm[i])
                 throw new Exception($"Sample mismatch at index {i}: expected {rawPcm[i]}, got {decoded[i]}");
         }
+
+        Console.WriteLine("PASSED");
+    }
+
+    private static void TestFramedOpusWithSequenceAndPLC()
+    {
+        Console.Write("[TEST 6] Sequenced 20ms framed Opus and loss gap PLC... ");
+        using var codec = new OpusVoiceCodec(48000, 1, 64000);
+
+        const int frameSize = OpusVoiceCodec.DefaultFrameSize; // 960 samples = 20ms
+        short[] pcm1 = GenerateSineWave(440, 48000, frameSize);
+        short[] pcm2 = GenerateSineWave(440, 48000, frameSize);
+
+        byte[] framedPacket1 = codec.EncodeFramed(pcm1, 100, 1000, frameSize);
+        byte[] framedPacket2 = codec.EncodeFramed(pcm2, 102, 1040, frameSize); // Simulating packet 101 lost!
+
+        if (!OpusVoiceCodec.IsFramedOpusPacket(framedPacket1))
+            throw new Exception("Expected packet to be identified as FramedOpus");
+
+        if (!OpusVoiceCodec.TryUnpackFramed(framedPacket1, out ushort seq1, out ushort ts1, out var payload1))
+            throw new Exception("Failed to unpack framed packet 1");
+
+        if (seq1 != 100 || ts1 != 1000 || payload1.IsEmpty)
+            throw new Exception($"Unpack mismatch: seq={seq1}, ts={ts1}");
+
+        short[] decoded1 = codec.Decode(framedPacket1, frameSize);
+        if (decoded1.Length != frameSize)
+            throw new Exception($"Expected {frameSize} samples, got {decoded1.Length}");
+
+        // Loss concealment for missing packet 101
+        short[] plcConcealed = codec.DecodeLoss(frameSize);
+        if (plcConcealed.Length != frameSize)
+            throw new Exception($"Expected {frameSize} PLC samples, got {plcConcealed.Length}");
+
+        short[] decoded2 = codec.Decode(framedPacket2, frameSize);
+        if (decoded2.Length != frameSize)
+            throw new Exception($"Expected {frameSize} samples, got {decoded2.Length}");
 
         Console.WriteLine("PASSED");
     }

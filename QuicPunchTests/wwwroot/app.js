@@ -8,7 +8,7 @@
     '/chat.html': 'chat',
     '/call.html': 'voice',
     '/vpn.html': 'vpn',
-    '/files.html': 'files'
+    '/speedtest.html': 'speedtest'
   };
 
   const PAGE_TITLES = {
@@ -16,7 +16,7 @@
     chat: 'Direct Chat · QuicPunch',
     voice: 'Voice Studio · QuicPunch',
     vpn: 'LAN Bridge · QuicPunch',
-    files: 'RelayDrive · QuicPunch'
+    speedtest: 'Speed Test · QuicPunch'
   };
 
   const PAGE_SUBTITLES = {
@@ -24,7 +24,7 @@
     chat: 'Direct Chat',
     voice: 'Voice Studio',
     vpn: 'LAN Bridge',
-    files: 'RelayDrive'
+    speedtest: 'Bandwidth & Latency Benchmark'
   };
 
   const PAGE_URLS = {
@@ -32,7 +32,7 @@
     chat: '/chat.html',
     voice: '/call.html',
     vpn: '/vpn.html',
-    files: '/files.html'
+    speedtest: '/speedtest.html'
   };
 
   let currentPage = 'dashboard';
@@ -41,6 +41,11 @@
   const eventListeners = new Map();
   let activeSocket = null;
   let isConnected = false;
+  let fallbackPollTimer = null;
+  const state = {
+    status: null,
+    get isWsConnected() { return isConnected; }
+  };
 
   function on(event, callback) {
     if (!eventListeners.has(event)) eventListeners.set(event, new Set());
@@ -116,16 +121,35 @@
     // Intercept navigation clicks
     document.addEventListener('click', e => {
       const a = e.target.closest('a');
-      if (!a || !a.href) return;
-      const url = new URL(a.href, location.origin);
-      if (url.origin === location.origin) {
-        const path = url.pathname.toLowerCase();
-        if (ROUTES[path] || a.dataset.page) {
-          e.preventDefault();
-          const targetPage = a.dataset.page || ROUTES[path];
-          navigate(targetPage, url.pathname + url.search);
-        }
+      if (!a) return;
+
+      const rawHref = (a.getAttribute('href') || '').trim();
+      if (rawHref.startsWith('file:') || rawHref.startsWith('file:///')) {
+        e.preventDefault();
+        toast('El navegador no permite abrir enlaces locales file:/// directamente. Usa los botones de carpeta.', 'warn');
+        return;
       }
+
+      let href = '';
+      try {
+        href = a.href || rawHref;
+      } catch {
+        href = rawHref;
+      }
+
+      if (!href || href.startsWith('file:')) return;
+
+      try {
+        const url = new URL(href, location.origin);
+        if (url.origin === location.origin) {
+          const path = url.pathname.toLowerCase();
+          if (ROUTES[path] || a.dataset.page) {
+            e.preventDefault();
+            const targetPage = a.dataset.page || ROUTES[path];
+            navigate(targetPage, url.pathname + url.search);
+          }
+        }
+      } catch { }
     });
 
     window.addEventListener('popstate', () => {
@@ -162,6 +186,52 @@
     } catch (e) { }
   });
 
+  function startFallbackPoll() {
+    if (fallbackPollTimer) return;
+    fallbackPollTimer = setInterval(async () => {
+      if (isConnected) {
+        stopFallbackPoll();
+        return;
+      }
+      try {
+        const s = await api('/api/status');
+        if (s) {
+          state.status = s;
+          processNotifications(s);
+          emit('status_updated', s);
+        }
+      } catch (e) { }
+    }, 45000);
+  }
+
+  function stopFallbackPoll() {
+    if (fallbackPollTimer) {
+      clearInterval(fallbackPollTimer);
+      fallbackPollTimer = null;
+    }
+  }
+
+  function requestSync() {
+    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+      try {
+        activeSocket.send(JSON.stringify({ type: 'sync' }));
+        return true;
+      } catch { }
+    }
+    return false;
+  }
+
+  async function getStatus(force = false) {
+    if (!force && state.status) return state.status;
+    const s = await api('/api/status');
+    if (s) {
+      state.status = s;
+      processNotifications(s);
+      emit('status_updated', s);
+    }
+    return s;
+  }
+
   function initWebSocket() {
     try {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -172,7 +242,9 @@
 
       activeSocket.onopen = () => {
         isConnected = true;
+        stopFallbackPoll();
         emit('ws_status', { connected: true });
+        requestSync();
       };
 
       activeSocket.onmessage = (evt) => {
@@ -183,6 +255,10 @@
           }
           const payload = JSON.parse(evt.data);
           if (payload && payload.type) {
+            if (payload.type === 'status_updated' && payload.data) {
+              state.status = payload.data;
+              processNotifications(payload.data);
+            }
             emit(payload.type, payload.data);
             if (payload.type === 'notification' && payload.data) {
               const n = payload.data;
@@ -197,6 +273,7 @@
 
       activeSocket.onclose = () => {
         isConnected = false;
+        startFallbackPoll();
         emit('ws_status', { connected: false });
         setTimeout(initWebSocket, 2000);
       };
@@ -205,6 +282,7 @@
         try { activeSocket.close(); } catch (e) { }
       };
     } catch (e) {
+      startFallbackPoll();
       setTimeout(initWebSocket, 3000);
     }
   }
@@ -298,13 +376,31 @@
   function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value ?? ''; }
   function safeDataUrl(value, kind) {
     const data = typeof value === 'string' ? value : '';
-    if (data.length > 12 * 1024 * 1024) return '';
-    const match = /^data:([^;,]+);base64,[A-Za-z0-9+/=\r\n]+$/i.exec(data);
-    if (!match) return '';
-    const mime = match[1].toLowerCase();
-    if (kind === 'image') return /^(image\/(png|jpeg|jpg|gif|webp))$/.test(mime) ? data : '';
+    if (!data.startsWith('data:') || data.length > 35 * 1024 * 1024) return '';
+
+    const commaIdx = data.indexOf(',');
+    if (commaIdx === -1) return '';
+
+    const header = data.slice(0, commaIdx);
+    const colonIdx = header.indexOf(':');
+    if (colonIdx === -1) return '';
+
+    // Must be base64 data url
+    if (!/;base64\s*$/i.test(header)) return '';
+
+    // Extract mime type (e.g. "audio/webm;codecs=opus" -> "audio/webm", or "image/png")
+    const mimeSection = header.slice(colonIdx + 1, header.length - 7); // strip ;base64 from the end
+    const mime = mimeSection.split(';')[0].trim().toLowerCase();
+
+    // Disallow dangerous executable web content
+    if (['text/html', 'application/xhtml+xml', 'image/svg+xml', 'application/javascript', 'text/javascript'].includes(mime)) {
+      return '';
+    }
+
+    if (kind === 'image') return /^(image\/(png|jpeg|jpg|gif|webp|bmp|avif|x-icon))$/.test(mime) ? data : '';
     if (kind === 'audio') return mime.startsWith('audio/') ? data : '';
-    if (['text/html','application/xhtml+xml','image/svg+xml','application/javascript','text/javascript'].includes(mime)) return '';
+    if (kind === 'video') return mime.startsWith('video/') ? data : '';
+    if (kind === 'file') return data;
     return data;
   }
 
@@ -345,7 +441,7 @@
   window.QP = {
     api, el, clear, canonicalId, shortId, initials, fmtBytes, peerMeta, trusted, findPeer,
     button, toast, copy, setText, safeDataUrl, on, off, emit, formatDuration, formatPingStatus,
-    sendBinary, navigate,
+    sendBinary, navigate, requestSync, getStatus, state,
     get currentPage() { return currentPage; },
     get isWsConnected() { return isConnected; }
   };

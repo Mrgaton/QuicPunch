@@ -277,11 +277,18 @@ namespace QuicPunch.Helpers
                 if (!Directory.Exists(_logDirectory))
                     return;
 
+                string today = DateTime.Now.ToString("yyyy-MM-dd");
+                string todayActiveName = $"{_filePrefix}_{today}.log";
+
                 var logFiles = Directory.GetFiles(_logDirectory, $"{_filePrefix}_*.log");
                 foreach (var logFile in logFiles)
                 {
                     if (ct.IsCancellationRequested) break;
                     if (string.Equals(logFile, activeFile, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    // Never compress today's active non-rotated log file
+                    if (Path.GetFileName(logFile).Equals(todayActiveName, StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     await CompressFileToZstandardAsync(logFile, ct, _compressionLevel).ConfigureAwait(false);
@@ -303,7 +310,7 @@ namespace QuicPunch.Helpers
 
             try
             {
-                await using (var sourceStream = new FileStream(sourceLogPath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 65536, useAsync: true))
+                await using (var sourceStream = new FileStream(sourceLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 65536, useAsync: true))
                 await using (var destStream = new FileStream(tempCompressedPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 65536, useAsync: true))
                 await using (var zstdStream = new ZstandardStream(destStream, level, leaveOpen: false))
                 {
@@ -314,7 +321,24 @@ namespace QuicPunch.Helpers
                     File.Delete(destCompressedPath);
 
                 File.Move(tempCompressedPath, destCompressedPath);
-                File.Delete(sourceLogPath);
+                try
+                {
+                    File.Delete(sourceLogPath);
+                }
+                catch (IOException)
+                {
+                    // File might be opened by external reader; left to be cleaned on next rotation
+                }
+            }
+            catch (IOException)
+            {
+                // File locked by active writer or another process; leave uncompressed until idle
+                try
+                {
+                    if (File.Exists(tempCompressedPath))
+                        File.Delete(tempCompressedPath);
+                }
+                catch { }
             }
             catch
             {
@@ -354,13 +378,6 @@ namespace QuicPunch.Helpers
             await DecompressZstandardToFileAsync(sourceCompressedPath, destinationLogPath, ct).ConfigureAwait(false);
         }
 
-        [Obsolete("Use CompressFileToZstandardAsync instead.")]
-        public static Task CompressFileToBrotliAsync(string sourceLogPath, CancellationToken ct = default, CompressionLevel level = CompressionLevel.Optimal)
-            => CompressFileToZstandardAsync(sourceLogPath, ct, level);
-
-        [Obsolete("Use DecompressZstandardToFileAsync instead.")]
-        public static Task DecompressBrotliToFileAsync(string sourceCompressedPath, string destinationLogPath, CancellationToken ct = default)
-            => DecompressLogFileAsync(sourceCompressedPath, destinationLogPath, ct);
 
         public void Dispose()
         {

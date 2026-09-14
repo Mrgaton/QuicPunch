@@ -3,24 +3,6 @@ using System.Runtime.InteropServices;
 
 namespace QuicPunch.Vpn.Linux;
 
-[StructLayout(LayoutKind.Explicit, Size = 40)]
-public unsafe struct IfReq
-{
-    [FieldOffset(0)]
-    public fixed byte IfName[16];
-
-    [FieldOffset(16)]
-    public short IfFlags;
-}
-
-[StructLayout(LayoutKind.Sequential)]
-public struct PollFd
-{
-    public int Fd;
-    public short Events;
-    public short Revents;
-}
-
 public static partial class LinuxTunApi
 {
     public const int O_RDWR = 2;
@@ -52,4 +34,22 @@ public static partial class LinuxTunApi
 
     [LibraryImport("libc", EntryPoint = "write", SetLastError = true)]
     public static unsafe partial nint Write(int fd, byte* buf, nuint count);
+}
+
+[StructLayout(LayoutKind.Explicit, Size = 40)]
+public unsafe struct IfReq
+{
+    [FieldOffset(0)]
+    public fixed byte IfName[16];
+
+    [FieldOffset(16)]
+    public short IfFlags;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct PollFd
+{
+    public int Fd;
+    public short Events;
+    public short Revents;
 }

@@ -320,8 +320,7 @@ namespace QuicPunchTests.Tests;
                 await qpB.StartAsync();
 
                 qpB.CurrentPeer.Addresses = new[] { IPAddress.Parse("127.0.0.1") };
-                qpB.CurrentPeer.MinPort = 50000;
-                qpB.CurrentPeer.MaxPort = 50000;
+                qpB.CurrentPeer.PortArray = [50000];
 
                 var bCertHash = qpB.CurrentPeer.CertHash;
 
@@ -469,8 +468,7 @@ namespace QuicPunchTests.Tests;
             var validPeer = new PeerInfo
             {
                 NetworkType = QuicPunch.QuicPunch.NetworkType.DynamicAddress,
-                MinPort = 5000,
-                MaxPort = 5000,
+                PortArray = [5000],
                 Addresses = new[] { IPAddress.Parse("127.0.0.1") }
             };
             validPeer.SetCertificateHash(fakeHash);
@@ -483,8 +481,7 @@ namespace QuicPunchTests.Tests;
             var badPeer = new PeerInfo
             {
                 NetworkType = QuicPunch.QuicPunch.NetworkType.DynamicAddress,
-                MinPort = 5000,
-                MaxPort = 5000,
+                PortArray = [5000],
                 Addresses = new[] { IPAddress.Parse("255.255.255.255") }
             };
             badPeer.SetCertificateHash(fakeHash);
@@ -517,8 +514,7 @@ namespace QuicPunchTests.Tests;
             var peerInfo = new PeerInfo
             {
                 Addresses = new[] { IPAddress.Parse("127.0.0.1") },
-                MinPort = 1000,
-                MaxPort = 60000
+                PortArray = Enumerable.Range(1000, 60000 - 1000 + 1).Select(p => (ushort)p).ToArray()
             };
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -1125,15 +1121,15 @@ namespace QuicPunchTests.Tests;
                     IPAddress.Parse("198.51.100.10"),
                     IPAddress.Parse("203.0.113.20")
                 };
-                qp.CurrentPeer.MinPort = 41000;
-                qp.CurrentPeer.MaxPort = 41999;
+                qp.CurrentPeer.PortArray = Enumerable.Range(41000, 41999 - 41000 + 1).Select(p => (ushort)p).ToArray();
 
                 string token = qp.GetWanToken();
                 using var decoded = Utilities.DecodeEndpointToken(token);
                 if (!decoded.Addresses.Contains(IPAddress.Parse("198.51.100.10")) ||
                     !decoded.Addresses.Contains(IPAddress.Parse("203.0.113.20")) ||
-                    decoded.MinPort != 41000 ||
-                    decoded.MaxPort != 41999 ||
+                    decoded.PortArray.Length == 0 ||
+                    decoded.PortArray[0] != 41000 ||
+                    decoded.PortArray[^1] != 41999 ||
                     !decoded.TryGetCertificateHash(out var decodedHash) ||
                     !CryptographicOperations.FixedTimeEquals(decodedHash, qp.CurrentPeer.CertHash))
                 {
@@ -1156,7 +1152,7 @@ namespace QuicPunchTests.Tests;
                 }
                 if (cappedDecoded.Addresses.Contains(IPAddress.Parse("198.51.100.33")))
                     throw new Exception("Endpoint token exceeded the 32-address discovery cap.");
-                if (cappedDecoded.MinPort != 41000 || cappedDecoded.MaxPort != 41999)
+                if (cappedDecoded.PortArray.Length == 0 || cappedDecoded.PortArray[0] != 41000 || cappedDecoded.PortArray[^1] != 41999)
                     throw new Exception("Endpoint token address truncation corrupted its port range.");
 
                 byte[] privateKey = NostrSchnorr.CreatePrivateKey();
@@ -2019,8 +2015,7 @@ namespace QuicPunchTests.Tests;
                 {
                     ActiveEndPoint = new IPEndPoint(IPAddress.Loopback, qpB.LocalBoundPort),
                     Addresses = new[] { IPAddress.Loopback },
-                    MinPort = qpB.LocalBoundPort,
-                    MaxPort = qpB.LocalBoundPort,
+                    PortArray = [(ushort)qpB.LocalBoundPort],
                     NetworkType = QuicPunch.QuicPunch.NetworkType.Static
                 };
 
@@ -2082,6 +2077,9 @@ namespace QuicPunchTests.Tests;
                 using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
                 using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
                 using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0);
+                qpA.Discovery.WanNostrDiscoveryEnabled = false;
+                qpB.Discovery.WanNostrDiscoveryEnabled = false;
+                qpC.Discovery.WanNostrDiscoveryEnabled = false;
                 await qpA.StartAsync();
                 await qpB.StartAsync();
                 await qpC.StartAsync();
@@ -2090,24 +2088,26 @@ namespace QuicPunchTests.Tests;
                 {
                     ActiveEndPoint = new IPEndPoint(IPAddress.Loopback, qpB.LocalBoundPort),
                     Addresses = new[] { IPAddress.Loopback },
-                    MinPort = qpB.LocalBoundPort,
-                    MaxPort = qpB.LocalBoundPort
+                    PortArray = [(ushort)qpB.LocalBoundPort]
                 });
                 _ = qpA.PeerInterrogation(new PeerInfo
                 {
                     ActiveEndPoint = new IPEndPoint(IPAddress.Loopback, qpC.LocalBoundPort),
                     Addresses = new[] { IPAddress.Loopback },
-                    MinPort = qpC.LocalBoundPort,
-                    MaxPort = qpC.LocalBoundPort
+                    PortArray = [(ushort)qpC.LocalBoundPort]
                 });
 
                 var initialTimeout = DateTime.UtcNow.AddSeconds(6);
                 while (DateTime.UtcNow < initialTimeout)
                 {
-                    if (qpA.AvailablePeers.ContainsKey(qpB.CurrentPeer.Id) &&
-                        qpA.AvailablePeers.ContainsKey(qpC.CurrentPeer.Id) &&
-                        qpB.AvailablePeers.ContainsKey(qpA.CurrentPeer.Id) &&
-                        qpC.AvailablePeers.ContainsKey(qpA.CurrentPeer.Id))
+                    if (qpA.AvailablePeers.TryGetValue(qpB.CurrentPeer.Id, out var candBOnA) && candBOnA.IsSessionReady &&
+                        qpB.AvailablePeers.TryGetValue(qpA.CurrentPeer.Id, out var candAOnB) && candAOnB.IsSessionReady &&
+                        candBOnA.ActiveSessionKeyId != null && candAOnB.ActiveSessionKeyId != null &&
+                        candBOnA.ActiveSessionKeyId.SequenceEqual(candAOnB.ActiveSessionKeyId) &&
+                        qpA.AvailablePeers.TryGetValue(qpC.CurrentPeer.Id, out var candCOnA) && candCOnA.IsSessionReady &&
+                        qpC.AvailablePeers.TryGetValue(qpA.CurrentPeer.Id, out var candAOnC) && candAOnC.IsSessionReady &&
+                        candCOnA.ActiveSessionKeyId != null && candAOnC.ActiveSessionKeyId != null &&
+                        candCOnA.ActiveSessionKeyId.SequenceEqual(candAOnC.ActiveSessionKeyId))
                         break;
                     await Task.Delay(50);
                 }
@@ -2129,8 +2129,7 @@ namespace QuicPunchTests.Tests;
                 {
                     ActiveEndPoint = new IPEndPoint(IPAddress.Loopback, qpB.LocalBoundPort),
                     Addresses = new[] { IPAddress.Loopback },
-                    MinPort = qpB.LocalBoundPort,
-                    MaxPort = qpB.LocalBoundPort
+                    PortArray = [(ushort)qpB.LocalBoundPort]
                 });
 
                 var reconnectTimeout = DateTime.UtcNow.AddSeconds(6);
@@ -2344,17 +2343,17 @@ namespace QuicPunchTests.Tests;
                 if (!outboundQuicBlocked)
                     throw new Exception("Untrusted discovered peer could start an outbound QUIC application connection.");
 
-                bool outboundUdpBlocked = false;
+                bool outboundTunnelBlocked = false;
                 try
                 {
-                    await qpB.InitUdpConnection(dummyProtocolId, peerA_on_B);
+                    await qpB.EnsureMultiplexerConnectedAsync(peerA_on_B);
                 }
                 catch (InvalidOperationException ex) when (ex.Message.Contains("trusted", StringComparison.OrdinalIgnoreCase))
                 {
-                    outboundUdpBlocked = true;
+                    outboundTunnelBlocked = true;
                 }
-                if (!outboundUdpBlocked)
-                    throw new Exception("Untrusted discovered peer could start an outbound UDP application connection.");
+                if (!outboundTunnelBlocked)
+                    throw new Exception("Untrusted discovered peer could start an outbound application connection tunnel.");
 
                 // 3. Node A attempts a protocol handshake with Node B for dummyProtocolId
                 var guid1 = Guid.NewGuid();
@@ -2464,14 +2463,14 @@ namespace QuicPunchTests.Tests;
                     .WithPort(0)
                     .WithAutoDiscovery(false)
                     .Build();
-                qpA.LanDiscoveryPort = 48511;
+                qpA.Discovery.LanDiscoveryPort = 48511;
 
                 using var qpB = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
                     .WithAutoDiscovery(false)
                     .Build();
-                qpB.LanDiscoveryPort = 48512;
+                qpB.Discovery.LanDiscoveryPort = 48512;
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -2661,21 +2660,21 @@ namespace QuicPunchTests.Tests;
                     .WithNostrRelays(customRelays)
                     .Build();
 
-                if (qp.NostrRelays == null || qp.NostrRelays.Length != 1 || qp.NostrRelays[0] != customRelays[0])
+                if (qp.Discovery.NostrRelays == null || qp.Discovery.NostrRelays.Length != 1 || qp.Discovery.NostrRelays[0] != customRelays[0])
                     throw new Exception("QuicPunchBuilder.Build did not set Nostr relays.");
-                if (qp.NostrDiscoveryEnabled)
+                if (qp.Discovery.NostrDiscoveryEnabled)
                     throw new Exception("Nostr discovery should be disabled before explicit enable.");
 
                 await qp.StartAsync();
-                if (qp.NostrDiscovery != null)
+                if (qp.Discovery.NostrDiscovery != null)
                     throw new Exception("Nostr discovery started while disabled.");
 
-                await qp.SetPeerDiscoveryEnabledAsync(true);
-                if (!qp.NostrDiscoveryEnabled || qp.NostrDiscovery == null || !qp.NostrDiscovery.IsRunning)
+                await qp.Discovery.SetPeerDiscoveryEnabledAsync(true);
+                if (!qp.Discovery.NostrDiscoveryEnabled || qp.Discovery.NostrDiscovery == null || !qp.Discovery.NostrDiscovery.IsRunning)
                     throw new Exception("Nostr discovery did not enter running state after enable.");
 
-                await qp.SetPeerDiscoveryEnabledAsync(false);
-                if (qp.NostrDiscoveryEnabled || qp.NostrDiscovery != null)
+                await qp.Discovery.SetPeerDiscoveryEnabledAsync(false);
+                if (qp.Discovery.NostrDiscoveryEnabled || qp.Discovery.NostrDiscovery != null)
                     throw new Exception("Nostr discovery did not stop cleanly after disable.");
 
                 await qp.StopAsync();
@@ -2703,7 +2702,7 @@ namespace QuicPunchTests.Tests;
                 if (qp.PoolId.Length != 20)
                     throw new Exception("PoolId should remain available when Nostr discovery is disabled.");
                 await qp.StartAsync();
-                if (qp.NostrDiscovery != null || qp.NostrDiscoveryEnabled)
+                if (qp.Discovery.NostrDiscovery != null || qp.Discovery.NostrDiscoveryEnabled)
                     throw new Exception("Nostr discovery started even though WithAutoDiscovery(false) was requested.");
                 await qp.StopAsync();
                 Console.WriteLine("PASSED");
@@ -2733,7 +2732,7 @@ namespace QuicPunchTests.Tests;
 
                 if (qp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Stopped)
                     throw new Exception($"Expected Stopped lifecycle, got {qp.LifecycleState}.");
-                if (qp.NostrDiscovery != null)
+                if (qp.Discovery.NostrDiscovery != null)
                     throw new Exception("Nostr discovery was recreated after StopAsync.");
                 if (qp.udp != null)
                     throw new Exception("UDP socket was recreated after StopAsync.");
@@ -2969,6 +2968,8 @@ namespace QuicPunchTests.Tests;
             {
                 using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
                 using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
+                qpA.Discovery.WanNostrDiscoveryEnabled = false;
+                qpB.Discovery.WanNostrDiscoveryEnabled = false;
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -3053,8 +3054,10 @@ namespace QuicPunchTests.Tests;
                     await Task.Delay(100);
                 }
 
-                if (qpB.IncomingHandshakeSessions.Count != 2)
-                    throw new Exception($"Expected exactly 2 incoming handshake sessions on Node B after second connection, found {qpB.IncomingHandshakeSessions.Count}");
+                // In the multiplexed architecture, subsequent virtual sessions reuse the persistent QUIC tunnel
+                // without creating redundant UDP handshake sessions.
+                if (qpB.IncomingHandshakeSessions.Count != 1)
+                    throw new Exception($"Expected exactly 1 incoming UDP handshake session on Node B (persistent multiplexer reused), found {qpB.IncomingHandshakeSessions.Count}");
 
                 if (handleCountA != 2)
                     throw new Exception($"Expected handleCountA == 2 after second connection, got {handleCountA}");
@@ -3089,6 +3092,8 @@ namespace QuicPunchTests.Tests;
             {
                 using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
                 using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
+                qpA.Discovery.WanNostrDiscoveryEnabled = false;
+                qpB.Discovery.WanNostrDiscoveryEnabled = false;
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -3189,8 +3194,7 @@ namespace QuicPunchTests.Tests;
             {
                 NetworkType = QuicPunch.QuicPunch.NetworkType.Tor,
                 OnionAddress = onion,
-                MinPort = port,
-                MaxPort = port
+                PortArray = [(ushort)port]
             };
             torPeer.SetCertificateHash(certHash);
 
@@ -3200,10 +3204,10 @@ namespace QuicPunchTests.Tests;
             if (rawBytes.Length != Utilities.TorTokenBinaryLength)
                 throw new Exception($"Expected Tor token binary length {Utilities.TorTokenBinaryLength}, got {rawBytes.Length}");
 
-            // Offset 0: Flags (NetworkType = Tor = 4)
-            var flags = new PackedFlags(rawBytes[0]);
-            if (flags.NetworkType != QuicPunch.QuicPunch.NetworkType.Tor)
-                throw new Exception($"Expected NetworkType Tor, got {flags.NetworkType}");
+            // Offset 0: Flags (IsTor = true)
+            var flags = new ConnectionFlags(rawBytes[0]);
+            if (!flags.IsTor)
+                throw new Exception($"Expected IsTor flag, got {flags}");
 
             // Offset 36..37: Port Little-Endian
             ushort encodedPort = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(rawBytes.AsSpan(36, 2));
@@ -3220,8 +3224,8 @@ namespace QuicPunchTests.Tests;
                 throw new Exception("Decoded NetworkType is not Tor");
             if (!string.Equals(decoded.OnionAddress, onion, StringComparison.OrdinalIgnoreCase))
                 throw new Exception($"Decoded onion address mismatch: expected {onion}, got {decoded.OnionAddress}");
-            if (decoded.MinPort != port || decoded.MaxPort != port)
-                throw new Exception($"Decoded port mismatch: expected {port}, got {decoded.MinPort}");
+            if (decoded.PortArray.Length != 1 || decoded.PortArray[0] != port)
+                throw new Exception($"Decoded port mismatch: expected {port}, got {string.Join(", ", decoded.PortArray)}");
             if (!decoded.TryGetCertificateHash(out var decodedHash) || !CryptographicOperations.FixedTimeEquals(decodedHash, certHash))
                 throw new Exception("Decoded certificate hash mismatch");
 
@@ -3238,8 +3242,10 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDirB);
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { LanDiscoveryPort = 48123 };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { LanDiscoveryPort = 48124 };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
+                qpA.Discovery.LanDiscoveryPort = 48123;
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                qpB.Discovery.LanDiscoveryPort = 48124;
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -3247,13 +3253,13 @@ namespace QuicPunchTests.Tests;
                 using var decodedB = Utilities.DecodeEndpointToken(tokenB);
 
                 // Record peer B as a discovered peer on node A
-                qpA.RecordDiscoveredPeer(decodedB, tokenB, "Nostr");
+                qpA.Discovery.RecordDiscoveredPeer(decodedB, tokenB, "Nostr");
 
                 if (!decodedB.TryGetCertificateHash(out var hashB))
                     throw new Exception("Peer B certificate hash unavailable.");
 
                 string hexKeyB = Convert.ToHexString(hashB);
-                if (!qpA.DiscoveredPeers.TryGetValue(hexKeyB, out var discoveredB))
+                if (!qpA.Discovery.DiscoveredPeers.TryGetValue(hexKeyB, out var discoveredB))
                     throw new Exception("Discovered peer was not stored in DiscoveredPeers.");
 
                 if (discoveredB.Source != "Nostr")
@@ -3324,12 +3330,10 @@ namespace QuicPunchTests.Tests;
                     IPAddress.Parse("198.51.100.50"),
                     IPAddress.Parse("192.168.1.100")
                 };
-                qp.CurrentPeer.MinPort = 35000;
-                qp.CurrentPeer.MaxPort = 35100;
+                qp.CurrentPeer.PortArray = Enumerable.Range(35000, 35100 - 35000 + 1).Select(p => (ushort)p).ToArray();
 
                 qp.TorCurrentPeer.OnionAddress = "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion";
-                qp.TorCurrentPeer.MinPort = 9050;
-                qp.TorCurrentPeer.MaxPort = 9050;
+                qp.TorCurrentPeer.PortArray = [9050];
                 qp.TorCurrentPeer.NetworkType = QuicPunch.QuicPunch.NetworkType.Tor;
 
                 string wanToken = qp.GetWanToken();
@@ -3378,20 +3382,20 @@ namespace QuicPunchTests.Tests;
                     .WithTorNostrDiscovery(false)
                     .Build();
 
-                if (!customBuilderQp.WanNostrDiscoveryEnabled)
+                if (!customBuilderQp.Discovery.WanNostrDiscoveryEnabled)
                     throw new Exception("WanNostrDiscoveryEnabled should be true from builder.");
-                if (customBuilderQp.TorNostrDiscoveryEnabled)
+                if (customBuilderQp.Discovery.TorNostrDiscoveryEnabled)
                     throw new Exception("TorNostrDiscoveryEnabled should be false from builder.");
 
                 await customBuilderQp.StartAsync();
-                if (customBuilderQp.WanNostrDiscovery == null || !customBuilderQp.WanNostrDiscovery.IsRunning)
+                if (customBuilderQp.Discovery.WanNostrDiscovery == null || !customBuilderQp.Discovery.WanNostrDiscovery.IsRunning)
                     throw new Exception("WanNostrDiscovery was not running after StartAsync.");
-                if (customBuilderQp.TorNostrDiscovery != null)
+                if (customBuilderQp.Discovery.TorNostrDiscovery != null)
                     throw new Exception("TorNostrDiscovery should not be running when disabled.");
 
                 // Stop WAN discovery dynamically
-                await customBuilderQp.SetWanPeerDiscoveryEnabledAsync(false);
-                if (customBuilderQp.WanNostrDiscoveryEnabled || customBuilderQp.WanNostrDiscovery != null)
+                await customBuilderQp.Discovery.SetWanPeerDiscoveryEnabledAsync(false);
+                if (customBuilderQp.Discovery.WanNostrDiscoveryEnabled || customBuilderQp.Discovery.WanNostrDiscovery != null)
                     throw new Exception("WanNostrDiscovery did not stop when disabled.");
 
                 await customBuilderQp.StopAsync();
@@ -3441,8 +3445,7 @@ namespace QuicPunchTests.Tests;
 
                 // 2. Tor compact token with valid signature
                 qp.TorCurrentPeer.OnionAddress = "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion";
-                qp.TorCurrentPeer.MinPort = 9050;
-                qp.TorCurrentPeer.MaxPort = 9050;
+                qp.TorCurrentPeer.PortArray = [9050];
                 qp.TorCurrentPeer.NetworkType = QuicPunch.QuicPunch.NetworkType.Tor;
 
                 string? torToken = qp.GetTorToken();
@@ -3470,13 +3473,12 @@ namespace QuicPunchTests.Tests;
                 var multiIpPeer = new PeerInfo(qp.CurrentPeer.Certificate!, qp.CurrentPeer.EcdhPublicKey)
                 {
                     Addresses = new[] { IPAddress.Parse("1.2.3.4"), IPAddress.Parse("5.6.7.8") },
-                    MinPort = 40000,
-                    MaxPort = 40050,
+                    PortArray = Enumerable.Range(40000, 40050 - 40000 + 1).Select(p => (ushort)p).ToArray(),
                     NetworkType = QuicPunch.QuicPunch.NetworkType.DynamicPortAndAddress
                 };
                 string multiToken = Utilities.EncodeEndpointToken(multiIpPeer);
                 using var decodedMulti = Utilities.DecodeEndpointToken(multiToken);
-                if (decodedMulti.MinPort != 40000 || decodedMulti.MaxPort != 40050 || decodedMulti.Addresses.Length < 2)
+                if (decodedMulti.PortArray.Length == 0 || decodedMulti.PortArray[0] != 40000 || decodedMulti.PortArray[^1] != 40050 || decodedMulti.Addresses.Length < 2)
                     throw new Exception("Dynamic port/multi-IP token did not preserve attributes.");
 
                 byte[] multiSig = Utilities.SignToken(multiToken, qp.CertManager.PeerCertificate);
@@ -3503,7 +3505,7 @@ namespace QuicPunchTests.Tests;
                     if (!peerStore.TryGet(decodedWan.CertHash, out var savedPeer) || savedPeer == null)
                         throw new Exception("PeerStore failed to retrieve peer by CertHash from signed token.");
 
-                    if (savedPeer.MinPort != decodedWan.MinPort)
+                    if (!savedPeer.PortArray.SequenceEqual(decodedWan.PortArray))
                         throw new Exception("PeerStore saved peer port mismatch.");
                 }
 
@@ -3541,8 +3543,7 @@ namespace QuicPunchTests.Tests;
                 await qpB.StartAsync();
 
                 // 1. Peer B has old port 40001
-                qpB.CurrentPeer.MinPort = 40001;
-                qpB.CurrentPeer.MaxPort = 40001;
+                qpB.CurrentPeer.PortArray = [40001];
                 qpB.CurrentPeer.Addresses = new[] { IPAddress.Parse("127.0.0.1") };
                 qpB.InvalidateTokenCache();
                 string oldTokenB = qpB.GetWanToken();
@@ -3554,28 +3555,23 @@ namespace QuicPunchTests.Tests;
 
                 if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var savedInitial) || savedInitial == null)
                     throw new Exception("qpA.PeerStore did not contain peer B.");
-                if (savedInitial.MinPort != 40001)
-                    throw new Exception($"Expected initial port 40001, got {savedInitial.MinPort}");
+                if (savedInitial.PortArray.Length != 1 || savedInitial.PortArray[0] != 40001)
+                    throw new Exception($"Expected initial port 40001, got {string.Join(", ", savedInitial.PortArray)}");
 
                 // 2. Peer B updates port (e.g. CGNAT change) to 50002
-                qpB.CurrentPeer.MinPort = 50002;
-                qpB.CurrentPeer.MaxPort = 50002;
+                qpB.CurrentPeer.PortArray = [50002];
                 qpB.InvalidateTokenCache();
                 string newTokenB = qpB.GetWanToken();
 
-                // 3. Inject new Nostr discovery token into qpA via ProcessWanNostrEndpointToken
-                var method = typeof(QuicPunch.QuicPunch).GetMethod("ProcessWanNostrEndpointToken", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (method == null)
-                    throw new Exception("ProcessWanNostrEndpointToken method not found.");
-
-                method.Invoke(qpA, new object?[] { newTokenB, qpB.CertManager.NostrPublicKeyHex, null, null });
+                // 3. Inject new Nostr discovery token into qpA via Discovery
+                qpA.Discovery.ProcessWanNostrEndpointToken(newTokenB, qpB.CertManager.NostrPublicKeyHex);
 
                 // 4. Verify PeerStore in memory was updated to new port 50002
                 if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var savedUpdated) || savedUpdated == null)
                     throw new Exception("qpA.PeerStore lost peer B after Nostr discovery update.");
 
-                if (savedUpdated.MinPort != 50002 || savedUpdated.MaxPort != 50002)
-                    throw new Exception($"Expected updated port 50002 in PeerStore, got {savedUpdated.MinPort}");
+                if (savedUpdated.PortArray.Length != 1 || savedUpdated.PortArray[0] != 50002)
+                    throw new Exception($"Expected updated port 50002 in PeerStore, got {string.Join(", ", savedUpdated.PortArray)}");
 
                 // 5. Verify peers.db on disk was persisted with the new port 50002
                 string peersDbPath = Path.Combine(tempDirA, "peers.db");
@@ -3584,8 +3580,8 @@ namespace QuicPunchTests.Tests;
                     if (!diskStore.TryGet(qpB.CurrentPeer.CertHash, out var diskPeer) || diskPeer == null)
                         throw new Exception("Disk peers.db did not contain updated peer B.");
 
-                    if (diskPeer.MinPort != 50002 || diskPeer.MaxPort != 50002)
-                        throw new Exception($"Expected port 50002 in persisted peers.db, got {diskPeer.MinPort}");
+                    if (diskPeer.PortArray.Length != 1 || diskPeer.PortArray[0] != 50002)
+                        throw new Exception($"Expected port 50002 in persisted peers.db, got {string.Join(", ", diskPeer.PortArray)}");
                 }
 
                 await qpA.StopAsync();
@@ -3655,8 +3651,7 @@ namespace QuicPunchTests.Tests;
                     .Build();
 
                 qp.CurrentPeer.Addresses = new[] { IPAddress.Parse("203.0.113.10") };
-                qp.CurrentPeer.MinPort = 30001;
-                qp.CurrentPeer.MaxPort = 30001;
+                qp.CurrentPeer.PortArray = [30001];
 
                 string firstToken = qp.GetWanToken();
                 for (int i = 0; i < 10; i++)
@@ -3667,8 +3662,7 @@ namespace QuicPunchTests.Tests;
                 }
 
                 // Invalidate and change port -> new stable token
-                qp.CurrentPeer.MinPort = 40002;
-                qp.CurrentPeer.MaxPort = 40002;
+                qp.CurrentPeer.PortArray = [40002];
                 qp.InvalidateTokenCache();
 
                 string secondToken = qp.GetWanToken();
@@ -3728,8 +3722,7 @@ namespace QuicPunchTests.Tests;
                 await qpB.StartAsync();
                 await qpAttacker.StartAsync();
 
-                qpB.CurrentPeer.MinPort = 40001;
-                qpB.CurrentPeer.MaxPort = 40001;
+                qpB.CurrentPeer.PortArray = [40001];
                 qpB.CurrentPeer.Addresses = new[] { IPAddress.Parse("127.0.0.1") };
                 string validTokenB = qpB.GetWanToken();
 
@@ -3742,47 +3735,41 @@ namespace QuicPunchTests.Tests;
                 qpA.PeerStore.AddOrUpdate(qpB.CurrentPeer, autoConnect: true, save: true, nostrPubKey: qpB.CertManager.NostrPublicKeyHex);
 
                 // 1. Attacker tries to publish a fake update for Peer B using Attacker's Nostr key
-                var method = typeof(QuicPunch.QuicPunch).GetMethod("ProcessWanNostrEndpointToken", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (method == null)
-                    throw new Exception("ProcessWanNostrEndpointToken method not found.");
-
                 // Attacker creates a token that has B's CertHash but a malicious port (e.g. 6666)
                 using var spoofedPeer = new PeerInfo(qpB.CertManager.PeerCertificate, qpB.CertManager.EcdhPublicKeyRaw)
                 {
                     Addresses = new[] { IPAddress.Parse("198.51.100.99") },
-                    MinPort = 6666,
-                    MaxPort = 6666,
+                    PortArray = [6666],
                     Name = "SpoofedB"
                 };
                 string spoofedToken = Utilities.EncodeEndpointToken(spoofedPeer);
 
                 // Attacker sends event with Attacker's Nostr public key
-                method.Invoke(qpA, new object?[] { spoofedToken, qpAttacker.CertManager.NostrPublicKeyHex, null, null });
+                qpA.Discovery.ProcessWanNostrEndpointToken(spoofedToken, qpAttacker.CertManager.NostrPublicKeyHex);
 
                 // Verify PeerStore was NOT modified by the spoofed event
                 if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var savedAfterAttack) || savedAfterAttack == null)
                     throw new Exception("qpA.PeerStore lost peer B.");
 
-                if (savedAfterAttack.MinPort == 6666)
+                if (savedAfterAttack.PortArray.Contains((ushort)6666))
                     throw new Exception("SECURITY VULNERABILITY: Spoofed Nostr event updated saved peer in PeerStore!");
 
-                if (savedAfterAttack.MinPort != 40001)
-                    throw new Exception($"Expected port 40001 to remain intact, got {savedAfterAttack.MinPort}");
+                if (savedAfterAttack.PortArray.Length != 1 || savedAfterAttack.PortArray[0] != 40001)
+                    throw new Exception($"Expected port 40001 to remain intact, got {string.Join(", ", savedAfterAttack.PortArray)}");
 
                 // 2. Legitimate Peer B publishes an update (port 50005) with B's legitimate Nostr key
-                qpB.CurrentPeer.MinPort = 50005;
-                qpB.CurrentPeer.MaxPort = 50005;
+                qpB.CurrentPeer.PortArray = [50005];
                 qpB.InvalidateTokenCache();
                 string legitimateUpdateToken = qpB.GetWanToken();
 
-                method.Invoke(qpA, new object?[] { legitimateUpdateToken, qpB.CertManager.NostrPublicKeyHex, null, null });
+                qpA.Discovery.ProcessWanNostrEndpointToken(legitimateUpdateToken, qpB.CertManager.NostrPublicKeyHex);
 
                 // Verify PeerStore WAS updated by the legitimate event
                 if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var savedAfterLegit) || savedAfterLegit == null)
                     throw new Exception("qpA.PeerStore lost peer B after legitimate update.");
 
-                if (savedAfterLegit.MinPort != 50005)
-                    throw new Exception($"Expected legitimate update to port 50005, got {savedAfterLegit.MinPort}");
+                if (savedAfterLegit.PortArray.Length != 1 || savedAfterLegit.PortArray[0] != 50005)
+                    throw new Exception($"Expected legitimate update to port 50005, got {string.Join(", ", savedAfterLegit.PortArray)}");
 
                 await qpA.StopAsync();
                 await qpB.StopAsync();
@@ -3832,8 +3819,7 @@ namespace QuicPunchTests.Tests;
                 await qpAttacker.StartAsync();
 
                 qpB.CurrentPeer.Addresses = new[] { IPAddress.Parse("198.51.100.22") };
-                qpB.CurrentPeer.MinPort = 45000;
-                qpB.CurrentPeer.MaxPort = 45000;
+                qpB.CurrentPeer.PortArray = [45000];
                 qpB.InvalidateTokenCache();
 
                 string tokenB = qpB.GetWanToken();
@@ -3859,7 +3845,7 @@ namespace QuicPunchTests.Tests;
                     throw new Exception("SECURITY VULNERABILITY: Token verified successfully with tampered signature!");
 
                 // 3. Process WAN Nostr discovery JSON payload on qpA
-                qpA.WanNostrDiscoveryEnabled = true;
+                qpA.Discovery.WanNostrDiscoveryEnabled = true;
                 string nostrPayload = System.Text.Json.JsonSerializer.Serialize(new
                 {
                     wan = tokenB,
@@ -3867,14 +3853,10 @@ namespace QuicPunchTests.Tests;
                     sig = Convert.ToBase64String(sigB)
                 });
 
-                var onWanEventMethod = typeof(QuicPunch.QuicPunch).GetMethod("OnWanNostrEventDiscovered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (onWanEventMethod == null)
-                    throw new Exception("OnWanNostrEventDiscovered method not found.");
-
-                onWanEventMethod.Invoke(qpA, new object?[] { qpB.CertManager.NostrPublicKeyHex, nostrPayload });
+                qpA.Discovery.OnWanNostrEventDiscovered(qpB.CertManager.NostrPublicKeyHex, nostrPayload);
 
                 string hexKeyB = Convert.ToHexString(qpB.CurrentPeer.CertHash);
-                if (!qpA.DiscoveredPeers.TryGetValue(hexKeyB, out var discB) || discB == null)
+                if (!qpA.Discovery.DiscoveredPeers.TryGetValue(hexKeyB, out var discB) || discB == null)
                     throw new Exception("Discovered peer B was not added to qpA.DiscoveredPeers.");
 
                 if (!discB.IsCertVerified)
@@ -3891,10 +3873,10 @@ namespace QuicPunchTests.Tests;
                     sig = Convert.ToBase64String(sigB)
                 });
 
-                qpA.DiscoveredPeers.TryRemove(hexKeyB, out _);
-                onWanEventMethod.Invoke(qpA, new object?[] { qpAttacker.CertManager.NostrPublicKeyHex, forgedNostrPayload });
+                qpA.Discovery.DiscoveredPeers.TryRemove(hexKeyB, out _);
+                qpA.Discovery.OnWanNostrEventDiscovered(qpAttacker.CertManager.NostrPublicKeyHex, forgedNostrPayload);
 
-                if (qpA.DiscoveredPeers.ContainsKey(hexKeyB))
+                if (qpA.Discovery.DiscoveredPeers.ContainsKey(hexKeyB))
                     throw new Exception("SECURITY VULNERABILITY: Forged Nostr payload with invalid certPubKey was accepted into DiscoveredPeers!");
 
                 // 5. Test that forged signature on Nostr payload is rejected
@@ -3905,10 +3887,10 @@ namespace QuicPunchTests.Tests;
                     sig = Convert.ToBase64String(tamperedSig)
                 });
 
-                qpA.DiscoveredPeers.TryRemove(hexKeyB, out _);
-                onWanEventMethod.Invoke(qpA, new object?[] { qpB.CertManager.NostrPublicKeyHex, forgedSigPayload });
+                qpA.Discovery.DiscoveredPeers.TryRemove(hexKeyB, out _);
+                qpA.Discovery.OnWanNostrEventDiscovered(qpB.CertManager.NostrPublicKeyHex, forgedSigPayload);
 
-                if (qpA.DiscoveredPeers.ContainsKey(hexKeyB))
+                if (qpA.Discovery.DiscoveredPeers.ContainsKey(hexKeyB))
                     throw new Exception("SECURITY VULNERABILITY: Forged Nostr payload with invalid sig was accepted into DiscoveredPeers!");
 
                 await qpA.StopAsync();
@@ -3949,12 +3931,11 @@ namespace QuicPunchTests.Tests;
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
-                qpA.WanNostrDiscoveryEnabled = true;
+                qpA.Discovery.WanNostrDiscoveryEnabled = true;
 
                 // 1. Peer B starts at port 41000
                 qpB.CurrentPeer.Addresses = new[] { IPAddress.Parse("198.51.100.10") };
-                qpB.CurrentPeer.MinPort = 41000;
-                qpB.CurrentPeer.MaxPort = 41000;
+                qpB.CurrentPeer.PortArray = [41000];
                 qpB.InvalidateTokenCache();
 
                 string tokenB1 = qpB.GetWanToken();
@@ -3966,13 +3947,12 @@ namespace QuicPunchTests.Tests;
                 await Task.Delay(100);
 
                 string hexKeyB = Convert.ToHexString(qpB.CurrentPeer.CertHash);
-                if (!qpA.ActiveInterrogations.Values.Any(s => s.Peer.MinPort == 41000))
+                if (!qpA.ActiveInterrogations.Values.Any(s => s.Peer.PortArray.Contains((ushort)41000)))
                     throw new Exception("Initial interrogation for port 41000 was not found in ActiveInterrogations.");
 
                 // 2. Peer B's NAT/endpoint changes to 198.51.100.20:52000
                 qpB.CurrentPeer.Addresses = new[] { IPAddress.Parse("198.51.100.20") };
-                qpB.CurrentPeer.MinPort = 52000;
-                qpB.CurrentPeer.MaxPort = 52000;
+                qpB.CurrentPeer.PortArray = [52000];
                 qpB.InvalidateTokenCache();
 
                 string tokenB2 = qpB.GetWanToken();
@@ -3985,18 +3965,14 @@ namespace QuicPunchTests.Tests;
                     sig = Convert.ToBase64String(sigB2)
                 });
 
-                var onWanEventMethod = typeof(QuicPunch.QuicPunch).GetMethod("OnWanNostrEventDiscovered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (onWanEventMethod == null)
-                    throw new Exception("OnWanNostrEventDiscovered method not found.");
-
                 // 3. Deliver new verified Nostr announcement to qpA
-                onWanEventMethod.Invoke(qpA, new object?[] { qpB.CertManager.NostrPublicKeyHex, nostrPayload });
+                qpA.Discovery.OnWanNostrEventDiscovered(qpB.CertManager.NostrPublicKeyHex, nostrPayload);
 
                 // 4. Verify DiscoveredPeers updated to 52000
                 bool discoveredUpdated = false;
                 for (int i = 0; i < 40; i++)
                 {
-                    if (qpA.DiscoveredPeers.TryGetValue(hexKeyB, out var disc) && disc.MinPort == 52000)
+                    if (qpA.Discovery.DiscoveredPeers.TryGetValue(hexKeyB, out var disc) && disc.PortArray.Contains((ushort)52000))
                     {
                         discoveredUpdated = true;
                         break;
@@ -4011,8 +3987,8 @@ namespace QuicPunchTests.Tests;
                 bool newInterrogationStarted = false;
                 for (int i = 0; i < 40; i++)
                 {
-                    if (qpA.ActiveInterrogations.Values.Any(s => s.Peer.MinPort == 52000) &&
-                        !qpA.ActiveInterrogations.Values.Any(s => s.Peer.MinPort == 41000))
+                    if (qpA.ActiveInterrogations.Values.Any(s => s.Peer.PortArray.Contains((ushort)52000)) &&
+                        !qpA.ActiveInterrogations.Values.Any(s => s.Peer.PortArray.Contains((ushort)41000)))
                     {
                         newInterrogationStarted = true;
                         break;
@@ -4020,7 +3996,7 @@ namespace QuicPunchTests.Tests;
                     await Task.Delay(25);
                 }
 
-                if (qpA.ActiveInterrogations.Values.Any(s => s.Peer.MinPort == 41000))
+                if (qpA.ActiveInterrogations.Values.Any(s => s.Peer.PortArray.Contains((ushort)41000)))
                     throw new Exception("Old interrogation session for port 41000 was not canceled after endpoint change!");
 
                 if (!newInterrogationStarted)
@@ -4062,10 +4038,10 @@ namespace QuicPunchTests.Tests;
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
-                qpA.WanNostrDiscoveryEnabled = true;
+                qpA.Discovery.WanNostrDiscoveryEnabled = true;
 
                 // Save Peer B on Peer A with old dummy endpoints
-                qpA.PeerStore.AddOrUpdate(new[] { IPAddress.Parse("198.51.100.99") }, 33333, 33333, qpB.CurrentPeer.CertHash, name: "RemotePeerB", autoConnect: true);
+                qpA.PeerStore.AddOrUpdate(new[] { IPAddress.Parse("198.51.100.99") }, new ushort[] { 33333 }, qpB.CurrentPeer.CertHash, name: "RemotePeerB", autoConnect: true);
                 qpA.TrustPeer(qpB.CurrentPeer.CertHash);
                 qpB.TrustPeer(qpA.CurrentPeer.CertHash);
 
@@ -4073,8 +4049,7 @@ namespace QuicPunchTests.Tests;
                 int realPortB = qpB.LocalDiscoveryPort;
                 var realIpB = IPAddress.Parse("192.168.1.100");
                 qpB.CurrentPeer.Addresses = new[] { realIpB };
-                qpB.CurrentPeer.MinPort = realPortB;
-                qpB.CurrentPeer.MaxPort = realPortB;
+                qpB.CurrentPeer.PortArray = [(ushort)realPortB];
                 qpB.InvalidateTokenCache();
 
                 string tokenB = qpB.GetWanToken();
@@ -4088,12 +4063,8 @@ namespace QuicPunchTests.Tests;
                     sig = Convert.ToBase64String(sigB)
                 });
 
-                var onWanEventMethod = typeof(QuicPunch.QuicPunch).GetMethod("OnWanNostrEventDiscovered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (onWanEventMethod == null)
-                    throw new Exception("OnWanNostrEventDiscovered method not found.");
-
                 // Deliver Nostr announcement to qpA
-                onWanEventMethod.Invoke(qpA, new object?[] { qpB.CertManager.NostrPublicKeyHex, nostrPayload });
+                qpA.Discovery.OnWanNostrEventDiscovered(qpB.CertManager.NostrPublicKeyHex, nostrPayload);
 
                 // Wait for connection to establish and PeerStore to update
                 bool storeUpdated = false;
@@ -4101,7 +4072,7 @@ namespace QuicPunchTests.Tests;
                 {
                     if (qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var saved) && saved != null)
                     {
-                        if (saved.MinPort == realPortB && saved.Addresses.Any(a => a.Equals(realIpB)))
+                        if (saved.PortArray.Contains((ushort)realPortB) && saved.Addresses.Any(a => a.Equals(realIpB)))
                         {
                             storeUpdated = true;
                             break;
@@ -4228,8 +4199,7 @@ namespace QuicPunchTests.Tests;
                 var peer = new PeerInfo
                 {
                     OnionAddress = onion,
-                    MinPort = port,
-                    MaxPort = port,
+                    PortArray = [(ushort)port],
                     NetworkType = QuicPunch.QuicPunch.NetworkType.Tor,
                     ActiveTransport = QuicPunch.QuicPunch.TransportType.Tor
                 };
@@ -4336,8 +4306,7 @@ namespace QuicPunchTests.Tests;
                 var wanPeer = new PeerInfo
                 {
                     Addresses = new[] { IPAddress.Parse("203.0.113.10"), IPAddress.Parse("198.51.100.20") },
-                    MinPort = 12345,
-                    MaxPort = 12345,
+                    PortArray = [12345],
                     NetworkType = QuicPunch.QuicPunch.NetworkType.Static,
                     ActiveTransport = QuicPunch.QuicPunch.TransportType.Wan
                 };
@@ -4352,8 +4321,7 @@ namespace QuicPunchTests.Tests;
                 var torPeer = new PeerInfo
                 {
                     OnionAddress = "h6mwth5qlqfulm2kyo4nhid6zx423kit33urpnq7m5iakj4mthtinkid.onion",
-                    MinPort = 443,
-                    MaxPort = 443,
+                    PortArray = [443],
                     NetworkType = QuicPunch.QuicPunch.NetworkType.Tor,
                     ActiveTransport = QuicPunch.QuicPunch.TransportType.Tor
                 };

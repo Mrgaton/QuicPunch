@@ -1,5 +1,7 @@
 using QuicPunch.Helpers;
+using QuicPunch.Security;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO.Compression;
 using System.Net;
@@ -16,15 +18,16 @@ namespace QuicPunch
     {
         //TODO: also implement stun to retrieve external port?
         public static async Task<(bool Success, UdpClient? client, IPEndPoint? remoteEndpoint)> OpenPortCore(
-            PeerInfo ownPeer, UdpClient nudp, PeerInfo remotePeer, IReadOnlyList<CandidateEndpoint>? remoteCandidates, ushort peerPort, Guid connectionGuid, CancellationToken mainCt)
+            PeerInfo ownPeer, UdpClient nudp, PeerInfo remotePeer, IReadOnlyList<CandidateEndpoint>? remoteCandidates,
+            ushort peerPort, Guid connectionGuid, CancellationToken mainCt, ECDsa? ownPrivateKey = null, byte[]? passwordHash = null)
         {
             try
             {
                 QuicPunchLog.Info($"[HOLE PUNCH] Starting UDP connectivity checks with peer {remotePeer.Name ?? "Peer"} ({remotePeer.Id}) (Guid: {connectionGuid})");
                 using var punchCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt);
-                _ = SendLoopAsync(nudp, remotePeer, remoteCandidates, peerPort, connectionGuid, ownPeer, punchCts.Token);
+                _ = SendLoopAsync(nudp, remotePeer, remoteCandidates, peerPort, connectionGuid, ownPeer, ownPrivateKey, passwordHash, punchCts.Token);
 
-                var remoteEndpoint = await ReceiveHoleLoopAsync(nudp, connectionGuid, ownPeer, remotePeer, punchCts.Token);
+                var remoteEndpoint = await ReceiveHoleLoopAsync(nudp, connectionGuid, ownPeer, remotePeer, ownPrivateKey, passwordHash, punchCts.Token);
                 punchCts.Cancel();
 
                 if (remoteEndpoint == null)
@@ -48,6 +51,7 @@ namespace QuicPunch
             }
         }
 
+
         public static async Task<(QuicConnection Connection, Stream Stream)> InitQuicConnectionCore(
             QuicPunch? qc, PeerInfo ownPeer, UdpClient nudp, PeerInfo remotePeer, IReadOnlyList<CandidateEndpoint>? remoteCandidates,
             ushort peerPort, Guid connectionGuid, X509Certificate2 ownCertificate, ZstandardCompressionOptions? compressionOptions, CancellationToken mainCt)
@@ -65,7 +69,7 @@ namespace QuicPunch
             using var openPortCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             using var openPortLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt, openPortCts.Token);
 
-            var udpResult = await OpenPortCore(ownPeer, nudp, remotePeer, remoteCandidates, peerPort, connectionGuid, openPortLinkedCts.Token)
+            var udpResult = await OpenPortCore(ownPeer, nudp, remotePeer, remoteCandidates, peerPort, connectionGuid, openPortLinkedCts.Token, qc?.CertManager?.Curve, qc?.PasswordHash)
                 .WaitAsync(openPortLinkedCts.Token);
 
             if (!udpResult.Success || udpResult.remoteEndpoint == null)
@@ -146,7 +150,7 @@ namespace QuicPunch
                             remotePeer.ActiveEndPoint = newEp;
                             if (qc != null)
                             {
-                                try { qc.PeerStore?.AddOrUpdate(remotePeer); } catch { }
+                                try { qc.UpdateSavedPeerIfPresent(remotePeer); } catch { }
                             }
                         };
                     }
@@ -190,7 +194,9 @@ namespace QuicPunch
             return (connection, stream);
         }
 
-        public static async Task<IPEndPoint?> ReceiveHoleLoopAsync(UdpClient udp, Guid connectionGuid, PeerInfo ownPeer, PeerInfo remotePeer, CancellationToken token)
+        public static async Task<IPEndPoint?> ReceiveHoleLoopAsync(
+            UdpClient udp, Guid connectionGuid, PeerInfo ownPeer, PeerInfo remotePeer,
+            ECDsa? ownPrivateKey, byte[]? passwordHash, CancellationToken token)
         {
             byte[] ackBody = new byte[QuicPunch.MagicHeader.Length + 1 + 16 + 16];
             Buffer.BlockCopy(QuicPunch.MagicHeader, 0, ackBody, 0, QuicPunch.MagicHeader.Length);
@@ -216,6 +222,50 @@ namespace QuicPunch
                             token).ConfigureAwait(false);
 
                         int bytesRead = result.ReceivedBytes;
+
+                        // High-security single-packet punch check (192 bytes)
+                        if (bytesRead >= QuicPunchHolePacket.PacketSize)
+                        {
+                            ReadOnlySpan<byte> holeSpan = receiveBuffer.AsSpan(0, bytesRead);
+                            uint magic = BinaryPrimitives.ReadUInt32LittleEndian(holeSpan[..4]);
+                            if (magic == QuicPunchHolePacket.MagicHeader)
+                            {
+                                bool valid = false;
+                                try
+                                {
+                                    if (remotePeer.Curve != null)
+                                    {
+                                        valid = QuicPunchHolePacket.TryVerifyFast(
+                                            holeSpan,
+                                            expectedRecipientId: ownPeer.Id,
+                                            ourCertHash: ownPeer.CertHash,
+                                            senderPublicKey: remotePeer.Curve,
+                                            localPasswordHash: passwordHash ?? ReadOnlySpan<byte>.Empty);
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    QuicPunchLog.Info($"[HOLE PUNCH] Notice verifying single-packet punch: {ex.Message}");
+                                }
+
+                                if (valid)
+                                {
+                                    var senderEp = (IPEndPoint)result.RemoteEndPoint;
+                                    QuicPunchLog.Info($"[HOLE PUNCH] Verified single-packet punch (PoP Validated) from {remotePeer.Name ?? "Peer"}! Nominated: {senderEp}");
+                                    for (int a = 0; a < 4; a++)
+                                    {
+                                        try { await udp.SendAsync(ackBody, senderEp, token).ConfigureAwait(false); } catch { }
+                                    }
+                                    return senderEp;
+                                }
+                                else
+                                {
+                                    QuicPunchLog.Info($"[HOLE PUNCH] Rejected single-packet punch from {result.RemoteEndPoint}: signature or password mismatch.");
+                                    continue;
+                                }
+                            }
+                        }
+
                         if (bytesRead < QuicPunch.MagicHeader.Length + 1 + 16 + 16)
                             continue;
 
@@ -282,10 +332,31 @@ namespace QuicPunch
 
         public static async Task SendLoopAsync(
             UdpClient udp, PeerInfo peer, IReadOnlyList<CandidateEndpoint>? remoteCandidates,
-            ushort askedPort, Guid connectionGuid, PeerInfo ownPeer, CancellationToken token)
+            ushort askedPort, Guid connectionGuid, PeerInfo ownPeer,
+            ECDsa? ownPrivateKey, byte[]? passwordHash, CancellationToken token)
         {
             try
             {
+                byte[]? punchPacketBytes = null;
+                if (ownPrivateKey != null && ownPeer.CertHash.Length == 32 && peer.CertHash.Length == 32)
+                {
+                    try
+                    {
+                        var punch = QuicPunchHolePacket.Create(
+                            ownPeer.Id,
+                            peer.Id,
+                            ownPeer.CertHash,
+                            peer.CertHash,
+                            ownPrivateKey,
+                            passwordHash);
+                        punchPacketBytes = punch.Encode();
+                    }
+                    catch (Exception ex)
+                    {
+                        QuicPunchLog.Info($"[HOLE PUNCH] Notice creating single punch packet: {ex.Message}");
+                    }
+                }
+
                 byte[] payload = new byte[QuicPunch.MagicHeader.Length + 1 + 16 + 16];
                 Buffer.BlockCopy(QuicPunch.MagicHeader, 0, payload, 0, QuicPunch.MagicHeader.Length);
                 payload[QuicPunch.MagicHeader.Length] = (byte)QuicPunchStructures.MessageType.FinalHandshake;
@@ -323,6 +394,13 @@ namespace QuicPunch
                             if (askedPort > 0) targetEndPoints.Add(new IPEndPoint(addr, askedPort));
                             if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Port > 0)
                                 targetEndPoints.Add(new IPEndPoint(addr, peer.ActiveEndPoint.Port));
+                            if (peer.PortArray is { Length: > 0 } ports)
+                            {
+                                foreach (var p in ports)
+                                {
+                                    if (p > 0) targetEndPoints.Add(new IPEndPoint(addr, p));
+                                }
+                            }
                         }
                     }
                 }
@@ -338,12 +416,18 @@ namespace QuicPunch
                         if (token.IsCancellationRequested) break;
                         try
                         {
+                            if (punchPacketBytes != null)
+                            {
+                                await udp.SendAsync(punchPacketBytes, ep).ConfigureAwait(false);
+                            }
                             await udp.SendAsync(payload, ep).ConfigureAwait(false);
                         }
                         catch (SocketException) { }
                         catch (ObjectDisposedException) { }
                     }
-                    await Task.Delay(125, token).ConfigureAwait(false);
+                    // Fast burst on the first 3 cycles (25ms), then 125ms interval
+                    int delayMs = tries <= 3 ? 25 : 125;
+                    await Task.Delay(delayMs, token).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) { }
@@ -369,25 +453,35 @@ namespace QuicPunch
             {
                 ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
                 ApplicationProtocols = SupportedProtocols,
-                ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(new QuicServerConnectionOptions
+                ConnectionOptionsCallback = (_, _, _) =>
                 {
-                    DefaultStreamErrorCode = 0,
-                    DefaultCloseErrorCode = 0,
-                    ServerAuthenticationOptions = new SslServerAuthenticationOptions
+                    var serverConnOpts = new QuicServerConnectionOptions
                     {
-                        ApplicationProtocols = SupportedProtocols,
-                        ServerCertificate = ownCertificate,
-                        ClientCertificateRequired = true,
+                        DefaultStreamErrorCode = 0,
+                        DefaultCloseErrorCode = 0,
+                        ServerAuthenticationOptions = new SslServerAuthenticationOptions
+                        {
+                            ApplicationProtocols = SupportedProtocols,
+                            ServerCertificate = ownCertificate,
+                            ClientCertificateRequired = true,
 
-                        RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
-                            ValidateRemotePeerCertificate(certificate, peerCertificate, "SERVER")
-                    },
+                            RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
+                                ValidateRemotePeerCertificate(certificate, peerCertificate, "SERVER")
+                        },
 
-                    MaxInboundBidirectionalStreams = 512,
-                    MaxInboundUnidirectionalStreams = 512,
-                    IdleTimeout = TimeSpan.FromMinutes(10),
-                    KeepAliveInterval = TimeSpan.FromSeconds(19)
-                }),
+                        MaxInboundBidirectionalStreams = 512,
+                        MaxInboundUnidirectionalStreams = 512,
+                        IdleTimeout = TimeSpan.FromMinutes(10),
+                        KeepAliveInterval = TimeSpan.FromSeconds(19)
+                    };
+
+                    if (MsQuicDatagramChannel.IsSupported)
+                    {
+                        MsQuicDatagramChannel.EnsureServerConfigurationPatched(serverConnOpts);
+                    }
+
+                    return ValueTask.FromResult(serverConnOpts);
+                },
             };
 
             QuicListener? listener = null;
@@ -396,6 +490,10 @@ namespace QuicPunch
             {
                 try
                 {
+                    if (MsQuicDatagramChannel.IsSupported)
+                    {
+                        MsQuicDatagramChannel.EnableDatagramsOnConfigurationCache();
+                    }
                     // Zero-dead-window overlapping bind: bind listener while holePunchUdp is still open
                     listener = await QuicListener.ListenAsync(options, token);
                     MsQuicTuner.EnsureOptimalConfiguration();
@@ -459,7 +557,7 @@ namespace QuicPunch
             var options = new QuicClientConnectionOptions
             {
                 RemoteEndPoint = targetPeer,
-                LocalEndPoint = new IPEndPoint(IPAddress.Any, localPort),
+                LocalEndPoint = localPort > 0 ? new IPEndPoint(IPAddress.Any, localPort) : null,
                 DefaultStreamErrorCode = 0,
                 DefaultCloseErrorCode = 0,
                 ClientAuthenticationOptions = new SslClientAuthenticationOptions
@@ -485,6 +583,11 @@ namespace QuicPunch
 
             QuicConnection? connection = null;
             int backoffMs = 50;
+
+            if (MsQuicDatagramChannel.IsSupported)
+            {
+                MsQuicDatagramChannel.EnsureClientConfigurationPatched(options);
+            }
 
             while (!token.IsCancellationRequested)
             {
@@ -570,7 +673,7 @@ namespace QuicPunch
 
             if (ownPeer?.CertHash != null && remotePeer?.CertHash != null)
             {
-                return Convert.ToBase64String(ownPeer.CertHash).CompareTo(Convert.ToBase64String(remotePeer.CertHash)) > 0;
+                return ownPeer.CertHash.AsSpan().SequenceCompareTo(remotePeer.CertHash) > 0;
             }
 
             return true;

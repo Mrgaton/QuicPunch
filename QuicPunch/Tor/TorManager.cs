@@ -421,14 +421,3 @@ public sealed class TorManager : IAsyncDisposable
     private void ThrowIfDisposed() =>
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 }
-
-public sealed class TorSocksException : IOException
-{
-    public TorSocksException(byte replyCode, string message)
-        : base($"Tor SOCKS5 error 0x{replyCode:X2}: {message}")
-    {
-        ReplyCode = replyCode;
-    }
-
-    public byte ReplyCode { get; }
-}

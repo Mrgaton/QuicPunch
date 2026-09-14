@@ -12,40 +12,20 @@
 | :--- | :--- | :--- | :--- | :--- |
 | `Interrogation` | `'I'` | `0x49` | [`HelloHandler`](../../QuicPunch/PacketHandler/HelloHandler.cs) | Discovery probe seeking rendezvous endpoint and cert. |
 | `Hello` | `'H'` | `0x48` | [`HelloHandler`](../../QuicPunch/PacketHandler/HelloHandler.cs) | Signed mutual authentication, ephemeral ECDH, nonce exchange. |
-| `Ack` | `'A'` | `0x41` | [`AckHandler`](../../QuicPunch/PacketHandler/AckHandler.cs) | Acknowledgment of Hello, clock drift check, peer exchange. |
+| `Ack` | `'K'` | `0x4B` | [`AckHandler`](../../QuicPunch/PacketHandler/AckHandler.cs) | Acknowledgment of Hello, clock drift check, peer exchange. |
 | `Handshake` | `'S'` | `0x53` | [`HandshakeHandler`](../../QuicPunch/PacketHandler/HandshakeHandler.cs) | Application protocol request, accept, decline, or candidate exchange. |
 | `FinalHandshake` | `'F'` | `0x46` | [`QuicPunchConnection`](../../QuicPunch/QuicPunchConnection.cs) | Hole punching burst packet to punch firewall pinholes. |
 | `QuicReady` | `'Q'` | `0x51` | [`QuicPunch`](../../QuicPunch/QuicPunch.cs) | Server signals that `QuicListener` is bound and ready to accept TLS connection. |
 | `Ping` | `'P'` | `0x50` | [`PingHandler`](../../QuicPunch/PacketHandler/PingHandler.cs) | Lightweight RTT latency measurement. |
-| `Disconnect` | `'D'` | `0x44` | [`DisconnectHandler`](../../QuicPunch/PacketHandler/DisconnectHandler.cs) | Signed teardown notification with immediate session cleanup. |
-| `Data` | `'X'` | `0x58` | [`QuicPunch`](../../QuicPunch/QuicPunch.cs) | Authenticated, encrypted AEAD UDP datagram. |
+| `Disconnect` | `'X'` | `0x58` | [`DisconnectHandler`](../../QuicPunch/PacketHandler/DisconnectHandler.cs) | Signed teardown notification with immediate session cleanup. |
 
 ---
 
-## Binary Wire Format: `Data` Packet (`'X'`)
+## Application Data Plane (RFC 9221 QUIC Datagrams)
 
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|       MagicHeader: "PNch" (0x50, 0x4E, 0x63, 0x68)    |Type:'X'|PacketType...
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|...PacketType (2B) |        Sender Peer ID (Guid, 16 Bytes)   |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 Sender Peer ID (Continued)                    |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 Sequence Number (ulong, 8 Bytes)              |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 AES-GCM Authentication Tag (16 Bytes)         |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                 Encrypted Ciphertext Payload (N Bytes)       |
-|                             ...                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
+All application datagram communication is transmitted natively through **RFC 9221 QUIC Datagrams** over the established TLS 1.3 `QuicConnection`:
 
-### Associated Authenticated Data (AAD) & Nonce Formulation
-- **Header AAD Size**: Exactly `31 bytes` (`MagicHeader (4B) + MessageType.Data (1B) + packetType (2B) + SenderId (16B) + sequenceNumber (8B)`).
-- **Nonce Formulation (12 Bytes)**:
-  - Nonce[0..3] = 4-byte `TxSalt` or `RxSalt`.
-  - Nonce[4..11] = 8-byte `sequenceNumber` encoded in **Big-Endian**.
+- **Zero Head-of-Line Blocking**: Unreliable, individual datagram frames without stream head-of-line stalls.
+- **Hardware DSCP Prioritization**: Prioritized queuing with QoS flags (e.g., DSCP 46 Voice EF).
+- **TLS 1.3 Encryption**: Authenticated and encrypted via the QUIC transport session keys.
+- **Congestion Control**: Native BBR / Cubic congestion control and MTU path discovery.

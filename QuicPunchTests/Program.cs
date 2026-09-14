@@ -10,7 +10,6 @@ using System.Text;
 using System.Web;
 using Microsoft.Win32;
 using QuicPunch.Helpers;
-using QuicPunchTests.Helpers;
 using QuicPunchTests.Protocols;
 using QuicPunchTests.Settings;
 using QuicPunchTests.Tests;
@@ -37,6 +36,11 @@ internal static class Program
         };
 
         Console.OutputEncoding = Encoding.UTF8;
+        if (args.Length > 0 && (args[0] == "--test-punch-packet" || args[0] == "--test-hole-packet")) { await QuicPunchHolePacketTests.RunAsync(); return; }
+        if (args.Length > 0 && (args[0] == "--test-multiplexer" || args[0] == "--test-mux")) { await QuicPeerMultiplexerTests.RunAsync(); return; }
+        if (args.Length > 0 && (args[0] == "--test-speedtest" || args[0] == "--test-speed-test" || args[0] == "--test-benchmark")) { await SpeedTestTests.RunAsync(); return; }
+        if (args.Length > 0 && (args[0] == "--test-screenshare" || args[0] == "--test-screen-share")) { await ScreenShareTests.RunAsync(); return; }
+        if (args.Length > 0 && (args[0] == "--test-datagram-categorization" || args[0] == "--test-datagram-framing")) { await QuicDatagramCategorizationTests.RunAllTestsAsync(); return; }
         if (args.Length > 0 && args[0] == "--test-antireplay") { await AntiReplayTests.RunAsync(); return; }
         if (args.Length > 0 && args[0] == "--test-security") { await SecurityDiscoveryTests.RunAsync(); return; }
         if (args.Length > 0 && args[0] == "--test-singleflight") { await SecurityDiscoveryTests.RunSingleFlightTestAsync(); return; }
@@ -54,7 +58,9 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--test-upnp") { await UpnpTests.RunAsync(); return; }
         if (args.Length > 0 && args[0] == "--test-port-openers") { await PortOpenerTests.RunAsync(); return; }
         if (args.Length > 0 && args[0] == "--test-opus") { OpusCodecTests.Run(); return; }
+        if (args.Length > 0 && (args[0] == "--test-native-audio" || args[0] == "--test-audio")) { await NativeAudioServiceTests.RunAsync(); return; }
         if (args.Length > 0 && args[0] == "--test-tor") { await TestTorFileShare.RunAsync(args); return; }
+        if (args.Length > 0 && (args[0] == "--test-screenshare" || args[0] == "--test-screen")) { await ScreenShareTests.RunAsync(); return; }
         if (args.Length > 0 && (args[0] == "--test-tor-cascade" || args[0] == "--test-tor-fallback")) { await TorBypassTests.RunAsync(); return; }
 
         if (args.Length > 0 && args[0].Contains("://"))
@@ -85,16 +91,17 @@ internal static class Program
         var qcc = new QuicPunch.QuicPunch(cts, null, pwdBytes, preferences.AutoAcceptTrusted)
         {
             SharePeers = true,
-            WanEnabled = preferences.WanEnabled,
-            WanNostrDiscoveryEnabled = preferences.WanNostrDiscoveryEnabled,
-            TorNostrDiscoveryEnabled = preferences.TorNostrDiscoveryEnabled
+            WanEnabled = preferences.WanEnabled
         };
+        qcc.Discovery.WanNostrDiscoveryEnabled = preferences.WanNostrDiscoveryEnabled;
+        qcc.Discovery.TorNostrDiscoveryEnabled = preferences.TorNostrDiscoveryEnabled;
 
+        QuicPunch.QuicPunch.EnableLogging = true;
         QuicPunch.QuicPunch.LogHandler = msg => { Console.WriteLine(msg); WebUiServer.LogEvent(msg); };
         QuicPunch.QuicPunch.ErrorHandler = msg => { Console.Error.WriteLine(msg); WebUiServer.LogEvent(msg); };
 
-        await qcc.SetWanPeerDiscoveryEnabledAsync(preferences.WanNostrDiscoveryEnabled, cts.Token);
-        await qcc.SetTorPeerDiscoveryEnabledAsync(preferences.TorNostrDiscoveryEnabled, cts.Token);
+        await qcc.Discovery.SetWanPeerDiscoveryEnabledAsync(preferences.WanNostrDiscoveryEnabled, cts.Token);
+        await qcc.Discovery.SetTorPeerDiscoveryEnabledAsync(preferences.TorNostrDiscoveryEnabled, cts.Token);
         await qcc.StartAsync(cts.Token);
 
         var lanHandler = new VirtualLanHandler();
@@ -106,11 +113,11 @@ internal static class Program
 
         var chatHandler = new ChatHandler();
         using var voiceCallHandler = new VoiceCallHandler(qcc);
-        using var relayDriveHandler = new RelayDriveHandler(qcc.CurrentPeer?.Id ?? Guid.Empty);
+        using var speedTestHandler = new SpeedTestHandler();
 
         qcc.RegisterProtocol(chatHandler);
         qcc.RegisterProtocol(voiceCallHandler);
-        qcc.RegisterProtocol(relayDriveHandler);
+        qcc.RegisterProtocol(speedTestHandler);
 
         if (preferences.LanEnabled)
         {
@@ -119,7 +126,7 @@ internal static class Program
                 qcc.RegisterProtocol(lanHandler);
         }
 
-        var webUi = new WebUiServer(qcc, chatHandler, lanHandler, voiceCallHandler, relayDriveHandler, preferencesStore, cts);
+        var webUi = new WebUiServer(qcc, chatHandler, lanHandler, voiceCallHandler, speedTestHandler, preferencesStore, cts);
         webUi.Start();
 
         if (preferences.TorEnabled)
@@ -144,7 +151,6 @@ internal static class Program
         Console.WriteLine($"Your token: {myToken}\n");
         string quickUri = $"qp://{myToken}";
         Console.WriteLine($"Share this URI for quick connection: {quickUri}\n");
-        DiyClipper.SetText(quickUri);
 
         qcc.OnPeerAvailable += peer => Console.WriteLine($"Peer available: {peer.Name}");
 
@@ -292,7 +298,7 @@ internal static class Program
         using var rsa = RSA.Create(2048);
         var certReq = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using var tempCert = certReq.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1));
-        using var cert = new X509Certificate2(tempCert.Export(X509ContentType.Pfx));
+        using var cert = X509CertificateLoader.LoadPkcs12(tempCert.Export(X509ContentType.Pfx), null);
 
         var alpn = new List<System.Net.Security.SslApplicationProtocol> { new("qtest") };
 

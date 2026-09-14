@@ -9,22 +9,6 @@ using System.Threading.Tasks;
 
 namespace QuicPunch;
 
-internal enum TorLaneKind : byte
-{
-    Message = 1,
-    QuicStream = 2,
-    RawTcp = 3
-}
-
-internal readonly record struct TorLanePreface(
-    TorLaneKind Kind,
-    Guid ConnectionId,
-    long StreamId,
-    QuicStreamType StreamType,
-    byte[] ConnectionToken,
-    string SenderServiceId,
-    int SenderVirtualPort);
-
 internal static class TorPeerTransportProtocol
 {
     private static readonly byte[] Magic = "QPT1"u8.ToArray();

@@ -53,8 +53,8 @@ namespace QuicPunch.PacketHandler
                     ? peersCopy.Select(p => p.Value)
                         .Where(qp.IsTrustedPeer)
                         .Where(p => transport == TransportType.Tor
-                            ? (p.NetworkType == QuicPunch.NetworkType.Tor || p.ActiveTransport == TransportType.Tor || !string.IsNullOrEmpty(p.OnionAddress))
-                            : (p.NetworkType != QuicPunch.NetworkType.Tor && p.ActiveTransport != TransportType.Tor && p.Addresses != null && p.Addresses.Length > 0))
+                            ? (p.ConnectionFlags.IsTor || p.ActiveTransport == TransportType.Tor || !string.IsNullOrEmpty(p.OnionAddress))
+                            : (!p.ConnectionFlags.IsTor && p.ActiveTransport != TransportType.Tor && p.Addresses != null && p.Addresses.Length > 0))
                         .Take(32)
                         .ToArray()
                     : Array.Empty<PeerInfo>();
@@ -65,12 +65,7 @@ namespace QuicPunch.PacketHandler
                 {
                     foreach (var peer in sharedPeers)
                     {
-                        PackedFlags pf = new PackedFlags()
-                        {
-                            NetworkType = peer.NetworkType
-                        };
-
-                        w.Write((byte)pf.RawValue);
+                        w.Write(peer.ConnectionFlags.RawValue);
 
                         if (transport == TransportType.Tor)
                         {
@@ -91,8 +86,10 @@ namespace QuicPunch.PacketHandler
                             }
                         }
 
-                        w.Write((ushort)peer.MinPort);
-                        w.Write((ushort)peer.MaxPort);
+                        ushort pMin = (ushort)(peer.PortArray.Length > 0 ? peer.PortArray.Min() : (peer.ActiveEndPoint?.Port ?? 0));
+                        ushort pMax = (ushort)(peer.PortArray.Length > 0 ? peer.PortArray.Max() : (peer.ActiveEndPoint?.Port ?? 0));
+                        w.Write(pMin);
+                        w.Write(pMax);
                         w.Write(peer.CertHash);
                     }
                 }
@@ -151,11 +148,7 @@ namespace QuicPunch.PacketHandler
                 w.Write((byte)type);
                 w.Write(currentPeer.CertHash);
 
-                PackedFlags pf = new PackedFlags()
-                {
-                    NetworkType = currentPeer.NetworkType
-                };
-                w.Write((byte)pf.RawValue);
+                w.Write(currentPeer.ConnectionFlags.RawValue);
 
                 var addresses = (currentPeer.Addresses ?? Array.Empty<IPAddress>())
                     .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && Utilities.IsValidPeerAddress(a))
@@ -168,9 +161,9 @@ namespace QuicPunch.PacketHandler
                     w.Write(address.GetAddressBytes());
                 }
 
-                ushort controlPort = (ushort)(currentPeer.MinPort > 0 ? currentPeer.MinPort : qp.LocalBoundPort);
-                ushort minPort = controlPort;
-                ushort maxPort = (ushort)(currentPeer.MaxPort > 0 ? currentPeer.MaxPort : controlPort);
+                ushort controlPort = (ushort)(currentPeer.PortArray.Length > 0 ? currentPeer.PortArray[0] : qp.LocalBoundPort);
+                ushort minPort = (ushort)(currentPeer.PortArray.Length > 0 ? currentPeer.PortArray.Min() : controlPort);
+                ushort maxPort = (ushort)(currentPeer.PortArray.Length > 0 ? currentPeer.PortArray.Max() : controlPort);
 
                 w.Write(minPort);
                 w.Write(maxPort);

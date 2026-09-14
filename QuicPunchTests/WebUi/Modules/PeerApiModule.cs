@@ -15,7 +15,7 @@ internal sealed class PeerApiModule
     private readonly ChatHandler _chatHandler;
     private readonly VirtualLanHandler _lanHandler;
     private readonly VoiceCallHandler _voiceHandler;
-    private readonly RelayDriveHandler _relayDriveHandler;
+    private readonly SpeedTestHandler _speedTestHandler;
     private readonly AppPreferencesStore _preferences;
     private readonly WebUiWebSocketHub _hub;
     private readonly CancellationTokenSource _cts;
@@ -29,7 +29,7 @@ internal sealed class PeerApiModule
         ChatHandler chatHandler,
         VirtualLanHandler lanHandler,
         VoiceCallHandler voiceHandler,
-        RelayDriveHandler relayDriveHandler,
+        SpeedTestHandler speedTestHandler,
         AppPreferencesStore preferences,
         WebUiWebSocketHub hub,
         CancellationTokenSource cts)
@@ -38,7 +38,7 @@ internal sealed class PeerApiModule
         _chatHandler = chatHandler;
         _lanHandler = lanHandler;
         _voiceHandler = voiceHandler;
-        _relayDriveHandler = relayDriveHandler;
+        _speedTestHandler = speedTestHandler;
         _preferences = preferences;
         _hub = hub;
         _cts = cts;
@@ -118,7 +118,6 @@ internal sealed class PeerApiModule
         if (protocolId == _chatHandler.ProtocolId) return "Direct Chat";
         if (protocolId == _voiceHandler.ProtocolId) return "Voice Studio";
         if (protocolId == _lanHandler.ProtocolId) return "LAN Bridge";
-        if (protocolId == _relayDriveHandler.ProtocolId) return "RelayDrive";
         return _qcc.ProtocolHandlers.TryGetValue(protocolId, out var handler) ? handler.ProtocolName : "Application";
     }
 
@@ -130,7 +129,7 @@ internal sealed class PeerApiModule
             "chat" or "direct chat" => _chatHandler.ProtocolId,
             "voice" or "call" or "voice studio" => _voiceHandler.ProtocolId,
             "lan" or "vpn" or "lan bridge" or "friendslan" => _lanHandler.ProtocolId,
-            "files" or "drive" or "relaydrive" or "file transfer" => _relayDriveHandler.ProtocolId,
+            "speedtest" or "speed test" or "benchmark" => _speedTestHandler.ProtocolId,
             _ => throw new InvalidDataException("Unknown application protocol.")
         };
     }
@@ -140,7 +139,7 @@ internal sealed class PeerApiModule
         bool connected = protocolId == _chatHandler.ProtocolId && ChatHandler.ActiveChats.ContainsKey(peer.Id)
             || protocolId == _voiceHandler.ProtocolId && VoiceCallHandler.ActiveCalls.ContainsKey(peer.Id)
             || protocolId == _lanHandler.ProtocolId && _lanHandler.ActivePeers.Values.Any(p => p.Peer.Id == peer.Id)
-            || protocolId == _relayDriveHandler.ProtocolId && RelayDriveHandler.ActiveSessions.ContainsKey(peer.Id)
+            || protocolId == _speedTestHandler.ProtocolId && SpeedTestHandler.ActiveSessions.ContainsKey(peer.Id)
             || _qcc.HasActiveProtocolSession(peer.Id, protocolId);
         if (connected) return (true, false);
 
@@ -187,17 +186,19 @@ internal sealed class PeerApiModule
 
             if (type == "tor")
             {
-                await _qcc.SetTorPeerDiscoveryEnabledAsync(enabled, _cts.Token).ConfigureAwait(false);
+                await _qcc.Discovery.SetTorPeerDiscoveryEnabledAsync(enabled, _cts.Token).ConfigureAwait(false);
                 _preferences.Update(p => p.TorNostrDiscoveryEnabled = enabled);
                 WebUiServer.LogEvent($"[DISCOVERY] Tor Nostr discovery {(enabled ? "enabled" : "disabled")}");
-                await WebUiContext.WriteJsonAsync(resp, new { success = true, type = "tor", enabled, running = _qcc.TorNostrDiscovery?.IsRunning ?? false }).ConfigureAwait(false);
+                WebUiServer.BroadcastStatusUpdate();
+                await WebUiContext.WriteJsonAsync(resp, new { success = true, type = "tor", enabled, running = _qcc.Discovery.TorNostrDiscovery?.IsRunning ?? false }).ConfigureAwait(false);
             }
             else
             {
-                await _qcc.SetWanPeerDiscoveryEnabledAsync(enabled, _cts.Token).ConfigureAwait(false);
+                await _qcc.Discovery.SetWanPeerDiscoveryEnabledAsync(enabled, _cts.Token).ConfigureAwait(false);
                 _preferences.Update(p => p.WanNostrDiscoveryEnabled = enabled);
                 WebUiServer.LogEvent($"[DISCOVERY] WAN Nostr discovery {(enabled ? "enabled" : "disabled")}");
-                await WebUiContext.WriteJsonAsync(resp, new { success = true, type = "wan", enabled, running = _qcc.WanNostrDiscovery?.IsRunning ?? false }).ConfigureAwait(false);
+                WebUiServer.BroadcastStatusUpdate();
+                await WebUiContext.WriteJsonAsync(resp, new { success = true, type = "wan", enabled, running = _qcc.Discovery.WanNostrDiscovery?.IsRunning ?? false }).ConfigureAwait(false);
             }
             return true;
         }
@@ -217,6 +218,18 @@ internal sealed class PeerApiModule
             {
                 _qcc.TrustPeer(certHash);
                 WebUiServer.LogEvent($"[TRUST] Trusted {peer.Name}");
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _qcc.EnsureMultiplexerConnectedAsync(peer).ConfigureAwait(false);
+                        WebUiServer.BroadcastStatusUpdate();
+                    }
+                    catch (Exception ex)
+                    {
+                        WebUiServer.LogEvent($"[QUIC CONNECT] Notice: could not immediately connect QUIC to {peer.Name}: {ex.Message}");
+                    }
+                });
             }
             else
             {
@@ -229,7 +242,31 @@ internal sealed class PeerApiModule
                 _qcc.UntrustPeer(certHash);
                 WebUiServer.LogEvent($"[TRUST] Removed trust from {peer.Name}");
             }
+            WebUiServer.BroadcastStatusUpdate();
             await WebUiContext.WriteJsonAsync(resp, new { success = true, trusted = trust }).ConfigureAwait(false);
+            return true;
+        }
+
+        if (path == "/api/peer/connect" && req.HttpMethod == "POST")
+        {
+            using JsonDocument doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
+            Guid peerId = WebUiContext.ParseGuid(doc.RootElement, "peerId");
+            if (!_qcc.AvailablePeers.TryGetValue(peerId, out var peer))
+            {
+                await WebUiContext.WriteJsonAsync(resp, new { success = false, error = "Peer not found." }, 404).ConfigureAwait(false);
+                return true;
+            }
+
+            try
+            {
+                await _qcc.EnsureMultiplexerConnectedAsync(peer, cancellationToken: _cts.Token).ConfigureAwait(false);
+                WebUiServer.BroadcastStatusUpdate();
+                await WebUiContext.WriteJsonAsync(resp, new { success = true, connected = true }).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await WebUiContext.WriteJsonAsync(resp, new { success = false, error = ex.Message }, 500).ConfigureAwait(false);
+            }
             return true;
         }
 
@@ -271,8 +308,41 @@ internal sealed class PeerApiModule
 
             string name = doc.RootElement.TryGetProperty("name", out var nEl) ? nEl.GetString()?.Trim() ?? "" : "";
             string onion = doc.RootElement.TryGetProperty("onionAddress", out var oEl) ? oEl.GetString()?.Trim() ?? "" : "";
-            int minPort = doc.RootElement.TryGetProperty("minPort", out var minEl) ? minEl.GetInt32() : 443;
-            int maxPort = doc.RootElement.TryGetProperty("maxPort", out var maxEl) ? maxEl.GetInt32() : minPort;
+            List<ushort> ports = new();
+            if (doc.RootElement.TryGetProperty("ports", out var pEl))
+            {
+                if (pEl.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in pEl.EnumerateArray())
+                    {
+                        if (item.TryGetInt32(out var pVal) && pVal >= 1 && pVal <= 65535)
+                            ports.Add((ushort)pVal);
+                    }
+                }
+                else if (pEl.ValueKind == JsonValueKind.String)
+                {
+                    var str = pEl.GetString() ?? "";
+                    foreach (var part in str.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        if (part.Contains('-'))
+                        {
+                            var rangeParts = part.Split('-', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                            if (rangeParts.Length == 2 && ushort.TryParse(rangeParts[0], out var start) && ushort.TryParse(rangeParts[1], out var end) && start >= 1 && end >= start)
+                            {
+                                for (int p = start; p <= end; p++) ports.Add((ushort)p);
+                            }
+                        }
+                        else if (ushort.TryParse(part, out var singlePort) && singlePort >= 1)
+                        {
+                            ports.Add(singlePort);
+                        }
+                    }
+                }
+            }
+            ports = ports.Distinct().OrderBy(p => p).ToList();
+            if (ports.Count == 0)
+                ports.Add(443);
+
             bool autoConnect = !doc.RootElement.TryGetProperty("autoConnect", out var acEl) || acEl.GetBoolean();
             string netTypeStr = doc.RootElement.TryGetProperty("networkType", out var ntEl) ? ntEl.GetString() ?? "" : "";
 
@@ -290,12 +360,9 @@ internal sealed class PeerApiModule
                 addresses.Add(IPAddress.Loopback);
             }
 
-            if (minPort < 1 || minPort > 65535 || maxPort < 1 || maxPort > 65535 || minPort > maxPort)
-                throw new InvalidDataException("Invalid port range (must be between 1 and 65535).");
-
-            QuicPunch.QuicPunch.NetworkType networkType = Enum.TryParse<QuicPunch.QuicPunch.NetworkType>(netTypeStr, true, out var parsedNt)
-                ? parsedNt
-                : (!string.IsNullOrEmpty(onion) ? QuicPunch.QuicPunch.NetworkType.Tor : (addresses.Count > 1 ? QuicPunch.QuicPunch.NetworkType.DynamicAddress : QuicPunch.QuicPunch.NetworkType.Static));
+            QuicPunch.QuicPunch.NetworkType networkType = !string.IsNullOrEmpty(onion)
+                ? QuicPunch.QuicPunch.NetworkType.Tor
+                : QuicPunch.QuicPunch.NetworkType.Static;
 
             if (_qcc.PeerStore == null)
                 throw new InvalidOperationException("PeerStore is not initialized.");
@@ -303,8 +370,7 @@ internal sealed class PeerApiModule
             _qcc.TrustPeer(certHash);
             bool saved = _qcc.PeerStore.AddOrUpdate(
                 addresses: addresses,
-                minPort: minPort,
-                maxPort: maxPort,
+                portArray: ports.ToArray(),
                 certificate: certHash,
                 ecdhPublicKey: null,
                 name: string.IsNullOrEmpty(name) ? null : name,
@@ -336,7 +402,8 @@ internal sealed class PeerApiModule
                     if (!string.IsNullOrEmpty(sp.OnionAddress) && _qcc.IsTorStarted)
                     {
                         WebUiServer.LogEvent($"[PEER] Connecting via Tor to saved peer {sp.Name ?? sp.OnionAddress}...");
-                        await _qcc.ConnectTorAsync(sp.OnionAddress, sp.MinPort > 0 ? sp.MinPort : 443, _cts.Token).ConfigureAwait(false);
+                        ushort torPort = sp.PortArray.Length > 0 ? sp.PortArray[0] : (ushort)443;
+                        await _qcc.ConnectTorAsync(sp.OnionAddress, torPort, _cts.Token).ConfigureAwait(false);
                     }
                     if (sp.Addresses != null && sp.Addresses.Length > 0 && sp.Addresses.Any(a => !IPAddress.IsLoopback(a)))
                     {
@@ -377,6 +444,30 @@ internal sealed class PeerApiModule
             return true;
         }
 
+        if (path == "/api/saved-peers-clear-offline" && req.HttpMethod == "POST")
+        {
+            if (_qcc.PeerStore == null) throw new InvalidOperationException("PeerStore is not initialized.");
+            int removedCount = 0;
+            var savedPeers = _qcc.PeerStore.SavedPeers.ToList();
+            foreach (var sp in savedPeers)
+            {
+                bool isOnline = _qcc.AvailablePeers.Values.Any(p =>
+                    p.TryGetCertificateHash(out var hash) &&
+                    CryptographicOperations.FixedTimeEquals(hash, sp.CertHash) &&
+                    p.IsConnectedAndResponsive(TimeSpan.FromMinutes(1)));
+
+                if (!isOnline)
+                {
+                    if (_qcc.RemoveSavedPeer(sp.CertHash))
+                        removedCount++;
+                }
+            }
+            WebUiServer.LogEvent($"[PEER STORE] Cleared {removedCount} offline saved peer(s).");
+            WebUiServer.BroadcastStatusUpdate();
+            await WebUiContext.WriteJsonAsync(resp, new { success = true, removedCount }).ConfigureAwait(false);
+            return true;
+        }
+
         if (path == "/api/save-all-peers" && req.HttpMethod == "POST")
         {
             int count = 0;
@@ -392,6 +483,7 @@ internal sealed class PeerApiModule
             bool enabled = doc.RootElement.GetProperty("autoAcceptAll").GetBoolean();
             _qcc.SetAutoAcceptAll(enabled);
             _preferences.Update(p => p.AutoAcceptTrusted = enabled);
+            WebUiServer.BroadcastStatusUpdate();
             await WebUiContext.WriteJsonAsync(resp, new { success = true, autoAcceptAll = enabled }).ConfigureAwait(false);
             return true;
         }
@@ -412,6 +504,7 @@ internal sealed class PeerApiModule
                 return true;
             }
             _qcc.SetPeerAutoAccept(peerId, enabled);
+            WebUiServer.BroadcastStatusUpdate();
             await WebUiContext.WriteJsonAsync(resp, new { success = true, peerId, autoAccept = enabled }).ConfigureAwait(false);
             return true;
         }
@@ -439,9 +532,9 @@ internal sealed class PeerApiModule
                 var savedIps = savedPeer.Addresses?.Select(a => a.ToString()).OrderBy(x => x).ToList() ?? new List<string>();
                 var tokenIps = p.Addresses?.Select(a => a.ToString()).OrderBy(x => x).ToList() ?? new List<string>();
                 bool ipsDifferent = !savedIps.SequenceEqual(tokenIps, StringComparer.OrdinalIgnoreCase);
-                bool portsDifferent = (p.MinPort > 0 && p.MinPort != savedPeer.MinPort) || (p.MaxPort > 0 && p.MaxPort != savedPeer.MaxPort);
+                bool portsDifferent = !(p.PortArray ?? Array.Empty<ushort>()).SequenceEqual(savedPeer.PortArray ?? Array.Empty<ushort>());
                 bool onionDifferent = !string.Equals(p.OnionAddress ?? "", savedPeer.OnionAddress ?? "", StringComparison.OrdinalIgnoreCase);
-                bool netTypeDifferent = p.NetworkType != QuicPunch.QuicPunch.NetworkType.Unknown && p.NetworkType != savedPeer.NetworkType;
+                bool netTypeDifferent = p.NetworkType != savedPeer.NetworkType;
                 bool hasDifferences = ipsDifferent || portsDifferent || onionDifferent || netTypeDifferent;
 
                 if (hasDifferences && action == "check")
@@ -457,8 +550,8 @@ internal sealed class PeerApiModule
                             name = savedPeer.Name ?? "Peer",
                             certHash = Convert.ToBase64String(savedPeer.CertHash),
                             addresses = savedPeer.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
-                            minPort = savedPeer.MinPort,
-                            maxPort = savedPeer.MaxPort,
+                            ports = savedPeer.PortArray ?? Array.Empty<ushort>(),
+                            portMode = savedPeer.ConnectionFlags?.PortMode.ToString() ?? "Single",
                             onionAddress = savedPeer.OnionAddress ?? "",
                             networkType = savedPeer.NetworkType.ToString(),
                             autoConnect = savedPeer.AutoConnect
@@ -467,8 +560,8 @@ internal sealed class PeerApiModule
                         {
                             name = p.Name ?? "",
                             addresses = p.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
-                            minPort = p.MinPort,
-                            maxPort = p.MaxPort,
+                            ports = p.PortArray ?? Array.Empty<ushort>(),
+                            portMode = p.ConnectionFlags?.PortMode.ToString() ?? "Single",
                             onionAddress = p.OnionAddress ?? "",
                             networkType = p.NetworkType.ToString()
                         }
@@ -484,23 +577,23 @@ internal sealed class PeerApiModule
                         : (savedPeer.Name ?? p.Name);
 
                     var newAddrs = (p.Addresses != null && p.Addresses.Length > 0) ? p.Addresses : (savedPeer.Addresses ?? new[] { IPAddress.Loopback });
-                    int newMin = p.MinPort > 0 ? p.MinPort : savedPeer.MinPort;
-                    int newMax = p.MaxPort > 0 ? p.MaxPort : savedPeer.MaxPort;
+                    ushort[] newPorts = (p.PortArray != null && p.PortArray.Length > 0) ? p.PortArray : (savedPeer.PortArray ?? Array.Empty<ushort>());
                     string? newOnion = !string.IsNullOrEmpty(p.OnionAddress) ? p.OnionAddress : savedPeer.OnionAddress;
-                    var newNt = p.NetworkType != QuicPunch.QuicPunch.NetworkType.Unknown ? p.NetworkType : savedPeer.NetworkType;
+                    var newNt = p.NetworkType;
+                    var newFlags = p.ConnectionFlags ?? savedPeer.ConnectionFlags;
 
                     _qcc.TrustPeer(certHash);
                     _qcc.PeerStore.AddOrUpdate(
                         addresses: newAddrs,
-                        minPort: newMin,
-                        maxPort: newMax,
+                        portArray: newPorts,
                         certificate: certHash,
                         ecdhPublicKey: p.EcdhPublicKey ?? savedPeer.EcdhPublicKey,
                         name: customName,
                         onionAddress: newOnion,
                         autoConnect: autoConnect,
                         save: true,
-                        networkType: newNt
+                        networkType: newNt,
+                        connectionFlags: newFlags
                     );
                     WebUiServer.LogEvent($"[PEER STORE] Updated saved peer '{customName}' ({Convert.ToBase64String(certHash)}) from new token.");
                 }
@@ -522,7 +615,7 @@ internal sealed class PeerApiModule
             {
                 byte[] hash = WebUiContext.ParseCertHash(certHashStr);
                 string hexKey = Convert.ToHexString(hash);
-                if (_qcc.DiscoveredPeers.TryGetValue(hexKey, out var dp))
+                if (_qcc.Discovery.DiscoveredPeers.TryGetValue(hexKey, out var dp))
                     token = dp.Token;
             }
 
@@ -538,23 +631,23 @@ internal sealed class PeerApiModule
                     {
                         var p = QuicPunch.Helpers.Utilities.DecodeEndpointToken(token);
                         var newAddrs = (p.Addresses != null && p.Addresses.Length > 0) ? p.Addresses : (savedPeer.Addresses ?? new[] { IPAddress.Loopback });
-                        int newMin = p.MinPort > 0 ? p.MinPort : savedPeer.MinPort;
-                        int newMax = p.MaxPort > 0 ? p.MaxPort : savedPeer.MaxPort;
+                        ushort[] newPorts = (p.PortArray != null && p.PortArray.Length > 0) ? p.PortArray : (savedPeer.PortArray ?? Array.Empty<ushort>());
                         string? newOnion = !string.IsNullOrEmpty(p.OnionAddress) ? p.OnionAddress : savedPeer.OnionAddress;
-                        var newNt = p.NetworkType != QuicPunch.QuicPunch.NetworkType.Unknown ? p.NetworkType : savedPeer.NetworkType;
+                        var newNt = p.NetworkType;
+                        var newFlags = p.ConnectionFlags ?? savedPeer.ConnectionFlags;
 
                         _qcc.TrustPeer(hash);
                         _qcc.PeerStore.AddOrUpdate(
                             addresses: newAddrs,
-                            minPort: newMin,
-                            maxPort: newMax,
+                            portArray: newPorts,
                             certificate: hash,
                             ecdhPublicKey: p.EcdhPublicKey ?? savedPeer.EcdhPublicKey,
                             name: savedPeer.Name,
                             onionAddress: newOnion,
                             autoConnect: savedPeer.AutoConnect,
                             save: true,
-                            networkType: newNt
+                            networkType: newNt,
+                            connectionFlags: newFlags
                         );
                         WebUiServer.LogEvent($"[PEER STORE] Updated saved peer '{savedPeer.Name}' with newly discovered endpoints.");
                     }
@@ -579,7 +672,7 @@ internal sealed class PeerApiModule
             string certHashStr = doc.RootElement.GetProperty("certHash").GetString()?.Trim() ?? "";
             byte[] hash = WebUiContext.ParseCertHash(certHashStr);
             string hexKey = Convert.ToHexString(hash);
-            _qcc.DiscoveredPeers.TryRemove(hexKey, out _);
+            _qcc.Discovery.DiscoveredPeers.TryRemove(hexKey, out _);
             await WebUiContext.WriteJsonAsync(resp, new { success = true }).ConfigureAwait(false);
             return true;
         }
@@ -587,7 +680,7 @@ internal sealed class PeerApiModule
         if (path == "/api/connect-all-discovered" && req.HttpMethod == "POST")
         {
             int count = 0;
-            foreach (var dp in _qcc.DiscoveredPeers.Values.ToArray())
+            foreach (var dp in _qcc.Discovery.DiscoveredPeers.Values.ToArray())
             {
                 if (!string.IsNullOrWhiteSpace(dp.Token))
                 {
@@ -674,6 +767,7 @@ internal sealed class PeerApiModule
                 return true;
             }
             petition.Tcs.TrySetResult(new HandshakeDecision(accept, accept ? (ushort)0 : null, CancellationToken.None));
+            WebUiServer.BroadcastStatusUpdate();
             await WebUiContext.WriteJsonAsync(resp, new { success = true }).ConfigureAwait(false);
             return true;
         }
@@ -694,10 +788,12 @@ internal sealed class PeerApiModule
                         await _qcc.StartWanAsync((ushort)port, cancellationToken: _cts.Token).ConfigureAwait(false);
                         WebUiServer.LogEvent($"[WAN] WAN UDP service ready on port {_qcc.LocalDiscoveryPort}");
                         _hub.Broadcast("wan_started", new { port = _qcc.LocalDiscoveryPort });
+                        WebUiServer.BroadcastStatusUpdate();
                     }
-                    catch (Exception ex) { WebUiServer.LogEvent($"[WAN] Start failed: {ex.Message}"); }
+                    catch (Exception ex) { WebUiServer.LogEvent($"[WAN] Start failed: {ex.Message}"); WebUiServer.BroadcastStatusUpdate(); }
                 });
             }
+            WebUiServer.BroadcastStatusUpdate();
             await WebUiContext.WriteJsonAsync(resp, new { success = true, starting = !_qcc.IsWanStarted }).ConfigureAwait(false);
             return true;
         }
@@ -708,6 +804,7 @@ internal sealed class PeerApiModule
             await _qcc.StopWanAsync().ConfigureAwait(false);
             WebUiServer.LogEvent("[WAN] WAN UDP service stopped.");
             _hub.Broadcast("wan_stopped", new { });
+            WebUiServer.BroadcastStatusUpdate();
             await WebUiContext.WriteJsonAsync(resp, new { success = true }).ConfigureAwait(false);
             return true;
         }
@@ -729,10 +826,12 @@ internal sealed class PeerApiModule
                         await _qcc.StartTorAsync(resolvedPort, cancellationToken: _cts.Token).ConfigureAwait(false);
                         WebUiServer.LogEvent($"[TOR] Hidden service ready at {_qcc.TorOnionAddress}");
                         _hub.Broadcast("tor_started", new { onion = _qcc.TorOnionAddress });
+                        WebUiServer.BroadcastStatusUpdate();
                     }
-                    catch (Exception ex) { WebUiServer.LogEvent($"[TOR] Start failed: {ex.Message}"); }
+                    catch (Exception ex) { WebUiServer.LogEvent($"[TOR] Start failed: {ex.Message}"); WebUiServer.BroadcastStatusUpdate(); }
                 });
             }
+            WebUiServer.BroadcastStatusUpdate();
             await WebUiContext.WriteJsonAsync(resp, new { success = true, starting = !_qcc.IsTorStarted }).ConfigureAwait(false);
             return true;
         }
@@ -743,6 +842,7 @@ internal sealed class PeerApiModule
             await _qcc.StopTorAsync().ConfigureAwait(false);
             WebUiServer.LogEvent("[TOR] Tor service stopped.");
             _hub.Broadcast("tor_stopped", new { });
+            WebUiServer.BroadcastStatusUpdate();
             await WebUiContext.WriteJsonAsync(resp, new { success = true }).ConfigureAwait(false);
             return true;
         }
@@ -760,7 +860,8 @@ internal sealed class PeerApiModule
                 onion = parts[0];
                 if (int.TryParse(parts[1], out int parsed)) port = parsed;
             }
-            await _qcc.ConnectTorAsync(onion, port, _cts.Token).ConfigureAwait(false);
+            if (port is < 1 or > ushort.MaxValue) throw new InvalidDataException("Port must be between 1 and 65535.");
+            await _qcc.ConnectTorAsync(onion, (ushort)port, _cts.Token).ConfigureAwait(false);
             await WebUiContext.WriteJsonAsync(resp, new { success = true }).ConfigureAwait(false);
             return true;
         }

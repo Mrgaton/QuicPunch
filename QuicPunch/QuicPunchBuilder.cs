@@ -126,6 +126,14 @@ namespace QuicPunch
             return this;
         }
 
+        private bool _autoConnectOnDiscovery;
+
+        public QuicPunchBuilder WithAutoConnectOnDiscovery(bool autoConnect = true)
+        {
+            _autoConnectOnDiscovery = autoConnect;
+            return this;
+        }
+
         private CancellationToken _cancellationToken;
 
         public QuicPunchBuilder WithCancellationToken(CancellationToken cancellationToken)
@@ -153,11 +161,9 @@ namespace QuicPunch
             bool wanEnabled = _wanAutoDiscovery ?? _autoDiscovery;
             bool torEnabled = _torAutoDiscovery ?? _autoDiscovery;
             var discoveryId = (wanEnabled || torEnabled) ? _poolId : null;
-            var quicPunch = new QuicPunch(cancellationToken.CanBeCanceled ? cancellationToken : _cancellationToken, discoveryId, _connectionPassword, _autoAcceptConnections, _discoveryPort, appDataPath: _appDataPath)
-            {
-                WanNostrDiscoveryEnabled = wanEnabled,
-                TorNostrDiscoveryEnabled = torEnabled
-            };
+            var quicPunch = new QuicPunch(cancellationToken.CanBeCanceled ? cancellationToken : _cancellationToken, discoveryId, _connectionPassword, _autoAcceptConnections, _discoveryPort, appDataPath: _appDataPath);
+            quicPunch.Discovery.WanNostrDiscoveryEnabled = wanEnabled;
+            quicPunch.Discovery.TorNostrDiscoveryEnabled = torEnabled;
 
             if (_poolId != null)
             {
@@ -166,12 +172,12 @@ namespace QuicPunch
 
             if (_nostrRelays != null && _nostrRelays.Length > 0)
             {
-                quicPunch.NostrRelays = _nostrRelays;
+                quicPunch.Discovery.NostrRelays = _nostrRelays;
             }
 
             if (_torNostrRelays != null && _torNostrRelays.Length > 0)
             {
-                quicPunch.TorNostrRelays = _torNostrRelays;
+                quicPunch.Discovery.TorNostrRelays = _torNostrRelays;
             }
 
             if (!string.IsNullOrWhiteSpace(_peerName))
@@ -185,6 +191,7 @@ namespace QuicPunch
             }
 
             quicPunch.EnableUpnp = _enableUpnp;
+            quicPunch.AutoConnectOnDiscovery = _autoConnectOnDiscovery;
 
             return quicPunch;
         }

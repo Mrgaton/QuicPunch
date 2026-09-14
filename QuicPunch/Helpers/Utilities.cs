@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.ComponentModel.Design;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
@@ -176,19 +177,14 @@ namespace QuicPunch.Helpers
 
             if (addresses.Length > 0 && targets.Count < MaxEndpointsPerBurst)
             {
-                int minPort = Math.Clamp(peerInfo.MinPort > 0 ? peerInfo.MinPort : 4002, 1, 65535);
-                int maxPort = Math.Clamp(peerInfo.MaxPort > 0 ? peerInfo.MaxPort : minPort, 1, 65535);
-                if (minPort > maxPort)
-                    (minPort, maxPort) = (maxPort, minPort);
-
-                int portSpan = maxPort - minPort + 1;
+                int portSpan = peerInfo.PortArray.Length;
                 long exhaustiveCount = (long)addresses.Length * portSpan;
 
                 if (exhaustiveCount + targets.Count <= MaxEndpointsPerBurst)
                 {
                     foreach (var address in addresses)
                     {
-                        for (int port = minPort; port <= maxPort && targets.Count < MaxEndpointsPerBurst; port++)
+                        foreach (int port in peerInfo.PortArray)
                             targets.Add(new IPEndPoint(address, port));
                     }
                 }
@@ -197,7 +193,7 @@ namespace QuicPunch.Helpers
                     foreach (var address in addresses)
                     {
                         if (targets.Count >= MaxEndpointsPerBurst) break;
-                        int port = portSpan == 1 ? minPort : Random.Shared.Next(minPort, maxPort + 1);
+                        int port = peerInfo.PortArray[Random.Shared.Next(peerInfo.PortArray.Length)];
                         targets.Add(new IPEndPoint(address, port));
                     }
 
@@ -205,7 +201,7 @@ namespace QuicPunch.Helpers
                     while (targets.Count < MaxEndpointsPerBurst && attempts++ < MaxEndpointsPerBurst * 8)
                     {
                         var address = addresses[Random.Shared.Next(addresses.Length)];
-                        int port = portSpan == 1 ? minPort : Random.Shared.Next(minPort, maxPort + 1);
+                        int port = peerInfo.PortArray[Random.Shared.Next(peerInfo.PortArray.Length)];
                         targets.Add(new IPEndPoint(address, port));
                     }
                 }
@@ -242,19 +238,61 @@ namespace QuicPunch.Helpers
         static bool TryParseEndpoint(string line, out string host, out int port)
         {
             host = "";
-            port = 0;
+            port = 3478;
 
             if (string.IsNullOrWhiteSpace(line))
                 return false;
 
             line = line.Trim();
 
-            int colon = line.LastIndexOf(':');
-            if (colon <= 0 || colon == line.Length - 1)
+            if (line.StartsWith("stun:", StringComparison.OrdinalIgnoreCase))
+                line = line[5..].Trim();
+            else if (line.StartsWith("turn:", StringComparison.OrdinalIgnoreCase))
+                line = line[5..].Trim();
+
+            if (string.IsNullOrWhiteSpace(line))
                 return false;
 
+            if (line.StartsWith('['))
+            {
+                int closing = line.IndexOf(']');
+                if (closing > 1)
+                {
+                    host = line[1..closing].Trim();
+                    if (closing + 1 < line.Length && line[closing + 1] == ':')
+                    {
+                        if (int.TryParse(line[(closing + 2)..].Trim(), out int parsedPort) && parsedPort is >= 1 and <= 65535)
+                        {
+                            port = parsedPort;
+                            return true;
+                        }
+                        return false;
+                    }
+                    port = 3478;
+                    return true;
+                }
+                return false;
+            }
+
+            int colon = line.LastIndexOf(':');
+            if (colon <= 0 || colon == line.Length - 1)
+            {
+                if (colon == -1)
+                {
+                    host = line;
+                    port = 3478;
+                    return true;
+                }
+                return false;
+            }
+
             host = line[..colon].Trim();
-            return int.TryParse(line[(colon + 1)..].Trim(), out port);
+            if (int.TryParse(line[(colon + 1)..].Trim(), out int p) && p is >= 1 and <= 65535)
+            {
+                port = p;
+                return true;
+            }
+            return false;
         }
 
         public static IPEndPoint[]? ResolveEndpoint(string line)
@@ -275,60 +313,47 @@ namespace QuicPunch.Helpers
                 return addresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork)
                     .Select(a => new IPEndPoint(a, port)).ToArray();
             }
-            catch (SocketException ex)
+            catch
             {
-                QuicPunchLog.Error($"DNS lookup failed for '{host}'", ex);
-                return null;
-            }
-            catch (Exception ex)
-            {
-                QuicPunchLog.Error($"Failed to resolve '{host}'", ex);
                 return null;
             }
         }
 
-        public static QuicPunch.NetworkType GetNetworkType(IEnumerable<KeyValuePair<IPEndPoint, int>> stunsHits)
+        public static ConnectionFlags GetConnectionFlags(IEnumerable<IPEndPoint> stunResponses, int originalPort)
         {
-            var hitsList = stunsHits as IReadOnlyCollection<KeyValuePair<IPEndPoint, int>> ?? stunsHits.ToList();
-            if (hitsList.Count == 0)
-                return QuicPunch.NetworkType.Unknown;
+            var cf = new ConnectionFlags();
+            var list = stunResponses?.ToList();
+            if (list == null || list.Count == 0)
+                return cf;
 
-            var hitsByIp = stunsHits
-                .GroupBy(x => x.Key.Address)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Sum(x => x.Value)
-                ).OrderByDescending(e => e.Value).ToArray();
+            int total = list.Count;
 
-            var biggestAddressHits = hitsByIp[0].Value;
-            var otherAddressHits = hitsByIp.Skip(1).Sum(e => e.Value);
-            double addressRatio = (double)biggestAddressHits / (biggestAddressHits + otherAddressHits);
+            var ipGroups = list.GroupBy(x => x.Address)
+                               .Select(g => g.Count())
+                               .OrderByDescending(c => c)
+                               .ToArray();
 
-            var hitsByPort = stunsHits
-                .GroupBy(x => x.Key.Port)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Sum(x => x.Value)
-                ).OrderByDescending(e => e.Value).ToArray();
+            cf.MultipleIps = ipGroups.Length > 1 && ((double)ipGroups[0] / total) < 0.95;
 
-            var biggestPortHits = hitsByPort[0].Value;
-            var otherPortHits = hitsByPort.Skip(1).Sum(e => e.Value);
-            double portRatio = (double)biggestPortHits / (biggestPortHits + otherPortHits);
+            var portGroups = list.GroupBy(x => x.Port)
+                                 .Select(g => new { Port = g.Key, Hits = g.Count() })
+                                 .OrderByDescending(x => x.Hits)
+                                 .ToArray();
 
-            if (addressRatio > 0.99 && portRatio > 0.99)
-            {
-                return QuicPunch.NetworkType.Static;
-            }
-            else if (addressRatio > 0.99 && portRatio < 0.99)
-            {
-                return QuicPunch.NetworkType.DynamicPort;
-            }
-            else if (addressRatio < 0.99 && portRatio > 0.99)
-            {
-                return QuicPunch.NetworkType.DynamicAddress;
-            }
+            int dominantPort = portGroups[0].Port;
+            double dominantRatio = (double)portGroups[0].Hits / total;
+            double avgHits = (double)total / portGroups.Length;
 
-            return QuicPunch.NetworkType.DynamicPortAndAddress;
+            if (portGroups.Length == 1 || dominantRatio >= 0.95)
+                cf.PortMode = PortMode.Single;
+            else if (portGroups.Length <= 8 && portGroups[^1].Hits >= avgHits * 0.40)
+                cf.PortMode = PortMode.Multiple;
+            else
+                cf.PortMode = PortMode.Range;
+
+            cf.IsNat = cf.MultipleIps || cf.PortMode != PortMode.Single || (originalPort > 0 && dominantPort != originalPort);
+
+            return cf;
         }
 
         public const int TorTokenBinaryLength = 70; // 1 byte flags + 35 bytes onion raw + 2 bytes port + 32 bytes cert hash
@@ -423,7 +448,7 @@ namespace QuicPunch.Helpers
             if (p == null)
                 throw new ArgumentNullException(nameof(p), "PeerInfo cannot be null when encoding endpoint token.");
 
-            if (p.NetworkType == QuicPunch.NetworkType.Tor)
+            if (p.ConnectionFlags.IsTor || p.NetworkType == QuicPunch.NetworkType.Tor)
             {
                 if (string.IsNullOrWhiteSpace(p.OnionAddress))
                     throw new ArgumentException("OnionAddress cannot be null or empty for Tor network type.", nameof(p));
@@ -431,22 +456,17 @@ namespace QuicPunch.Helpers
                 if (!p.TryGetCertificateHash(out var torCertHash) || torCertHash.Length != EndpointTokenCertificateHashLength)
                     throw new ArgumentException("Peer certificate hash must be exactly 32 bytes.", nameof(p));
 
-                int torPort = p.MinPort > 0 ? p.MinPort : 443;
+                int torPort = p.PortArray?.Length > 0 ? p.PortArray[0] : 443;
                 if (torPort is < 1 or > 65535)
                     throw new ArgumentOutOfRangeException(nameof(p), "Tor port must be in the range 1..65535.");
 
                 Span<byte> tokenBytes = stackalloc byte[TorTokenBinaryLength];
+                tokenBytes[0] = new ConnectionFlags { IsTor = true }.RawValue;
 
-                // Offset 0: Flags (NetworkType = Tor)
-                tokenBytes[0] = (byte)new PackedFlags { NetworkType = QuicPunch.NetworkType.Tor }.RawValue;
-
-                // Offset 1..35: Raw 35 bytes of Onion address decoded directly from Base32
                 if (!TryBase32Decode(p.OnionAddress.AsSpan(), tokenBytes.Slice(1, 35), out int decodedLen) || decodedLen != 35)
                     throw new ArgumentException($"Invalid Tor v3 onion address '{p.OnionAddress}': expected 35 decoded bytes (56 base32 characters).", nameof(p));
 
                 BinaryPrimitives.WriteUInt16LittleEndian(tokenBytes.Slice(36, 2), (ushort)torPort);
-
-                // Offset 38..69: Certificate Hash (32 bytes)
                 torCertHash.CopyTo(tokenBytes.Slice(38, EndpointTokenCertificateHashLength));
 
                 return Base64Url.EncodeToString(tokenBytes);
@@ -457,30 +477,39 @@ namespace QuicPunch.Helpers
 
             var rawAddresses = p.Addresses ?? Array.Empty<IPAddress>();
             var addresses = rawAddresses.Length > 0
-                ? rawAddresses.Take(MaxEndpointTokenAddresses).ToList()
+                ? rawAddresses.Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork || a.IsIPv4MappedToIPv6).Select(a => a.IsIPv4MappedToIPv6 ? a.MapToIPv4() : a).Take(MaxEndpointTokenAddresses).ToList()
                 : GetValidLocalIPAddresses().Take(MaxEndpointTokenAddresses).ToList();
 
             if (addresses.Count == 0)
                 throw new InvalidOperationException("Peer has no valid IPv4 address to publish in an endpoint token.");
 
-            var localIps = GetValidLocalIPAddresses()
-                .Where(ip => !addresses.Contains(ip))
-                .Take(Math.Max(0, MaxEndpointTokenAddresses - addresses.Count))
-                .ToList();
-            int minPort = p.MinPort > 0 ? p.MinPort : p.MaxPort;
-            int maxPort = p.MaxPort > 0 ? p.MaxPort : p.MinPort;
-            if (minPort is < 1 or > 65535 || maxPort is < 1 or > 65535 || minPort > maxPort)
-                throw new InvalidOperationException("Peer endpoint token requires a valid port or port range in 1..65535.");
+            ushort[] portArray = p.PortArray?.Length > 0 ? p.PortArray : [];
 
+            if (portArray.Length == 0)
+                throw new InvalidOperationException("Peer endpoint token requires at least one valid port.");
 
+            p.PortArray = portArray;
             bool multipleAddresses = addresses.Count > 1;
-            bool portRange = minPort != maxPort;
-            QuicPunch.NetworkType networkType = multipleAddresses
-                ? (portRange ? QuicPunch.NetworkType.DynamicPortAndAddress : QuicPunch.NetworkType.DynamicAddress)
-                : (portRange ? QuicPunch.NetworkType.DynamicPort : QuicPunch.NetworkType.Static);
+            p.ConnectionFlags.MultipleIps = multipleAddresses;
+            if (portArray.Length <= 1)
+            {
+                p.ConnectionFlags.PortMode = PortMode.Single;
+            }
+            else if (p.ConnectionFlags.PortMode == PortMode.Single || (p.ConnectionFlags.PortMode == PortMode.Multiple && portArray.Length > 255))
+            {
+                bool isContiguous = true;
+                for (int i = 1; i < portArray.Length; i++)
+                {
+                    if (portArray[i] != portArray[i - 1] + 1)
+                    {
+                        isContiguous = false;
+                        break;
+                    }
+                }
+                p.ConnectionFlags.PortMode = (isContiguous || portArray.Length > 8) ? PortMode.Range : PortMode.Multiple;
+            }
 
-            var flags = new PackedFlags { NetworkType = networkType };
-            w.Write((byte)flags.RawValue);
+            w.Write(p.ConnectionFlags.RawValue);
 
             if (multipleAddresses)
             {
@@ -493,27 +522,30 @@ namespace QuicPunch.Helpers
                 w.Write(addresses[0].GetAddressBytes());
             }
 
-            if (portRange)
+            switch (p.ConnectionFlags.PortMode)
             {
-                w.Write((ushort)minPort);
-                w.Write((ushort)maxPort);
+                case PortMode.Single:
+                    w.Write((ushort)portArray[0]);
+                    break;
+                case PortMode.Multiple:
+                    if (portArray.Length > 255)
+                        throw new InvalidOperationException($"Too many ports ({portArray.Length}) for Multiple port mode. Maximum is 255.");
+                    w.Write((byte)portArray.Length);
+                    foreach (ushort port in portArray)
+                        w.Write((ushort)port);
+                    break;
+                case PortMode.Range:
+                    w.Write((ushort)portArray.Min());
+                    w.Write((ushort)portArray.Max());
+                    break;
             }
-            else
-            {
-                w.Write((ushort)minPort);
-            }
-
-            w.Write((byte)localIps.Count);
-            foreach (IPAddress localIp in localIps)
-                w.Write(localIp.GetAddressBytes());
 
             if (!p.TryGetCertificateHash(out var certHash) || certHash.Length != EndpointTokenCertificateHashLength)
                 throw new ArgumentException("Peer certificate hash must be exactly 32 bytes.", nameof(p));
 
             w.Write(certHash);
 
-            byte[] payloadBytes = ms.ToArray();
-            return Base64Url.EncodeToString(payloadBytes);
+            return Base64Url.EncodeToString(ms.ToArray());
         }
 
         public static PeerInfo DecodeEndpointToken(string t)
@@ -529,7 +561,6 @@ namespace QuicPunch.Helpers
                 t = System.Web.HttpUtility.UrlDecode(System.Web.HttpUtility.UrlDecode(uriParam));
             }
 
-
             if (t.StartsWith("qp://", StringComparison.OrdinalIgnoreCase))
                 t = t.Substring(5);
             else if (t.StartsWith("QPHP://", StringComparison.OrdinalIgnoreCase))
@@ -541,14 +572,18 @@ namespace QuicPunch.Helpers
 
             if (t.EndsWith(".onion", StringComparison.OrdinalIgnoreCase) || t.Contains(".onion:"))
             {
-                var onionPeer = new PeerInfo { NetworkType = QuicPunch.NetworkType.Tor };
+                var onionPeer = new PeerInfo
+                {
+                    NetworkType = QuicPunch.NetworkType.Tor,
+                    ConnectionFlags = new ConnectionFlags { IsTor = true }
+                };
                 var parts = t.Split(':');
                 onionPeer.OnionAddress = parts[0];
-                int port = 443;
-                if (parts.Length > 1 && int.TryParse(parts[1], out int parsedPort)) port = parsedPort;
+                ushort port = 443;
+                if (parts.Length > 1 && ushort.TryParse(parts[1], out ushort parsedPort)) port = parsedPort;
                 if (port is < 1 or > 65535)
                     throw new InvalidDataException("Tor endpoint port must be in the range 1..65535.");
-                onionPeer.MinPort = onionPeer.MaxPort = port;
+                onionPeer.PortArray = [port];
                 return onionPeer;
             }
 
@@ -556,54 +591,62 @@ namespace QuicPunch.Helpers
             if (rawToken.Length == 0 || rawToken.Length > MaxEndpointTokenBytes)
                 throw new InvalidDataException($"Endpoint token size is invalid ({rawToken.Length} bytes).");
 
-            var flags = new PackedFlags(rawToken[0]);
-            if (flags.NetworkType == QuicPunch.NetworkType.Tor)
+            var flags = new ConnectionFlags(rawToken[0]);
+            bool isTor = flags.IsTor || (rawToken.Length == TorTokenBinaryLength && (rawToken[0] & 0b111) == (byte)QuicPunch.NetworkType.Tor);
+            if (isTor)
             {
                 if (rawToken.Length != TorTokenBinaryLength)
                     throw new InvalidDataException($"Invalid Tor endpoint token size: expected {TorTokenBinaryLength} bytes, got {rawToken.Length}.");
 
                 ReadOnlySpan<byte> span = rawToken.AsSpan();
-                var torPeer = new PeerInfo { NetworkType = QuicPunch.NetworkType.Tor };
+                var torPeer = new PeerInfo
+                {
+                    NetworkType = QuicPunch.NetworkType.Tor,
+                    ConnectionFlags = new ConnectionFlags { IsTor = true }
+                };
 
-                // Offset 1..35: Raw 35 bytes of Onion address
                 ReadOnlySpan<byte> rawOnion = span.Slice(1, 35);
                 torPeer.OnionAddress = Base32Encode(rawOnion).ToLowerInvariant() + ".onion";
 
-                // Offset 36..37: Virtual Port
                 ushort port = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(36, 2));
                 if (port == 0)
                     throw new InvalidDataException("Tor endpoint token contains port 0.");
-                torPeer.MinPort = torPeer.MaxPort = port;
+                torPeer.PortArray = [port];
 
-                // Offset 38..69: Certificate Hash (32 bytes)
                 byte[] torHash = span.Slice(38, EndpointTokenCertificateHashLength).ToArray();
                 torPeer.SetCertificateHash(torHash);
 
                 return torPeer;
             }
 
-            const int MinWanTokenLength = 1 + 4 + 2 + 1 + EndpointTokenCertificateHashLength;
-            if (rawToken.Length < MinWanTokenLength)
-                throw new InvalidDataException($"WAN endpoint token size is too short ({rawToken.Length} < {MinWanTokenLength} bytes).");
-
-            var peer = new PeerInfo();
             try
             {
-                ReadOnlySpan<byte> span = rawToken.AsSpan();
-                peer.NetworkType = flags.NetworkType;
-                if (peer.NetworkType is not QuicPunch.NetworkType.Static
-                    and not QuicPunch.NetworkType.DynamicPort
-                    and not QuicPunch.NetworkType.DynamicAddress
-                    and not QuicPunch.NetworkType.DynamicPortAndAddress)
-                {
-                    throw new InvalidDataException($"Unsupported endpoint token network type: {(byte)peer.NetworkType}.");
-                }
+                return DecodeModernWanEndpointToken(rawToken, flags);
+            }
+            catch (Exception) when (TryDecodeLegacyWanToken(rawToken, out var legacyPeer) && legacyPeer != null)
+            {
+                return legacyPeer;
+            }
+        }
 
+        private static PeerInfo DecodeModernWanEndpointToken(ReadOnlySpan<byte> span, ConnectionFlags flags)
+        {
+            const int MinWanTokenLength = 1 + 4 + 2 + EndpointTokenCertificateHashLength;
+            if (span.Length < MinWanTokenLength)
+                throw new InvalidDataException($"WAN endpoint token size is too short ({span.Length} < {MinWanTokenLength} bytes).");
+
+            var peer = new PeerInfo
+            {
+                ConnectionFlags = flags,
+                NetworkType = QuicPunch.NetworkType.Static
+            };
+
+            try
+            {
                 int offset = 1;
+
                 var allAddresses = new List<IPAddress>();
-                int addressCount = peer.NetworkType is QuicPunch.NetworkType.DynamicAddress or QuicPunch.NetworkType.DynamicPortAndAddress
-                    ? span[offset++]
-                    : 1;
+                int addressCount = flags.MultipleIps ? span[offset++] : 1;
 
                 if (addressCount is < 1 or > MaxEndpointTokenAddresses)
                     throw new InvalidDataException($"Token address count exceeds maximum allowed ({addressCount}).");
@@ -612,52 +655,62 @@ namespace QuicPunch.Helpers
                 {
                     if (offset + 4 > span.Length)
                         throw new InvalidDataException("Truncated peer address in endpoint token.");
+
                     var ip = new IPAddress(span.Slice(offset, 4));
                     offset += 4;
+
                     if (!IsValidPeerAddress(ip))
                         throw new InvalidDataException($"Invalid, reserved or dangerous peer address '{ip}'.");
+
                     if (!allAddresses.Contains(ip))
                         allAddresses.Add(ip);
                 }
 
-                if (peer.NetworkType is QuicPunch.NetworkType.DynamicPort or QuicPunch.NetworkType.DynamicPortAndAddress)
+                switch (flags.PortMode)
                 {
-                    if (offset + 4 > span.Length)
-                        throw new InvalidDataException("Truncated port range in endpoint token.");
-                    peer.MinPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
-                    offset += 2;
-                    peer.MaxPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
-                    offset += 2;
+                    case PortMode.Single:
+                        if (offset + 2 > span.Length)
+                            throw new InvalidDataException("Truncated port in endpoint token.");
+                        peer.PortArray = [BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2))];
+                        offset += 2;
+                        break;
+
+                    case PortMode.Range:
+                        if (offset + 4 > span.Length)
+                            throw new InvalidDataException("Truncated port range in endpoint token.");
+                        var minPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                        offset += 2;
+                        var maxPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                        offset += 2;
+                        if (minPort == 0 || minPort > maxPort)
+                            throw new InvalidDataException("Invalid port range in endpoint token.");
+                        peer.PortArray = Enumerable.Range(minPort, maxPort - minPort + 1).Select(p => (ushort)p).ToArray();
+                        break;
+
+                    case PortMode.Multiple:
+                        if (offset + 1 > span.Length)
+                            throw new InvalidDataException("Truncated port count in endpoint token.");
+                        int portCount = span[offset++];
+                        if (offset + (portCount * 2) > span.Length)
+                            throw new InvalidDataException("Truncated port array in endpoint token.");
+
+                        ushort[] ports = new ushort[portCount];
+                        for (int i = 0; i < portCount; i++)
+                        {
+                            ports[i] = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                            offset += 2;
+                        }
+                        peer.PortArray = ports;
+                        break;
+
+                    default:
+                        throw new InvalidDataException("Invalid port mode in endpoint token.");
                 }
-                else
-                {
-                    if (offset + 2 > span.Length)
-                        throw new InvalidDataException("Truncated port in endpoint token.");
-                    peer.MinPort = peer.MaxPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
-                    offset += 2;
-                }
 
-                if (peer.MinPort is < 1 or > 65535 || peer.MaxPort is < 1 or > 65535 || peer.MinPort > peer.MaxPort)
-                    throw new InvalidDataException("Endpoint token contains an invalid port range.");
+                bool hasValidPorts = (peer.PortArray != null && peer.PortArray.Length > 0);
 
-                if (offset + 1 + EndpointTokenCertificateHashLength > span.Length)
-                    throw new InvalidDataException("Endpoint token is missing its local-address count or certificate hash.");
-
-                int localIpCount = span[offset++];
-                if (localIpCount > MaxEndpointTokenAddresses)
-                    throw new InvalidDataException($"Token local IP count exceeds maximum allowed ({localIpCount} > {MaxEndpointTokenAddresses}).");
-
-                for (int i = 0; i < localIpCount; i++)
-                {
-                    if (offset + 4 > span.Length)
-                        throw new InvalidDataException("Truncated local peer address in endpoint token.");
-                    var localIp = new IPAddress(span.Slice(offset, 4));
-                    offset += 4;
-                    if (!IsValidPeerAddress(localIp))
-                        throw new InvalidDataException($"Invalid, reserved or dangerous peer local address '{localIp}'.");
-                    if (!allAddresses.Contains(localIp))
-                        allAddresses.Add(localIp);
-                }
+                if (!hasValidPorts)
+                    throw new InvalidDataException("Endpoint token contains an invalid port configuration.");
 
                 if (offset + EndpointTokenCertificateHashLength != span.Length)
                     throw new InvalidDataException("Endpoint token format mismatch or contains unexpected trailing data.");
@@ -673,6 +726,109 @@ namespace QuicPunch.Helpers
             {
                 peer.Dispose();
                 throw;
+            }
+        }
+
+        private static bool TryDecodeLegacyWanToken(ReadOnlySpan<byte> span, out PeerInfo? peer)
+        {
+            peer = null;
+            const int MinWanTokenLength = 1 + 4 + 2 + EndpointTokenCertificateHashLength;
+            if (span.Length < MinWanTokenLength)
+                return false;
+
+            try
+            {
+                byte flagByte = span[0];
+                int netType = flagByte & 0b111;
+                if (netType > 3)
+                    return false;
+
+                int offset = 1;
+                var allAddresses = new List<IPAddress>();
+
+                if (netType == 2 || netType == 3)
+                {
+                    if (offset >= span.Length) return false;
+                    int addrCount = span[offset++];
+                    if (addrCount < 1 || addrCount > 32) return false;
+                    for (int i = 0; i < addrCount; i++)
+                    {
+                        if (offset + 4 > span.Length) return false;
+                        var ip = new IPAddress(span.Slice(offset, 4));
+                        offset += 4;
+                        if (!IsValidPeerAddress(ip)) return false;
+                        if (!allAddresses.Contains(ip)) allAddresses.Add(ip);
+                    }
+                }
+                else
+                {
+                    if (offset + 4 > span.Length) return false;
+                    var ip = new IPAddress(span.Slice(offset, 4));
+                    offset += 4;
+                    if (!IsValidPeerAddress(ip)) return false;
+                    allAddresses.Add(ip);
+                }
+
+                ushort minPort;
+                ushort maxPort;
+                if (netType == 1 || netType == 3)
+                {
+                    if (offset + 4 > span.Length) return false;
+                    minPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                    offset += 2;
+                    maxPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                    offset += 2;
+                }
+                else
+                {
+                    if (offset + 2 > span.Length) return false;
+                    minPort = maxPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                    offset += 2;
+                }
+
+                if (minPort == 0 || minPort > maxPort)
+                    return false;
+
+                if (offset < span.Length - EndpointTokenCertificateHashLength)
+                {
+                    int localIpCount = span[offset++];
+                    if (localIpCount > 32) return false;
+                    for (int i = 0; i < localIpCount; i++)
+                    {
+                        if (offset + 4 > span.Length) return false;
+                        var localIp = new IPAddress(span.Slice(offset, 4));
+                        offset += 4;
+                        if (IsValidPeerAddress(localIp) && !allAddresses.Contains(localIp))
+                        {
+                            allAddresses.Add(localIp);
+                        }
+                    }
+                }
+
+                if (offset + EndpointTokenCertificateHashLength != span.Length)
+                    return false;
+
+                byte[] certHash = span.Slice(offset, EndpointTokenCertificateHashLength).ToArray();
+
+                var legacyPeer = new PeerInfo
+                {
+                    Addresses = allAddresses.ToArray(),
+                    PortArray = minPort == maxPort
+                        ? [(ushort)minPort]
+                        : Enumerable.Range(minPort, maxPort - minPort + 1).Select(p => (ushort)p).ToArray(),
+                    NetworkType = QuicPunch.NetworkType.Static
+                };
+                legacyPeer.ConnectionFlags.PortMode = minPort == maxPort ? PortMode.Single : PortMode.Range;
+                legacyPeer.ConnectionFlags.MultipleIps = allAddresses.Count > 1;
+                legacyPeer.SetCertificateHash(certHash);
+                peer = legacyPeer;
+                return true;
+            }
+            catch
+            {
+                peer?.Dispose();
+                peer = null;
+                return false;
             }
         }
 
@@ -857,6 +1013,52 @@ namespace QuicPunch.Helpers
             string username = GenerateRandomUsername();
             string hostname = GenerateRandomHostname();
             return (username, hostname, $"{username}@{hostname}");
+        }
+
+        public static bool PeerTargetsMatch(PeerInfo a, PeerInfo b)
+        {
+            bool aHasIdentity = a.TryGetCertificateHash(out var aHash);
+            bool bHasIdentity = b.TryGetCertificateHash(out var bHash);
+            if (aHasIdentity && bHasIdentity)
+            {
+                // Once both sides have identities, endpoint reuse must never make two
+                // different peers compare equal. Endpoint matching is only a bridge
+                // while at least one side is still an unauthenticated candidate.
+                return CryptographicOperations.FixedTimeEquals(aHash, bHash);
+            }
+
+            if (!string.IsNullOrWhiteSpace(a.OnionAddress) && !string.IsNullOrWhiteSpace(b.OnionAddress) &&
+                string.Equals(a.OnionAddress, b.OnionAddress, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (a.ActiveEndPoint != null && b.ActiveEndPoint != null && a.ActiveEndPoint.Equals(b.ActiveEndPoint))
+                return true;
+
+            if (a.ActiveEndPoint != null && EndpointMatchesPeer(a.ActiveEndPoint, b))
+                return true;
+            if (b.ActiveEndPoint != null && EndpointMatchesPeer(b.ActiveEndPoint, a))
+                return true;
+
+            if (a.Addresses != null && b.Addresses != null && a.Addresses.Intersect(b.Addresses).Any())
+            {
+                if (a.PortArray != null && b.PortArray != null && a.PortArray.Intersect(b.PortArray).Any())
+                    return true;
+            }
+
+            return false;
+        }
+
+        public static bool EndpointMatchesPeer(IPEndPoint endpoint, PeerInfo peer)
+        {
+            if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Equals(endpoint))
+                return true;
+
+            if (peer.Addresses == null || !peer.Addresses.Contains(endpoint.Address))
+                return false;
+
+            return peer.PortArray != null && peer.PortArray.Contains((ushort)endpoint.Port);
         }
     }
 }

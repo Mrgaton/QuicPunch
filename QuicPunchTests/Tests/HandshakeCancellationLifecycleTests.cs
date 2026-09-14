@@ -96,10 +96,8 @@ public static class HandshakeCancellationLifecycleTests
                 if (qpB.ActiveIncomingWorkerCount == 0)
                     throw new Exception("Expected ActiveIncomingWorkerCount > 0 while waiting for manual decision");
 
-                // Stop instance
                 await qpB.StopAsync();
 
-                // Assert clean state immediately after StopAsync
                 AssertCleanState(qpB, "Test 1 post-stop");
 
                 // Wait 2 seconds and verify no zombie session appears
@@ -163,7 +161,6 @@ public static class HandshakeCancellationLifecycleTests
                 // Stop instance while gathering candidates
                 await qpB.StopAsync();
 
-                // Assertions
                 AssertCleanState(qpB, "Test 2 post-stop");
 
                 await Task.Delay(2000);
@@ -229,7 +226,6 @@ public static class HandshakeCancellationLifecycleTests
                 // Stop instance during hole punch
                 await qpB.StopAsync();
 
-                // Assertions
                 AssertCleanState(qpB, "Test 3 post-stop");
 
                 await Task.Delay(2000);
@@ -323,7 +319,6 @@ public static class HandshakeCancellationLifecycleTests
                 // Stop instance while QUIC is connecting
                 await qpB.StopAsync();
 
-                // Assertions
                 AssertCleanState(qpB, "Test 4 post-stop");
 
                 await Task.Delay(2000);
@@ -383,19 +378,16 @@ public static class HandshakeCancellationLifecycleTests
 
                 long gen1 = qpB.LifecycleGeneration;
 
-                // Stop instance
                 await qpB.StopAsync();
 
                 AssertCleanState(qpB, "Test 5 post-stop");
 
-                // Immediately restart instance
                 await qpB.StartAsync();
 
                 long gen2 = qpB.LifecycleGeneration;
                 if (gen2 <= gen1)
                     throw new Exception($"Expected LifecycleGeneration to increment after restart (gen1={gen1}, gen2={gen2})");
 
-                // Assert fresh state in new generation
                 AssertCleanState(qpB, "Test 5 post-start");
 
                 // Verify that trying to register a session with the old generation (gen1) fails

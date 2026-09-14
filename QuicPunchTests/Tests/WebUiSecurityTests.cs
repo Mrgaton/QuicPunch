@@ -43,7 +43,7 @@ namespace QuicPunchTests.Tests;
             var chatHandler = new ChatHandler();
             var lanHandler = new VirtualLanHandler();
             var voiceHandler = new VoiceCallHandler(qp);
-            var relayDriveHandler = new RelayDriveHandler(qp.CurrentPeer?.Id ?? Guid.Empty);
+            var speedTestHandler = new SpeedTestHandler();
             var preferences = new AppPreferencesStore(tempDir);
 
             var server = new WebUiServer(
@@ -51,7 +51,7 @@ namespace QuicPunchTests.Tests;
                 chatHandler,
                 lanHandler,
                 voiceHandler,
-                relayDriveHandler,
+                speedTestHandler,
                 preferences,
                 cts,
                 port: 5800);
@@ -122,6 +122,25 @@ namespace QuicPunchTests.Tests;
                     if (ws.State != WebSocketState.Open)
                         throw new Exception($"Expected WebSocket State Open, got {ws.State}");
                     await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+                }
+
+                // 7. Verify index.html resolves all @include views properly
+                using (var req = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}/"))
+                {
+                    req.Headers.Add("Origin", $"http://127.0.0.1:{port}");
+                    using var resp = await client.SendAsync(req);
+                    if (resp.StatusCode != System.Net.HttpStatusCode.OK)
+                        throw new Exception($"Expected 200 OK for GET /, got {resp.StatusCode}");
+                    string html = await resp.Content.ReadAsStringAsync();
+                    if (html.Contains("<!-- @include"))
+                        throw new Exception("Index HTML still contains unparsed <!-- @include tags.");
+                    if (!html.Contains("id=\"view-dashboard\"") ||
+                        !html.Contains("id=\"view-chat\"") ||
+                        !html.Contains("id=\"view-voice\"") ||
+                        !html.Contains("id=\"view-vpn\""))
+                        throw new Exception("Index HTML is missing one or more SPA view containers.");
+                    if (!html.Contains("id=\"pasteClipboardBtn\""))
+                        throw new Exception("Index HTML is missing pasteClipboardBtn.");
                 }
 
                 Console.WriteLine("PASSED");

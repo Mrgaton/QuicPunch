@@ -3,16 +3,6 @@ using System.Runtime.InteropServices;
 
 namespace QuicPunch.Vpn.Windows
 {
-    public enum WintunLoggerLevel : int
-    {
-        Info = 0,
-        Warn = 1,
-        Err = 2
-    }
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Unicode)]
-    public delegate void WintunLoggerCallback(WintunLoggerLevel level, ulong timestamp, string message);
-
     public static unsafe class WintunApi
     {
         private const string DllName = "wintun";
@@ -58,5 +48,33 @@ namespace QuicPunch.Vpn.Windows
 
         [DllImport(DllName, ExactSpelling = true, SetLastError = false)]
         public static extern void WintunSendPacket(IntPtr session, byte* packet);
+    }
+
+    public enum WintunLoggerLevel : int
+    {
+        Info = 0,
+        Warn = 1,
+        Err = 2
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Unicode)]
+    public delegate void WintunLoggerCallback(WintunLoggerLevel level, ulong timestamp, string message);
+
+    public static class WintunLogger
+    {
+        private static WintunLoggerCallback? _loggerCallback;
+
+        public static void SetLogger(Action<WintunLoggerLevel, ulong, string>? logger)
+        {
+            if (logger == null)
+            {
+                _loggerCallback = null;
+                WintunApi.WintunSetLogger(null);
+                return;
+            }
+
+            _loggerCallback = (level, timestamp, message) => logger(level, timestamp, message);
+            WintunApi.WintunSetLogger(_loggerCallback);
+        }
     }
 }

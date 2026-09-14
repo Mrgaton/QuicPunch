@@ -7,32 +7,6 @@ using QuicPunch.Helpers;
 
 namespace QuicPunch
 {
-    public sealed class StunResultEventArgs : EventArgs
-    {
-        public EndPoint ServerEndpoint { get; }
-        public IPEndPoint MappedEndPoint { get; }
-        public TimeSpan RoundTripTime { get; }
-
-        public StunResultEventArgs(IPEndPoint remote, IPEndPoint mapped, TimeSpan rtt)
-        {
-            ServerEndpoint = remote;
-            MappedEndPoint = mapped;
-            RoundTripTime = rtt;
-        }
-    }
-
-    public sealed class StunEndpointHit
-    {
-        public int Count { get; set; }
-        public long LastSeenTicks { get; set; }
-
-        public StunEndpointHit(int count, long lastSeenTicks)
-        {
-            Count = count;
-            LastSeenTicks = lastSeenTicks;
-        }
-    }
-
     public sealed class SimpleStunClient
     {
         private const uint MagicCookie = 0x2112A442;
@@ -42,8 +16,8 @@ namespace QuicPunch
         private const ushort XorMappedAddress = 0x0020;
 
         private readonly UdpClient _udp;
-        private readonly IReadOnlyList<IPEndPoint> _servers;
-        private readonly IPEndPoint[] _shuffledServers;
+        private IReadOnlyList<IPEndPoint> _servers;
+        private IPEndPoint[] _shuffledServers;
         private int _serverCursor = 0;
         private readonly Dictionary<TxId, PendingRequest> _pending = new();
         private readonly List<TxId> _expiredKeysBuffer = new();
@@ -128,12 +102,38 @@ namespace QuicPunch
             }
         }  
 
-        public async Task SendRequest(CancellationToken cancellationToken, int? batchSize = null)
+        public void AddServers(IEnumerable<IPEndPoint> newServers)
+        {
+            ArgumentNullException.ThrowIfNull(newServers);
+            lock (_lock)
+            {
+                var existingSet = new HashSet<IPEndPoint>(_servers);
+                var toAdd = newServers.Where(s => existingSet.Add(s)).ToArray();
+                if (toAdd.Length == 0) return;
+
+                _servers = _servers.Concat(toAdd).Distinct().ToArray();
+                var shuffledToAdd = toAdd.OrderBy(_ => Random.Shared.Next()).ToArray();
+                _shuffledServers = _shuffledServers.Concat(shuffledToAdd).ToArray();
+            }
+        }
+
+        public void UpdateServers(IReadOnlyList<IPEndPoint> servers)
+        {
+            ArgumentNullException.ThrowIfNull(servers);
+            lock (_lock)
+            {
+                _servers = servers;
+                _shuffledServers = servers.OrderBy(_ => Random.Shared.Next()).ToArray();
+                _serverCursor = 0;
+            }
+        }
+
+        public async Task SendRequest(CancellationToken cancellationToken, int? batchSize = null, IReadOnlyList<IPEndPoint>? targets = null)
         {
             CleanupTimeouts();
 
-            var targets = GetNextBatch(batchSize ?? DefaultBatchSize);
-            await Task.WhenAll(targets.Select(server => SendRequestSafeAsync(server, cancellationToken)));
+            var toSend = targets ?? GetNextBatch(batchSize ?? DefaultBatchSize);
+            await Task.WhenAll(toSend.Select(server => SendRequestSafeAsync(server, cancellationToken))).ConfigureAwait(false);
         }
 
         public bool TryProcessIncoming(byte[] buffer, IPEndPoint remoteEndPoint) =>
@@ -472,5 +472,31 @@ namespace QuicPunch
         private readonly record struct TxId(ulong Part1, uint Part2);
 
         private readonly record struct PendingRequest(IPEndPoint Remote, long SentTicks);
+    }
+
+    public sealed class StunEndpointHit
+    {
+        public int Count { get; set; }
+        public long LastSeenTicks { get; set; }
+
+        public StunEndpointHit(int count, long lastSeenTicks)
+        {
+            Count = count;
+            LastSeenTicks = lastSeenTicks;
+        }
+    }
+
+    public sealed class StunResultEventArgs : EventArgs
+    {
+        public EndPoint ServerEndpoint { get; }
+        public IPEndPoint MappedEndPoint { get; }
+        public TimeSpan RoundTripTime { get; }
+
+        public StunResultEventArgs(IPEndPoint remote, IPEndPoint mapped, TimeSpan rtt)
+        {
+            ServerEndpoint = remote;
+            MappedEndPoint = mapped;
+            RoundTripTime = rtt;
+        }
     }
 }

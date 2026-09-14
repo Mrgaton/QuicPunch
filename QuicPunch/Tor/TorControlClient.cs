@@ -468,10 +468,6 @@ public sealed record TorControlReply(
     int StatusCode,
     IReadOnlyList<string> Lines);
 
-public sealed record TorAddOnionResult(
-    string ServiceId,
-    string? PrivateKeySpec);
-
 public sealed class TorControlException : IOException
 {
     public TorControlException(

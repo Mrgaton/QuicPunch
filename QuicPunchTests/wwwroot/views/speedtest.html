@@ -1,0 +1,131 @@
+  <!-- 6. SPEED TEST VIEW -->
+  <div id="view-speedtest" class="spa-view hidden">
+    <main class="workspace">
+      <header class="page-head">
+        <div>
+          <h1>Prueba de Velocidad</h1>
+          <p>Mide el ancho de banda en tiempo real, entrega de paquetes y latencia QUIC de ida y vuelta con cualquier peer conectado.</p>
+        </div>
+      </header>
+
+      <div class="split-2">
+        <!-- Configuration & Launch Card -->
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Configuración de la prueba</h2>
+              <p>Selecciona el peer de destino y los parámetros del test.</p>
+            </div>
+          </div>
+          <div class="section-body">
+            <div class="field">
+              <label for="speedTestPeerSelect">Peer de destino</label>
+              <select class="select" id="speedTestPeerSelect">
+                <option value="">Seleccionar un peer conectado...</option>
+              </select>
+            </div>
+
+            <div class="form-grid two-col space-top">
+              <div class="field">
+                <label for="speedTestDuration">Duración</label>
+                <select class="select" id="speedTestDuration">
+                  <option value="5">5 Segundos (Comprobación rápida)</option>
+                  <option value="10" selected>10 Segundos (Recomendado)</option>
+                  <option value="30">30 Segundos (Sostenido)</option>
+                  <option value="60">60 Segundos (Test de estrés)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="speedTestMode">Dirección / Modo</label>
+                <select class="select" id="speedTestMode">
+                  <option value="both" selected>Bidireccional (Ambos)</option>
+                  <option value="upload">Solo subida (Emisor)</option>
+                  <option value="download">Solo bajada (Receptor)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="toolbar space-top">
+              <button class="btn primary large-btn" id="startSpeedTestBtn">Iniciar prueba de velocidad</button>
+              <button class="btn danger hidden" id="cancelSpeedTestBtn">Cancelar prueba</button>
+            </div>
+
+            <div id="speedTestStatusNotice" class="inline-help space-top">Listo para iniciar la prueba.</div>
+          </div>
+        </section>
+
+        <!-- Live Gauge & Metrics Card -->
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Telemetría en tiempo real</h2>
+              <p>Métricas instantáneas transmitidas sobre QUIC.</p>
+            </div>
+            <span class="badge" id="speedTestActiveBadge">Inactivo</span>
+          </div>
+          <div class="section-body">
+            <div class="speedometer-container">
+              <div class="speed-readout">
+                <div class="speed-big-number" id="speedTestLiveNumber">0.0</div>
+                <div class="speed-unit">Mbps</div>
+              </div>
+              <div class="speed-bar-track">
+                <div class="speed-bar-fill" id="speedTestBarFill" style="width: 0%;"></div>
+              </div>
+            </div>
+
+            <div class="speed-metric-grid space-top">
+              <div class="speed-metric-tile">
+                <span class="metric-label">Subida</span>
+                <span class="metric-val" id="speedTestMetricUpload">—</span>
+              </div>
+              <div class="speed-metric-tile">
+                <span class="metric-label">Bajada</span>
+                <span class="metric-val" id="speedTestMetricDownload">—</span>
+              </div>
+              <div class="speed-metric-tile">
+                <span class="metric-label">Latencia QUIC (RTT)</span>
+                <span class="metric-val" id="speedTestMetricRtt">—</span>
+              </div>
+              <div class="speed-metric-tile">
+                <span class="metric-label">Total transferido</span>
+                <span class="metric-val" id="speedTestMetricBytes">0 MB</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- History Table -->
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>Historial de pruebas</h2>
+            <p>Resultados de pruebas anteriores ejecutadas durante esta sesión.</p>
+          </div>
+          <button class="btn sm ghost" id="clearSpeedTestHistoryBtn">Limpiar historial</button>
+        </div>
+        <div class="section-body no-pad">
+          <div class="table-wrap borderless">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Peer</th>
+                  <th>Modo</th>
+                  <th>Velocidad Subida</th>
+                  <th>Velocidad Bajada</th>
+                  <th>Datos movidos</th>
+                  <th>Duración</th>
+                  <th>Latencia</th>
+                </tr>
+              </thead>
+              <tbody id="speedTestHistoryBody">
+                <tr><td colspan="8" class="muted text-center">No hay pruebas realizadas aún.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>

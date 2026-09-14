@@ -2,20 +2,19 @@ let dashboardStatus = null;
 let dashboardBusy = false;
 let savedPeerEditingHash = null;
 let logsClearedAt = 0;
-let currentStunData = { exactMappings: [], publicAddresses: [], minPort: 0, maxPort: 0, serverCount: 0 };
+let currentStunData = { exactMappings: [], publicAddresses: [], ports: [], serverCount: 0 };
 
 const APP_DEFS = [
   { key: 'chat', label: 'Direct Chat', href: '/chat.html' },
   { key: 'voice', label: 'Voice Studio', href: '/call.html' },
   { key: 'lan', label: 'LAN Bridge', href: '/vpn.html' },
-  { key: 'files', label: 'RelayDrive', href: '/files.html' }
+  { key: 'speedtest', label: 'Speed Test', href: '/speedtest.html' }
 ];
 
-const NETWORK_TYPES = ['Static', 'DynamicPort', 'DynamicAddress', 'DynamicPortAndAddress', 'Tor'];
+const NETWORK_TYPES = ['Wan', 'Tor'];
 
 document.addEventListener('DOMContentLoaded', () => {
   byId('copyWanInline').addEventListener('click', () => dashboardStatus && QP.copy(fullToken(dashboardStatus.node?.wanToken)));
-  byId('copyQuickLinkBtn').addEventListener('click', () => dashboardStatus && QP.copy(dashboardStatus.node?.quickUri || dashboardStatus.quickUri || ''));
   byId('copyTorInline').addEventListener('click', () => dashboardStatus && QP.copy(fullToken(dashboardStatus.node?.torToken)));
   byId('connectTokenBtn').addEventListener('click', connectToken);
   byId('connectAllDiscoveredBtn')?.addEventListener('click', connectAllDiscovered);
@@ -28,8 +27,18 @@ document.addEventListener('DOMContentLoaded', () => {
   byId('torNewNymBtn').addEventListener('click', newTorCircuits);
   byId('applyPortBtn').addEventListener('click', applyListenerPort);
   byId('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') connectToken(); });
+  byId('pasteClipboardBtn')?.addEventListener('click', () => detectClipboardToken(true));
+  byId('tokenInput')?.addEventListener('focus', () => {
+    if (!byId('tokenInput').value.trim()) detectClipboardToken(false);
+  });
+  window.addEventListener('focus', () => {
+    if (document.body.dataset.page === 'dashboard' && !byId('tokenInput')?.value.trim()) {
+      detectClipboardToken(false);
+    }
+  });
   byId('refreshBtn').addEventListener('click', refreshDashboard);
   byId('clearLogsBtn').addEventListener('click', clearLogsView);
+  byId('clearOfflineSavedBtn')?.addEventListener('click', clearOfflineSavedPeers);
   byId('addSavedPeerBtn').addEventListener('click', () => openSavedPeerEditor());
   byId('closeSavedPeerModalBtn').addEventListener('click', closeSavedPeerEditor);
   byId('cancelSavedPeerBtn').addEventListener('click', closeSavedPeerEditor);
@@ -53,15 +62,100 @@ document.addEventListener('DOMContentLoaded', () => {
       if (byId('tokenConflictModal') && !byId('tokenConflictModal').classList.contains('hidden')) closeTokenConflictModal();
     }
   });
-  refreshDashboard();
-  setInterval(refreshDashboard, 1300);
+
+  if (window.QP && typeof QP.on === 'function') {
+    QP.on('status_updated', status => {
+      dashboardStatus = status;
+      renderDashboard(dashboardStatus);
+    });
+    QP.on('view_changed', data => {
+      if (data && data.page === 'dashboard') {
+        if (QP.state && QP.state.status) {
+          dashboardStatus = QP.state.status;
+          renderDashboard(dashboardStatus);
+        } else {
+          refreshDashboard();
+        }
+      }
+    });
+  }
+
+  if (window.QP && QP.state && QP.state.status) {
+    dashboardStatus = QP.state.status;
+    renderDashboard(dashboardStatus);
+  } else {
+    refreshDashboard();
+  }
+
+  // Periodic fast refresh for native QUIC telemetry when viewing dashboard
+  setInterval(async () => {
+    if (document.body.dataset.page === 'dashboard' && !document.hidden && !dashboardBusy) {
+      try {
+        const tel = await QP.api('/api/telemetry');
+        if (tel) {
+          renderQuicTelemetry(tel);
+        }
+      } catch { }
+    }
+  }, 2500);
 });
 
 function byId(id) { return document.getElementById(id); }
 function fullToken(raw) { const value = String(raw || '').trim(); return !value ? '' : (value.toUpperCase().startsWith('QP://') ? value : `QP://${value}`); }
 function td(text, className = '') { const node = document.createElement('td'); if (className) node.className = className; node.textContent = text ?? ''; return node; }
 function emptyRow(body, cols, text) { const tr = document.createElement('tr'); const cell = td(text, 'empty-cell'); cell.colSpan = cols; tr.appendChild(cell); body.appendChild(tr); }
-function formatPortRange(minPort, maxPort) { const min = Number(minPort || 0), max = Number(maxPort || 0); if (!min) return '—'; return !max || min === max ? String(min) : `${min} – ${max}`; }
+function formatPortRange(minOrItem, maxPortArg, portsArg, portModeArg) {
+  let ports = null, portMode = null;
+  if (minOrItem && typeof minOrItem === 'object') {
+    if (Array.isArray(minOrItem)) {
+      ports = minOrItem;
+      portMode = maxPortArg || null;
+    } else {
+      ports = minOrItem.ports || minOrItem.portArray || null;
+      portMode = minOrItem.portMode || null;
+    }
+  } else if (Array.isArray(portsArg)) {
+    ports = portsArg;
+    portMode = portModeArg || null;
+  } else if (minOrItem !== undefined && minOrItem !== null && String(minOrItem).trim() !== '' && String(minOrItem) !== '0') {
+    if (maxPortArg && maxPortArg !== minOrItem && String(maxPortArg) !== '0') {
+      return `${minOrItem} – ${maxPortArg}`;
+    }
+    return String(minOrItem);
+  }
+
+  if (Array.isArray(ports) && ports.length > 0) {
+    const validPorts = ports.map(p => Number(p)).filter(p => !isNaN(p) && p > 0);
+    if (validPorts.length === 1) {
+      return String(validPorts[0]);
+    }
+    if (validPorts.length > 0) {
+      const sorted = [...new Set(validPorts)].sort((a, b) => a - b);
+      if (sorted.length === 1) return String(sorted[0]);
+
+      const minP = sorted[0];
+      const maxP = sorted[sorted.length - 1];
+
+      let isContiguous = true;
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i] !== sorted[i - 1] + 1) {
+          isContiguous = false;
+          break;
+        }
+      }
+
+      // Si es un rango de verdad (consecutivos), o son más de 8 puertos, o modo Range:
+      if (isContiguous || sorted.length > 8 || portMode === 'Range') {
+        return `${minP} – ${maxP}`;
+      }
+
+      // Si son múltiples puertos discretos (<= 8 y no contiguos), enumerar separados por coma
+      return sorted.join(', ');
+    }
+  }
+
+  return '—';
+}
 function formatBytes(bytes) {
   if (bytes === null || bytes === undefined || isNaN(bytes)) return '0 B';
   const num = Number(bytes);
@@ -78,7 +172,7 @@ async function refreshDashboard() {
   if (dashboardBusy) return;
   dashboardBusy = true;
   try {
-    dashboardStatus = await QP.api('/api/status');
+    dashboardStatus = await (QP.getStatus ? QP.getStatus(true) : QP.api('/api/status'));
     renderDashboard(dashboardStatus);
   } catch (e) { QP.toast(e.message); }
   finally { dashboardBusy = false; }
@@ -86,25 +180,53 @@ async function refreshDashboard() {
 
 function renderDashboard(s) {
   const peers = s.peers || [];
-  const connected = peers.filter(p => p.isTrusted);
-  const untrusted = peers.filter(p => !p.isTrusted);
+  const isResponsive = p => p.isQuicConnected || (Number(p.unresponsiveSeconds ?? p.lastSeenSecondsAgo ?? 99999) < 60);
+  const connected = peers.filter(p => p.isTrusted && isResponsive(p));
+  const untrusted = peers.filter(p => !p.isTrusted && isResponsive(p));
 
   QP.setText('nodeName', s.node?.name || 'Local node');
   QP.setText('nodeNetwork', s.node?.networkType || 'Unknown');
   byId('listenerPortInput').value = String(s.node?.listenerPort || '');
-  QP.setText('wanMeta', wanStatusText(s));
-  QP.setText('discoveryMeta', discoveryStatusText(s.discovery?.wan || s.discovery));
-  QP.setText('torDiscoveryMeta', discoveryStatusText(s.discovery?.tor));
-  QP.setText('torMeta', torStatusText(s));
+  const wanMetaEl = byId('wanMeta');
+  if (wanMetaEl) {
+    wanMetaEl.textContent = wanStatusText(s);
+    if (s.wan?.lastError) {
+      wanMetaEl.title = s.wan.lastError;
+      wanMetaEl.style.cursor = 'pointer';
+      wanMetaEl.onclick = () => byId('logs')?.scrollIntoView({ behavior: 'smooth' });
+    } else {
+      wanMetaEl.removeAttribute('title');
+      wanMetaEl.style.cursor = 'default';
+      wanMetaEl.onclick = null;
+    }
+  }
+  QP.setText('discoveryMeta', discoveryStatusText(s.discovery?.wan || s.discovery, s.wan));
+  QP.setText('torDiscoveryMeta', discoveryStatusText(s.discovery?.tor, s.tor));
+  const torMetaEl = byId('torMeta');
+  if (torMetaEl) {
+    torMetaEl.textContent = torStatusText(s);
+    if (s.tor?.lastError) {
+      torMetaEl.title = s.tor.lastError;
+      torMetaEl.style.cursor = 'pointer';
+      torMetaEl.onclick = () => byId('logs')?.scrollIntoView({ behavior: 'smooth' });
+    } else {
+      torMetaEl.removeAttribute('title');
+      torMetaEl.style.cursor = 'default';
+      torMetaEl.onclick = null;
+    }
+  }
   QP.setText('wanTokenBox', fullToken(s.node?.wanToken) || (s.wan?.isStarted === false ? 'WAN service inactive' : 'WAN token unavailable'));
   QP.setText('torTokenBox', fullToken(s.node?.torToken) || (s.tor?.isStarted === false ? 'Tor service inactive' : 'Tor token unavailable'));
   byId('copyWanInline').disabled = !s.node?.wanToken || s.wan?.isStarted === false;
-  byId('copyQuickLinkBtn').disabled = !s.node?.wanToken || s.wan?.isStarted === false;
   byId('copyTorInline').disabled = !s.node?.torToken || s.tor?.isStarted === false;
   byId('torNewNymBtn').disabled = !s.tor?.isStarted;
   if (byId('wanToggle')) byId('wanToggle').checked = !!(s.wan?.desiredEnabled ?? s.wan?.isStarted ?? true);
   byId('discoveryToggle').checked = !!(s.discovery?.wan?.desiredEnabled ?? s.discovery?.desiredEnabled);
-  if (byId('torDiscoveryToggle')) byId('torDiscoveryToggle').checked = !!s.discovery?.tor?.desiredEnabled;
+  byId('discoveryToggle').disabled = s.wan?.isStarted === false && !s.wan?.desiredEnabled;
+  if (byId('torDiscoveryToggle')) {
+    byId('torDiscoveryToggle').checked = !!s.discovery?.tor?.desiredEnabled;
+    byId('torDiscoveryToggle').disabled = s.tor?.isStarted === false && !s.tor?.desiredEnabled;
+  }
   byId('torToggle').checked = !!s.tor?.desiredEnabled;
   byId('autoAcceptToggle').checked = !!s.autoAcceptAll;
 
@@ -124,22 +246,44 @@ function renderDashboard(s) {
   renderLogs(s.logs || []);
 }
 
+function cleanInlineError(err, maxLen = 65) {
+  if (!err) return '';
+  let str = String(err).trim();
+  if (str.includes('Last error:')) {
+    str = str.substring(str.lastIndexOf('Last error:') + 'Last error:'.length).trim();
+  }
+  const nl = str.indexOf('\n');
+  if (nl > 0) str = str.substring(0, nl).trim();
+  return str.length > maxLen ? str.substring(0, maxLen) + '…' : str;
+}
+
 function wanStatusText(s) {
   if (s.wan?.isStarted) return `Running · port ${s.node?.listenerPort || s.wan?.port || '—'}`;
-  if (s.wan?.lastError) return `Failed · ${s.wan.lastError}`;
+  if (s.wan?.lastError) return `Failed · ${cleanInlineError(s.wan.lastError)}`;
   if (s.wan?.desiredEnabled) return 'Starting…';
   return 'Stopped';
 }
 
-function discoveryStatusText(d) {
+function discoveryStatusText(d, parentService) {
   if (d?.running) return `Running · ${d.connectedRelays}/${d.relayCount} relays`;
-  if (d?.desiredEnabled) return 'Starting…';
+  
+  // If parent transport (WAN or Tor) is explicitly stopped/disabled, discovery cannot run
+  const isParentInactive = parentService && (!parentService.isStarted && !parentService.desiredEnabled);
+  const isServiceStopped = d?.serviceRunning === false && d?.serviceDesiredEnabled === false;
+  if (isParentInactive || isServiceStopped) return 'Stopped (service inactive)';
+
+  if (d?.desiredEnabled) {
+    if (parentService && !parentService.isStarted && parentService.desiredEnabled) {
+      return 'Waiting for service…';
+    }
+    return 'Starting…';
+  }
   return 'Stopped';
 }
 
 function torStatusText(s) {
   if (s.tor?.isStarted) return `Running · SOCKS ${s.tor.socksPort || '—'} · virtual ${s.tor.virtualPort || '—'}`;
-  if (s.tor?.lastError) return `Failed · ${s.tor.lastError}`;
+  if (s.tor?.lastError) return `Failed · ${cleanInlineError(s.tor.lastError)}`;
   if (s.tor?.desiredEnabled) {
     const status = s.tor.bootstrapStatus || '';
     const isGeneric = !status || status === 'Bootstrapping...' || status === 'Not initialized';
@@ -166,13 +310,13 @@ function renderStun(stun, node) {
   currentStunData = {
     exactMappings: exact,
     publicAddresses: publicAddresses,
-    minPort: stun.minPort ?? node.minPort,
-    maxPort: stun.maxPort ?? node.maxPort,
+    ports: stun.ports || node.ports || [],
+    portMode: stun.portMode || node.portMode || null,
     serverCount: stun.serverCount ?? 0
   };
 
   QP.setText('stunAddresses', publicAddresses.length ? publicAddresses.join(', ') : 'No exact public address observed yet');
-  QP.setText('stunPorts', stun.portDisplay || formatPortRange(currentStunData.minPort, currentStunData.maxPort));
+  QP.setText('stunPorts', stun.portDisplay || formatPortRange(currentStunData));
 
   const stunTextEl = byId('stunMappings');
   const stunDotsBtn = byId('openStunModalBtn');
@@ -243,7 +387,7 @@ function renderDiscovered(items, s) {
     tr.appendChild(pcell);
 
     const typeCell = document.createElement('td');
-    typeCell.appendChild(QP.el('div', 'mono', item.networkType || 'Static'));
+    typeCell.appendChild(QP.el('div', 'mono', item.networkType || 'Wan'));
     typeCell.appendChild(QP.el('div', 'peer-sub', item.source || 'Nostr'));
     tr.appendChild(typeCell);
 
@@ -258,7 +402,7 @@ function renderDiscovered(items, s) {
     }
     tr.appendChild(addrCell);
 
-    tr.appendChild(td(formatPortRange(item.minPort, item.maxPort), 'mono'));
+    tr.appendChild(td(formatPortRange(item), 'mono'));
 
     const timeCell = document.createElement('td');
     const secAgo = Number(item.lastSeenSecondsAgo || 0);
@@ -337,13 +481,20 @@ function renderInterrogations(items) {
     const tr = document.createElement('tr');
     const peer = td(item.peerName || 'Unknown');
     peer.appendChild(QP.el('div', 'peer-sub mono', item.canonicalId || QP.canonicalId(item.certHash || item.peerId || item.id)));
-    tr.append(peer, td((item.addresses || []).join(', ') || 'Unknown', 'mono wrap'), td(formatPortRange(item.minPort, item.maxPort), 'mono'), td(item.startTime || '—'));
+    tr.append(peer, td((item.addresses || []).join(', ') || 'Unknown', 'mono wrap'), td(formatPortRange(item), 'mono'), td(item.startTime || '—'));
     const actions = document.createElement('td'); actions.appendChild(QP.button('Cancel', 'danger', () => cancelInterrogation(item.sessionId || item.id))); tr.appendChild(actions);
     body.appendChild(tr);
   });
 }
 
 function renderConnected(peers, s) {
+  const saveAllBtn = byId('saveAllBtn');
+  if (saveAllBtn) {
+    const unsavedCount = (peers || []).filter(p => !p.isSaved).length;
+    saveAllBtn.disabled = unsavedCount === 0;
+    saveAllBtn.title = unsavedCount > 0 ? `Guardar ${unsavedCount} peer(s) no guardado(s)` : 'Todos los peers conectados ya están guardados';
+  }
+
   const body = byId('connectedPeers'); QP.clear(body);
   if (!peers.length) { emptyRow(body, 7, 'No trusted peers are currently available.'); return; }
   peers.forEach(peer => {
@@ -351,6 +502,7 @@ function renderConnected(peers, s) {
     const pcell = document.createElement('td');
     const name = QP.el('div', 'peer-primary', peer.name || 'Peer');
     const tags = QP.el('div', 'peer-inline-tags');
+    if (peer.isQuicConnected) tags.appendChild(QP.el('span', 'badge purple', 'QUIC'));
     if (peer.isSaved) tags.appendChild(QP.el('span', 'badge green', 'Saved'));
     if (peer.isAutoAccepted) tags.appendChild(QP.el('span', 'badge blue', 'Auto'));
     if (peer.hasCipher) tags.appendChild(QP.el('span', 'badge green', 'Encrypted'));
@@ -368,7 +520,17 @@ function renderConnected(peers, s) {
     const pingCell = document.createElement('td');
     const unresponsive = Number(peer.unresponsiveSeconds ?? peer.lastSeenSecondsAgo ?? 99999);
     const pingVal = peer.telemetry?.rttMs ?? (peer.ping !== null && peer.ping !== undefined ? Number(peer.ping) : null);
-    if (unresponsive > 10) {
+    if (peer.isQuicConnected) {
+      const pingBadge = QP.el('span', 'badge green', pingVal !== null && !isNaN(pingVal) ? `${pingVal} ms` : '< 1 ms');
+      pingBadge.title = 'Native QUIC smoothed RTT (MsQuic statistics)';
+      pingCell.appendChild(pingBadge);
+      const sub = QP.el('div', 'peer-sub text-muted', 'QUIC RTT');
+      if (peer.telemetry?.packetLossPercentage !== undefined && peer.telemetry.packetLossPercentage > 0) {
+        sub.textContent = `QUIC · Loss: ${peer.telemetry.packetLossPercentage}%`;
+        sub.className = 'peer-sub text-warn';
+      }
+      pingCell.appendChild(sub);
+    } else if (unresponsive > 10) {
       pingCell.appendChild(QP.el('span', 'badge red', `Sin respuesta (${QP.formatDuration(unresponsive)})`));
     } else if (pingVal !== null && !isNaN(pingVal)) {
       pingCell.appendChild(QP.el('span', 'badge green', `${pingVal} ms`));
@@ -385,14 +547,16 @@ function renderConnected(peers, s) {
     const sessions = sessionLabels(peer.id, s);
     const sessionCell = document.createElement('td');
     if (sessions.length) sessions.forEach(label => sessionCell.appendChild(QP.el('span', 'badge blue session-badge', label)));
-    else sessionCell.appendChild(QP.el('span', 'muted', 'No app session'));
+    else sessionCell.appendChild(QP.el('span', 'muted', peer.isQuicConnected ? 'QUIC Tunnel ready' : 'No app session'));
     tr.appendChild(sessionCell);
 
     const trustCell = document.createElement('td');
     const trustActions = QP.el('div', 'mini-actions');
+    if (!peer.isQuicConnected) {
+      trustActions.appendChild(QP.button('Connect', 'accent', () => connectPeerDirect(peer.id)));
+    }
     trustActions.append(
-      QP.button(peer.isSaved ? 'Unsave' : 'Save', peer.isSaved ? '' : 'green', () => savePeer(peer.id, !peer.isSaved)),
-      QP.button(peer.isAutoAccepted ? 'Auto on' : 'Auto off', '', () => autoPeer(peer.id, !peer.isAutoAccepted))
+      QP.button(peer.isSaved ? 'Unsave' : 'Save', peer.isSaved ? '' : 'green', () => savePeer(peer.id, !peer.isSaved))
     );
     if (!peer.isSaved) trustActions.appendChild(QP.button('Untrust', 'ghost', () => trustPeer(peer.id, false)));
     trustCell.appendChild(trustActions); tr.appendChild(trustCell);
@@ -427,7 +591,7 @@ function normalizeProtocolName(name) {
   if (n.includes('chat')) return 'chat';
   if (n.includes('voice') || n.includes('call')) return 'voice';
   if (n.includes('lan') || n.includes('vpn')) return 'lan';
-  if (n.includes('relay') || n.includes('file') || n.includes('drive')) return 'files';
+  if (n.includes('speed') || n.includes('bench')) return 'speedtest';
   if (n.includes('clip')) return 'clipboard';
   return n.replace(/[^a-z0-9]+/g, '-') || 'protocol';
 }
@@ -437,7 +601,6 @@ function sessionLabels(peerId, s) {
   if ((s.activeChats || []).some(x => x.peerId === peerId)) labels.push('Chat');
   if ((s.activeVoiceCalls || []).some(x => x.peerId === peerId)) labels.push('Voice');
   if ((s.lan?.activePeers || []).some(x => x.peerId === peerId)) labels.push('LAN');
-  if ((s.activeRelayDriveSessions || []).some(x => x.peerId === peerId)) labels.push('Files');
   return labels;
 }
 
@@ -460,9 +623,9 @@ function renderSaved(saved, peers) {
     const live = peers.find(p => p.certHash && p.certHash === item.certHash);
     const tr = document.createElement('tr');
     const nameCell = td(item.name || 'Saved peer'); if (live) nameCell.appendChild(QP.el('div', 'peer-sub', live.hasCipher ? 'Authenticated session' : 'Peer available')); tr.appendChild(nameCell);
-    const certCell = td(item.canonicalId || QP.canonicalId(item.certHash), 'mono'); certCell.appendChild(QP.el('div', 'peer-sub', item.networkType || 'Static')); tr.appendChild(certCell);
+    const certCell = td(item.canonicalId || QP.canonicalId(item.certHash), 'mono'); certCell.appendChild(QP.el('div', 'peer-sub', item.networkType || 'Wan')); tr.appendChild(certCell);
     tr.appendChild(td(item.onionAddress || (item.addresses || []).join(', ') || '—', 'mono wrap'));
-    tr.appendChild(td(formatPortRange(item.minPort, item.maxPort), 'mono'));
+    tr.appendChild(td(formatPortRange(item), 'mono'));
 
     const autoCell = document.createElement('td');
     const autoLabel = document.createElement('label'); autoLabel.className = 'check-line compact-check';
@@ -489,7 +652,6 @@ function renderActiveApps(s) {
   (s.activeChats || []).forEach(x => rows.push({ peerId:x.peerId, peerName:x.peerName, app:'Direct Chat', detail:'Reliable chat session', href:`/chat.html?peer=${encodeURIComponent(x.peerId)}` }));
   (s.activeVoiceCalls || []).forEach(x => rows.push({ peerId:x.peerId, peerName:x.peerName, app:'Voice Studio', detail:'Live voice call', href:'/call.html' }));
   (s.lan?.activePeers || []).forEach(x => rows.push({ peerId:x.peerId, peerName:x.peerName, app:'LAN Bridge', detail:`Virtual IP ${x.virtualIp || '—'}`, href:'/vpn.html' }));
-  (s.activeRelayDriveSessions || []).forEach(x => rows.push({ peerId:x.peerId, peerName:x.peerName, app:'RelayDrive', detail:'Mounted virtual shelf', href:'/files.html' }));
   if (!rows.length) { emptyRow(body, 4, 'No application sessions are active.'); return; }
   rows.forEach(row => {
     const tr = document.createElement('tr');
@@ -538,9 +700,8 @@ function openSavedPeerEditor(item = null) {
   byId('savedCertHash').readOnly = !!item;
   byId('savedAddresses').value = (item?.addresses || []).join('\n');
   byId('savedOnion').value = item?.onionAddress || '';
-  byId('savedMinPort').value = String(item?.minPort || 443);
-  byId('savedMaxPort').value = String(item?.maxPort || item?.minPort || 443);
-  byId('savedNetworkType').value = NETWORK_TYPES.includes(item?.networkType) ? item.networkType : (item?.onionAddress ? 'Tor' : 'Static');
+  byId('savedPorts').value = item ? formatPortRange(item) : '443';
+  byId('savedNetworkType').value = NETWORK_TYPES.includes(item?.networkType) ? item.networkType : (item?.onionAddress ? 'Tor' : 'Wan');
   byId('savedAutoConnect').checked = item ? !!item.autoConnect : true;
   byId('savedPeerModalError').classList.add('hidden');
   byId('savedPeerModalError').textContent = '';
@@ -552,17 +713,45 @@ function closeSavedPeerEditor() { byId('savedPeerModal').classList.add('hidden')
 
 async function saveSavedPeerEditor() {
   const certHash = byId('savedCertHash').value.trim();
-  const minPort = Number(byId('savedMinPort').value), maxPort = Number(byId('savedMaxPort').value);
+  const portsRaw = byId('savedPorts').value.trim();
   const error = byId('savedPeerModalError');
   if (!certHash) return showSavedError('Certificate hash is required.');
-  if (!Number.isInteger(minPort) || !Number.isInteger(maxPort) || minPort < 1 || maxPort > 65535 || minPort > maxPort) return showSavedError('Enter a valid port or port range.');
+  
+  const ports = [];
+  const parts = portsRaw.split(/[\s,;]+/).filter(Boolean);
+  for (const part of parts) {
+    if (part.includes('-') || part.includes('–')) {
+      const rp = part.split(/[-–]/).filter(Boolean);
+      if (rp.length === 2) {
+        const start = parseInt(rp[0], 10);
+        const end = parseInt(rp[1], 10);
+        if (!isNaN(start) && !isNaN(end) && start >= 1 && end <= 65535 && end >= start) {
+          for (let p = start; p <= end; p++) ports.push(p);
+        } else {
+          return showSavedError('Invalid port range: ' + part);
+        }
+      } else {
+        return showSavedError('Invalid port range format: ' + part);
+      }
+    } else {
+      const p = parseInt(part, 10);
+      if (!isNaN(p) && p >= 1 && p <= 65535) {
+        ports.push(p);
+      } else {
+        return showSavedError('Invalid port: ' + part);
+      }
+    }
+  }
+
+  const uniquePorts = [...new Set(ports)].sort((a, b) => a - b);
+  if (!uniquePorts.length) return showSavedError('Enter at least one valid port (1-65535).');
+
   const payload = {
     certHash,
     name: byId('savedName').value.trim(),
     addresses: byId('savedAddresses').value,
     onionAddress: byId('savedOnion').value.trim(),
-    minPort,
-    maxPort,
+    ports: uniquePorts,
     networkType: byId('savedNetworkType').value,
     autoConnect: byId('savedAutoConnect').checked
   };
@@ -582,6 +771,7 @@ function showSavedError(message) { const error = byId('savedPeerModalError'); er
 async function reconnectSavedPeer(certHash) { try { await QP.api('/api/connect-saved-peer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash})}); QP.toast('Reconnect started'); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
 async function toggleSavedAutoConnect(certHash,autoConnect) { try { await QP.api('/api/toggle-saved-peer-autoconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash,autoConnect})}); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
 async function deleteSavedPeer(item) { if (!confirm(`Delete saved peer "${item.name || 'Saved peer'}"? This removes it from the persistent database.`)) return; try { await QP.api('/api/saved-peer-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash:item.certHash})}); QP.toast('Saved peer deleted'); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
+async function clearOfflineSavedPeers() { if (!confirm('Are you sure you want to remove all offline saved peers from the database?')) return; try { const r = await QP.api('/api/saved-peers-clear-offline',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); QP.toast(`Cleared ${r.removedCount || 0} offline saved peer(s)`); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
 
 async function launchSelectedApp(peer, select) {
   const option = select.options[select.selectedIndex]; if (!option) return;
@@ -601,6 +791,7 @@ async function setAutoAccept(enabled){try{await QP.api('/api/settings/auto-accep
 async function trustPeer(peerId,trust){try{await QP.api('/api/peer/trust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId,trust})});QP.toast(trust?'Peer trusted':'Trust removed');}catch(e){QP.toast(e.message);}refreshDashboard();}
 async function savePeer(peerId,save){try{await QP.api('/api/save-peer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId,save,autoConnect:true})});QP.toast(save?'Peer saved':'Peer removed from saved list');}catch(e){QP.toast(e.message);}refreshDashboard();}
 async function autoPeer(peerId,autoAccept){try{await QP.api('/api/peer/auto-accept',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId,autoAccept})});}catch(e){QP.toast(e.message);}refreshDashboard();}
+async function connectPeerDirect(peerId){try{const r=await QP.api('/api/peer/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId})});if(r.success){QP.toast('Establishing QUIC connection...','success');}else{QP.toast(r.error||'Connection failed','error');}}catch(e){QP.toast(e.message,'error');}refreshDashboard();}
 async function disconnectPeer(peerId){try{await QP.api('/api/disconnect-peer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId})});}catch(e){QP.toast(e.message);}refreshDashboard();}
 async function saveAllPeers(){try{const r=await QP.api('/api/save-all-peers',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});QP.toast(`${r.savedCount} peer(s) saved`);}catch(e){QP.toast(e.message);}refreshDashboard();}
 async function cancelInterrogation(id){try{await QP.api('/api/cancel-interrogation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});QP.toast('Connection attempt cancelled');}catch(e){QP.toast(e.message);}refreshDashboard();}
@@ -615,14 +806,14 @@ function openTokenConflictModal(res) {
   byId('conflictAutoConnect').checked = res.savedPeer?.autoConnect !== false;
 
   const savedIps = (res.savedPeer?.addresses || []).join(', ') || 'Ninguna';
-  const savedPorts = formatPortRange(res.savedPeer?.minPort, res.savedPeer?.maxPort);
-  const savedType = res.savedPeer?.networkType || 'Static';
+  const savedPorts = formatPortRange(res.savedPeer);
+  const savedType = res.savedPeer?.networkType || 'Wan';
   const savedTor = res.savedPeer?.onionAddress ? `\nTor: ${res.savedPeer.onionAddress}` : '';
   byId('conflictSavedInfo').textContent = `IP(s): ${savedIps}\nPuertos: ${savedPorts}\nTipo de red: ${savedType}${savedTor}`;
 
   const newIps = (res.newTokenPeer?.addresses || []).join(', ') || 'Ninguna';
-  const newPorts = formatPortRange(res.newTokenPeer?.minPort, res.newTokenPeer?.maxPort);
-  const newType = res.newTokenPeer?.networkType || 'Static';
+  const newPorts = formatPortRange(res.newTokenPeer);
+  const newType = res.newTokenPeer?.networkType || 'Wan';
   const newTor = res.newTokenPeer?.onionAddress ? `\nTor: ${res.newTokenPeer.onionAddress}` : '';
   byId('conflictNewInfo').textContent = `IP(s): ${newIps}\nPuertos: ${newPorts}\nTipo de red: ${newType}${newTor}`;
 
@@ -675,6 +866,48 @@ async function connectToken() {
   }
   refreshDashboard();
 }
+
+async function detectClipboardToken(explicit = false) {
+  if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+    if (explicit) QP.toast('El navegador no permite acceso directo al portapapeles.', 'warn');
+    return;
+  }
+
+  try {
+    const rawText = (await navigator.clipboard.readText() || '').trim();
+    if (!rawText) {
+      if (explicit) QP.toast('El portapapeles está vacío.', 'info');
+      return;
+    }
+
+    const match = rawText.match(/(?:qp|qphp):\/\/[^\s"'<>]+/i);
+    let candidate = match ? match[0] : null;
+
+    if (!candidate) {
+      if (rawText.toLowerCase().includes('.onion') || (/^[A-Za-z0-9+/=_-]{30,}$/.test(rawText) && !rawText.includes(' '))) {
+        candidate = rawText;
+      }
+    }
+
+    if (candidate) {
+      const input = byId('tokenInput');
+      if (input) {
+        if (input.value.trim() !== candidate) {
+          input.value = candidate;
+          QP.toast('Token de conexión detectado en portapapeles y cargado.', 'info');
+        } else if (explicit) {
+          QP.toast('El token ya está cargado en el campo.', 'info');
+        }
+      }
+    } else if (explicit) {
+      QP.toast('No se encontró un token QP válido en el portapapeles.', 'warn');
+    }
+  } catch (err) {
+    if (explicit) {
+      QP.toast('No se pudo acceder al portapapeles: ' + (err.message || 'Permiso denegado'), 'warn');
+    }
+  }
+}
 async function respondPetition(item,accept){try{await QP.api('/api/respond-petition',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requestId:item.requestId,accept})});if(accept){const key=normalizeProtocolName(item.protocolName);const app=APP_DEFS.find(x=>x.key===key);if(app?.href)setTimeout(()=>{QP.navigate(key, key==='chat'?`${app.href}?peer=${encodeURIComponent(item.peerId)}`:app.href);},120);}}catch(e){QP.toast(e.message);}refreshDashboard();}
 
 function openStunModal() {
@@ -711,15 +944,13 @@ function renderStunModalList() {
   });
 
   const uniqueIps = [...new Set(endpoints.map(e => e.address).filter(Boolean))];
-  const ports = endpoints.map(e => Number(e.port)).filter(p => !isNaN(p) && p > 0);
-  const minP = ports.length ? Math.min(...ports) : (currentStunData.minPort || '—');
-  const maxP = ports.length ? Math.max(...ports) : (currentStunData.maxPort || '—');
+  const ports = [...new Set(endpoints.map(e => Number(e.port)).filter(p => !isNaN(p) && p > 0))].sort((a, b) => a - b);
   const totalHits = endpoints.reduce((sum, e) => sum + e.hits, 0);
 
   const stat1 = QP.el('span', '', ''); stat1.innerHTML = `<strong>Total responses:</strong> ${totalHits}`;
   const stat2 = QP.el('span', '', ''); stat2.innerHTML = `<strong>Unique endpoints:</strong> ${endpoints.length}`;
   const stat3 = QP.el('span', '', ''); stat3.innerHTML = `<strong>Unique IPs:</strong> ${uniqueIps.length}`;
-  const stat4 = QP.el('span', '', ''); stat4.innerHTML = `<strong>Port range:</strong> ${minP === maxP ? minP : `${minP} – ${maxP}`}`;
+  const stat4 = QP.el('span', '', ''); stat4.innerHTML = `<strong>Port(s):</strong> ${formatPortRange(ports.length ? ports : currentStunData.ports, currentStunData.portMode)}`;
   statsBox.append(stat1, stat2, stat3, stat4);
 
   if (!endpoints.length) {
@@ -757,14 +988,19 @@ function copyAllStunMappings() {
 function renderQuicTelemetry(s) {
   const badge = byId('quicTelemetryStatusBadge');
   const body = byId('quicTelemetryBody');
-  if (!body) return;
-  QP.clear(body);
+  if (!body || !s) return;
 
-  let sessions = s.quicTelemetry || [];
-  if (!sessions.length && s.peers) {
+  let sessions = [];
+  if (Array.isArray(s)) {
+    sessions = s;
+  } else if (Array.isArray(s.quicTelemetry) && s.quicTelemetry.length > 0) {
+    sessions = s.quicTelemetry;
+  } else if (Array.isArray(s.sessions) && s.sessions.length > 0) {
+    sessions = s.sessions;
+  } else if (Array.isArray(s.peers) && s.peers.length > 0) {
     sessions = s.peers.filter(p => p.telemetry).map(p => ({
-      peerId: p.id,
-      peerName: p.name || 'Peer',
+      peerId: p.id || p.peerId,
+      peerName: p.name || p.peerName || 'Peer',
       protocolId: '',
       protocolName: 'Peer Direct',
       transportType: p.isTor ? 'Tor' : (p.activeTransport || 'WAN'),
@@ -792,7 +1028,15 @@ function renderQuicTelemetry(s) {
     QP.setText('kpiQuicAlgorithm', 'Algorithm: BBR / CUBIC · MTU: —');
     QP.setText('kpiQuicThroughput', '—');
     QP.setText('kpiQuicPackets', 'Tx: 0 pkts · Rx: 0 pkts');
-    emptyRow(body, 9, 'No active QUIC protocol sessions available. Connect to a peer or open an application to inspect native telemetry.');
+
+    const fragment = document.createDocumentFragment();
+    emptyRow(fragment, 8, 'No active QUIC protocol sessions available. Connect to a peer or open an application to inspect native telemetry.');
+    if (typeof body.replaceChildren === 'function') {
+      body.replaceChildren(fragment);
+    } else {
+      QP.clear(body);
+      body.appendChild(fragment);
+    }
     return;
   }
 
@@ -845,9 +1089,11 @@ function renderQuicTelemetry(s) {
   QP.setText('kpiQuicLoss', `${overallLossRatio.toFixed(2)}%`);
   QP.setText('kpiQuicLossDetails', `${totalLost.toLocaleString()} lost · ${totalRetrans.toLocaleString()} retrans`);
   QP.setText('kpiQuicCwnd', formatBytes(totalCwnd));
-  QP.setText('kpiQuicAlgorithm', `Algorithms: ${Array.from(algos).join(', ') || 'BBR / CUBIC'}`);
+  QP.setText('kpiQuicAlgorithm', 'Optimal BBR Congestion Control');
   QP.setText('kpiQuicThroughput', `Tx: ${formatBytes(totalTxBytes)} · Rx: ${formatBytes(totalRxBytes)}`);
   QP.setText('kpiQuicPackets', `Tx: ${totalTxPackets.toLocaleString()} pkts · Rx: ${totalRxPackets.toLocaleString()} pkts`);
+
+  const fragment = document.createDocumentFragment();
 
   sessions.forEach(item => {
     const t = item.telemetry || {};
@@ -870,22 +1116,14 @@ function renderQuicTelemetry(s) {
     }
     tr.appendChild(protoCell);
 
-    // 3. Congestion Control
-    const ccCell = document.createElement('td');
-    const algo = t.congestionAlgorithm || 'CUBIC';
-    const isBbr = String(algo).toUpperCase() === 'BBR';
-    const ccBadge = QP.el('span', `badge ${isBbr ? 'badge-cc-bbr' : 'badge-cc-cubic'}`, algo);
-    ccCell.appendChild(ccBadge);
-    tr.appendChild(ccCell);
-
-    // 4. RTT (Min / Avg / Max)
+    // 3. RTT (Min / Avg / Max)
     const rttCell = document.createElement('td');
     const rttVal = t.rttMs !== undefined ? `${t.rttMs} ms` : '—';
     rttCell.appendChild(QP.el('div', 'mono strong', rttVal));
-    rttCell.appendChild(QP.el('div', 'peer-sub mono', `Min: ${t.minRttMs ?? '—'} · Max: ${t.maxRttMs ?? '—'} ms`));
+    rttCell.appendChild(QP.el('div', 'peer-sub mono', `Min: ${t.minRttMs ?? '—'} · Max: ${t.maxRttMs ?? '—'} ms · Var: ${t.rttVarianceMs ?? '—'} ms`));
     tr.appendChild(rttCell);
 
-    // 5. Loss %
+    // 4. Loss %
     const lossCell = document.createElement('td');
     const lossPct = t.packetLossPercentage !== undefined ? `${t.packetLossPercentage}%` : '0.00%';
     const lossBadge = QP.el('span', `badge ${t.packetLossPercentage > 1 ? 'red' : 'green'}`, lossPct);
@@ -893,55 +1131,41 @@ function renderQuicTelemetry(s) {
     lossCell.appendChild(QP.el('div', 'peer-sub mono', `Lost: ${t.sendSuspectedLostPackets ?? 0} · Retrans: ${t.sendRetransmittablePackets ?? 0}`));
     tr.appendChild(lossCell);
 
-    // 6. CWND / Path MTU
+    // 5. CWND / Path MTU
     const cwndCell = document.createElement('td');
     cwndCell.appendChild(QP.el('div', 'mono strong', formatBytes(t.sendCongestionWindow || 0)));
     cwndCell.appendChild(QP.el('div', 'peer-sub mono', `MTU: ${t.pathMtu || '—'} B`));
     tr.appendChild(cwndCell);
 
-    // 7. Wire Transfer (Tx / Rx)
+    // 6. Wire Transfer (Tx / Rx)
     const wireCell = document.createElement('td');
     wireCell.appendChild(QP.el('div', 'mono', `Tx: ${formatBytes(t.sendTotalBytes || 0)}`));
     wireCell.appendChild(QP.el('div', 'mono text-muted', `Rx: ${formatBytes(t.recvTotalBytes || 0)}`));
     wireCell.appendChild(QP.el('div', 'peer-sub mono', `${t.sendTotalPackets ?? 0} tx · ${t.recvTotalPackets ?? 0} rx pkts`));
     tr.appendChild(wireCell);
 
-    // 8. Security / ALPN
+    // 7. Security / ALPN
     const secCell = document.createElement('td');
     secCell.appendChild(QP.el('div', 'mono text-xs', t.cipherSuite || 'TLS 1.3'));
     secCell.appendChild(QP.el('div', 'peer-sub mono', `ALPN: ${t.alpn || '—'}`));
     tr.appendChild(secCell);
 
-    // 9. Actions
-    const actionCell = document.createElement('td');
-    const switchBtn = QP.button(
-      isBbr ? 'Set CUBIC' : 'Set BBR',
-      isBbr ? '' : 'accent',
-      () => switchCongestionControl(item.peerId, item.protocolId, algo)
-    );
-    actionCell.appendChild(switchBtn);
-    tr.appendChild(actionCell);
+    // 8. Diagnostics / Handshake
+    const diagCell = document.createElement('td');
+    const hs = t.handshakeDurationMs !== undefined ? `${t.handshakeDurationMs} ms` : '—';
+    diagCell.appendChild(QP.el('div', 'mono strong', `Handshake: ${hs}`));
+    const drops = t.recvDroppedPackets ?? 0;
+    const dupes = t.recvDuplicatePackets ?? 0;
+    diagCell.appendChild(QP.el('div', 'peer-sub mono', `Drops: ${drops} · Dupes: ${dupes}`));
+    tr.appendChild(diagCell);
 
-    body.appendChild(tr);
+    fragment.appendChild(tr);
   });
-}
 
-async function switchCongestionControl(peerId, protocolId, currentAlgo) {
-  const targetAlgo = (String(currentAlgo || '').toUpperCase() === 'BBR') ? 'cubic' : 'bbr';
-  try {
-    const res = await QP.api('/api/quic/congestion-control', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ peerId, protocolId: protocolId || undefined, algorithm: targetAlgo })
-    });
-    if (res.success) {
-      QP.toast(`Switched congestion control to ${targetAlgo.toUpperCase()}`);
-    } else {
-      QP.toast(`Failed to switch congestion control to ${targetAlgo.toUpperCase()}`);
-    }
-  } catch (err) {
-    QP.toast(`Congestion control update failed: ${err.message}`);
+  if (typeof body.replaceChildren === 'function') {
+    body.replaceChildren(fragment);
+  } else {
+    QP.clear(body);
+    body.appendChild(fragment);
   }
-  refreshDashboard();
 }
-

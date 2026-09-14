@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Photino.NET;
 using QuicPunch;
 using QuicPunch.Helpers;
@@ -23,7 +24,7 @@ internal sealed class WebUiServer
     private readonly ChatHandler _chatHandler;
     private readonly VirtualLanHandler _lanHandler;
     private readonly VoiceCallHandler _voiceHandler;
-    private readonly RelayDriveHandler _relayDriveHandler;
+    private readonly SpeedTestHandler _speedTestHandler;
     private readonly AppPreferencesStore _preferences;
     private readonly CancellationTokenSource _cts;
     private readonly SemaphoreSlim _requestSlots = new(WebUiContext.MaxConcurrentHttpRequests, WebUiContext.MaxConcurrentHttpRequests);
@@ -33,7 +34,7 @@ internal sealed class WebUiServer
     private readonly ChatApiModule _chatModule;
     private readonly VoiceApiModule _voiceModule;
     private readonly LanApiModule _lanModule;
-    private readonly FilesApiModule _filesModule;
+    private readonly SpeedTestApiModule _speedTestModule;
     private readonly PeerApiModule _peerModule;
     private readonly StatusApiModule _statusModule;
 
@@ -44,14 +45,12 @@ internal sealed class WebUiServer
     public static ConcurrentQueue<UserNotification> UserNotifications { get; } = new();
 
     public static ConcurrentQueue<ChatMessage> ChatMessages => _instance?._chatModule.ChatMessages ?? _emptyChatMessages;
-    public static ConcurrentDictionary<string, ConcurrentQueue<byte[]>> IncomingAudioQueues => _instance?._voiceModule.IncomingAudioQueues ?? _emptyAudioQueues;
     public static ConcurrentQueue<(string PeerId, string SignalType)> CallSignals => _instance?._voiceModule.CallSignals ?? _emptyCallSignals;
     public static ConcurrentQueue<ClipboardItem> ClipboardItems => _instance?._peerModule.ClipboardItems ?? _emptyClipboardItems;
     public static ConcurrentDictionary<Guid, PendingPetitionItem> PendingPetitions => _instance?._peerModule.PendingPetitions ?? _emptyPetitions;
     public static ConcurrentDictionary<(Guid PeerId, Guid ProtocolId), Guid> InFlightConnections => _instance?._peerModule.InFlightConnections ?? _emptyInFlight;
 
     private static readonly ConcurrentQueue<ChatMessage> _emptyChatMessages = new();
-    private static readonly ConcurrentDictionary<string, ConcurrentQueue<byte[]>> _emptyAudioQueues = new();
     private static readonly ConcurrentQueue<(string PeerId, string SignalType)> _emptyCallSignals = new();
     private static readonly ConcurrentQueue<ClipboardItem> _emptyClipboardItems = new();
     private static readonly ConcurrentDictionary<Guid, PendingPetitionItem> _emptyPetitions = new();
@@ -86,7 +85,7 @@ internal sealed class WebUiServer
         ChatHandler chatHandler,
         VirtualLanHandler lanHandler,
         VoiceCallHandler voiceHandler,
-        RelayDriveHandler relayDriveHandler,
+        SpeedTestHandler speedTestHandler,
         AppPreferencesStore preferences,
         CancellationTokenSource cts,
         int port = 5000)
@@ -96,7 +95,7 @@ internal sealed class WebUiServer
         _chatHandler = chatHandler;
         _lanHandler = lanHandler;
         _voiceHandler = voiceHandler;
-        _relayDriveHandler = relayDriveHandler;
+        _speedTestHandler = speedTestHandler;
         _preferences = preferences;
         _cts = cts;
         _port = port;
@@ -105,9 +104,63 @@ internal sealed class WebUiServer
         _chatModule = new ChatApiModule(_qcc, _chatHandler, _hub);
         _voiceModule = new VoiceApiModule(_voiceHandler, _hub);
         _lanModule = new LanApiModule(_qcc, _lanHandler, _preferences);
-        _filesModule = new FilesApiModule(_qcc, _relayDriveHandler, _cts);
-        _peerModule = new PeerApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _relayDriveHandler, _preferences, _hub, _cts);
-        _statusModule = new StatusApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _relayDriveHandler, _preferences, _peerModule, _chatModule);
+        _speedTestModule = new SpeedTestApiModule(_qcc, _speedTestHandler, _hub, _cts);
+        _peerModule = new PeerApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _speedTestHandler, _preferences, _hub, _cts);
+        _statusModule = new StatusApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _preferences, _peerModule, _chatModule);
+
+        _hub.GetStatusSnapshot = () => _statusModule.GetStatusObject();
+
+        _qcc.OnPeerAvailable += _ => BroadcastStatusUpdate();
+        _qcc.OnPeerDisconnected += _ => BroadcastStatusUpdate();
+        if (_qcc.NatCoordinator != null)
+        {
+            _qcc.NatCoordinator.MappingChanged += (_, _) => BroadcastStatusUpdate();
+        }
+        if (_qcc.PeerStore != null)
+        {
+            _qcc.PeerStore.PeerAdded += (_, _) => BroadcastStatusUpdate();
+            _qcc.PeerStore.PeerModified += (_, _) => BroadcastStatusUpdate();
+            _qcc.PeerStore.PeerRemoved += (_, _) => BroadcastStatusUpdate();
+        }
+        _lanHandler.StateChanged += () => BroadcastStatusUpdate();
+    }
+
+    private readonly object _statusBroadcastLock = new();
+    private CancellationTokenSource? _statusBroadcastCts;
+
+    public static void BroadcastStatusUpdate(int delayMs = 50)
+    {
+        _instance?.ScheduleStatusBroadcast(delayMs);
+    }
+
+    public void ScheduleStatusBroadcast(int delayMs = 50)
+    {
+        lock (_statusBroadcastLock)
+        {
+            _statusBroadcastCts?.Cancel();
+            _statusBroadcastCts?.Dispose();
+            _statusBroadcastCts = new CancellationTokenSource();
+            var token = _statusBroadcastCts.Token;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (delayMs > 0)
+                        await Task.Delay(delayMs, token).ConfigureAwait(false);
+
+                    if (token.IsCancellationRequested) return;
+
+                    var status = _statusModule.GetStatusObject();
+                    _hub.Broadcast("status_updated", status);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    QuicPunchLog.Info($"[WebUI] Status broadcast error: {ex.Message}");
+                }
+            }, token);
+        }
     }
 
     public int Port => _port;
@@ -314,7 +367,7 @@ internal sealed class WebUiServer
             if (await _chatModule.HandleRequestAsync(path, req, resp).ConfigureAwait(false)) return;
             if (await _voiceModule.HandleRequestAsync(path, req, resp).ConfigureAwait(false)) return;
             if (await _lanModule.HandleRequestAsync(path, req, resp).ConfigureAwait(false)) return;
-            if (await _filesModule.HandleRequestAsync(path, req, resp).ConfigureAwait(false)) return;
+            if (await _speedTestModule.HandleRequestAsync(path, req, resp).ConfigureAwait(false)) return;
             if (await _peerModule.HandleRequestAsync(path, req, resp).ConfigureAwait(false)) return;
 
             await WebUiContext.WriteJsonAsync(resp, new { success = false, error = "Not found." }, 404).ConfigureAwait(false);
@@ -341,25 +394,43 @@ internal sealed class WebUiServer
         }
     }
 
+    private static readonly string? DevWwwRoot = FindDevWwwRoot();
+
+    private static string? FindDevWwwRoot()
+    {
+        string baseDir = AppContext.BaseDirectory;
+        string[] candidates =
+        [
+            Path.Combine(baseDir, "wwwroot"),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "wwwroot")),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "QuicPunchTests", "wwwroot"))
+        ];
+        foreach (var dir in candidates)
+        {
+            if (Directory.Exists(dir) && File.Exists(Path.Combine(dir, "index.html")))
+                return dir;
+        }
+        return null;
+    }
+
     private async Task<bool> TryServeStaticAsync(string path, HttpListenerResponse resp)
     {
         string? file = path switch
         {
             "/" or "/index.html" => "index.html",
-            "/chat.html" or "/call.html" or "/vpn.html" or "/files.html" or "/clipboard.html" => "index.html",
+            "/chat.html" or "/call.html" or "/vpn.html" or "/speedtest.html" => "index.html",
             "/app.css" => "app.css",
             "/app.js" => "app.js",
             "/dashboard.js" => "dashboard.js",
             "/chat.js" => "chat.js",
             "/voice.js" => "voice.js",
             "/vpn.js" => "vpn.js",
-            "/clipboard.js" => "clipboard.js",
-            "/files.js" => "files.js",
+            "/speedtest.js" => "speedtest.js",
             _ => null
         };
         if (file == null) return false;
 
-        string content = LoadEmbeddedResource(file);
+        string content = LoadContent(file);
         string contentType = file.EndsWith(".css", StringComparison.OrdinalIgnoreCase) ? "text/css; charset=utf-8" :
             file.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ? "application/javascript; charset=utf-8" : "text/html; charset=utf-8";
         if (file.EndsWith(".html", StringComparison.OrdinalIgnoreCase)) content = InjectSecurityBootstrap(content);
@@ -370,11 +441,55 @@ internal sealed class WebUiServer
         return true;
     }
 
+    private string LoadContent(string file)
+    {
+        string content = ReadRawFile(file);
+        if (file.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+        {
+            content = ResolveIncludes(content);
+        }
+        return content;
+    }
+
+    private string ReadRawFile(string relativePath)
+    {
+        relativePath = relativePath.TrimStart('/', '\\').Replace('\\', '/');
+        if (DevWwwRoot != null)
+        {
+            string diskPath = Path.Combine(DevWwwRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(diskPath))
+            {
+                try
+                {
+                    return File.ReadAllText(diskPath, Encoding.UTF8);
+                }
+                catch
+                {
+                    // Fall back to embedded resource if disk read fails
+                }
+            }
+        }
+        return LoadEmbeddedResource(relativePath);
+    }
+
+    private string ResolveIncludes(string html)
+    {
+        return Regex.Replace(html, @"<!--\s*@include\s+[""']?([^""'\s>]+)[""']?\s*-->", m =>
+        {
+            string includePath = m.Groups[1].Value.Trim();
+            string childContent = ReadRawFile(includePath);
+            return ResolveIncludes(childContent);
+        });
+    }
+
     private string LoadEmbeddedResource(string file)
     {
         Assembly assembly = Assembly.GetExecutingAssembly();
-        string? resource = assembly.GetManifestResourceNames().FirstOrDefault(name => name.EndsWith(file, StringComparison.OrdinalIgnoreCase));
-        if (resource == null) return file.EndsWith(".html") ? $"<h1>{file} not found</h1>" : "";
+        string normalized = file.Replace('/', '.').Replace('\\', '.');
+        string? resource = assembly.GetManifestResourceNames().FirstOrDefault(name =>
+            name.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(file, StringComparison.OrdinalIgnoreCase));
+        if (resource == null) return file.EndsWith(".html", StringComparison.OrdinalIgnoreCase) ? $"<h1>{file} not found</h1>" : "";
         using Stream? stream = assembly.GetManifestResourceStream(resource);
         if (stream == null) return "";
         using var reader = new StreamReader(stream, Encoding.UTF8);

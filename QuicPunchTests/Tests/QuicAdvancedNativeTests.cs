@@ -207,15 +207,12 @@ public static class QuicAdvancedNativeTests
         var wrappedClient = QuicPunch.QuicConnection.Wrap(clientConn);
         var wrappedServer = QuicPunch.QuicConnection.Wrap(serverConn);
 
-        // Verify DSCP priority via wrapper
         bool wrapDscpOk = wrappedClient.TrySetDscp(QuicDscpPriority.Voice);
         Console.WriteLine($"   --> Wrapper TrySetDscp(Voice): {(wrapDscpOk ? "SUCCESS" : "FAILED")}");
 
-        // Verify Path MTU via wrapper
         bool wrapMtuOk = wrappedClient.TryGetPathMtu(out var clientMtu);
         Console.WriteLine($"   --> Wrapper PathMtu: {wrappedClient.PathMtu} bytes (TryGetPathMtu: {(wrapMtuOk ? "SUCCESS" : "FAILED")}, PMTUD Active: {MsQuicTuner.IsPathMtuDiscoveryActive})");
 
-        // Verify Stream Priority via wrapper
         await using (var wsClient = await wrappedClient.OpenOutboundStreamAsync(QuicStreamType.Bidirectional))
         {
             var acceptTask = wrappedServer.AcceptInboundStreamAsync();
@@ -235,7 +232,6 @@ public static class QuicAdvancedNativeTests
             Console.WriteLine("   --> Wrapper QuicStream priority properties: SUCCESS");
         }
 
-        // Verify Telemetry via wrapper
         bool wrapTelemOk = wrappedClient.TryGetTelemetry(out var wrapTelem);
         Console.WriteLine($"   --> Wrapper TryGetTelemetry: {(wrapTelemOk && wrapTelem != null ? "SUCCESS" : "FAILED")}");
 
