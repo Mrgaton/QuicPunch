@@ -11,11 +11,24 @@ using System.Threading.Channels;
 namespace QuicPunch.Helpers;
 
 /// <summary>
+/// Abstraction for RFC 9221 Unreliable QUIC Datagram channels (both native and virtual multiplexed).
+/// </summary>
+public interface IQuicDatagramChannel : IDisposable
+{
+    bool IsSendEnabled { get; }
+    bool IsReceiveEnabled { get; }
+    bool Send(ReadOnlySpan<byte> datagram);
+    System.Threading.Channels.Channel<byte[]> IncomingDatagrams { get; }
+    event Action<byte[]>? OnDatagramReceived;
+    event Action<System.Net.IPEndPoint>? OnPeerAddressChanged;
+}
+
+/// <summary>
 /// Unmanaged helper and channel for RFC 9221 Unreliable QUIC Datagrams on top of Microsoft MsQuic (.NET 11).
 /// Enables negotiating, sending, and receiving raw unreliable QUIC datagram frames through native MsQuic
 /// API table hooks and configuration tuning without waiting for official System.Net.Quic datagram APIs.
 /// </summary>
-public sealed class MsQuicDatagramChannel : IDisposable
+public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
 {
     private const uint QuicParamConfigSettings = 0x03000000;
     private const uint QuicParamConnDatagramReceiveEnabled = 0x0500000D;
@@ -155,7 +168,7 @@ public sealed class MsQuicDatagramChannel : IDisposable
     /// Injects RFC 9221 DatagramReceiveEnabled into all MsQuicConfiguration caches in System.Net.Quic.
     /// Call this before establishing connections to ensure max_datagram_frame_size is negotiated during handshake.
     /// </summary>
-    public static bool EnableDatagramsOnConfigurationCache()
+    public static bool EnableDatagramsOnConfigurationCache(List<System.Net.Security.SslApplicationProtocol>? customProtocols = null)
     {
         EnsureInitialized();
         if (SetParam == null) return false;
@@ -186,14 +199,13 @@ public sealed class MsQuicDatagramChannel : IDisposable
                 // Offset 106: _bitfield: bit 2 = MigrationEnabled, bit 3 = DatagramReceiveEnabled
                 cfgSettings[106] = (byte)((1 << 3) | (1 << 2));
 
-                int patchedCount = PatchAllConfigurations(cacheObj, cfgSettings);
-                if (patchedCount == 0)
+                if (!s_warmedUpForSupportedProtocols || customProtocols != null)
                 {
-                    // Cache is empty. Warm it up with a 15ms loopback handshake so System.Net.Quic builds its native configuration objects
-                    WarmUpCache();
-                    patchedCount = PatchAllConfigurations(cacheObj, cfgSettings);
+                    s_warmedUpForSupportedProtocols = true;
+                    WarmUpCache(customProtocols);
                 }
 
+                int patchedCount = PatchAllConfigurations(cacheObj, cfgSettings);
                 s_isConfigPatched = patchedCount > 0;
                 return s_isConfigPatched;
             }
@@ -203,6 +215,98 @@ public sealed class MsQuicDatagramChannel : IDisposable
                 return false;
             }
         }
+    }
+
+    /// <summary>
+    /// Ensures that MsQuic's cached configuration handle for the given client connection options is created
+    /// and patched with DatagramReceiveEnabled before the connection is initiated.
+    /// </summary>
+    public static bool EnsureClientConfigurationPatched(global::System.Net.Quic.QuicClientConnectionOptions options)
+    {
+        EnsureInitialized();
+        if (SetParam == null || options == null) return false;
+
+        try
+        {
+            var asm = typeof(global::System.Net.Quic.QuicConnection).Assembly;
+            var configType = asm.GetType("System.Net.Quic.MsQuicConfiguration");
+            MethodInfo? createMethod = null;
+            if (configType != null)
+            {
+                foreach (var m in configType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                {
+                    if (m.Name == "Create")
+                    {
+                        var ps = m.GetParameters();
+                        if (ps.Length == 1 && ps[0].ParameterType.Name == "QuicClientConnectionOptions")
+                        {
+                            createMethod = m;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (createMethod != null)
+            {
+                var handle = createMethod.Invoke(null, new object[] { options }) as SafeHandle;
+                if (handle != null && !handle.IsInvalid)
+                {
+                    return PatchConfiguration(handle);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            QuicPunchLog.Error("[EnsureClientConfig] Exception", ex);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Ensures that MsQuic's cached configuration handle for the given server connection options is created
+    /// and patched with DatagramReceiveEnabled before listener accepts connections.
+    /// </summary>
+    public static bool EnsureServerConfigurationPatched(global::System.Net.Quic.QuicServerConnectionOptions options, string? targetHost = null)
+    {
+        EnsureInitialized();
+        if (SetParam == null || options == null) return false;
+
+        try
+        {
+            var asm = typeof(global::System.Net.Quic.QuicConnection).Assembly;
+            var configType = asm.GetType("System.Net.Quic.MsQuicConfiguration");
+            MethodInfo? createMethod = null;
+            if (configType != null)
+            {
+                foreach (var m in configType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                {
+                    if (m.Name == "Create")
+                    {
+                        var ps = m.GetParameters();
+                        if (ps.Length == 2 && ps[0].ParameterType.Name == "QuicServerConnectionOptions")
+                        {
+                            createMethod = m;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (createMethod != null)
+            {
+                var handle = createMethod.Invoke(null, new object[] { options, targetHost ?? string.Empty }) as SafeHandle;
+                if (handle != null && !handle.IsInvalid)
+                {
+                    return PatchConfiguration(handle);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            QuicPunchLog.Error("[EnsureServerConfig] Exception", ex);
+        }
+        return false;
     }
 
     private static int PatchAllConfigurations(object cacheObj, byte[] cfgSettings)
@@ -240,14 +344,16 @@ public sealed class MsQuicDatagramChannel : IDisposable
         return count;
     }
 
-    private static void WarmUpCache()
+    private static bool s_warmedUpForSupportedProtocols;
+
+    private static void WarmUpCache(List<System.Net.Security.SslApplicationProtocol>? customProtocols = null)
     {
         try
         {
             using var ecdh = System.Security.Cryptography.ECDiffieHellman.Create();
             using var pfxCert = CertManager.GenerateIdentityCertificate("warmup", ecdh);
 
-            var alpn = new List<System.Net.Security.SslApplicationProtocol> { new("warmup") };
+            var alpn = customProtocols ?? QuicPunchConnection.SupportedProtocols;
             var listenerTask = System.Net.Quic.QuicListener.ListenAsync(new System.Net.Quic.QuicListenerOptions
             {
                 ListenEndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0),
@@ -259,7 +365,9 @@ public sealed class MsQuicDatagramChannel : IDisposable
                     ServerAuthenticationOptions = new System.Net.Security.SslServerAuthenticationOptions
                     {
                         ServerCertificate = pfxCert,
-                        ApplicationProtocols = alpn
+                        ApplicationProtocols = alpn,
+                        ClientCertificateRequired = true,
+                        RemoteCertificateValidationCallback = delegate { return true; }
                     }
                 })
             }).AsTask();
@@ -276,11 +384,12 @@ public sealed class MsQuicDatagramChannel : IDisposable
                     ClientAuthenticationOptions = new System.Net.Security.SslClientAuthenticationOptions
                     {
                         ApplicationProtocols = alpn,
+                        ClientCertificates = new System.Security.Cryptography.X509Certificates.X509Certificate2Collection(pfxCert),
                         RemoteCertificateValidationCallback = delegate { return true; }
                     }
                 }).AsTask();
 
-                Task.WaitAll([serverTask, clientConnTask], 1500);
+                Task.WaitAll([serverTask, clientConnTask], 2000);
                 try { clientConnTask.Result.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
                 try { serverTask.Result.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
             }
@@ -328,7 +437,7 @@ public sealed class MsQuicDatagramChannel : IDisposable
     public bool IsSendEnabled { get; private set; }
     public bool IsReceiveEnabled { get; private set; }
 
-    public readonly Channel<byte[]> IncomingDatagrams = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1024)
+    public Channel<byte[]> IncomingDatagrams { get; } = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1024)
     {
         FullMode = BoundedChannelFullMode.DropOldest,
         SingleReader = false,
@@ -433,11 +542,19 @@ public sealed class MsQuicDatagramChannel : IDisposable
     {
         if (_disposed != 0 || DatagramSend == null) return false;
 
+        if (!IsSendEnabled)
+        {
+            RefreshStatus();
+            if (!IsSendEnabled)
+            {
+                return false;
+            }
+        }
+
         unsafe
         {
             long id = Interlocked.Increment(ref s_nextSendId);
 
-            // Allocate native memory for the datagram payload
             IntPtr dataPtr = Marshal.AllocHGlobal(datagram.Length);
             datagram.CopyTo(new Span<byte>((void*)dataPtr, datagram.Length));
 
@@ -456,7 +573,7 @@ public sealed class MsQuicDatagramChannel : IDisposable
             int res = DatagramSend(ConnectionHandle, qbPtr, 1, 0, (IntPtr)id);
             if (!IsSuccessOrPending(res))
             {
-                Console.WriteLine($"[MsQuicDatagram] Send returned status 0x{res:X}");
+                QuicPunchLog.Info($"[MsQuicDatagram] Send returned status 0x{res:X}");
                 if (PendingSendBuffers.TryRemove(id, out var pair))
                 {
                     Marshal.FreeHGlobal(pair.DataBufferPtr);
@@ -544,7 +661,6 @@ public sealed class MsQuicDatagramChannel : IDisposable
                 return StatusSuccess;
             }
 
-            // Delegate all standard connection events to System.Net.Quic's NativeCallback
             if (OriginalNativeCallbackPtr != IntPtr.Zero)
             {
                 var orig = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)OriginalNativeCallbackPtr;
