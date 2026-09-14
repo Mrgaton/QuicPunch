@@ -1,25 +1,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Net;
 using System.Text;
 using QuicPunch;
 
 namespace QuicPunch.Helpers
 {
-    public sealed record HandshakeRequest(
-       Guid Id,
-       Guid ProtocolId,
-       IPEndPoint RemoteEndPoint,
-       Guid PeerId = default,
-       byte[]? CertHash = null);
-
-    public sealed record HandshakeDecision(
-        bool Accepted,
-        ushort? Port,
-        CancellationToken? Ct,
-        IReadOnlyList<CandidateEndpoint>? Candidates = null);
-
     public sealed class HandshakeManager
     {
         private readonly ConcurrentDictionary<Guid, TaskCompletionSource<HandshakeDecision>> _pending = new();
@@ -117,4 +103,17 @@ namespace QuicPunch.Helpers
             return tcs.TrySetResult(decision);
         }
     }
+
+    public sealed record HandshakeRequest(
+        Guid Id,
+        Guid ProtocolId,
+        System.Net.IPEndPoint RemoteEndPoint,
+        Guid PeerId = default,
+        byte[]? CertHash = null);
+
+    public sealed record HandshakeDecision(
+        bool Accepted,
+        ushort? Port,
+        CancellationToken? Ct,
+        IReadOnlyList<CandidateEndpoint>? Candidates = null);
 }

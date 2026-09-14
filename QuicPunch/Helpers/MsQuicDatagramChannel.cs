@@ -11,19 +11,6 @@ using System.Threading.Channels;
 namespace QuicPunch.Helpers;
 
 /// <summary>
-/// Abstraction for RFC 9221 Unreliable QUIC Datagram channels (both native and virtual multiplexed).
-/// </summary>
-public interface IQuicDatagramChannel : IDisposable
-{
-    bool IsSendEnabled { get; }
-    bool IsReceiveEnabled { get; }
-    bool Send(ReadOnlySpan<byte> datagram);
-    System.Threading.Channels.Channel<byte[]> IncomingDatagrams { get; }
-    event Action<byte[]>? OnDatagramReceived;
-    event Action<System.Net.IPEndPoint>? OnPeerAddressChanged;
-}
-
-/// <summary>
 /// Unmanaged helper and channel for RFC 9221 Unreliable QUIC Datagrams on top of Microsoft MsQuic (.NET 11).
 /// Enables negotiating, sending, and receiving raw unreliable QUIC datagram frames through native MsQuic
 /// API table hooks and configuration tuning without waiting for official System.Net.Quic datagram APIs.
@@ -33,6 +20,7 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
     private const uint QuicParamConfigSettings = 0x03000000;
     private const uint QuicParamConnDatagramReceiveEnabled = 0x0500000D;
     private const uint QuicParamConnDatagramSendEnabled = 0x0500000E;
+    private const uint QuicParamConnDatagramMaxLength = 0x0500000F;
     private const uint QuicParamConnSettings = 0x05000004;
 
     private const int EventDatagramReceived = 11;
@@ -436,6 +424,7 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
     public IntPtr OriginalContext { get; }
     public bool IsSendEnabled { get; private set; }
     public bool IsReceiveEnabled { get; private set; }
+    public ushort MaxSendDatagramLength { get; private set; } = 1420;
 
     public Channel<byte[]> IncomingDatagrams { get; } = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1024)
     {
@@ -520,6 +509,13 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
             if (GetParam(ConnectionHandle, QuicParamConnDatagramSendEnabled, (IntPtr)(&len), (IntPtr)(&send)) == 0)
             {
                 IsSendEnabled = send != 0;
+            }
+
+            ushort maxLen = 0;
+            uint lenMax = sizeof(ushort);
+            if (GetParam(ConnectionHandle, QuicParamConnDatagramMaxLength, (IntPtr)(&lenMax), (IntPtr)(&maxLen)) == 0 && maxLen > 0)
+            {
+                MaxSendDatagramLength = maxLen;
             }
         }
     }
@@ -693,4 +689,18 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
 
         IncomingDatagrams.Writer.TryComplete();
     }
+}
+
+/// <summary>
+/// Abstraction for RFC 9221 Unreliable QUIC Datagram channels (both native and virtual multiplexed).
+/// </summary>
+public interface IQuicDatagramChannel : IDisposable
+{
+    bool IsSendEnabled { get; }
+    bool IsReceiveEnabled { get; }
+    ushort MaxSendDatagramLength { get; }
+    bool Send(ReadOnlySpan<byte> datagram);
+    System.Threading.Channels.Channel<byte[]> IncomingDatagrams { get; }
+    event Action<byte[]>? OnDatagramReceived;
+    event Action<System.Net.IPEndPoint>? OnPeerAddressChanged;
 }

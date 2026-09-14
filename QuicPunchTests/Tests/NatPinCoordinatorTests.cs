@@ -108,10 +108,10 @@ namespace QuicPunchTests.Tests;
             coneCoord.AddManualSample(stableEp, 16);
 
             var coneMap = coneCoord.CurrentMapping;
-            if (coneMap.NetworkType != QuicPunch.QuicPunch.NetworkType.Static)
-                throw new Exception($"Expected Static NAT, got {coneMap.NetworkType}");
-            if (coneMap.MostUsedPort != 55000 || coneMap.MinPort != 55000 || coneMap.MaxPort != 55000)
-                throw new Exception("Port range did not match single stable port.");
+            if (coneMap.ConnectionFlags.IsNat || coneMap.ConnectionFlags.MultipleIps || coneMap.ConnectionFlags.PortMode != PortMode.Single)
+                throw new Exception($"Expected a direct single-endpoint mapping, got {coneMap.ConnectionFlags}");
+            if (coneMap.MostUsedPort != 55000 || coneMap.PortArray.Length != 1 || coneMap.PortArray[0] != 55000)
+                throw new Exception("Port array did not match single stable port.");
             if (coneMap.DiscoveredAddresses.Length != 1 || !coneMap.DiscoveredAddresses[0].Equals(stableEp.Address))
                 throw new Exception("Discovered IP addresses mismatch for stable cone mapping.");
 
@@ -122,10 +122,10 @@ namespace QuicPunchTests.Tests;
             symCoord.AddManualSample(new IPEndPoint(IPAddress.Parse("93.184.216.34"), 55003), 1);
 
             var symMap = symCoord.CurrentMapping;
-            if (symMap.NetworkType != QuicPunch.QuicPunch.NetworkType.DynamicPort)
-                throw new Exception($"Expected DynamicPort (Symmetric NAT), got {symMap.NetworkType}");
-            if (symMap.MinPort != 55001 || symMap.MaxPort != 55003)
-                throw new Exception($"Port range was expected to span 55001..55003, got {symMap.MinPort}..{symMap.MaxPort}");
+            if (!symMap.ConnectionFlags.IsNat || symMap.ConnectionFlags.PortMode != PortMode.Multiple)
+                throw new Exception($"Expected a NAT mapping with multiple ports, got {symMap.ConnectionFlags}");
+            if (symMap.PortArray.Length != 3 || symMap.PortArray[0] != 55001 || symMap.PortArray[2] != 55003)
+                throw new Exception($"Port array was expected to span 55001..55003, got {string.Join(", ", symMap.PortArray)}");
 
             Console.WriteLine("PASSED");
 
@@ -140,6 +140,88 @@ namespace QuicPunchTests.Tests;
                 throw new Exception("GetStunHitsSnapshot still contains hits after ResetMapping.");
 
             Console.WriteLine("PASSED");
+
+            // Test 5: Dynamic catalog expansion via AddServerEndpoints retains rotation continuity
+            Console.Write("[TEST 5] Dynamic AddServerEndpoints preserves rotation cycle without resetting cursor... ");
+            var dynCoord = new NatPinCoordinator();
+            var initialSeedList = Enumerable.Range(1, 16)
+                .Select(i => new IPEndPoint(IPAddress.Parse($"198.51.100.{i}"), 3478))
+                .ToList();
+            dynCoord.SetServerEndpoints(initialSeedList);
+
+            // Fetch first batch of 8
+            var firstBatch = dynCoord.GetNextBurstBatch(8);
+            if (firstBatch.Count != 8)
+                throw new Exception($"Expected initial batch of 8, got {firstBatch.Count}");
+
+            // Now dynamically add 16 more discovered servers
+            var discoveredBatch = Enumerable.Range(17, 16)
+                .Select(i => new IPEndPoint(IPAddress.Parse($"198.51.100.{i}"), 3478))
+                .ToList();
+            dynCoord.AddServerEndpoints(discoveredBatch);
+
+            if (dynCoord.Servers.Count != 32)
+                throw new Exception($"Expected 32 total servers after dynamic expansion, got {dynCoord.Servers.Count}");
+
+            // Fetch second batch of 8; it MUST NOT repeat any servers from firstBatch
+            var secondBatch = dynCoord.GetNextBurstBatch(8);
+            if (secondBatch.Count != 8)
+                throw new Exception($"Expected second batch of 8, got {secondBatch.Count}");
+            if (firstBatch.Intersect(secondBatch).Any())
+                throw new Exception("Cursor was improperly reset by AddServerEndpoints: secondBatch overlaps with firstBatch!");
+
+            Console.WriteLine("PASSED");
+
+            // Test 6: StunGatherer endpoint parsing & fast initial resolution
+            Console.Write("[TEST 6] StunGatherer robust parsing, seed gathering & background streaming... ");
+            if (!StunGatherer.TryParseStunEndpoint("stun:stun.l.google.com:19302", out var host1, out var port1) || host1 != "stun.l.google.com" || port1 != 19302)
+                throw new Exception("Failed to parse stun: scheme prefix.");
+
+            if (!StunGatherer.TryParseStunEndpoint("turn:relay.example.com:3478", out var host2, out var port2) || host2 != "relay.example.com" || port2 != 3478)
+                throw new Exception("Failed to parse turn: scheme prefix.");
+
+            if (!StunGatherer.TryParseStunEndpoint("stun.nextcloud.com", out var host3, out var port3) || host3 != "stun.nextcloud.com" || port3 != 3478)
+                throw new Exception("Failed to default omitted port to 3478.");
+
+            if (!StunGatherer.TryParseStunEndpoint("[2001:db8::1]:3478", out var host4, out var port4) || host4 != "2001:db8::1" || port4 != 3478)
+                throw new Exception("Failed to parse IPv6 bracketed endpoint.");
+
+            var initialEndpoints = await StunGatherer.GatherInitialEndpointsAsync();
+            if (initialEndpoints.IsEmpty)
+                throw new Exception("GatherInitialEndpointsAsync returned empty collection.");
+
+            // Verify background fetch fast-path streams raw IPs
+            var streamedBatches = new List<IReadOnlyList<IPEndPoint>>();
+            using var bgCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var bgTask = StunGatherer.StartBackgroundCatalogFetchAsync(batch =>
+            {
+                lock (streamedBatches)
+                {
+                    streamedBatches.Add(batch);
+                }
+            }, bgCts.Token);
+
+            // Give background task a moment to download and yield STUN batches
+            for (int i = 0; i < 60; i++)
+            {
+                await Task.Delay(100);
+                lock (streamedBatches)
+                {
+                    if (streamedBatches.Count > 0 && streamedBatches.Sum(b => b.Count) >= 5)
+                        break;
+                }
+            }
+
+            int streamedCount = 0;
+            lock (streamedBatches)
+            {
+                streamedCount = streamedBatches.Sum(b => b.Count);
+            }
+
+            if (streamedCount == 0)
+                throw new Exception("Background catalog gathering failed to yield any streamed STUN batches.");
+
+            Console.WriteLine($"PASSED (streamed {streamedCount} endpoints in background)");
 
             Console.WriteLine("==================================================");
             Console.WriteLine("   ALL NAT PIN COORDINATOR TESTS PASSED!          ");

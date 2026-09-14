@@ -12,13 +12,12 @@
 | **Protocol Name** | `VoiceCall` | [`VoiceCallHandler.ProtocolName`](../../QuicPunchTests/Protocols/VoiceCallHandler.cs) |
 | **Audio Codec** | Concentus Opus 48 kHz VoIP (`OpusVoiceCodec`) | 60ms frames, in-band FEC, 10% packet loss concealment |
 | **Primary Data Plane** | RFC 9221 QUIC Datagrams (`MsQuicDatagramChannel`) | Hardware DSCP 46 (Voice EF) prioritized, unbuffered, TLS-encrypted |
-| **Fallback Data Plane** | Encrypted UDP Datagrams (`VoicePacketType = 0x7601`) | AES-GCM-256 encrypted frames via [`QuicPunch.SendPayloadAsync`](../../QuicPunch/QuicPunch.cs) |
 | **Max Voice Frame Size** | `64 KiB` (`65,536 bytes`) | [`VoiceCallHandler`](../../QuicPunchTests/Protocols/VoiceCallHandler.cs) |
 | **Control Plane** | Reliable `QuicConnection` & `QuicStream` | Lifecycle, call signaling, keepalive, and session teardown |
 
 ---
 
-## Hybrid Plane Architecture
+## Dual Plane Architecture
 
 ```mermaid
 graph TD
@@ -33,13 +32,9 @@ graph TD
     end
 
     subgraph FastTransport [" 3. Real-Time Data Plane (Zero Head-of-Line Blocking)"]
-        Enc --> CheckDgram{"DatagramChannel.IsSendEnabled?"}
-        CheckDgram -- "Yes (Preferred)" --> Dgram["RFC 9221 QUIC Datagrams
+        Enc --> Dgram["RFC 9221 QUIC Datagrams
 (MsQuic Native Hook, DSCP 46 EF)"]
-        CheckDgram -- "No (Fallback)" --> UdpData["Encrypted UDP Packets (0x7601)
-(AES-GCM-256, RFC 6479 Anti-Replay)"]
         Dgram --> Dec
-        UdpData --> Dec
     end
 ```
 

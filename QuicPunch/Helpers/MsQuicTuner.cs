@@ -5,36 +5,6 @@ using System.Runtime.InteropServices;
 
 namespace QuicPunch.Helpers;
 
-public enum QuicCongestionAlgorithm : ushort
-{
-    Cubic = 0,
-    Bbr = 1
-}
-
-/// <summary>
-/// Relative priority levels for QUIC streams (maps to MsQuic uint16 priority 0..65535).
-/// Data on streams with higher priority is scheduled and transmitted ahead of lower-priority streams.
-/// </summary>
-public enum QuicStreamPriority : ushort
-{
-    Lowest = 0x0000,
-    VeryLow = 0x2000,
-    Low = 0x4000,
-    Normal = 0x7FFF,   // Default in MsQuic (32767)
-    High = 0xC000,
-    VeryHigh = 0xE000,
-    Critical = 0xFFFF   // Highest priority (65535)
-}
-
-/// <summary>
-/// Scheduling scheme used by MsQuic to schedule packets across multiple streams on a connection.
-/// </summary>
-public enum QuicStreamSchedulingScheme : uint
-{
-    Fifo = 0,
-    RoundRobin = 1
-}
-
 /// <summary>
 /// Low-level tuning utility for Microsoft MsQuic native engine.
 /// Allows querying and dynamically switching congestion control algorithms (e.g. CUBIC to BBR),
@@ -53,7 +23,6 @@ public static class MsQuicTuner
     private static readonly GetParamDelegate? GetParam;
     private static readonly bool Initialized;
 
-    // MsQuic Parameter IDs
     public const uint QuicParamConfigSettings = 0x03000000;
     public const uint QuicParamConnSettings = 0x05000004;
     public const uint QuicParamConnLocalAddress = 0x05000001;
@@ -922,7 +891,6 @@ public static class MsQuicTuner
                 }
             }
 
-            // Automatically apply stream scheduling scheme (Round-Robin by default)
             TrySetStreamSchedulingScheme(connection, streamSchedulingScheme);
             return true;
         }
@@ -1260,94 +1228,19 @@ public static class MsQuicTuner
     }
 }
 
-/// <summary>
-/// Extension methods for applying optimal MsQuic native tunings directly on QuicConnection instances.
-/// </summary>
-public static class QuicConnectionExtensions
+public enum QuicCongestionAlgorithm : ushort
 {
-    /// <summary>
-    /// Atomically applies BBR congestion control, Pacing, HyStart, PMTUD, 16MB/4MB flow control windows, and keepalive to this connection.
-    /// </summary>
-    public static bool ApplyOptimalTuning(this System.Net.Quic.QuicConnection connection) =>
-        MsQuicTuner.TryApplyOptimalTuning(connection);
-
-    /// <summary>
-    /// Atomically applies BBR congestion control, Pacing, HyStart, PMTUD, 16MB/4MB flow control windows, and keepalive to this connection.
-    /// </summary>
-    public static bool ApplyOptimalTuning(this global::QuicPunch.QuicConnection connection) =>
-        MsQuicTuner.TryApplyOptimalTuning(connection);
-
-    /// <summary>
-    /// Queries the active congestion control algorithm of this native QUIC connection.
-    /// </summary>
-    public static bool TryGetCongestionControl(this System.Net.Quic.QuicConnection connection, out QuicCongestionAlgorithm algorithm) =>
-        MsQuicTuner.TryGetCongestionControl(connection, out algorithm);
-
-    /// <summary>
-    /// Queries the active congestion control algorithm of this QuicPunch QUIC connection.
-    /// </summary>
-    public static bool TryGetCongestionControl(this global::QuicPunch.QuicConnection connection, out QuicCongestionAlgorithm algorithm) =>
-        MsQuicTuner.TryGetCongestionControl(connection, out algorithm);
-
-    /// <summary>
-    /// Configures Path MTU Discovery parameters on an active native QUIC connection.
-    /// </summary>
-    public static bool TrySetPathMtuDiscovery(this System.Net.Quic.QuicConnection connection, ushort minMtu = 1280, ushort maxMtu = 1500, ulong timeoutUs = 600_000_000UL, byte missingProbeCount = 3) =>
-        MsQuicTuner.TrySetPathMtuDiscovery(connection, minMtu, maxMtu, timeoutUs, missingProbeCount);
-
-    /// <summary>
-    /// Configures Path MTU Discovery parameters on an active QuicPunch QUIC connection.
-    /// </summary>
-    public static bool TrySetPathMtuDiscovery(this global::QuicPunch.QuicConnection connection, ushort minMtu = 1280, ushort maxMtu = 1500, ulong timeoutUs = 600_000_000UL, byte missingProbeCount = 3) =>
-        MsQuicTuner.TrySetPathMtuDiscovery(connection, minMtu, maxMtu, timeoutUs, missingProbeCount);
-
-    /// <summary>
-    /// Sets the stream scheduling scheme on an active native QUIC connection (FIFO or RoundRobin).
-    /// </summary>
-    public static bool TrySetStreamSchedulingScheme(this System.Net.Quic.QuicConnection connection, QuicStreamSchedulingScheme scheme) =>
-        MsQuicTuner.TrySetStreamSchedulingScheme(connection, scheme);
-
-    /// <summary>
-    /// Sets the stream scheduling scheme on an active QuicPunch QUIC connection (FIFO or RoundRobin).
-    /// </summary>
-    public static bool TrySetStreamSchedulingScheme(this global::QuicPunch.QuicConnection connection, QuicStreamSchedulingScheme scheme) =>
-        MsQuicTuner.TrySetStreamSchedulingScheme(connection, scheme);
-
-    /// <summary>
-    /// Queries the stream scheduling scheme of an active native QUIC connection.
-    /// </summary>
-    public static bool TryGetStreamSchedulingScheme(this System.Net.Quic.QuicConnection connection, out QuicStreamSchedulingScheme scheme) =>
-        MsQuicTuner.TryGetStreamSchedulingScheme(connection, out scheme);
-
-    /// <summary>
-    /// Queries the stream scheduling scheme of an active QuicPunch QUIC connection.
-    /// </summary>
-    public static bool TryGetStreamSchedulingScheme(this global::QuicPunch.QuicConnection connection, out QuicStreamSchedulingScheme scheme) =>
-        MsQuicTuner.TryGetStreamSchedulingScheme(connection, out scheme);
+    Cubic = 0,
+    Bbr = 1
 }
 
 /// <summary>
-/// Extension methods for setting and querying QUIC stream priorities directly on Stream instances.
+/// Scheduling scheme used by MsQuic to schedule packets across multiple streams on a connection.
 /// </summary>
-public static class QuicStreamExtensions
+public enum QuicStreamSchedulingScheme : uint
 {
-    /// <summary>
-    /// Sets the relative transport priority for this QUIC stream.
-    /// </summary>
-    public static bool SetQuicPriority(this System.IO.Stream stream, QuicStreamPriority priority) =>
-        MsQuicTuner.TrySetStreamPriority(stream, priority);
-
-    /// <summary>
-    /// Sets the raw numeric transport priority (0x0000 to 0xFFFF) for this QUIC stream.
-    /// </summary>
-    public static bool SetQuicPriority(this System.IO.Stream stream, ushort priority) =>
-        MsQuicTuner.TrySetStreamPriority(stream, priority);
-
-    /// <summary>
-    /// Gets the current relative transport priority for this QUIC stream.
-    /// </summary>
-    public static QuicStreamPriority GetQuicPriority(this System.IO.Stream stream) =>
-        MsQuicTuner.TryGetStreamPriority(stream, out QuicStreamPriority p) ? p : QuicStreamPriority.Normal;
+    Fifo = 0,
+    RoundRobin = 1
 }
 
 public enum QuicDscpPriority : byte
@@ -1356,6 +1249,62 @@ public enum QuicDscpPriority : byte
     LowPriority = 8,
     Video = 34,      // Assured Forwarding 41 (AF41)
     Voice = 46       // Expedited Forwarding (EF)
+}
+
+/// <summary>
+/// Relative priority levels for QUIC streams (maps to MsQuic uint16 priority 0..65535).
+/// Data on streams with higher priority is scheduled and transmitted ahead of lower-priority streams.
+/// </summary>
+public enum QuicStreamPriority : ushort
+{
+    Lowest = 0x0000,
+    VeryLow = 0x2000,
+    Low = 0x4000,
+    Normal = 0x7FFF,   // Default in MsQuic (32767)
+    High = 0xC000,
+    VeryHigh = 0xE000,
+    Critical = 0xFFFF   // Highest priority (65535)
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct QuicStatisticsV2
+{
+    public ulong CorrelationId;
+    public uint Flags;
+    public uint Rtt;                           // Microseconds
+    public uint MinRtt;                        // Microseconds
+    public uint MaxRtt;                        // Microseconds
+    public ulong TimingStart;
+    public ulong TimingInitialFlightEnd;
+    public ulong TimingHandshakeFlightEnd;
+    public uint HandshakeClientFlight1Bytes;
+    public uint HandshakeServerFlight1Bytes;
+    public uint HandshakeClientFlight2Bytes;
+    public ushort SendPathMtu;
+    // 2 bytes padding automatically inserted by runtime for 8-byte alignment of ulong
+    public ulong SendTotalPackets;
+    public ulong SendRetransmittablePackets;
+    public ulong SendSuspectedLostPackets;
+    public ulong SendSpuriousLostPackets;
+    public ulong SendTotalBytes;
+    public ulong SendTotalStreamBytes;
+    public uint SendCongestionCount;
+    public uint SendPersistentCongestionCount;
+    public ulong RecvTotalPackets;
+    public ulong RecvReorderedPackets;
+    public ulong RecvDroppedPackets;
+    public ulong RecvDuplicatePackets;
+    public ulong RecvTotalBytes;
+    public ulong RecvTotalStreamBytes;
+    public ulong RecvDecryptionFailures;
+    public ulong RecvValidAckFrames;
+    public uint KeyUpdateCount;
+    public uint SendCongestionWindow;
+    public uint DestCidUpdateCount;
+    public uint SendEcnCongestionCount;
+    public byte HandshakeHopLimitTTL;
+    // 3 bytes padding
+    public uint RttVariance;
 }
 
 /// <summary>
@@ -1486,43 +1435,92 @@ public record QuicConnectionTelemetry
         Math.Max(0.0, (double)(SendSuspectedLostPackets - SendSpuriousLostPackets) / SendTotalPackets);
 }
 
-[StructLayout(LayoutKind.Sequential)]
-public struct QuicStatisticsV2
+/// <summary>
+/// Extension methods for setting and querying QUIC stream priorities directly on Stream instances.
+/// </summary>
+public static class QuicStreamExtensions
 {
-    public ulong CorrelationId;
-    public uint Flags;
-    public uint Rtt;                           // Microseconds
-    public uint MinRtt;                        // Microseconds
-    public uint MaxRtt;                        // Microseconds
-    public ulong TimingStart;
-    public ulong TimingInitialFlightEnd;
-    public ulong TimingHandshakeFlightEnd;
-    public uint HandshakeClientFlight1Bytes;
-    public uint HandshakeServerFlight1Bytes;
-    public uint HandshakeClientFlight2Bytes;
-    public ushort SendPathMtu;
-    // 2 bytes padding automatically inserted by runtime for 8-byte alignment of ulong
-    public ulong SendTotalPackets;
-    public ulong SendRetransmittablePackets;
-    public ulong SendSuspectedLostPackets;
-    public ulong SendSpuriousLostPackets;
-    public ulong SendTotalBytes;
-    public ulong SendTotalStreamBytes;
-    public uint SendCongestionCount;
-    public uint SendPersistentCongestionCount;
-    public ulong RecvTotalPackets;
-    public ulong RecvReorderedPackets;
-    public ulong RecvDroppedPackets;
-    public ulong RecvDuplicatePackets;
-    public ulong RecvTotalBytes;
-    public ulong RecvTotalStreamBytes;
-    public ulong RecvDecryptionFailures;
-    public ulong RecvValidAckFrames;
-    public uint KeyUpdateCount;
-    public uint SendCongestionWindow;
-    public uint DestCidUpdateCount;
-    public uint SendEcnCongestionCount;
-    public byte HandshakeHopLimitTTL;
-    // 3 bytes padding
-    public uint RttVariance;
+    /// <summary>
+    /// Sets the relative transport priority for this QUIC stream.
+    /// </summary>
+    public static bool SetQuicPriority(this System.IO.Stream stream, QuicStreamPriority priority) =>
+        MsQuicTuner.TrySetStreamPriority(stream, priority);
+
+    /// <summary>
+    /// Sets the raw numeric transport priority (0x0000 to 0xFFFF) for this QUIC stream.
+    /// </summary>
+    public static bool SetQuicPriority(this System.IO.Stream stream, ushort priority) =>
+        MsQuicTuner.TrySetStreamPriority(stream, priority);
+
+    /// <summary>
+    /// Gets the current relative transport priority for this QUIC stream.
+    /// </summary>
+    public static QuicStreamPriority GetQuicPriority(this System.IO.Stream stream) =>
+        MsQuicTuner.TryGetStreamPriority(stream, out QuicStreamPriority p) ? p : QuicStreamPriority.Normal;
+}
+
+/// <summary>
+/// Extension methods for applying optimal MsQuic native tunings directly on QuicConnection instances.
+/// </summary>
+public static class QuicConnectionExtensions
+{
+    /// <summary>
+    /// Atomically applies BBR congestion control, Pacing, HyStart, PMTUD, 16MB/4MB flow control windows, and keepalive to this connection.
+    /// </summary>
+    public static bool ApplyOptimalTuning(this System.Net.Quic.QuicConnection connection) =>
+        MsQuicTuner.TryApplyOptimalTuning(connection);
+
+    /// <summary>
+    /// Atomically applies BBR congestion control, Pacing, HyStart, PMTUD, 16MB/4MB flow control windows, and keepalive to this connection.
+    /// </summary>
+    public static bool ApplyOptimalTuning(this global::QuicPunch.QuicConnection connection) =>
+        MsQuicTuner.TryApplyOptimalTuning(connection);
+
+    /// <summary>
+    /// Queries the active congestion control algorithm of this native QUIC connection.
+    /// </summary>
+    public static bool TryGetCongestionControl(this System.Net.Quic.QuicConnection connection, out QuicCongestionAlgorithm algorithm) =>
+        MsQuicTuner.TryGetCongestionControl(connection, out algorithm);
+
+    /// <summary>
+    /// Queries the active congestion control algorithm of this QuicPunch QUIC connection.
+    /// </summary>
+    public static bool TryGetCongestionControl(this global::QuicPunch.QuicConnection connection, out QuicCongestionAlgorithm algorithm) =>
+        MsQuicTuner.TryGetCongestionControl(connection, out algorithm);
+
+    /// <summary>
+    /// Configures Path MTU Discovery parameters on an active native QUIC connection.
+    /// </summary>
+    public static bool TrySetPathMtuDiscovery(this System.Net.Quic.QuicConnection connection, ushort minMtu = 1280, ushort maxMtu = 1500, ulong timeoutUs = 600_000_000UL, byte missingProbeCount = 3) =>
+        MsQuicTuner.TrySetPathMtuDiscovery(connection, minMtu, maxMtu, timeoutUs, missingProbeCount);
+
+    /// <summary>
+    /// Configures Path MTU Discovery parameters on an active QuicPunch QUIC connection.
+    /// </summary>
+    public static bool TrySetPathMtuDiscovery(this global::QuicPunch.QuicConnection connection, ushort minMtu = 1280, ushort maxMtu = 1500, ulong timeoutUs = 600_000_000UL, byte missingProbeCount = 3) =>
+        MsQuicTuner.TrySetPathMtuDiscovery(connection, minMtu, maxMtu, timeoutUs, missingProbeCount);
+
+    /// <summary>
+    /// Sets the stream scheduling scheme on an active native QUIC connection (FIFO or RoundRobin).
+    /// </summary>
+    public static bool TrySetStreamSchedulingScheme(this System.Net.Quic.QuicConnection connection, QuicStreamSchedulingScheme scheme) =>
+        MsQuicTuner.TrySetStreamSchedulingScheme(connection, scheme);
+
+    /// <summary>
+    /// Sets the stream scheduling scheme on an active QuicPunch QUIC connection (FIFO or RoundRobin).
+    /// </summary>
+    public static bool TrySetStreamSchedulingScheme(this global::QuicPunch.QuicConnection connection, QuicStreamSchedulingScheme scheme) =>
+        MsQuicTuner.TrySetStreamSchedulingScheme(connection, scheme);
+
+    /// <summary>
+    /// Queries the stream scheduling scheme of an active native QUIC connection.
+    /// </summary>
+    public static bool TryGetStreamSchedulingScheme(this System.Net.Quic.QuicConnection connection, out QuicStreamSchedulingScheme scheme) =>
+        MsQuicTuner.TryGetStreamSchedulingScheme(connection, out scheme);
+
+    /// <summary>
+    /// Queries the stream scheduling scheme of an active QuicPunch QUIC connection.
+    /// </summary>
+    public static bool TryGetStreamSchedulingScheme(this global::QuicPunch.QuicConnection connection, out QuicStreamSchedulingScheme scheme) =>
+        MsQuicTuner.TryGetStreamSchedulingScheme(connection, out scheme);
 }

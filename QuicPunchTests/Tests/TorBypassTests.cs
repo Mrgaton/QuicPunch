@@ -154,6 +154,69 @@ public static class TorBypassTests
         Assert(sequence[1] == TorTransportTier.Snowflake, "Cascade falls back to Tier 2: Snowflake");
         Assert(sequence[2] == TorTransportTier.Obfs4, "Cascade terminates at Tier 3: Obfs4 (most resistant)");
 
+        // Test 7: Linux LD_LIBRARY_PATH filtering of debug symbol folders
+        if (OperatingSystem.IsLinux())
+        {
+            Console.WriteLine("\n--- Test 7: Linux LD_LIBRARY_PATH Debug Filtering ---");
+            string dummyRoot = Path.Combine(Path.GetTempPath(), "qp_test_ldpath_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(dummyRoot, "tor"));
+            Directory.CreateDirectory(Path.Combine(dummyRoot, "debug"));
+            Directory.CreateDirectory(Path.Combine(dummyRoot, "pluggable_transports"));
+
+            File.WriteAllText(Path.Combine(dummyRoot, "tor", "libevent.so.7"), "mock");
+            File.WriteAllText(Path.Combine(dummyRoot, "debug", "libevent.so.7"), "mock debug without PT_DYNAMIC");
+            File.WriteAllText(Path.Combine(dummyRoot, "pluggable_transports", "libpt.so.1"), "mock");
+
+            string mockTor = Path.Combine(dummyRoot, "tor", "tor");
+            File.WriteAllText(mockTor, "#!/bin/sh");
+
+            try
+            {
+                string? ldPath = TorRuntimeManager.BuildLinuxLibraryPath(dummyRoot, mockTor);
+                Assert(ldPath != null, "BuildLinuxLibraryPath returns valid path on Linux");
+                Assert(!ldPath!.Contains("/debug"), "LD_LIBRARY_PATH strictly excludes debug symbols directory");
+                Assert(ldPath.StartsWith(Path.GetDirectoryName(mockTor)!), "LD_LIBRARY_PATH places primary tor directory first");
+                Assert(ldPath.Contains("pluggable_transports"), "LD_LIBRARY_PATH retains valid shared library subdirectories");
+            }
+            finally
+            {
+                try { Directory.Delete(dummyRoot, recursive: true); } catch { }
+            }
+        }
+
+        // Test 8: Live Tor Process execution without library load errors (Exit Code 127)
+        Console.WriteLine("\n--- Test 8: Live Tor Executable & Shared Library Verification ---");
+        string expectedTor = Path.Combine(AppContext.BaseDirectory, "Tor", "15.0.19", "linux-x64", "tor", "tor");
+        if (File.Exists(expectedTor))
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = expectedTor,
+                Arguments = "--version",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            string? ld = TorRuntimeManager.BuildLinuxLibraryPath(Path.GetDirectoryName(expectedTor)!, expectedTor);
+            if (!string.IsNullOrWhiteSpace(ld))
+            {
+                psi.Environment["LD_LIBRARY_PATH"] = ld;
+            }
+
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            string stdout = await p.StandardOutput.ReadToEndAsync();
+            string stderr = await p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+
+            Assert(p.ExitCode == 0, $"Tor process ran successfully with exit code {p.ExitCode} (stderr: {stderr.Trim()})");
+            Assert(stdout.Contains("Tor version"), $"Tor stdout contains version banner: {stdout.Split('\n').FirstOrDefault()?.Trim()}");
+            Assert(!stderr.Contains("object file has no dynamic section"), "Tor dynamic loader did not encounter corrupt debug libraries");
+        }
+        else
+        {
+            Console.WriteLine($"[SKIP] Tor binary not found at {expectedTor}, skipping live run.");
+        }
+
         Console.WriteLine("\n==================================================");
         Console.WriteLine($"RESULTS: {passed} PASSED, {failed} FAILED");
         Console.WriteLine("==================================================");

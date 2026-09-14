@@ -412,14 +412,45 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
             }
 
             while (_quicLanes.Reader.TryRead(out HubInboundQuicLane lane))
-                lane.Connection.Dispose();
-            while (_rawLanes.Reader.TryRead(out TorTcpConnection raw))
-                raw.Dispose();
+                lane.Connection?.Dispose();
+            while (_rawLanes.Reader.TryRead(out TorTcpConnection? raw))
+                raw?.Dispose();
 
             CryptographicOperations.ZeroMemory(_token);
         }
     }
 }
+
+public enum TorTransportTier
+{
+    Direct = 1,
+    Snowflake = 2,
+    Obfs4 = 3
+}
+
+public enum TorTransportMode
+{
+    AutoCascade = 0,
+    Direct = 1,
+    Snowflake = 2,
+    Obfs4 = 3
+}
+
+internal enum TorLaneKind : byte
+{
+    Message = 1,
+    QuicStream = 2,
+    RawTcp = 3
+}
+
+internal readonly record struct TorLanePreface(
+    TorLaneKind Kind,
+    Guid ConnectionId,
+    long StreamId,
+    QuicStreamType StreamType,
+    byte[] ConnectionToken,
+    string SenderServiceId,
+    int SenderVirtualPort);
 
 public sealed record TorIncomingPeerConnection
 {
@@ -446,3 +477,49 @@ internal readonly record struct HubInboundQuicLane(
     long StreamId,
     QuicStreamType StreamType,
     TorTcpConnection Connection);
+
+public readonly record struct DummyQuicOpenLaneRequest(
+    Guid ConnectionId,
+    long StreamId,
+    QuicStreamType Type);
+
+public interface IDummyQuicLane : IDisposable, IAsyncDisposable
+{
+    Stream Stream { get; }
+
+    bool CanRead { get; }
+    bool CanWrite { get; }
+
+    Task ReadsClosed { get; }
+    Task WritesClosed { get; }
+
+    void CompleteWrites();
+
+    void Abort(
+        QuicAbortDirection abortDirection,
+        long errorCode);
+}
+
+public readonly record struct DummyQuicInboundLane(
+    long StreamId,
+    QuicStreamType Type,
+    IDummyQuicLane Lane);
+
+public interface IDummyQuicLaneProvider : IAsyncDisposable
+{
+    EndPoint? LocalEndPoint => null;
+    EndPoint? RemoteEndPoint => null;
+
+    ValueTask<IDummyQuicLane> OpenOutboundLaneAsync(
+        DummyQuicOpenLaneRequest request,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<DummyQuicInboundLane> AcceptInboundLaneAsync(
+        Guid connectionId,
+        CancellationToken cancellationToken = default);
+
+    ValueTask CloseAsync(
+        long errorCode,
+        CancellationToken cancellationToken = default) =>
+        ValueTask.CompletedTask;
+}

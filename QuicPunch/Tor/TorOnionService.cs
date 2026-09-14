@@ -62,3 +62,8 @@ public sealed class TorOnionService : IAsyncDisposable
     private void ThrowIfDisposed() =>
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 }
+
+public sealed record TorAddOnionResult(
+    string ServiceId,
+    string? PrivateKeySpec);
+

@@ -82,10 +82,34 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
     private readonly object _shutdownLock = new();
 
     public int ConnectedClientsCount => _clients.Count;
+    public Func<object>? GetStatusSnapshot { get; set; }
+    private readonly Task _periodicSyncTask;
 
     public WebUiWebSocketHub(CancellationTokenSource cts)
     {
         _cts = cts;
+        _periodicSyncTask = Task.Run(PeriodicSyncLoopAsync);
+    }
+
+    private async Task PeriodicSyncLoopAsync()
+    {
+        while (!_cts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(2500, _cts.Token).ConfigureAwait(false);
+                if (!_clients.IsEmpty && GetStatusSnapshot != null)
+                {
+                    var status = GetStatusSnapshot();
+                    if (status != null)
+                    {
+                        await BroadcastAsync("status_updated", status).ConfigureAwait(false);
+                    }
+                }
+            }
+            catch (OperationCanceledException) { break; }
+            catch { }
+        }
     }
 
     public void OnClientConnected()
@@ -149,6 +173,23 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
                 clientId = client.Id.ToString()
             }), _cts.Token).ConfigureAwait(false);
 
+            if (GetStatusSnapshot != null)
+            {
+                try
+                {
+                    var snapshot = GetStatusSnapshot();
+                    if (snapshot != null)
+                    {
+                        await client.SendTextAsync(JsonSerializer.Serialize(new
+                        {
+                            type = "status_updated",
+                            data = snapshot
+                        }), _cts.Token).ConfigureAwait(false);
+                    }
+                }
+                catch { }
+            }
+
             _ = Task.Run(() => HandleClientLoopAsync(client), _cts.Token);
         }
         catch (Exception ex)
@@ -165,12 +206,15 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
 
     private async Task HandleClientLoopAsync(ClientConnection client)
     {
-        byte[] buffer = new byte[16384];
+        // 2MB buffer for high-bitrate, ultra-high refresh rate chunks (supporting up to 144fps and 30+ Mbps I-frames)
+        byte[] buffer = new byte[2 * 1024 * 1024];
+        int accumulated = 0;
+
         try
         {
             while (!_cts.Token.IsCancellationRequested && client.Socket.State == WebSocketState.Open)
             {
-                var result = await client.Socket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token).ConfigureAwait(false);
+                var result = await client.Socket.ReceiveAsync(new ArraySegment<byte>(buffer, accumulated, buffer.Length - accumulated), _cts.Token).ConfigureAwait(false);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     if (client.Socket.State == WebSocketState.CloseReceived)
@@ -183,31 +227,108 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
                     }
                     break;
                 }
-                if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
+
+                accumulated += result.Count;
+                if (!result.EndOfMessage)
                 {
-                    string text = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    if (accumulated >= buffer.Length)
+                    {
+                        // Exceeded maximum frame size, drop
+                        accumulated = 0;
+                    }
+                    continue;
+                }
+
+                int messageLength = accumulated;
+                accumulated = 0;
+
+                if (result.MessageType == WebSocketMessageType.Text && messageLength > 0)
+                {
+                    string text = Encoding.UTF8.GetString(buffer, 0, messageLength);
                     if (text.Contains("\"ping\"", StringComparison.OrdinalIgnoreCase))
                     {
                         await client.SendTextAsync("{\"type\":\"pong\"}", _cts.Token).ConfigureAwait(false);
                     }
-                }
-                else if (result.MessageType == WebSocketMessageType.Binary && result.Count > 16)
-                {
-                    if (result.Count > 64 * 1024)
+                    else if ((text.Contains("\"sync\"", StringComparison.OrdinalIgnoreCase) || text.Contains("\"get_status\"", StringComparison.OrdinalIgnoreCase)) && GetStatusSnapshot != null)
                     {
-                        // Drop oversized frames to prevent memory exhaustion
-                        continue;
+                        try
+                        {
+                            var snapshot = GetStatusSnapshot();
+                            if (snapshot != null)
+                            {
+                                await client.SendTextAsync(JsonSerializer.Serialize(new
+                                {
+                                    type = "status_updated",
+                                    data = snapshot
+                                }), _cts.Token).ConfigureAwait(false);
+                            }
+                        }
+                        catch { }
                     }
-                    Guid targetPeerId = new Guid(buffer.AsSpan(0, 16));
-                    byte[] audioPayload = new byte[result.Count - 16];
-                    Buffer.BlockCopy(buffer, 16, audioPayload, 0, result.Count - 16);
-                    if (targetPeerId == Guid.Empty)
+                }
+                else if (result.MessageType == WebSocketMessageType.Binary && messageLength > 16)
+                {
+                    // Tagged or Legacy Binary:
+                    // If Tag == 0x02: [Tag 0x02 (1B)][TargetPeerId (16B)][CodecId (1B)][Video Data]
+                    // If Tag == 0x01: [Tag 0x01 (1B)][TargetPeerId (16B)][Audio Data]
+                    // Legacy Audio: [TargetPeerId (16B)][Audio Data]
+                    if (buffer[0] == 0x02 && messageLength > 18)
                     {
-                        _ = VoiceCallHandler.BroadcastAudioDatagramAsync(audioPayload);
+                        Guid targetPeerId = new Guid(buffer.AsSpan(1, 16));
+                        byte codecId = buffer[17];
+                        int videoLen = messageLength - 18;
+                        byte[] videoPayload = new byte[videoLen];
+                        Buffer.BlockCopy(buffer, 18, videoPayload, 0, videoLen);
+
+                        if (targetPeerId == Guid.Empty)
+                        {
+                            _ = VoiceCallHandler.SendScreenFrameAsync(videoPayload);
+                        }
+                        else
+                        {
+                            _ = VoiceCallHandler.SendScreenFrameToPeerAsync(targetPeerId, videoPayload);
+                        }
+                    }
+                    else if (buffer[0] == 0x03 && messageLength > 1)
+                    {
+                        // Tag 0x03: Screen Share Audio PCM Int16 samples
+                        int pcmBytes = messageLength - 1;
+                        byte[] audioPayload = new byte[pcmBytes];
+                        Buffer.BlockCopy(buffer, 1, audioPayload, 0, pcmBytes);
+                        _ = VoiceCallHandler.SendScreenAudioAsync(audioPayload);
+                    }
+                    else if (buffer[0] == 0x01 && messageLength > 17)
+                    {
+                        Guid targetPeerId = new Guid(buffer.AsSpan(1, 16));
+                        int audioLen = messageLength - 17;
+                        byte[] audioPayload = new byte[audioLen];
+                        Buffer.BlockCopy(buffer, 17, audioPayload, 0, audioLen);
+
+                        if (targetPeerId == Guid.Empty)
+                        {
+                            _ = VoiceCallHandler.BroadcastAudioDatagramAsync(audioPayload);
+                        }
+                        else
+                        {
+                            _ = VoiceCallHandler.SendAudioDatagramAsync(targetPeerId, audioPayload);
+                        }
                     }
                     else
                     {
-                        _ = VoiceCallHandler.SendAudioDatagramAsync(targetPeerId, audioPayload);
+                        // Fallback: Legacy 16-byte PeerId + audio
+                        Guid targetPeerId = new Guid(buffer.AsSpan(0, 16));
+                        int audioLen = messageLength - 16;
+                        byte[] audioPayload = new byte[audioLen];
+                        Buffer.BlockCopy(buffer, 16, audioPayload, 0, audioLen);
+
+                        if (targetPeerId == Guid.Empty)
+                        {
+                            _ = VoiceCallHandler.BroadcastAudioDatagramAsync(audioPayload);
+                        }
+                        else
+                        {
+                            _ = VoiceCallHandler.SendAudioDatagramAsync(targetPeerId, audioPayload);
+                        }
                     }
                 }
             }
@@ -232,6 +353,31 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
         byte[] packet = new byte[16 + audioData.Length];
         peerId.TryWriteBytes(packet.AsSpan(0, 16));
         Buffer.BlockCopy(audioData, 0, packet, 16, audioData.Length);
+        var tasks = _clients.Values.Select(client => client.SendBinaryAsync(packet, _cts.Token));
+        _ = Task.WhenAll(tasks);
+    }
+
+    public void BroadcastBinaryVideo(Guid peerId, byte codecId, byte[] videoChunk)
+    {
+        if (_clients.IsEmpty || videoChunk == null || videoChunk.Length == 0) return;
+        // Format: [Tag 0x02 (1B)][PeerId (16B)][CodecId (1B)][Video Data]
+        byte[] packet = new byte[18 + videoChunk.Length];
+        packet[0] = 0x02;
+        peerId.TryWriteBytes(packet.AsSpan(1, 16));
+        packet[17] = codecId;
+        Buffer.BlockCopy(videoChunk, 0, packet, 18, videoChunk.Length);
+        var tasks = _clients.Values.Select(client => client.SendBinaryAsync(packet, _cts.Token));
+        _ = Task.WhenAll(tasks);
+    }
+
+    public void BroadcastBinaryScreenAudio(Guid peerId, byte[] audioData)
+    {
+        if (_clients.IsEmpty || audioData == null || audioData.Length == 0) return;
+        // Format: [Tag 0x04 (1B)][PeerId (16B)][Audio PCM Data]
+        byte[] packet = new byte[17 + audioData.Length];
+        packet[0] = 0x04;
+        peerId.TryWriteBytes(packet.AsSpan(1, 16));
+        Buffer.BlockCopy(audioData, 0, packet, 17, audioData.Length);
         var tasks = _clients.Values.Select(client => client.SendBinaryAsync(packet, _cts.Token));
         _ = Task.WhenAll(tasks);
     }

@@ -42,7 +42,7 @@ namespace QuicPunch.PacketHandler
                 var peerId = new Guid(XxHash128.Hash(certHash));
                 bool isKnownPeer = qc.AvailablePeers.TryGetValue(peerId, out var peer) && peer?.Certificate != null;
 
-                PackedFlags pf = new PackedFlags(r.ReadByte());
+                var flags = new ConnectionFlags(r.ReadByte());
 
                 var addressesAmount = r.ReadByte();
                 if (addressesAmount > MaxHelloAddresses)
@@ -62,6 +62,10 @@ namespace QuicPunch.PacketHandler
                 ushort minPort = r.ReadUInt16();
                 ushort maxPort = r.ReadUInt16();
 
+                ushort[] portArray = (minPort > 0 && maxPort >= minPort)
+                    ? (minPort == maxPort ? [minPort] : Enumerable.Range(minPort, maxPort - minPort + 1).Select(p => (ushort)p).ToArray())
+                    : (minPort > 0 ? [minPort] : Array.Empty<ushort>());
+
                 int senderControlPort = minPort > 0 ? minPort : (remoteEndPoint is IPEndPoint ipPort ? ipPort.Port : 0);
                 if (minPort == 0) minPort = (ushort)senderControlPort;
                 if (maxPort == 0) maxPort = (ushort)senderControlPort;
@@ -69,7 +73,7 @@ namespace QuicPunch.PacketHandler
                 IPEndPoint targetControlEndPoint;
                 if (remoteEndPoint is IPEndPoint remoteIpEp)
                 {
-                    if (senderControlPort > 0 && (isLanDiscovery || remoteIpEp.Port == qc.LanDiscoveryPort || IPAddress.Broadcast.Equals(remoteIpEp.Address)))
+                    if (senderControlPort > 0 && (isLanDiscovery || remoteIpEp.Port == qc.Discovery.LanDiscoveryPort || IPAddress.Broadcast.Equals(remoteIpEp.Address)))
                     {
                         targetControlEndPoint = new IPEndPoint(remoteIpEp.Address, senderControlPort);
                     }
@@ -163,7 +167,14 @@ namespace QuicPunch.PacketHandler
                         }
                     }
 
-                    using (var ecdsa = (isKnownPeer ? peer!.Certificate : cert!).GetECDsaPublicKey())
+                    var signingCert = isKnownPeer ? peer!.Certificate : cert;
+                    if (signingCert == null)
+                    {
+                        QuicPunchLog.Info("HELLO: Missing certificate for signature verification from " + remoteEndPoint);
+                        return;
+                    }
+
+                    using (var ecdsa = signingCert.GetECDsaPublicKey())
                     {
                         if (ecdsa == null || !ecdsa.VerifyData(buffer.AsSpan(0, payloadLength), signature, HashAlgorithmName.SHA3_256))
                         {
@@ -200,10 +211,10 @@ namespace QuicPunch.PacketHandler
                             TorChannel = torChannel,
                             OnionAddress = torChannel?.RemoteOnion,
                             Addresses = addresses,
-                            MinPort = minPort,
-                            MaxPort = maxPort,
+                            PortArray = portArray,
                             Name = Encoding.UTF8.GetString(nameBytes),
-                            NetworkType = pf.NetworkType,
+                            NetworkType = flags.IsTor ? QuicPunch.NetworkType.Tor : QuicPunch.NetworkType.Static,
+                            ConnectionFlags = flags,
                             LastSeenHelloTicks = remoteTicks,
                             SessionNonce = remoteSessionNonce,
                             EphemeralEcdhPublicKey = remoteEphemeralKey
@@ -228,6 +239,24 @@ namespace QuicPunch.PacketHandler
                                 var responseHello = qc.GenerateHelloPayload(MessageType.Hello, true, challengeNonce, transport, targetPeer: peerInfo);
                                 _ = qc.SendResponseAsync(responseHello, targetControlEndPoint, transport, torChannel);
                                 _ = qc.SendResponseAsync(qc.GenerateAck(qc.SharePeers, transport), targetControlEndPoint, transport, torChannel);
+
+                                bool shouldAutoConnect = qc.AutoConnectOnDiscovery
+                                    || (qc.PeerStore != null && peerInfo.CertHash != null && qc.PeerStore.TryGet(peerInfo.CertHash, out var sp) && sp != null && sp.AutoConnect);
+
+                                if (shouldAutoConnect && (qc.AutoAcceptUntrustedConnections || qc.IsTrustedPeer(peerInfo)) && !qc.IsPeerMultiplexerActiveOrConnecting(peerInfo.Id))
+                                {
+                                    Task.Run(async () =>
+                                    {
+                                        try
+                                        {
+                                            await qc.EnsureMultiplexerConnectedAsync(peerInfo).ConfigureAwait(false);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            QuicPunchLog.Info($"[HELLO AUTO-CONNECT] Failed for {peerInfo.Name}: {ex.Message}");
+                                        }
+                                    }).ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                                }
                             }
                             else
                             {
@@ -265,9 +294,9 @@ namespace QuicPunch.PacketHandler
                         {
                             peer.Addresses = addresses;
                         }
-                        if (minPort > 0) peer.MinPort = minPort;
-                        if (maxPort > 0) peer.MaxPort = maxPort;
-                        if (pf.NetworkType != QuicPunch.NetworkType.Unknown) peer.NetworkType = pf.NetworkType;
+                        if (portArray.Length > 0) peer.PortArray = portArray;
+                        peer.ConnectionFlags = flags;
+                        peer.NetworkType = flags.IsTor ? QuicPunch.NetworkType.Tor : QuicPunch.NetworkType.Static;
 
                         if (torChannel != null && (peer.TorChannel == null || peer.TorChannel.IsClosed || !ReferenceEquals(peer.TorChannel, torChannel)))
                         {
@@ -303,7 +332,26 @@ namespace QuicPunch.PacketHandler
                         }
 
                         peer.MarkSeen();
+                        qc.CancelMatchingInterrogations(peer);
                         qc.UpdateSavedPeerIfPresent(peer);
+
+                        bool shouldAutoConnectKnown = qc.AutoConnectOnDiscovery
+                            || (qc.PeerStore != null && peer.CertHash != null && qc.PeerStore.TryGet(peer.CertHash, out var spK) && spK != null && spK.AutoConnect);
+
+                        if (shouldAutoConnectKnown && (qc.AutoAcceptUntrustedConnections || qc.IsTrustedPeer(peer)) && !qc.IsPeerMultiplexerActiveOrConnecting(peer.Id))
+                        {
+                            Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await qc.EnsureMultiplexerConnectedAsync(peer).ConfigureAwait(false);
+                                }
+                                catch (Exception ex)
+                                {
+                                    QuicPunchLog.Info($"[HELLO AUTO-CONNECT] Failed for {peer.Name}: {ex.Message}");
+                                }
+                            }).ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                        }
                     }
 
                     _ = qc.SendResponseAsync(qc.GenerateAck(qc.SharePeers, transport), remoteEndPoint, transport, torChannel);

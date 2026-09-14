@@ -21,21 +21,6 @@ using System.Threading.Tasks;
 
 namespace QuicPunch;
 
-public enum TorTransportMode
-{
-    AutoCascade = 0,
-    Direct = 1,
-    Snowflake = 2,
-    Obfs4 = 3
-}
-
-public enum TorTransportTier
-{
-    Direct = 1,
-    Snowflake = 2,
-    Obfs4 = 3
-}
-
 public sealed class TorRuntimeManager : IAsyncDisposable
 {
     public const string PinnedBundleVersion = "15.0.19";
@@ -164,7 +149,7 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             if (TryValidateExistingInstall(installDirectory, markerPath, bundle, out string? existingTor))
             {
                 _torExecutable = existingTor;
-                return existingTor;
+                return existingTor!;
             }
 
             string staging = Path.Combine(parent, ".tor-staging-" + Guid.NewGuid().ToString("N"));
@@ -320,7 +305,8 @@ public sealed class TorRuntimeManager : IAsyncDisposable
                     lastException = ex;
                     if (!isLastTier)
                     {
-                        AddLog($"[TOR] [Tier {i + 1}/{tiers.Count}] Connection via {tier} failed or timed out: {ex.Message}");
+                        string cleanErr = ex.Message.Split('\n')[0].Trim();
+                        AddLog($"[TOR] [Tier {i + 1}/{tiers.Count}] Connection via {tier} failed: {cleanErr}");
                         AddLog($"[TOR] Cascading to next tier...");
                         await StopChildProcessOnlyAsync().ConfigureAwait(false);
                     }
@@ -398,7 +384,7 @@ public sealed class TorRuntimeManager : IAsyncDisposable
 
         if (OperatingSystem.IsLinux())
         {
-            string? ldLibraryPath = BuildLinuxLibraryPath(InstallDirectory);
+            string? ldLibraryPath = BuildLinuxLibraryPath(InstallDirectory, torExecutable);
             if (!string.IsNullOrWhiteSpace(ldLibraryPath))
             {
                 if (startInfo.Environment.TryGetValue("LD_LIBRARY_PATH", out string? existing) &&
@@ -757,6 +743,13 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             if (string.IsNullOrEmpty(relative))
                 continue;
 
+            // Skip extracting debug symbol directories to save disk space and prevent dynamic linker conflicts
+            if (relative.StartsWith("debug/", StringComparison.OrdinalIgnoreCase) ||
+                relative.Contains("/debug/", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             string target = GetSafeExtractionPath(root, relative);
 
             switch (entry.EntryType)
@@ -906,6 +899,20 @@ public sealed class TorRuntimeManager : IAsyncDisposable
 
         try
         {
+            // Proactively remove any legacy or corrupt debug folder that causes ld.so errors
+            if (!string.IsNullOrWhiteSpace(installDirectory) && Directory.Exists(installDirectory))
+            {
+                try
+                {
+                    string debugDir = Path.Combine(installDirectory, "debug");
+                    if (Directory.Exists(debugDir))
+                    {
+                        Directory.Delete(debugDir, recursive: true);
+                    }
+                }
+                catch { }
+            }
+
             // 1. Look directly in AppContext.BaseDirectory (same directory as current binary)
             string directAppPath = Path.Combine(AppContext.BaseDirectory, exeName);
             if (File.Exists(directAppPath))
@@ -1026,17 +1033,53 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             ? Directory.GetFiles(root, exactName, SearchOption.AllDirectories).OrderBy(p => p.Length).FirstOrDefault()
             : null;
 
-    private static string? BuildLinuxLibraryPath(string root)
+    internal static string? BuildLinuxLibraryPath(string root, string? torExecutable = null)
     {
         if (!OperatingSystem.IsLinux() || !Directory.Exists(root))
             return null;
 
-        return string.Join(
-            Path.PathSeparator,
-            Directory.EnumerateFiles(root, "*.so*", SearchOption.AllDirectories)
-                .Select(Path.GetDirectoryName)
-                .Where(p => !string.IsNullOrWhiteSpace(p))
-                .Distinct(StringComparer.Ordinal));
+        var dirs = new System.Collections.Generic.List<string>();
+
+        // 1. Tor binary's own directory MUST be first in LD_LIBRARY_PATH
+        if (!string.IsNullOrWhiteSpace(torExecutable))
+        {
+            string? torDir = Path.GetDirectoryName(torExecutable);
+            if (!string.IsNullOrWhiteSpace(torDir) && Directory.Exists(torDir))
+            {
+                dirs.Add(torDir);
+            }
+        }
+
+        // 2. Discover other shared library directories (.so), strictly excluding debug symbols
+        try
+        {
+            foreach (string file in Directory.EnumerateFiles(root, "*.so*", SearchOption.AllDirectories))
+            {
+                string? dir = Path.GetDirectoryName(file);
+                if (string.IsNullOrWhiteSpace(dir))
+                    continue;
+
+                // Reject any debug / symbol directories (they lack PT_DYNAMIC sections and break ld.so)
+                string[] segments = dir.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+                if (segments.Any(s => s.Equals("debug", StringComparison.OrdinalIgnoreCase) ||
+                                      s.Equals(".debug", StringComparison.OrdinalIgnoreCase) ||
+                                      s.StartsWith("debug-", StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                if (!dirs.Contains(dir, StringComparer.Ordinal))
+                {
+                    dirs.Add(dir);
+                }
+            }
+        }
+        catch
+        {
+            // If enumeration fails, fall back to whatever was collected
+        }
+
+        return string.Join(Path.PathSeparator, dirs);
     }
 
     private static void EnsureExecutablePermission(string path)
@@ -1211,12 +1254,19 @@ public sealed class TorRuntimeManager : IAsyncDisposable
         if (!process.HasExited)
             return;
 
-        string logDetails = string.Join("\n", _logs.ToArray());
-        if (string.IsNullOrWhiteSpace(logDetails))
-            logDetails = "(No log output recorded)";
+        // Find the most relevant error line from process output
+        string? relevantError = _logs.Reverse()
+            .FirstOrDefault(l => l.StartsWith("ERR ", StringComparison.OrdinalIgnoreCase) ||
+                                 l.Contains("error while loading", StringComparison.OrdinalIgnoreCase) ||
+                                 l.Contains("undefined symbol", StringComparison.OrdinalIgnoreCase) ||
+                                 l.Contains("[WARN]", StringComparison.OrdinalIgnoreCase) ||
+                                 l.Contains("[ERR]", StringComparison.OrdinalIgnoreCase));
 
-        throw new InvalidOperationException(
-            $"Tor exited unexpectedly with code {process.ExitCode}.\nTor Output Log:\n{logDetails}");
+        string summary = string.IsNullOrWhiteSpace(relevantError)
+            ? $"Tor exited unexpectedly with code {process.ExitCode}."
+            : $"Tor exited with code {process.ExitCode}: {relevantError.Trim()}";
+
+        throw new InvalidOperationException(summary);
     }
 
     private static void TryDeleteFile(string path)
@@ -1243,6 +1293,17 @@ public sealed class TorRuntimeManager : IAsyncDisposable
         string Platform,
         string Sha256,
         string ExecutableRelativePath);
+}
+
+public sealed class TorSocksException : IOException
+{
+    public TorSocksException(byte replyCode, string message)
+        : base($"Tor SOCKS5 error 0x{replyCode:X2}: {message}")
+    {
+        ReplyCode = replyCode;
+    }
+
+    public byte ReplyCode { get; }
 }
 
 public sealed class TorRuntimeOptions

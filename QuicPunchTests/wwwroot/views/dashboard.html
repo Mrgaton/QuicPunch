@@ -1,0 +1,143 @@
+  <!-- 1. DASHBOARD VIEW (Network) -->
+  <div id="view-dashboard" class="spa-view">
+    <main class="workspace">
+      <header class="page-head compact-head">
+        <div><h1>Network</h1><p>Identity, STUN mappings, discovery, trust, connection attempts, saved peers and application sessions.</p></div>
+        <div class="toolbar"><button class="btn sm" id="refreshBtn">Refresh</button></div>
+      </header>
+
+      <section id="requestsPanel" class="section attention hidden">
+        <div class="section-head"><div><h2>Connection Requests</h2><p>Incoming application sessions that require a decision.</p></div></div>
+        <div class="section-body"><div id="requestsList" class="peer-list"></div></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Local Node</h2><p>Runtime identity and network information.</p></div></div>
+        <div class="section-body no-pad">
+          <table class="detail-table local-node-table"><tbody>
+            <tr><th>Node name</th><td id="nodeName">—</td><th>Network type</th><td id="nodeNetwork">—</td></tr>
+            <tr><th>Listener port</th><td><div class="inline-form"><input class="input mono short-input" id="listenerPortInput" type="number" min="1" max="65535"><button class="btn sm" id="applyPortBtn">Apply</button></div></td><th>Auto-accept peers</th><td><div class="service-state"><label class="inline-toggle"><input id="autoAcceptToggle" type="checkbox"><span>Enabled</span></label></div></td></tr>
+            <tr><th>WAN service</th><td><div class="service-state"><label class="inline-toggle"><input id="wanToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="wanMeta"></span></div></td><th>WAN Nostr discovery</th><td><div class="service-state"><label class="inline-toggle"><input id="discoveryToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="discoveryMeta"></span></div></td></tr>
+            <tr><th>Tor service</th><td><div class="service-state"><label class="inline-toggle"><input id="torToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="torMeta"></span></div></td><th>Tor Nostr discovery</th><td><div class="service-state"><label class="inline-toggle"><input id="torDiscoveryToggle" type="checkbox"><span>Enabled</span></label><span class="service-detail" id="torDiscoveryMeta"></span></div></td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>STUN / Public Mapping</h2><p>Public addresses and ports currently observed through STUN. Exact mappings are shown separately from the predictive port range.</p></div></div>
+        <div class="section-body no-pad">
+          <table class="detail-table stun-table"><tbody>
+            <tr><th>Public IP address(es)</th><td id="stunAddresses" class="mono wrap">Discovering…</td><th>Observed port(s)</th><td id="stunPorts" class="mono">—</td></tr>
+            <tr><th>Exact STUN mappings</th><td colspan="3" class="stun-cell"><div class="stun-mappings-cell"><span id="stunMappings" class="mono stun-mappings-text" title="Click to view all STUN mappings">No exact mapping yet</span><button type="button" class="btn sm stun-dots-btn hidden" id="openStunModalBtn" title="View all STUN responses">…</button></div></td></tr>
+            <tr><th>Local addresses</th><td id="localAddresses" class="mono wrap">—</td><th>STUN servers loaded</th><td id="stunServerCount">0</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Connection Tokens</h2><p>Complete tokens include the <span class="mono">QP://</span> scheme and can be pasted directly into another node.</p></div></div>
+        <div class="section-body token-stack">
+          <div class="token-line"><div class="token-label"><strong>WAN token</strong><span>Direct UDP / WAN identity</span></div><div class="code-box selectable" id="wanTokenBox">Generating…</div><div class="toolbar"><button class="btn" id="copyWanInline">Copy</button></div></div>
+          <div class="token-line"><div class="token-label"><strong>Tor token</strong><span>Hidden-service transport for the same peer identity</span></div><div class="code-box selectable" id="torTokenBox">Tor service inactive</div><div class="toolbar"><button class="btn" id="copyTorInline">Copy</button><button class="btn" id="torNewNymBtn">New circuits</button></div></div>
+          <div class="manual-connect">
+            <input class="input mono" id="tokenInput" placeholder="Paste QP:// token">
+            <button class="btn sm" id="pasteClipboardBtn" type="button" title="Detectar y pegar token desde el portapapeles">📋 Pegar</button>
+            <button class="btn primary" id="connectTokenBtn">Connect token</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Discovered Peers</h2><p>Peers discovered via Nostr rendezvous signaling. Connect manually to initiate UDP hole-punching or Tor connection.</p></div><div class="toolbar"><button class="btn sm" id="connectAllDiscoveredBtn">Connect all</button></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Source / type</th><th>Addresses / Tor</th><th>Port(s)</th><th>Discovered</th><th>Actions</th></tr></thead><tbody id="discoveredPeersBody"></tbody></table></div></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Connecting Peers</h2><p>Active hole-punching / interrogation attempts.</p></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Candidate addresses</th><th>Port(s)</th><th>Started</th><th></th></tr></thead><tbody id="interrogationsBody"></tbody></table></div></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Connected Peers</h2><p>Trusted identities currently available. Open any registered application for each peer.</p></div><div class="toolbar"><button class="btn sm" id="saveAllBtn" title="Guardar todos los peers conectados en la base de datos local">Save all connected</button></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table connected-table"><thead><tr><th>Peer</th><th>Transport / endpoint</th><th>Ping</th><th>Session</th><th>Trust settings</th><th>Application</th><th></th></tr></thead><tbody id="connectedPeers"></tbody></table></div></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Untrusted Peers</h2><p>Authenticated identities not yet allowed to open application protocols.</p></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Transport</th><th>Endpoint</th><th>Last seen</th><th>Certificate</th><th></th></tr></thead><tbody id="untrustedPeers"></tbody></table></div></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Saved Peers Database</h2><p>Persistent identities. Offline peers can be edited, reconnected, removed and configured for auto-connect.</p></div><div class="toolbar"><button class="btn sm ghost" id="clearOfflineSavedBtn">Clear offline</button><button class="btn sm" id="addSavedPeerBtn">Add saved peer</button></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table saved-table"><thead><tr><th>Name</th><th>Certificate / type</th><th>Addresses / Tor</th><th>Port(s)</th><th>Auto-connect</th><th>Status</th><th>Actions</th></tr></thead><tbody id="savedPeersBody"></tbody></table></div></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Active Application Sessions</h2><p>Protocols currently open with trusted peers.</p></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table"><thead><tr><th>Peer</th><th>Application</th><th>Details</th><th></th></tr></thead><tbody id="activeAppsBody"></tbody></table></div></div>
+      </section>
+
+      <section class="section" id="quicTelemetrySection">
+        <div class="section-head">
+          <div>
+            <h2>QUIC Protocol Telemetry &amp; Performance Metrics</h2>
+            <p>Real-time microsecond transport telemetry, congestion control state, packet loss metrics, and TLS metadata queried directly from the native MsQuic engine.</p>
+          </div>
+          <div class="toolbar">
+            <span class="badge" id="quicTelemetryStatusBadge"><span class="status-dot"></span>0 active connections</span>
+          </div>
+        </div>
+        <div class="section-body">
+          <div class="telemetry-kpi-grid">
+            <div class="kpi-card">
+              <span class="kpi-label">Active Connections</span>
+              <strong class="kpi-value" id="kpiQuicConnections">0</strong>
+              <span class="kpi-sub" id="kpiQuicTransports">WAN / Tor</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">Round-Trip Time (RTT)</span>
+              <strong class="kpi-value" id="kpiQuicRtt">—</strong>
+              <span class="kpi-sub" id="kpiQuicRttRange">Min: — · Max: — · Var: —</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">Packet Loss Ratio</span>
+              <strong class="kpi-value" id="kpiQuicLoss">0.00%</strong>
+              <span class="kpi-sub" id="kpiQuicLossDetails">0 lost · 0 retrans</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">Congestion Control (CWND)</span>
+              <strong class="kpi-value" id="kpiQuicCwnd">—</strong>
+              <span class="kpi-sub" id="kpiQuicAlgorithm">Optimal BBR Congestion Control</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-label">Network Throughput</span>
+              <strong class="kpi-value" id="kpiQuicThroughput">—</strong>
+              <span class="kpi-sub" id="kpiQuicPackets">Tx: 0 pkts · Rx: 0 pkts</span>
+            </div>
+          </div>
+          <div class="table-wrap borderless space-top">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Peer / Identity</th>
+                  <th>Protocol / Transport</th>
+                  <th>RTT (Min / Avg / Max)</th>
+                  <th>Loss %</th>
+                  <th>CWND / Path MTU</th>
+                  <th>Wire Transfer (Tx / Rx)</th>
+                  <th>Security / ALPN</th>
+                  <th>Diagnostics / Handshake</th>
+                </tr>
+              </thead>
+              <tbody id="quicTelemetryBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>Recent Activity</h2><p>Local runtime events and diagnostics.</p></div><div class="toolbar"><button class="btn sm" id="clearLogsBtn">Clear view</button></div></div>
+        <div class="section-body"><div class="log-list" id="logs"></div></div>
+      </section>
+    </main>
+  </div>

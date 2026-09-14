@@ -14,7 +14,7 @@ public sealed class WindowsVpnAdapter : IVpnAdapter
     public bool IsActive => _adapter != null && !_disposed;
     public IPAddress? LocalIp { get; private set; }
     public string? SubnetMask { get; private set; }
-    public int Mtu { get; private set; } = 1500;
+    public int Mtu { get; private set; } = 1420;
 
     public WindowsVpnAdapter(string name = "QuicPunchAdapter", string tunnelType = "QuicPunchTunnel", Guid? requestedGuid = null)
     {

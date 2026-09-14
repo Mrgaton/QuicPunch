@@ -32,7 +32,6 @@ public static class PortOpenerTests
     {
         Console.Write("[TEST 1] NAT-PMP (RFC 6886) protocol framing & result codes... ");
 
-        // Verify response parsing logic
         byte[] mockIpResponse = new byte[12];
         mockIpResponse[0] = 0;   // Vers
         mockIpResponse[1] = 128; // OP (0 + 128)
@@ -100,7 +99,6 @@ public static class PortOpenerTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
 
-        // Start mock server
         var serverTask = Task.Run(async () =>
         {
             var req = await mockGatewayUdp.ReceiveAsync(cts.Token);
@@ -162,10 +160,8 @@ public static class PortOpenerTests
                 BinaryPrimitives.WriteUInt32BigEndian(resp.AsSpan(4, 4), 7200); // Lifetime
                 BinaryPrimitives.WriteUInt32BigEndian(resp.AsSpan(8, 4), 500);  // Epoch
 
-                // Copy mapping nonce
                 req.Buffer.AsSpan(24, 12).CopyTo(resp.AsSpan(24, 12));
                 resp[36] = req.Buffer[36]; // Protocol
-                // Copy internal port
                 req.Buffer.AsSpan(40, 2).CopyTo(resp.AsSpan(40, 2));
                 // Assigned external port
                 BinaryPrimitives.WriteUInt16BigEndian(resp.AsSpan(42, 2), 59999);

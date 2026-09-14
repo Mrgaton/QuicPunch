@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -67,8 +68,8 @@ namespace QuicPunchTests.Tests;
                     throw new InvalidOperationException("Node B Tor transport was not initialized properly.");
                 }
 
-                const ushort FilePacketType = 100;
-                var packetReaderA = nodeA.GetPacketReader(FilePacketType);
+                var receiverProtocol = new TorFileShareReceiverProtocol();
+                nodeA.RegisterProtocol(receiverProtocol);
 
                 Console.WriteLine("\nWaiting 45s for Tor onion service descriptors to propagate across relays...");
                 await Task.Delay(45000, ctsB.Token);
@@ -79,7 +80,7 @@ namespace QuicPunchTests.Tests;
                     try
                     {
                         Console.WriteLine($"[Attempt {attempt}] Connecting to Tor onion {onionA}:{portA}...");
-                        await nodeB.ConnectTorAsync(onionA, portA, ctsB.Token);
+                        await nodeB.ConnectTorAsync(onionA, checked((ushort)portA), ctsB.Token);
                         Console.WriteLine($"[Attempt {attempt}] Connected!");
                         break;
                     }
@@ -137,15 +138,18 @@ namespace QuicPunchTests.Tests;
                 RandomNumberGenerator.Fill(testFileData);
                 byte[] originalHash = SHA256.HashData(testFileData);
 
-                Console.WriteLine($"\n[Node B] Transmitting {testFileData.Length} bytes payload over Tor to Node A...");
-                await nodeB.SendPayloadAsync(peerA_on_B, FilePacketType, testFileData);
+                var senderProtocol = new TorFileShareSenderProtocol(testFileData);
+                nodeB.RegisterProtocol(senderProtocol);
+
+                Console.WriteLine($"\n[Node B] Transmitting {testFileData.Length} bytes payload over Tor to Node A via QUIC stream...");
+                await nodeB.InitQuicConnection(senderProtocol.ProtocolId, peerA_on_B, cancellationToken: ctsB.Token);
 
                 Console.WriteLine("[Node A] Waiting for incoming encrypted payload over Tor...");
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                var (senderId, receivedData) = await packetReaderA.ReadAsync(timeoutCts.Token);
+                byte[] receivedData = await receiverProtocol.DataReceived.Task.WaitAsync(timeoutCts.Token);
 
                 byte[] receivedHash = SHA256.HashData(receivedData);
-                Console.WriteLine($"[Node A] Successfully received {receivedData.Length} bytes from peer {senderId}!");
+                Console.WriteLine($"[Node A] Successfully received {receivedData.Length} bytes over Tor QUIC stream!");
 
                 if (originalHash.SequenceEqual(receivedHash))
                 {
@@ -169,6 +173,49 @@ namespace QuicPunchTests.Tests;
                 if (nodeB != null) { try { await nodeB.DisposeAsync(); } catch { } }
                 try { Directory.Delete(dirA, true); } catch { }
                 try { Directory.Delete(dirB, true); } catch { }
+            }
+        }
+
+        private static readonly Guid TestTorProtocolId = Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00");
+
+        private sealed class TorFileShareReceiverProtocol : QuicPunch.QuicPunch.IProtocolHandler
+        {
+            public Guid ProtocolId => TestTorProtocolId;
+            public ushort PreferredPort => 0;
+            public string ProtocolName => "TorFileShare";
+            public ushort StreamPriority => (ushort)QuicStreamPriority.Normal;
+            public ZstandardCompressionOptions? CompressionOptions => null;
+
+            public TaskCompletionSource<byte[]> DataReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public Task DeniedAsync(PeerInfo peer, CancellationToken ct) => Task.CompletedTask;
+
+            public async Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct)
+            {
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms, ct).ConfigureAwait(false);
+                DataReceived.TrySetResult(ms.ToArray());
+            }
+        }
+
+        private sealed class TorFileShareSenderProtocol : QuicPunch.QuicPunch.IProtocolHandler
+        {
+            private readonly byte[] _dataToSend;
+            public Guid ProtocolId => TestTorProtocolId;
+            public ushort PreferredPort => 0;
+            public string ProtocolName => "TorFileShare";
+            public ushort StreamPriority => (ushort)QuicStreamPriority.Normal;
+            public ZstandardCompressionOptions? CompressionOptions => null;
+
+            public TorFileShareSenderProtocol(byte[] dataToSend) => _dataToSend = dataToSend;
+
+            public Task DeniedAsync(PeerInfo peer, CancellationToken ct) => Task.CompletedTask;
+
+            public async Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct)
+            {
+                await stream.WriteAsync(_dataToSend, ct).ConfigureAwait(false);
+                await stream.FlushAsync(ct).ConfigureAwait(false);
+                stream.Close();
             }
         }
     }

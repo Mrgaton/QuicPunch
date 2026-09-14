@@ -1,0 +1,96 @@
+  <!-- 2. DIRECT CHAT VIEW -->
+  <div id="view-chat" class="spa-view hidden">
+    <main class="workspace chat-workspace">
+      <div class="discord-chat" id="chatContainer">
+        <aside class="dm-pane">
+          <div class="dm-head"><div><strong>Direct messages</strong><span>Trusted peers</span></div></div>
+          <div class="dm-search"><input class="input" id="chatPeerSearch" placeholder="Find a peer"></div>
+          <div id="chatPeers" class="dm-list"></div>
+        </aside>
+        <section class="conversation-pane">
+          <header class="conversation-head">
+            <div class="conversation-identity">
+              <div class="avatar large" id="chatAvatar">—</div>
+              <div>
+                <strong id="chatPeerName">Choose a peer</strong>
+                <span id="chatPeerMeta">Select someone from the left</span>
+              </div>
+            </div>
+            <div class="chat-header-actions">
+              <button class="btn icon-btn" id="chatSearchToggleBtn" title="Search messages" disabled>🔍</button>
+              <button class="btn icon-btn" id="chatClearBtn" title="Clear conversation" disabled>🗑️</button>
+              <button class="btn primary" id="chatConnectBtn" disabled>Connect chat</button>
+            </div>
+          </header>
+
+          <!-- In-chat search bar -->
+          <div id="chatSearchBar" class="chat-search-bar hidden">
+            <span class="search-icon">🔍</span>
+            <input class="input sm" id="chatSearchInput" placeholder="Filter messages in this chat...">
+            <span id="chatSearchCount" class="chat-search-badge"></span>
+            <button class="btn sm" id="chatSearchCloseBtn">✕</button>
+          </div>
+
+          <div id="messages" class="messages discord-messages">
+            <div class="empty">Choose a trusted peer from the left.</div>
+          </div>
+
+          <!-- Typing indicator -->
+          <div id="chatTypingIndicator" class="chat-typing-bar hidden">
+            <span class="typing-indicator-dots"><span></span><span></span><span></span></span>
+            <span id="chatTypingText">Peer is typing...</span>
+          </div>
+
+          <!-- Drag and drop zone overlay -->
+          <div id="chatDropZone" class="chat-drop-overlay hidden">
+            <div class="drop-overlay-box">
+              <div class="drop-overlay-icon">📁</div>
+              <strong>Drop files here to send</strong>
+              <span>Fast peer-to-peer on-demand transfer</span>
+            </div>
+          </div>
+
+          <!-- Voice recording in-progress bar -->
+          <div id="voiceRecordingBar" class="voice-recording-bar hidden">
+            <div class="voice-recording-pulse"></div>
+            <span id="voiceRecordingTimer" class="voice-timer">00:00</span>
+            <span class="voice-recording-label">Recording voice note...</span>
+            <div class="voice-recording-actions">
+              <button class="btn sm danger" id="voiceCancelBtn" title="Cancel">🗑️ Cancel</button>
+              <button class="btn sm primary" id="voiceSendBtn" title="Send note">➤ Send</button>
+            </div>
+          </div>
+
+          <!-- Composer -->
+          <div class="composer discord-composer">
+            <button class="btn composer-btn" id="attachBtn" title="Attach file or media" disabled>+</button>
+            <button class="btn composer-btn" id="emojiBtn" title="Insert emoji" disabled>😊</button>
+            <textarea id="messageInput" class="textarea" placeholder="Message selected peer (Enter to send, Shift+Enter for newline)" disabled></textarea>
+            <button class="btn composer-btn" id="voiceRecordBtn" title="Record voice note" disabled>🎙️</button>
+            <button class="btn primary" id="sendBtn" disabled>Send</button>
+            <input id="fileInput" type="file" hidden multiple>
+          </div>
+
+          <!-- Emoji Popover -->
+          <div id="emojiPopover" class="emoji-popover hidden">
+            <div class="emoji-grid" id="emojiGrid"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Image Lightbox Modal -->
+    <div id="chatLightbox" class="chat-lightbox hidden">
+      <div class="lightbox-overlay" id="lightboxOverlay"></div>
+      <div class="lightbox-dialog">
+        <img id="lightboxImg" src="" alt="Full preview">
+        <div class="lightbox-toolbar">
+          <span id="lightboxCaption" class="lightbox-caption"></span>
+          <div class="lightbox-buttons">
+            <a id="lightboxDownloadBtn" class="btn sm primary" download target="_blank">⬇️ Download</a>
+            <button class="btn sm" id="lightboxCloseBtn">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>

@@ -108,6 +108,14 @@ namespace QuicPunch.PacketHandler
                         session.ConnectionTaskStarted = true;
                     }
 
+                    if (connectionType == Guid.Empty && qc.TryGetPeerMultiplexer(peerId, out var existingMux) && existingMux != null && !existingMux.IsDisposed)
+                    {
+                        QuicPunchLog.Info($"[Handshake] Multiplexer already active with {peerId}. Declining redundant handshake to preserve active sessions.");
+                        session.MarkRejected();
+                        session.ResponsePayloadTcs.TrySetResult(Array.Empty<byte>());
+                        return;
+                    }
+
                     QuicPunchLog.Info($"[HANDSHAKE SESSION] Starting new incoming handshake session for Guid: {guid} from {remoteEndPoint} (Candidates: {remoteCandidates.Count})");
 
                     bool wasYielded = false;
@@ -158,7 +166,9 @@ namespace QuicPunch.PacketHandler
                             HandShakeType decidedResponse = HandShakeType.Unsupported;
                             ushort decidedPort = 0;
 
-                            if (qc.ProtocolHandlers.TryGetValue(connectionType, out var handler))
+                            IProtocolHandler? handler = null;
+                            bool isMultiplexerTunnel = connectionType == Guid.Empty;
+                            if (isMultiplexerTunnel || qc.ProtocolHandlers.TryGetValue(connectionType, out handler))
                             {
                                 HandshakeDecision decision;
 
@@ -167,7 +177,8 @@ namespace QuicPunch.PacketHandler
                                     || (isTrusted && (
                                         qc.AutoAcceptConnections
                                         || wasYielded
-                                        || qc.IsPeerAutoAccepted(peerId)));
+                                        || qc.IsPeerAutoAccepted(peerId)
+                                        || isMultiplexerTunnel));
 
                                 if (isAutoAccepted)
                                 {
@@ -241,7 +252,7 @@ namespace QuicPunch.PacketHandler
 
                             token.ThrowIfCancellationRequested();
 
-                            if (decidedResponse == HandShakeType.Accept && handler != null)
+                            if (decidedResponse == HandShakeType.Accept && (handler != null || isMultiplexerTunnel))
                             {
                                 if (!qc.AvailablePeers.TryGetValue(peerId, out var targetPeer))
                                 {
@@ -250,40 +261,28 @@ namespace QuicPunch.PacketHandler
 
                                 if (transport == TransportType.Wan && nudp != null)
                                 {
-                                    var connection = await QuicPunchConnection.InitQuicConnectionCore(qc, qc.GetCurrentPeer(transport), nudp, targetPeer, remoteCandidates, remotePort, guid, qc.GetCertManager(transport).PeerCertificate!, handler.CompressionOptions, token).ConfigureAwait(false);
+                                    var connection = await QuicPunchConnection.InitQuicConnectionCore(qc, qc.GetCurrentPeer(transport), nudp, targetPeer, remoteCandidates, remotePort, guid, qc.GetCertManager(transport).PeerCertificate!, null, token).ConfigureAwait(false);
 
                                     token.ThrowIfCancellationRequested();
 
-                                    if (connection.Connection == null || connection.Stream == null)
+                                    if (connection.Connection != null && connection.Stream != null)
                                     {
-                                        _ = Task.Run(async () => await handler.DeniedAsync(targetPeer, token).ConfigureAwait(false));
-                                    }
-                                    else
-                                    {
-                                        bool registered = await qc.RegisterProtocolSessionAsync(targetPeer.Id, connectionType, connection.Connection, connection.Stream, workerGen).ConfigureAwait(false);
-                                        if (registered)
-                                        {
-                                            sessionHandedOff = true;
-                                            handshakeCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                                        bool isServer = QuicPunchConnection.AmIServer(qc.GetCurrentPeer(transport), targetPeer);
+                                        var mux = new Multiplexer.QuicPeerMultiplexer(
+                                            connection.Connection,
+                                            targetPeer,
+                                            isServer,
+                                            protocolLookup: id => qc.ProtocolHandlers.TryGetValue(id, out var h) ? h : null,
+                                            accessCheck: p => qc.AutoAcceptUntrustedConnections || qc.IsTrustedPeer(p),
+                                            initialControlStream: connection.Stream,
+                                            sessionRegisteredCallback: (protoId, conn, str) => qc.RegisterProtocolSessionAsync(targetPeer.Id, protoId, conn, str, workerGen),
+                                            sessionUnregisteredCallback: (protoId, conn) => qc.UnregisterProtocolSessionAsync(targetPeer.Id, protoId, conn));
 
-                                            var capturedCts = handshakeCts;
-                                            var capturedDecisionCts = decisionLinkedCts;
-                                            _ = Task.Run(async () =>
-                                            {
-                                                try
-                                                {
-                                                    await handler.HandleAsync(connection.Connection, connection.Stream, targetPeer, token).ConfigureAwait(false);
-                                                }
-                                                finally
-                                                {
-                                                    await qc.UnregisterProtocolSessionAsync(targetPeer.Id, connectionType, connection.Connection).ConfigureAwait(false);
-                                                    try { await connection.Stream.DisposeAsync().ConfigureAwait(false); } catch { }
-                                                    try { await connection.Connection.DisposeAsync().ConfigureAwait(false); } catch { }
-                                                    try { capturedDecisionCts?.Dispose(); } catch { }
-                                                    try { capturedCts.Dispose(); } catch { }
-                                                }
-                                            }, token);
-                                        }
+                                        await mux.StartAsync(token).ConfigureAwait(false);
+                                        qc.RegisterPeerMultiplexer(targetPeer.Id, mux);
+
+                                        sessionHandedOff = true;
+                                        handshakeCts.CancelAfter(Timeout.InfiniteTimeSpan);
                                     }
                                 }
                                 else if (transport == TransportType.Tor && (torChannel != null || handshakePeer.TorChannel != null))
@@ -295,30 +294,22 @@ namespace QuicPunch.PacketHandler
                                         var stream = await dummyConn.AcceptInboundStreamAsync(token).ConfigureAwait(false);
                                         token.ThrowIfCancellationRequested();
 
-                                        bool registered = await qc.RegisterProtocolSessionAsync(targetPeer.Id, connectionType, dummyConn, stream, workerGen).ConfigureAwait(false);
-                                        if (registered)
-                                        {
-                                            sessionHandedOff = true;
-                                            handshakeCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                                        bool isServer = QuicPunchConnection.AmIServer(qc.GetCurrentPeer(transport), targetPeer);
+                                        var mux = new Multiplexer.QuicPeerMultiplexer(
+                                            dummyConn,
+                                            targetPeer,
+                                            isServer,
+                                            protocolLookup: id => qc.ProtocolHandlers.TryGetValue(id, out var h) ? h : null,
+                                            accessCheck: p => qc.AutoAcceptUntrustedConnections || qc.IsTrustedPeer(p),
+                                            initialControlStream: stream,
+                                            sessionRegisteredCallback: (protoId, conn, str) => qc.RegisterProtocolSessionAsync(targetPeer.Id, protoId, conn, str, workerGen),
+                                            sessionUnregisteredCallback: (protoId, conn) => qc.UnregisterProtocolSessionAsync(targetPeer.Id, protoId, conn));
 
-                                            var capturedCts = handshakeCts;
-                                            var capturedDecisionCts = decisionLinkedCts;
-                                            _ = Task.Run(async () =>
-                                            {
-                                                try
-                                                {
-                                                    await handler.HandleAsync(dummyConn, stream, targetPeer, token).ConfigureAwait(false);
-                                                }
-                                                finally
-                                                {
-                                                    await qc.UnregisterProtocolSessionAsync(targetPeer.Id, connectionType, dummyConn).ConfigureAwait(false);
-                                                    try { await stream.DisposeAsync().ConfigureAwait(false); } catch { }
-                                                    try { await dummyConn.DisposeAsync().ConfigureAwait(false); } catch { }
-                                                    try { capturedDecisionCts?.Dispose(); } catch { }
-                                                    try { capturedCts.Dispose(); } catch { }
-                                                }
-                                            }, token);
-                                        }
+                                        await mux.StartAsync(token).ConfigureAwait(false);
+                                        qc.RegisterPeerMultiplexer(targetPeer.Id, mux);
+
+                                        sessionHandedOff = true;
+                                        handshakeCts.CancelAfter(Timeout.InfiniteTimeSpan);
                                     }
                                     catch (OperationCanceledException)
                                     {
@@ -328,7 +319,6 @@ namespace QuicPunch.PacketHandler
                                     catch (Exception ex)
                                     {
                                         QuicPunchLog.Error("[TOR QUIC HANDLER ERROR]", ex);
-                                        await handler.DeniedAsync(targetPeer, token).ConfigureAwait(false);
                                         try { await dummyConn.DisposeAsync().ConfigureAwait(false); } catch { }
                                     }
                                 }
@@ -363,6 +353,7 @@ namespace QuicPunch.PacketHandler
                             }
                         }
                     });
+                    _ = worker.Task.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
                     return;
 
                 case HandShakeType.Accept:

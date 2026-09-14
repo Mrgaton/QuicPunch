@@ -1,6 +1,7 @@
 using QuicPunch.Helpers;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -22,7 +23,7 @@ namespace QuicPunch.PacketHandler
 
                 var peerId = new Guid(r.ReadBytes(16));
 
-                if (qc.AvailablePeers.TryGetValue(peerId, out PeerInfo ackPeer))
+                if (qc.AvailablePeers.TryGetValue(peerId, out PeerInfo? ackPeer) && ackPeer != null)
                 {
                     if (!qc.IsTrustedPeer(ackPeer))
                     {
@@ -40,8 +41,9 @@ namespace QuicPunch.PacketHandler
                     {
                         PeerInfo pi = new PeerInfo();
 
-                        PackedFlags pf = new PackedFlags(r.ReadByte());
-                        pi.NetworkType = pf.NetworkType;
+                        ConnectionFlags flags = new ConnectionFlags(r.ReadByte());
+                        pi.ConnectionFlags = flags;
+                        pi.NetworkType = flags.IsTor ? QuicPunch.NetworkType.Tor : QuicPunch.NetworkType.Static;
 
                         byte addressCount = r.ReadByte();
                         if (addressCount > 32)
@@ -60,8 +62,20 @@ namespace QuicPunch.PacketHandler
 
                         pi.Addresses = addresses.ToArray();
 
-                        pi.MinPort = r.ReadUInt16();
-                        pi.MaxPort = r.ReadUInt16();
+                        ushort sharedMinPort = r.ReadUInt16();
+                        ushort sharedMaxPort = r.ReadUInt16();
+                        if (sharedMinPort > 0 && sharedMaxPort >= sharedMinPort)
+                        {
+                            pi.PortArray = sharedMinPort == sharedMaxPort
+                                ? [sharedMinPort]
+                                : Enumerable.Range(sharedMinPort, sharedMaxPort - sharedMinPort + 1).Select(p => (ushort)p).ToArray();
+                            pi.ConnectionFlags.PortMode = sharedMinPort == sharedMaxPort ? PortMode.Single : PortMode.Range;
+                        }
+                        else if (sharedMinPort > 0)
+                        {
+                            pi.PortArray = [sharedMinPort];
+                            pi.ConnectionFlags.PortMode = PortMode.Single;
+                        }
 
                         byte[] sharedCertHash = r.ReadBytes(32);
                         if (sharedCertHash.Length != 32)

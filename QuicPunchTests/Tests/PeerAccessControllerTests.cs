@@ -89,8 +89,7 @@ namespace QuicPunchTests.Tests;
                 { 
                     Name = "SavedNode",
                     Addresses = new[] { System.Net.IPAddress.Parse("192.168.1.100") },
-                    MinPort = 5000,
-                    MaxPort = 5000
+                    PortArray = [5000]
                 };
                 savedPeer.SetCertificateHash(certHash2);
                 if (!store.AddOrUpdate(savedPeer, autoConnect: false))

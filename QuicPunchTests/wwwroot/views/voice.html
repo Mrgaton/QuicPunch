@@ -1,0 +1,121 @@
+  <!-- 3. VOICE STUDIO VIEW -->
+  <div id="view-voice" class="spa-view hidden">
+    <main class="workspace">
+      <header class="page-head compact-head">
+        <div>
+          <h1>Voice Studio</h1>
+          <p>Real-time P2P voice sessions with native system audio, Opus VoIP at 48 kHz / 60 ms, and per-peer controls.</p>
+        </div>
+        <div class="toolbar">
+          <span class="badge blue" id="audioBackendBadge">Native Audio</span>
+        </div>
+      </header>
+
+      <!-- Audio & Stream Control Panel -->
+      <section class="section voice-my-controls-card">
+        <div class="section-head">
+          <div>
+            <h2>My Audio & Streaming</h2>
+            <p>Independent transmission (microphone, screen share) and output reception controls.</p>
+          </div>
+        </div>
+        <div class="section-body">
+          <div class="voice-quick-controls">
+            <button class="btn green voice-ctrl-btn" id="voicePanelMicBtn" title="Mute / Unmute microphone">
+              <span class="btn-icon" id="voicePanelMicIcon">🎙️</span>
+              <div class="btn-col">
+                <strong id="voicePanelMicText">Mic Active</strong>
+                <span class="btn-sub" id="voicePanelMicSub">Peers can hear you</span>
+              </div>
+            </button>
+            <button class="btn green voice-ctrl-btn" id="voicePanelDeafenBtn" title="Deafen / Hear others">
+              <span class="btn-icon" id="voicePanelDeafenIcon">🎧</span>
+              <div class="btn-col">
+                <strong id="voicePanelDeafenText">Audio Active</strong>
+                <span class="btn-sub" id="voicePanelDeafenSub">You can hear others</span>
+              </div>
+            </button>
+            <button class="btn ghost voice-ctrl-btn" id="voicePanelScreenBtn" title="Share your screen with call participants">
+              <span class="btn-icon" id="voicePanelScreenIcon">🖥️</span>
+              <div class="btn-col">
+                <strong id="voicePanelScreenText">Share Screen</strong>
+                <span class="btn-sub" id="voicePanelScreenSub">Stream monitor or window</span>
+              </div>
+            </button>
+            <button class="btn ghost voice-ctrl-btn" id="voiceScreenSettingsBtn" title="Configure video quality, refresh rate (FPS), resolution, and codec before or during transmission">
+              <span class="btn-icon" id="voiceScreenSettingsIcon">⚙️</span>
+              <div class="btn-col">
+                <strong id="voiceScreenSettingsText">Stream Settings</strong>
+                <span class="btn-sub" id="voiceScreenSettingsSub">60 FPS · 1080p</span>
+              </div>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Live Screen Shares (Multi-User Stream Grid) -->
+      <section class="section hidden" id="screenShareGridSection">
+        <div class="section-head">
+          <div>
+            <h2 id="screenShareSectionTitle">🖥️ Live Screen Streams</h2>
+            <p id="screenShareSectionSubtitle">High-definition continuous video streams with GPU acceleration and configurable codec.</p>
+          </div>
+          <div class="toolbar">
+            <span class="badge red live-badge animate-pulse" id="screenShareGlobalLiveBadge">● LIVE</span>
+            <button class="btn sm ghost" id="screenShareGlobalSettingsBtn" title="Video settings">⚙️ Quality & Codec</button>
+          </div>
+        </div>
+        <div class="section-body">
+          <div id="screenShareGrid" class="screen-share-grid">
+            <!-- Dynamic stream tiles inserted here: [Peer Video Tile] -->
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>Active Calls</h2>
+            <p>Direct peer sessions with individual volume, listener muting, and selective mic privacy.</p>
+          </div>
+        </div>
+        <div class="section-body"><div id="activeCalls" class="call-list voice-call-list"></div></div>
+      </section>
+
+      <div class="split-2">
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Devices & System Audio</h2>
+              <p>Host-native capture and playback devices.</p>
+            </div>
+          </div>
+          <div class="section-body">
+            <div class="field"><label for="micSelect">Microphone (Input Device)</label><select class="select" id="micSelect"></select></div>
+            <div class="field space-top"><label for="speakerSelect">Speakers / Headphones (Output Device)</label><select class="select" id="speakerSelect"></select></div>
+            
+            <div class="field space-top">
+              <label>Master Output Volume (<span id="masterVolumeLabel" class="mono">100%</span>)</label>
+              <input type="range" id="masterVolumeSlider" min="0" max="200" step="5" value="100" style="width: 100%;">
+            </div>
+
+            <div class="field space-top"><label>Microphone Activity Level</label><div class="meter"><span id="micMeter"></span></div></div>
+            <div class="toolbar space-top">
+              <button class="btn" id="testMicBtn">Test Mic</button>
+              <button class="btn accent" id="advancedOpusBtn">Opus Audio Settings</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Start Call</h2>
+              <p>Trusted peers available for voice calls.</p>
+            </div>
+          </div>
+          <div class="section-body"><div id="voicePeers" class="peer-list voice-peer-list"></div></div>
+        </section>
+      </div>
+    </main>
+  </div>

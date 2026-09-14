@@ -281,8 +281,7 @@ public static class NativeQuicOptimizationsTests
                 var peer = new PeerInfo
                 {
                     Addresses = new[] { IPAddress.Loopback },
-                    MinPort = 8000,
-                    MaxPort = 8000,
+                    PortArray = [8000],
                     Name = "OptTestPeer",
                     ResumptionTicket = mockTicket
                 };
@@ -323,7 +322,6 @@ public static class NativeQuicOptimizationsTests
             try { if (File.Exists(tempDbPath + ".lock")) File.Delete(tempDbPath + ".lock"); } catch { }
         }
 
-        // Cleanup connections
         await clientConn.DisposeAsync();
         await serverConn.DisposeAsync();
 

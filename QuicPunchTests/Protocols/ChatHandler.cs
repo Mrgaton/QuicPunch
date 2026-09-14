@@ -10,7 +10,7 @@ namespace QuicPunchTests.Protocols
 {
     public sealed class ChatHandler : QuicPunch.QuicPunch.IProtocolHandler
     {
-        private const int MaxFrameBytes = 12 * 1024 * 1024;
+        private const int MaxFrameBytes = 32 * 1024 * 1024;
         public Guid ProtocolId { get; } = Guid.Parse("00000000-0000-0000-0000-000000000001");
         public ushort PreferredPort => 0;
         public string ProtocolName => "Chat";
@@ -23,6 +23,11 @@ namespace QuicPunchTests.Protocols
         public event Func<Guid, List<(string MsgId, string Sender, string Content, DateTime Timestamp)>>? OnGetHistoryForPeer;
         public event Action<PeerInfo>? OnPeerConnected;
         public event Action<PeerInfo>? OnPeerDisconnected;
+        public event Action<PeerInfo, bool>? OnTypingReceived;
+        public event Action<PeerInfo, string, Guid, string, long, string, string>? OnFileOfferReceived;
+        public event Action<PeerInfo, Guid, long>? OnFileRequestReceived;
+        public event Action<PeerInfo, Guid>? OnFileCancelReceived;
+        public event Action<PeerInfo, Guid, long, ReadOnlyMemory<byte>, bool>? OnFileChunkReceived;
 
         public sealed class ChatSession : IDisposable
         {
@@ -50,6 +55,23 @@ namespace QuicPunchTests.Protocols
                 {
                     await Stream.WriteAsync(header, ct).ConfigureAwait(false);
                     await Stream.WriteAsync(payload, ct).ConfigureAwait(false);
+                    await Stream.FlushAsync(ct).ConfigureAwait(false);
+                }
+                finally { WriteLock.Release(); }
+            }
+
+            public async Task SendBinaryChunkAsync(ReadOnlyMemory<byte> chunk, CancellationToken ct = default)
+            {
+                if (chunk.Length <= 0 || chunk.Length > MaxFrameBytes)
+                    throw new InvalidDataException("Binary frame size is invalid.");
+
+                byte[] header = new byte[4];
+                BinaryPrimitives.WriteInt32LittleEndian(header, chunk.Length);
+                await WriteLock.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    await Stream.WriteAsync(header, ct).ConfigureAwait(false);
+                    await Stream.WriteAsync(chunk, ct).ConfigureAwait(false);
                     await Stream.FlushAsync(ct).ConfigureAwait(false);
                 }
                 finally { WriteLock.Release(); }
@@ -117,6 +139,16 @@ namespace QuicPunchTests.Protocols
 
         private async Task ProcessFrameAsync(ChatSession session, PeerInfo peer, byte[] payload, CancellationToken ct)
         {
+            if (payload.Length >= 26 && payload[0] == 0x01)
+            {
+                Guid fileId = new(payload.AsSpan(1, 16));
+                long offset = BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(17, 8));
+                bool isEnd = payload[25] == 1;
+                ReadOnlyMemory<byte> data = payload.AsMemory(26);
+                OnFileChunkReceived?.Invoke(peer, fileId, offset, data, isEnd);
+                return;
+            }
+
             try
             {
                 using var doc = JsonDocument.Parse(payload);
@@ -137,6 +169,36 @@ namespace QuicPunchTests.Protocols
                     case "chat_ack":
                         OnMessageAckReceived?.Invoke(peer, msgId);
                         break;
+                    case "chat_typing":
+                    {
+                        bool isTyping = root.TryGetProperty("isTyping", out var itEl) && itEl.GetBoolean();
+                        OnTypingReceived?.Invoke(peer, isTyping);
+                        break;
+                    }
+                    case "chat_file_offer":
+                    {
+                        Guid fileId = root.TryGetProperty("fileId", out var fEl) && Guid.TryParse(fEl.GetString(), out var fid) ? fid : Guid.Empty;
+                        string fileName = root.TryGetProperty("name", out var nEl) ? nEl.GetString() ?? "" : "";
+                        long fileSize = root.TryGetProperty("size", out var sEl) ? sEl.GetInt64() : 0;
+                        string mime = root.TryGetProperty("mime", out var mEl) ? mEl.GetString() ?? "" : "";
+                        string sender = (root.TryGetProperty("sender", out var sndEl) ? sndEl.GetString() : null) ?? peer.Name ?? "Unknown";
+                        OnFileOfferReceived?.Invoke(peer, msgId, fileId, fileName, fileSize, mime, sender);
+                        await session.SendJsonAsync(new { type = "chat_ack", msgId, status = "delivered" }, ct).ConfigureAwait(false);
+                        break;
+                    }
+                    case "chat_file_req":
+                    {
+                        Guid reqFileId = root.TryGetProperty("fileId", out var rfEl) && Guid.TryParse(rfEl.GetString(), out var rfid) ? rfid : Guid.Empty;
+                        long reqOffset = root.TryGetProperty("offset", out var roEl) ? roEl.GetInt64() : 0;
+                        OnFileRequestReceived?.Invoke(peer, reqFileId, reqOffset);
+                        break;
+                    }
+                    case "chat_file_cancel":
+                    {
+                        Guid cancelFileId = root.TryGetProperty("fileId", out var cfEl) && Guid.TryParse(cfEl.GetString(), out var cfid) ? cfid : Guid.Empty;
+                        OnFileCancelReceived?.Invoke(peer, cancelFileId);
+                        break;
+                    }
                     case "chat_sync_req":
                     {
                         var history = OnGetHistoryForPeer?.Invoke(peer.Id) ?? new();
@@ -166,6 +228,100 @@ namespace QuicPunchTests.Protocols
                 }
             }
             catch (JsonException) { }
+        }
+
+        public static byte[] BuildFileChunkFrame(Guid fileId, long offset, byte[] data, int count, bool isEnd)
+        {
+            byte[] frame = new byte[1 + 16 + 8 + 1 + count];
+            frame[0] = 0x01;
+            fileId.TryWriteBytes(frame.AsSpan(1, 16));
+            BinaryPrimitives.WriteInt64LittleEndian(frame.AsSpan(17, 8), offset);
+            frame[25] = (byte)(isEnd ? 1 : 0);
+            Buffer.BlockCopy(data, 0, frame, 26, count);
+            return frame;
+        }
+
+        public static async Task<bool> SendTypingAsync(Guid peerId, bool isTyping)
+        {
+            if (!ActiveChats.TryGetValue(peerId, out var chat)) return false;
+            try
+            {
+                await chat.SendJsonAsync(new { type = "chat_typing", isTyping }).ConfigureAwait(false);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static async Task<(bool Success, string MsgId)> SendFileOfferAsync(Guid peerId, string senderName, Guid fileId, string fileName, long fileSize, string mime)
+        {
+            string msgId = Guid.NewGuid().ToString();
+            if (!ActiveChats.TryGetValue(peerId, out var chat)) return (false, msgId);
+            try
+            {
+                await chat.SendJsonAsync(new
+                {
+                    type = "chat_file_offer",
+                    msgId,
+                    sender = senderName,
+                    fileId = fileId.ToString(),
+                    name = fileName,
+                    size = fileSize,
+                    mime,
+                    timestamp = DateTime.UtcNow.ToString("o")
+                }).ConfigureAwait(false);
+                return (true, msgId);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CHAT] Error sending file offer: {ex.Message}");
+                return (false, msgId);
+            }
+        }
+
+        public static async Task<bool> RequestFileAsync(Guid peerId, Guid fileId, long offset = 0)
+        {
+            if (!ActiveChats.TryGetValue(peerId, out var chat)) return false;
+            try
+            {
+                await chat.SendJsonAsync(new
+                {
+                    type = "chat_file_req",
+                    fileId = fileId.ToString(),
+                    offset
+                }).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CHAT] Error requesting file: {ex.Message}");
+                return false;
+            }
+        }
+
+        public static async Task<bool> CancelFileAsync(Guid peerId, Guid fileId)
+        {
+            if (!ActiveChats.TryGetValue(peerId, out var chat)) return false;
+            try
+            {
+                await chat.SendJsonAsync(new
+                {
+                    type = "chat_file_cancel",
+                    fileId = fileId.ToString()
+                }).ConfigureAwait(false);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static async Task<bool> SendBinaryChunkAsync(Guid peerId, byte[] frame)
+        {
+            if (!ActiveChats.TryGetValue(peerId, out var chat)) return false;
+            try
+            {
+                await chat.SendBinaryChunkAsync(frame).ConfigureAwait(false);
+                return true;
+            }
+            catch { return false; }
         }
 
         public static async Task<(bool Success, string MsgId)> SendMessageAsync(Guid peerId, string senderName, string message)
