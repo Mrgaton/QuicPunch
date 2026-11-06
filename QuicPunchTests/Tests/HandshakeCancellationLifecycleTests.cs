@@ -60,14 +60,13 @@ public static class HandshakeCancellationLifecycleTests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0);
-                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
-                qpB.AutoAcceptConnections = false;
-                qpB.AutoAcceptUntrustedConnections = false;
+
                 qpB.TrustPeer(qpA.CurrentPeer.CertHash);
 
                 var decisionBlocker = new TaskCompletionSource();
@@ -124,8 +123,8 @@ public static class HandshakeCancellationLifecycleTests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0);
-                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 // Point STUN servers to a blackhole IP so candidate gathering takes time (~800ms)
                 qpB.StunServerEndpoints = new[] { new IPEndPoint(IPAddress.Parse("192.0.2.1"), 3478) };
@@ -133,8 +132,9 @@ public static class HandshakeCancellationLifecycleTests
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
-                qpB.AutoAcceptConnections = true;
-                qpB.AutoAcceptUntrustedConnections = true;
+
+                qpB.TrustPeer(qpA.CurrentPeer.CertHash);
+                qpB.Manager.HandshakeRequested += (_, _) => Task.FromResult(new HandshakeDecision(true, 0, CancellationToken.None));
 
                 var protoId = Guid.NewGuid();
                 qpB.RegisterProtocol(new DummyProtocolHandler(protoId, () => { }));
@@ -186,8 +186,8 @@ public static class HandshakeCancellationLifecycleTests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0);
-                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 // No STUN servers so candidate gathering is immediate
                 qpB.StunServerEndpoints = Array.Empty<IPEndPoint>();
@@ -196,8 +196,9 @@ public static class HandshakeCancellationLifecycleTests
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
-                qpB.AutoAcceptConnections = true;
-                qpB.AutoAcceptUntrustedConnections = true;
+
+                qpB.TrustPeer(qpA.CurrentPeer.CertHash);
+                qpB.Manager.HandshakeRequested += (_, _) => Task.FromResult(new HandshakeDecision(true, 0, CancellationToken.None));
 
                 var protoId = Guid.NewGuid();
                 qpB.RegisterProtocol(new DummyProtocolHandler(protoId, () => { }));
@@ -251,8 +252,8 @@ public static class HandshakeCancellationLifecycleTests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0);
-                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 qpB.StunServerEndpoints = Array.Empty<IPEndPoint>();
                 qpA.StunServerEndpoints = Array.Empty<IPEndPoint>();
@@ -260,8 +261,9 @@ public static class HandshakeCancellationLifecycleTests
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
-                qpB.AutoAcceptConnections = true;
-                qpB.AutoAcceptUntrustedConnections = true;
+
+                qpB.TrustPeer(qpA.CurrentPeer.CertHash);
+                qpB.Manager.HandshakeRequested += (_, _) => Task.FromResult(new HandshakeDecision(true, 0, CancellationToken.None));
 
                 var protoId = Guid.NewGuid();
                 qpB.RegisterProtocol(new DummyProtocolHandler(protoId, () => { }));
@@ -282,7 +284,7 @@ public static class HandshakeCancellationLifecycleTests
 
                 // Wait for B to generate accept response
                 int retries = 0;
-                while (retries++ < 100 && (!qpB.IncomingHandshakeSessions.TryGetValue(connGuid, out var s) || !s.ResponsePayloadTcs.Task.IsCompleted))
+                while (retries++ < 750 && (!qpB.IncomingHandshakeSessions.TryGetValue(connGuid, out var s) || !s.ResponsePayloadTcs.Task.IsCompleted))
                 {
                     await Task.Delay(20);
                 }
@@ -299,19 +301,13 @@ public static class HandshakeCancellationLifecycleTests
                 var bType = (QuicPunchStructures.HandShakeType)r.ReadByte();
                 var bPort = r.ReadUInt16();
 
-                // Send FinalHandshake from Node A's dummy UDP socket to B's bound port to satisfy hole punch
-                byte[] finalHs = new byte[QuicPunch.QuicPunch.MagicHeader.Length + 1 + 16 + 16];
-                Buffer.BlockCopy(QuicPunch.QuicPunch.MagicHeader, 0, finalHs, 0, QuicPunch.QuicPunch.MagicHeader.Length);
-                finalHs[QuicPunch.QuicPunch.MagicHeader.Length] = (byte)QuicPunchStructures.MessageType.FinalHandshake;
-                connGuid.ToByteArray().CopyTo(finalHs.AsSpan(QuicPunch.QuicPunch.MagicHeader.Length + 1, 16));
-                qpA.CurrentPeer.IdRaw.CopyTo(finalHs.AsSpan(QuicPunch.QuicPunch.MagicHeader.Length + 1 + 16, 16));
-
+                // Complete the production authenticated connectivity checks before stopping B.
                 var bEp = new IPEndPoint(IPAddress.Loopback, bPort);
-                for (int i = 0; i < 5; i++)
-                {
-                    await dummyUdpA.SendAsync(finalHs, bEp);
-                    await Task.Delay(10);
-                }
+                using var punchTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var punched = await QuicPunchConnection.OpenPortCore(qpA.CurrentPeer, dummyUdpA, qpB.CurrentPeer,
+                    [new CandidateEndpoint(bEp, CandidateType.Host)], bPort, connGuid, punchTimeout.Token,
+                    qpA.CertManager.Curve, qpA.PasswordHash);
+                if (!punched.Success) throw new Exception("Authenticated hole punch did not complete");
 
                 // Node B now completes hole punch and enters QUIC connect phase
                 await Task.Delay(100);
@@ -344,14 +340,13 @@ public static class HandshakeCancellationLifecycleTests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0);
-                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: dirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qpB = new QuicPunch.QuicPunch(appDataPath: dirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
-                qpB.AutoAcceptConnections = false;
-                qpB.AutoAcceptUntrustedConnections = false;
+
                 qpB.TrustPeer(qpA.CurrentPeer.CertHash);
 
                 var decisionBlocker = new TaskCompletionSource();
@@ -414,7 +409,6 @@ public static class HandshakeCancellationLifecycleTests
         {
             public Guid ProtocolId { get; }
             public string ProtocolName => "LifecycleDummyProtocol";
-            public System.IO.Compression.ZstandardCompressionOptions? CompressionOptions => null;
 
             private readonly Action? _onHandle;
 

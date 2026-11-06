@@ -28,7 +28,7 @@ namespace QuicPunch.PacketHandler
 
                 long nowTicks = PreciseTime.GetCorrectTime().Ticks;
                 long diffTicks = nowTicks - ticks;
-                if (Math.Abs(diffTicks) > 30_000_000) // 3 seconds maximum clock drift tolerance
+                if (!PreciseTime.IsTimestampFresh(ticks, nowTicks)) // Bounded skew tolerance; signature and replay checks remain mandatory.
                 {
                     QuicPunch.WriteLine($"[DisconnectHandler] Packet from {remoteEndPoint} rejected: timestamp drifted by {diffTicks / 10_000.0}ms.");
                     return;
@@ -54,11 +54,13 @@ namespace QuicPunch.PacketHandler
                     return;
                 }
 
+                // A disconnect from an earlier authenticated Hello must not tear down a replacement session.
+                if (ticks <= peer.LastSeenHelloTicks) return;
                 byte[] signature = new byte[CertManager.SignatureLength];
                 Buffer.BlockCopy(buffer, payloadLength, signature, 0, CertManager.SignatureLength);
 
                 using var ecdsa = peer.Certificate.GetECDsaPublicKey();
-                if (ecdsa == null || !ecdsa.VerifyData(buffer.AsSpan(0, payloadLength), signature, HashAlgorithmName.SHA3_256))
+                if (ecdsa == null || !Sha3Crypto.VerifyData(ecdsa, buffer.AsSpan(0, payloadLength), signature))
                 {
                     QuicPunch.WriteLine($"[DisconnectHandler] Invalid disconnect signature from {remoteEndPoint}");
                     return;

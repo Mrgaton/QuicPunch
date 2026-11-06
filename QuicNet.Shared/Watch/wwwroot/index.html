@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#151c21">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="quicwatch-csrf" content="__QUICWATCH_CSRF__">
+  <script src="/watch/diagnostics.js"></script>
+  <title>Ver juntos · QuicNet</title>
+  <link rel="stylesheet" href="/watch/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div><strong>Ver juntos<span class="accent-text">.</span></strong><small>Un mismo vídeo. Un momento compartido.</small></div></div>
+    <div class="status"><span id="liveDot" class="dot"></span><span id="connectionText">Preparando conexión…</span></div>
+  </header>
+
+  <main class="layout">
+    <section class="stage card">
+      <div class="stage-head">
+        <div><span class="eyebrow">SALA ACTIVA</span><h1 id="roomTitle">Todavía no hay una sala</h1></div>
+        <div class="stage-tools">
+          <span id="roleBadge" class="badge">Sin sala</span>
+          <button id="leaveRoom" class="danger" type="button" hidden>Salir de la sala</button>
+          <button id="fullscreenBtn" class="icon-button" type="button" title="Ver vídeo a pantalla completa" aria-label="Ver vídeo a pantalla completa">⛶ Pantalla completa</button>
+        </div>
+      </div>
+      <div class="player-shell" id="playerShell">
+        <video id="player" controls playsinline preload="metadata"></video>
+        <div id="emptyPlayer" class="empty-player">
+          <div class="play-glyph">▶</div>
+          <h2>Elige un vídeo para empezar</h2>
+          <p>Crea una sala, invita a tus contactos y disfruta del vídeo en sincronía, con su calidad original.</p>
+        </div>
+      </div>
+      <div class="now-playing">
+        <div><strong id="mediaName">Sin contenido</strong><small id="mediaMeta">Esperando un vídeo</small></div>
+        <div class="cache-wrap"><span id="cacheText">Directo desde el origen</span><div class="progress"><i id="cacheBar"></i></div></div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <section class="card panel">
+        <div class="section-title"><div><span class="eyebrow">TU IDENTIDAD</span><h2 id="localName">Este dispositivo</h2></div><button id="copyToken" class="icon-button" title="Copiar invitación">Copiar</button></div>
+        <details><summary>Ver código de invitación</summary><div id="myToken" class="token">Preparando invitación…</div></details>
+      </section>
+
+      <section class="card panel">
+        <div class="section-title"><div><span class="eyebrow">PARTICIPANTES</span><h2>Conectar dispositivos</h2></div><span id="peerCount" class="count">0</span></div>
+        <form id="tokenForm" class="inline-form">
+          <input id="tokenInput" aria-label="Código de invitación" autocomplete="off" placeholder="Pega una invitación" required>
+          <button type="submit" class="primary">Conectar</button>
+        </form>
+        <div id="peerList" class="peer-list"><p class="muted">Aún no hay nadie conectado.</p></div>
+      </section>
+
+      <section class="card panel actions">
+        <span class="eyebrow">SALA</span>
+        <label for="roomName">Nombre</label>
+        <input id="roomName" value="Noche de cine" maxlength="60" required>
+        <button id="createRoom" class="primary wide">Crear sala con los seleccionados</button>
+        <button id="pickMedia" class="secondary wide" disabled>Elegir vídeo original</button>
+        <details>
+          <summary>Seleccionar por ruta</summary>
+          <form id="pathForm" class="path-form"><input id="pathInput" aria-label="Ruta del archivo de vídeo" placeholder="C:\Vídeos\película.mp4" required><button class="secondary" type="submit">Abrir</button></form>
+        </details>
+      </section>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/watch/app.js"></script>
+</body>
+</html>

@@ -14,8 +14,8 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
 
     private const int SampleRate = OpusVoiceCodec.DefaultSampleRate; // 48000
     private const int Channels = OpusVoiceCodec.DefaultChannels;     // 1 (mono)
-    private const int FrameSize = OpusVoiceCodec.DefaultFrameSize;   // 2880 samples (60 ms)
-    private const int FrameBytes = FrameSize * sizeof(short);        // 5760 bytes
+    private const int FrameSize = OpusVoiceCodec.DefaultFrameSize;   // 960 samples (20 ms)
+    private const int FrameBytes = FrameSize * sizeof(short);        // 1920 bytes
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PaSampleSpec
@@ -47,18 +47,6 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
         ref PaBufferAttr attr,
         out int error);
 
-    [DllImport(LibPulseSimple, CallingConvention = CallingConvention.Cdecl, EntryPoint = "pa_simple_new")]
-    private static extern IntPtr PaSimpleNewNoAttr(
-        string? server,
-        string name,
-        int dir,
-        string? dev,
-        string streamName,
-        ref PaSampleSpec ss,
-        IntPtr map,
-        IntPtr attr,
-        out int error);
-
     [DllImport(LibPulseSimple, CallingConvention = CallingConvention.Cdecl, EntryPoint = "pa_simple_free")]
     private static extern void PaSimpleFree(IntPtr s);
 
@@ -69,7 +57,7 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
     private static extern int PaSimpleWrite(IntPtr s, byte[] data, UIntPtr bytes, out int error);
 
     public string Name => "PulseAudio / PipeWire";
-    public bool IsSupported => OperatingSystem.IsLinux();
+    public bool IsSupported => OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid();
 
     private IntPtr _recordHandle = IntPtr.Zero;
     private IntPtr _playbackHandle = IntPtr.Zero;
@@ -163,6 +151,7 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
     public bool StartCapture(Action<short[]> onPcmSamples, string? deviceId = null)
     {
         StopCapture();
+        if (_captureTask is { IsCompleted: false }) return false;
 
         var spec = new PaSampleSpec
         {
@@ -194,20 +183,31 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
 
         _captureCts = new CancellationTokenSource();
         CancellationToken ct = _captureCts.Token;
-        _captureTask = Task.Run(() => CaptureLoop(onPcmSamples, ct), ct);
+        IntPtr recordHandle = _recordHandle;
+        var captureCts = _captureCts;
+        _captureTask = Task.Run(() =>
+        {
+            try { CaptureLoop(recordHandle, onPcmSamples, ct); }
+            finally
+            {
+                PaSimpleFree(recordHandle);
+                Interlocked.CompareExchange(ref _recordHandle, IntPtr.Zero, recordHandle);
+                captureCts.Dispose();
+            }
+        });
         QuicPunchLog.Info("[AUDIO-PULSE] Native microphone capture started.");
         return true;
     }
 
-    private void CaptureLoop(Action<short[]> onPcmSamples, CancellationToken ct)
+    private void CaptureLoop(IntPtr recordHandle, Action<short[]> onPcmSamples, CancellationToken ct)
     {
         byte[] rawBuffer = new byte[FrameBytes];
         short[] pcmBuffer = new short[FrameSize];
 
-        while (!ct.IsCancellationRequested && _recordHandle != IntPtr.Zero)
+        while (!ct.IsCancellationRequested)
         {
             int error;
-            int ret = PaSimpleRead(_recordHandle, rawBuffer, (UIntPtr)rawBuffer.Length, out error);
+            int ret = PaSimpleRead(recordHandle, rawBuffer, (UIntPtr)rawBuffer.Length, out error);
             if (ret < 0)
             {
                 if (ct.IsCancellationRequested) break;
@@ -215,6 +215,7 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
                 continue;
             }
 
+            if (ct.IsCancellationRequested) break;
             Buffer.BlockCopy(rawBuffer, 0, pcmBuffer, 0, rawBuffer.Length);
             try
             {
@@ -228,15 +229,9 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
     {
         try { _captureCts?.Cancel(); } catch { }
         try { _captureTask?.Wait(500); } catch { }
-        _captureCts?.Dispose();
+        // pa_simple_read is blocking: only its worker may free the native handle.
+        // If the audio server stalls, retain that worker and reject another capture.
         _captureCts = null;
-        _captureTask = null;
-
-        if (_recordHandle != IntPtr.Zero)
-        {
-            PaSimpleFree(_recordHandle);
-            _recordHandle = IntPtr.Zero;
-        }
     }
 
     public bool StartPlayback(string? deviceId = null)

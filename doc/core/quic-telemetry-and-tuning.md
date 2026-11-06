@@ -1,14 +1,41 @@
 ---
-title: MsQuic Native Telemetry and Dynamic Congestion Control
-description: Technical architecture, native parameter definitions, and programming reference for MsQuic protocol telemetry and runtime congestion algorithm switching in QuicPunch.
-ms.date: 09/05/2026
+title: MsQuic Native Telemetry and Transport Tuning
+description: Native MsQuic telemetry, XDP policy, and configuration before connection startup.
+ms.date: 10/23/2026
 ms.topic: conceptual
 ms.service: quicpunch
 ---
 
-# MsQuic Native Telemetry and Dynamic Congestion Control
+# MsQuic Native Telemetry and Transport Tuning
 
-This document describes the design, native interop architecture, and runtime programming model for extracting low-level QUIC telemetry and dynamically managing congestion control algorithms in QuicPunch.
+This document describes native QUIC telemetry and configuration before connection startup.
+
+## XDP datapath
+
+Windows x64 now requests XDP for the QUIC connection itself, including streams and RFC 9221 datagrams. The pinned MsQuic implements **XDP for Windows**, not Linux AF_XDP. Linux and Android retain their OS UDP datapaths. See the pinned upstream [XDP documentation](https://github.com/microsoft/msquic/blob/80a065112426bce68c1da42d026478d3e40fd45e/docs/XDP.md).
+
+`MsQuicNativeLoader` initializes the tuner after loading the native library. The tuner sets `QUIC_PARAM_GLOBAL_SETTINGS.XdpEnabled` before the first listener binds: listeners select their datapath from global settings, before the server configuration callback. Client configurations also explicitly receive the XDP policy before connection startup. In the pinned ABI, `IsSet.XdpEnabled` is bit 43 at offset 0 and `XdpEnabled` is bit 6 in `Flags` at offset 120. Active-connection tuning does not change the datapath.
+
+MsQuic retains its normal socket fallback when the driver, permissions, adapter, or route cannot use XDP. It still reserves an OS UDP port even when XDP carries packets. An ordinary socket's existence alone therefore does not prove that bypass is inactive.
+
+Install the production XDP runtime from an **Administrator PowerShell 7**:
+
+```powershell
+./scripts/install-quic-xdp.ps1
+```
+
+The installer pins Microsoft's production runtime 1.4.0 to a SHA-256 digest and validates the driver/catalog signatures. `-PrepareOnly` downloads and verifies without installing. It does not enable test signing or change Secure Boot. Downloads are disposable under `.artifacts/`; Windows installs the runtime in its own driver store/system directories. Restart QuicNet after installation so MsQuic initializes against the new driver. Direct rule programming also requires elevated permission for QuicNet; separating rule programming into a privileged XDP maps broker is not implemented here.
+
+Set `$env:QUICNET_XDP='0'` **before launching the process** to disable the request. The default on Windows is enabled. No machine-wide MsQuic registry values are changed.
+
+`MsQuicTuner.IsXdpRequested`, `TryGetXdpEnabled`, and the `xdpRequested` field in `/api/status` and `/api/telemetry` report the native **request setting**, not actual bypass. A true value can coexist with socket fallback. Validate an active XDP route with MsQuic/XDP tracing and compare throughput, loss, latency, and CPU on the same physical path; loopback tests cannot establish NIC bypass or an XDP speedup.
+
+## Performance review (2026-10-23)
+
+- Existing configuration already enables BBR before connection startup, pacing, ECN, PMTU discovery, 16 MiB connection and 4 MiB stream receive windows, and round-robin scheduling. These are preserved. The [earlier performance audit](../audits/quic-performance-2026-10-15.md) explains why setting BBR after connecting was ineffective.
+- Native QUIC datagram sends now place `QUIC_BUFFER` and payload in one allocation, reducing native allocation/free calls from two to one per datagram. The buffer is still tracked until MsQuic's send callback; failed sends and callbacks share a removal path to prevent double frees. This reduces allocator work; no end-to-end speedup is claimed without comparative measurement.
+- Busy polling, forced CPU affinity, larger windows, larger MTUs, disabled send buffering, and crypto offload are not enabled speculatively. Measure CPU saturation, bandwidth-delay product, route MTU, queueing, and hardware support first. Keep pacing and bounded queues so bulk transfers do not overwhelm interactive traffic.
+- `--test-quic-optimizations` checks global policy before listener binding, first-client/server native settings, status serialization, and an 8 MiB SHA-256-verified stream transfer. Run it in fresh processes both with the default environment and with `QUICNET_XDP=0`. `--test-quic-datagrams` verifies concurrent variable-size payloads and completion cleanup. `--benchmark-quic` exercises the real multiplexor over an artificial 80 ms path with periodic loss; it is not a physical-NIC XDP benchmark.
 
 ## Overview
 
@@ -19,7 +46,7 @@ The `MsQuicTuner` component establishes a reflection bridge into `System.Net.Qui
 - Comprehensive transmission statistics, including packet loss ratios, retransmissions, spurious losses, and congestion window (CWND) sizes.
 - Reception diagnostics, including packet reordering, drops, duplicate frames, and decryption failures.
 - Cryptographic handshake metrics, TLS cipher suites, ALPN tokens, and key rotation counts.
-- Dynamic, in-flight switching of congestion control algorithms between CUBIC and BBR.
+- Congestion control selected before connection startup, with readback on live connections.
 
 ---
 
@@ -53,65 +80,15 @@ MsQuic parameters are queried and assigned using specific level constants and pa
 | :--- | :--- | :--- | :--- |
 | `QUIC_PARAM_CONN_STATISTICS_V2` | `0x05000016` | Connection | Queries comprehensive connection telemetry using the `QUIC_STATISTICS_V2` structure. |
 | `QUIC_PARAM_CONN_SETTINGS` | `0x05000004` | Connection | Gets or sets connection-specific settings, including the active congestion control algorithm. |
-| `QUIC_PARAM_CONN_LOCAL_ADDRESS` | `0x05000000` | Connection | Returns the native local IP endpoint (`sockaddr`). |
-| `QUIC_PARAM_CONN_REMOTE_ADDRESS` | `0x05000001` | Connection | Returns the native remote IP endpoint (`sockaddr`). |
-| `QUIC_PARAM_STREAM_PRIORITY` | `0x08000001` | Stream | Gets or sets a 16-bit stream priority (0 to 65535). |
+| `QUIC_PARAM_CONN_LOCAL_ADDRESS` | `0x05000001` | Connection | Returns the native local IP endpoint (`sockaddr`). |
+| `QUIC_PARAM_CONN_REMOTE_ADDRESS` | `0x05000002` | Connection | Returns the native remote IP endpoint (`sockaddr`). |
+| `QUIC_PARAM_STREAM_PRIORITY` | `0x08000003` | Stream | Gets or sets a 16-bit stream priority (0 to 65535). |
 
 ---
 
 ## The QUIC_STATISTICS_V2 Structure
 
-The `QUIC_STATISTICS_V2` structure is populated directly by MsQuic when querying `QUIC_PARAM_CONN_STATISTICS_V2`. It represents an unmanaged memory layout containing protocol telemetry:
-
-```csharp
-[StructLayout(LayoutKind.Sequential)]
-public struct QUIC_STATISTICS_V2
-{
-    public uint StructSize;
-    public ulong CorrelationId;
-    public uint VersionNegotiationDurationUs;
-    public uint HandshakeDurationUs;
-    public uint ConnectedDurationUs;
-    public uint DisconnectedDurationUs;
-
-    public uint SendTotalPackets;
-    public uint SendRetransmittablePackets;
-    public uint SendSuspectedLostPackets;
-    public uint SendSpuriousLostPackets;
-
-    public uint RecvTotalPackets;
-    public uint RecvReorderedPackets;
-    public uint RecvDroppedPackets;
-    public uint RecvDuplicatePackets;
-    public uint RecvDecryptionFailures;
-    public uint RecvValidAckFrames;
-
-    public ulong SendTotalBytes;
-    public ulong SendTotalStreamBytes;
-    public ulong RecvTotalBytes;
-    public ulong RecvTotalStreamBytes;
-
-    public uint SendCongestionCount;
-    public uint SendPersistentCongestionCount;
-    public uint SendEcnCongestionCount;
-
-    public uint RttUs;
-    public uint MinRttUs;
-    public uint MaxRttUs;
-    public uint RttVarianceUs;
-
-    public uint SendCongestionWindow;
-    public ushort PathMtu;
-
-    public byte KeyUpdateCount;
-    public byte DestCidUpdateCount;
-    public byte HandshakeHopLimitTtl;
-
-    public byte HandshakeClientFlight1Bytes;
-    public byte HandshakeServerFlight1Bytes;
-    public byte HandshakeClientFlight2Bytes;
-}
-```
+The native layout is defined by `QuicStatisticsV2` in `QuicPunch/Helpers/MsQuicTuner.cs`, matching the pinned `msquic.h`. Use that definition rather than copying an abbreviated structure: native field widths, ordering, alignment, and returned buffer length must agree. `TryGetTelemetry` maps the raw values to `QuicConnectionTelemetry`.
 
 ### Key Derived Metrics
 
@@ -123,15 +100,15 @@ From the raw native structure, `MsQuicTuner` calculates higher-level operational
 
 ---
 
-## Dynamic Congestion Control Switching
+## Congestion Control Selection
 
-QuicPunch allows runtime algorithm switching between CUBIC and BBR without closing or reconnecting the QUIC session.
+Select BBR or CUBIC on the configuration before connecting. A live `TrySetCongestionControl` call only accepts an idempotent request for the existing algorithm; changing it requires a new connection. Updating the stored native field after startup does not reinitialize MsQuic's active controller.
 
 ### Native Setting Layout
 
 In MsQuic, the congestion control algorithm is stored within `QUIC_SETTINGS`:
 - **Byte Offset**: Offset 92 within `QUIC_SETTINGS`.
-- **Bitfield Flag**: The `IsSet.CongestionControlAlgorithm` bit at offset 132 indicates that the algorithm field is actively specified (bitmask `0x00020000`).
+- **Bitfield Flag**: Bit 17 in `IsSetFlags` at offset 0 marks the algorithm field as explicitly specified (bitmask `0x00020000`).
 - **Enumeration Values**:
   - `0`: CUBIC (Loss-based congestion control).
   - `1`: BBR (Bottleneck Bandwidth and Round-trip propagation time, model-based).
@@ -141,7 +118,7 @@ In MsQuic, the congestion control algorithm is stored within `QUIC_SETTINGS`:
 ```csharp
 using QuicPunch.Helpers;
 
-// Switch connection to BBR dynamically
+// This succeeds only if the connection already uses BBR.
 bool success = MsQuicTuner.TrySetCongestionControl(quicConnection, QuicCongestionAlgorithm.Bbr);
 
 // Verify active algorithm
@@ -253,4 +230,4 @@ The embedded WebUI backend exposes REST endpoints for automated telemetry collec
 The WebUI client executes automated polling against `/api/status` at 1.3-second intervals (`setInterval(refreshDashboard, 1300)`). On each tick:
 1. Active session telemetry is unpacked from `quicTelemetry`.
 2. The KPI cards display aggregated metrics: active connections, mean RTT, overall packet loss ratio, global congestion window volume, and total wire throughput.
-3. The table lists every active QUIC link, displaying local and remote endpoints, cryptographic parameters (TLS 1.3 cipher suite and ALPN), loss statistics, and an interactive action button to toggle between BBR and CUBIC in real time.
+3. The table lists active QUIC links with endpoints, cryptographic parameters, and loss statistics. Changing a live connection's congestion algorithm is rejected; reconnect using a new configuration instead.

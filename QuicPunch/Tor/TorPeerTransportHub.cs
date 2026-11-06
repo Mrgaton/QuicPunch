@@ -21,6 +21,9 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
     private readonly Channel<TorIncomingPeerConnection> _incomingConnections;
     private readonly Task _acceptLoop;
     private int _disposed;
+    private readonly SemaphoreSlim _incomingSlots = new(64, 64);
+    private readonly ConcurrentDictionary<long, Task> _incomingWorkers = new();
+    private long _nextWorker;
 
     private TorPeerTransportHub(TorManager tor, TorOnionService service)
     {
@@ -114,6 +117,7 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
         _shutdown.Cancel();
         try { await _acceptLoop.ConfigureAwait(false); } catch { }
 
+        try { await Task.WhenAll(_incomingWorkers.Values).ConfigureAwait(false); } catch { }
         _incomingConnections.Writer.TryComplete();
 
         foreach (RouteState route in _routes.Values)
@@ -135,8 +139,18 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
             TorTcpConnection? connection = null;
             try
             {
-                TorTcpConnection incomingConn = await _service.AcceptConnectionAsync(_shutdown.Token).ConfigureAwait(false);
-                _ = Task.Run(() => HandleIncomingAsync(incomingConn, _shutdown.Token));
+                await _incomingSlots.WaitAsync(_shutdown.Token).ConfigureAwait(false);
+                TorTcpConnection incomingConn;
+                try { incomingConn = await _service.AcceptConnectionAsync(_shutdown.Token).ConfigureAwait(false); }
+                catch { _incomingSlots.Release(); throw; }
+                long id = Interlocked.Increment(ref _nextWorker);
+                var worker = Task.Run(async () =>
+                {
+                    try { await HandleIncomingAsync(incomingConn, _shutdown.Token).ConfigureAwait(false); }
+                    finally { _incomingSlots.Release(); }
+                });
+                _incomingWorkers[id] = worker;
+                _ = worker.ContinueWith(completed => { _incomingWorkers.TryRemove(id, out _); _ = completed.Exception; }, TaskScheduler.Default);
             }
             catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
             {
@@ -173,6 +187,7 @@ public sealed class TorPeerTransportHub : IAsyncDisposable
 
             if (preface.Kind == TorLaneKind.Message)
             {
+                if (_routes.Count >= 256) return;
                 transferred = HandleIncomingMessageLane(connection, preface);
                 return;
             }
@@ -509,6 +524,7 @@ public interface IDummyQuicLaneProvider : IAsyncDisposable
 {
     EndPoint? LocalEndPoint => null;
     EndPoint? RemoteEndPoint => null;
+    Helpers.IQuicDatagramChannel? DatagramChannel => null;
 
     ValueTask<IDummyQuicLane> OpenOutboundLaneAsync(
         DummyQuicOpenLaneRequest request,

@@ -5,7 +5,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using QuicPunch;
 using QuicPunch.Multiplexer;
-using QuicPunchTests.Protocols;
+using QuicNet.Protocols;
 using QuicConnection = QuicPunch.QuicConnection;
 using NativeQuicConnection = System.Net.Quic.QuicConnection;
 
@@ -18,11 +18,22 @@ public static class ScreenShareTests
         using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var req = new CertificateRequest("CN=ScreenShareNode", ecdsa, HashAlgorithmName.SHA256);
         var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddHours(2));
-        return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), null);
+        return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), null,
+            X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
     }
 
     public static async Task RunAsync()
     {
+        if (!VoiceCallHandler.ActiveCalls.IsEmpty) throw new Exception("Screen test requires isolated call state.");
+        try
+        {
+            await VoiceCallHandler.StartScreenShareAsync(kind: "camera");
+            throw new Exception("Video started without a call.");
+        }
+        catch (InvalidOperationException) { }
+        if (VoiceCallHandler.IsLocalScreenSharing) throw new Exception("Rejected video start changed sharing state.");
+        // Initialize the application's OpenSSL MsQuic before System.Net.Quic loads its backend.
+        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(QuicPunchConnection).TypeHandle);
         Console.WriteLine("==================================================");
         Console.WriteLine("     SCREEN SHARING PROTOCOL VERIFICATION TESTS    ");
         Console.WriteLine("==================================================");
@@ -75,6 +86,7 @@ public static class ScreenShareTests
             RemoteEndPoint = listener.LocalEndPoint,
             ClientAuthenticationOptions = new SslClientAuthenticationOptions
             {
+                TargetHost = QuicPunchConnection.DefaultDisguiseHost,
                 ApplicationProtocols = new List<SslApplicationProtocol> { alpn },
                 ClientCertificates = new X509CertificateCollection { clientCert },
                 RemoteCertificateValidationCallback = (_, _, _, _) => true
@@ -88,8 +100,8 @@ public static class ScreenShareTests
         var serverQuicConn = QuicConnection.Wrap(serverNative);
         var clientQuicConn = QuicConnection.Wrap(clientNative);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var dummyQcc = new QuicPunch.QuicPunch(cts.Token);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var dummyQcc = new QuicPunch.QuicPunch(cts.Token) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
         using var handlerServer = new VoiceCallHandler(dummyQcc);
         using var handlerClient = new VoiceCallHandler(dummyQcc);
@@ -164,7 +176,13 @@ public static class ScreenShareTests
         if (recvAudio.Length != dummyPcm.Length || !recvAudio.SequenceEqual(dummyPcm))
             throw new Exception("Received screen audio frame corrupted or size mismatch!");
 
+        await TestRemoteScreenControlsAsync(dummyQcc, handlerServer, handlerClient, serverPeer, clientPeer);
+
         // 4. Trigger Screen Share Stop
+        var cameraStarted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        handlerServer.OnScreenShareStarted += (peer, _, _, _, _) => cameraStarted.TrySetResult(VoiceCallHandler.ActiveCalls[peer.Id].RemoteVideoKind);
+        await VoiceCallHandler.StartScreenShareAsync(640, 480, 1, 30, kind: "camera");
+        if (await cameraStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)) != "camera") throw new Exception("Camera source kind was lost across QUIC.");
         await VoiceCallHandler.StopScreenShareAsync();
         bool stopped = await tcsStopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
         if (!stopped)
@@ -179,5 +197,73 @@ public static class ScreenShareTests
         try { await clientMux.DisposeAsync(); } catch { }
 
         Console.WriteLine("PASSED");
+    }
+
+    private static async Task TestRemoteScreenControlsAsync(QuicPunch.QuicPunch qcc, VoiceCallHandler emitter,
+        VoiceCallHandler viewer, PeerInfo emitterPeer, PeerInfo viewerPeer)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "qp_screen_control_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        using var store = new QuicPunch.Helpers.PeerStore(Path.Combine(directory, "peers.db"), watch: false);
+        typeof(QuicPunch.QuicPunch).GetProperty(nameof(qcc.PeerStore))!.SetValue(qcc, store);
+        try
+        {
+            var hash = viewerPeer.CertHash;
+            store.AddOrUpdate([IPAddress.Loopback], [4333], hash, save: true);
+            emitter.ReportBrowserScreenSettings(new(), ["h264", "vp9"]);
+            var caps = await viewer.RequestScreenControlAsync(emitterPeer.Id, "capabilities");
+            if (!caps.Success || caps.Capabilities?.Backend != "browser" || !caps.Capabilities.Codecs.Contains("vp9") || caps.Capabilities.CanConfigure)
+                throw new Exception("Emitter did not report its own capabilities and permission state.");
+            var denied = await viewer.RequestScreenControlAsync(emitterPeer.Id, "configure", caps.Capabilities.Revision, new());
+            if (denied.Code != "Denied") throw new Exception("Friend changed remote screen settings without permission.");
+            store.SetProfile(hash, QuicPunch.Helpers.PeerProfile.Administrator);
+            caps = await viewer.RequestScreenControlAsync(emitterPeer.Id, "capabilities");
+            if (!caps.Capabilities!.CanConfigure) throw new Exception("Administrator cannot configure remote transmission.");
+            var settings = new ScreenTransmissionSettings("vp9", 1280, 720, 30, 4_000_000);
+            var conflict = await viewer.RequestScreenControlAsync(emitterPeer.Id, "configure", caps.Capabilities.Revision - 1, settings);
+            if (conflict.Code != "Conflict") throw new Exception("Stale configuration overwrote the emitter's settings.");
+            var unsupported = await viewer.RequestScreenControlAsync(emitterPeer.Id, "configure", caps.Capabilities.Revision,
+                settings with { Codec = "hevc" });
+            if (unsupported.Code != "Unsupported") throw new Exception("Unavailable codec was accepted.");
+            bool acceptBrowserUpdate = true;
+            emitter.OnBrowserScreenSettingsRequested += (senderId, requestId, requested) =>
+            {
+                _ = Task.Run(async () =>
+                {
+                    if (acceptBrowserUpdate)
+                    {
+                        await VoiceCallHandler.StartScreenShareAsync(requested.Width, requested.Height,
+                            requested.Codec == "vp9" ? (byte)3 : (byte)1, (byte)requested.Fps);
+                        emitter.ReportBrowserScreenSettings(requested, ["h264", "vp9"]);
+                    }
+                    emitter.CompleteBrowserScreenUpdate(requestId, acceptBrowserUpdate);
+                });
+            };
+            var updated = await viewer.RequestScreenControlAsync(emitterPeer.Id, "configure", caps.Capabilities.Revision, settings);
+            if (!updated.Success || updated.Capabilities!.Current != settings || updated.Capabilities.Revision <= caps.Capabilities.Revision)
+                throw new Exception("Remote configuration was not acknowledged with the applied settings.");
+            acceptBrowserUpdate = false;
+            var failed = await viewer.RequestScreenControlAsync(emitterPeer.Id, "configure", updated.Capabilities.Revision, settings with { Fps = 60 });
+            if (failed.Success || failed.Code != "Failed") throw new Exception("A failed browser update was reported as applied.");
+            // Admin session approval is also reusable for applications outside QuicNet's built-in GUID map.
+            if (!await qcc.AuthorizeIncomingSessionAsync(viewerPeer, Guid.NewGuid(), QuicPunch.QuicPunch.TransportType.Wan, CancellationToken.None))
+                throw new Exception("Administrator required interactive application approval.");
+            store.SetProfile(hash, QuicPunch.Helpers.PeerProfile.Friend);
+            denied = await viewer.RequestScreenControlAsync(emitterPeer.Id, "configure", updated.Capabilities.Revision, settings);
+            if (denied.Code != "Denied") throw new Exception("Existing call retained revoked administrator rights.");
+            await VoiceCallHandler.StopScreenShareAsync();
+            var asked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            emitter.OnScreenShareRequested += _ => asked.TrySetResult();
+            var request = await viewer.RequestScreenControlAsync(emitterPeer.Id, "start");
+            if (request.Code != "ConsentRequired" || !asked.Task.IsCompleted)
+                throw new Exception("A friend's screen request did not require local consent.");
+            if (VoiceCallHandler.IsLocalScreenSharing) throw new Exception("Friend started capture without local approval.");
+        }
+        finally
+        {
+            typeof(QuicPunch.QuicPunch).GetProperty(nameof(qcc.PeerStore))!.SetValue(qcc, null);
+            store.Dispose();
+            Directory.Delete(directory, recursive: true);
+        }
     }
 }

@@ -8,8 +8,12 @@ namespace QuicPunch.Helpers
 {
     public sealed class HandshakeManager
     {
-        private readonly ConcurrentDictionary<Guid, TaskCompletionSource<HandshakeDecision>> _pending = new();
-        private readonly ConcurrentDictionary<Guid, byte> _activeRaises = new();
+        private sealed record PendingDecision(HandshakeRequest Request, bool LocalRaise)
+        {
+            public TaskCompletionSource<HandshakeDecision> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public int Started;
+        }
+        private readonly ConcurrentDictionary<Guid, PendingDecision> _pending = new();
 
         public event Func<HandshakeRequest, CancellationToken, Task<HandshakeDecision>>? HandshakeRequested;
 
@@ -19,15 +23,26 @@ namespace QuicPunch.Helpers
             bool localRaise,
             CancellationToken ct)
         {
-            var tcs = _pending.GetOrAdd(request.Id, _ =>
-                new TaskCompletionSource<HandshakeDecision>(TaskCreationOptions.RunContinuationsAsynchronously));
+            // Snapshot identity bytes so callers cannot change the expected signer later.
+            request = request with
+            {
+                CertHash = request.CertHash?.ToArray(),
+                RemoteEndPoint = new System.Net.IPEndPoint(request.RemoteEndPoint.Address, request.RemoteEndPoint.Port)
+            };
+            var pending = _pending.GetOrAdd(request.Id, _ => new PendingDecision(request, localRaise));
+            if (pending.LocalRaise != localRaise || pending.Request.PeerId != request.PeerId
+                || pending.Request.ProtocolId != request.ProtocolId || pending.Request.Transport != request.Transport
+                || !Equals(pending.Request.RemoteEndPoint, request.RemoteEndPoint)
+                || !(pending.Request.CertHash ?? []).AsSpan().SequenceEqual(request.CertHash ?? []))
+                throw new InvalidOperationException("Handshake ID already belongs to another negotiation.");
+            var tcs = pending.Completion;
+
+            if (Interlocked.Exchange(ref pending.Started, 1) != 0)
+                return tcs.Task;
 
             if (localRaise)
             {
-                if (_activeRaises.TryAdd(request.Id, 0))
-                {
-                    _ = RaiseAsync(request, timeout, ct);
-                }
+                _ = RaiseAsync(pending, timeout, ct);
             }
             else
             {
@@ -37,7 +52,7 @@ namespace QuicPunch.Helpers
                 CancellationTokenRegistration registration = default;
                 registration = timeoutCts.Token.Register(() =>
                 {
-                    Complete(request.Id, new HandshakeDecision(false, null, null));
+                    Complete(pending, new HandshakeDecision(false, null, null, FailureReason: ct.IsCancellationRequested ? "cancelled" : "timeout"));
                 });
 
                 tcs.Task.ContinueWith(_ =>
@@ -50,8 +65,9 @@ namespace QuicPunch.Helpers
             return tcs.Task;
         }
 
-        private async Task RaiseAsync(HandshakeRequest request, TimeSpan timeout, CancellationToken ct)
+        private async Task RaiseAsync(PendingDecision pending, TimeSpan timeout, CancellationToken ct)
         {
+            var request = pending.Request;
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(timeout);
 
@@ -60,21 +76,21 @@ namespace QuicPunch.Helpers
                 var handler = HandshakeRequested;
                 if (handler is null)
                 {
-                    Complete(request.Id, new HandshakeDecision(false, null, null));
+                    Complete(pending, new HandshakeDecision(false, null, null));
                     return;
                 }
 
                 var decision = await handler(request, timeoutCts.Token).WaitAsync(timeoutCts.Token);
-                Complete(request.Id, decision);
+                Complete(pending, decision);
             }
             catch (OperationCanceledException)
             {
-                Complete(request.Id, new HandshakeDecision(false, null, null));
+                Complete(pending, new HandshakeDecision(false, null, null));
             }
             catch (Exception ex)
             {
-                if (_pending.TryRemove(request.Id, out var tcs))
-                    tcs.TrySetException(ex);
+                if (_pending.TryRemove(new KeyValuePair<Guid, PendingDecision>(request.Id, pending)))
+                    pending.Completion.TrySetException(ex);
             }
         }
         public bool Reject(Guid id) => Complete(id, new HandshakeDecision(false, null, null));
@@ -82,25 +98,41 @@ namespace QuicPunch.Helpers
 
         public int PendingDecisionsCount => _pending.Count;
 
+        internal bool CompleteRemote(Guid id, Guid peerId, ReadOnlySpan<byte> certHash, Guid protocolId,
+            QuicPunch.TransportType transport, System.Net.EndPoint remoteEndPoint, HandshakeDecision decision)
+        {
+            if (!_pending.TryGetValue(id, out var pending) || pending.LocalRaise)
+                return false;
+            var request = pending.Request;
+            if (request.PeerId == Guid.Empty || request.PeerId != peerId || request.ProtocolId != protocolId
+                || request.Transport != transport || request.CertHash is not { Length: > 0 }
+                || !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(request.CertHash, certHash)
+                || (transport == QuicPunch.TransportType.Wan && !request.RemoteEndPoint.Equals(remoteEndPoint)))
+                return false;
+
+            if (!_pending.TryRemove(new KeyValuePair<Guid, PendingDecision>(id, pending)))
+                return false;
+            return pending.Completion.TrySetResult(decision);
+        }
+
         public void CancelAll()
         {
-            _activeRaises.Clear();
             foreach (var kvp in _pending)
             {
-                if (_pending.TryRemove(kvp.Key, out var tcs))
-                {
-                    tcs.TrySetResult(new HandshakeDecision(false, null, null));
-                }
+                Complete(kvp.Value, new HandshakeDecision(false, null, null));
             }
         }
 
         private bool Complete(Guid id, HandshakeDecision decision)
         {
-            _activeRaises.TryRemove(id, out _);
-            if (!_pending.TryRemove(id, out var tcs))
-                return false;
+            return _pending.TryGetValue(id, out var pending) && Complete(pending, decision);
+        }
 
-            return tcs.TrySetResult(decision);
+        private bool Complete(PendingDecision pending, HandshakeDecision decision)
+        {
+            if (!_pending.TryRemove(new KeyValuePair<Guid, PendingDecision>(pending.Request.Id, pending)))
+                return false;
+            return pending.Completion.TrySetResult(decision);
         }
     }
 
@@ -109,11 +141,13 @@ namespace QuicPunch.Helpers
         Guid ProtocolId,
         System.Net.IPEndPoint RemoteEndPoint,
         Guid PeerId = default,
-        byte[]? CertHash = null);
+        byte[]? CertHash = null,
+        QuicPunch.TransportType Transport = QuicPunch.TransportType.Wan);
 
     public sealed record HandshakeDecision(
         bool Accepted,
         ushort? Port,
         CancellationToken? Ct,
-        IReadOnlyList<CandidateEndpoint>? Candidates = null);
+        IReadOnlyList<CandidateEndpoint>? Candidates = null,
+        string? FailureReason = null);
 }

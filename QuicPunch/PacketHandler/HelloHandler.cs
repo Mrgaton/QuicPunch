@@ -59,16 +59,11 @@ namespace QuicPunch.PacketHandler
                 }
                 IPAddress[] addresses = validAddresses.ToArray();
 
-                ushort minPort = r.ReadUInt16();
-                ushort maxPort = r.ReadUInt16();
-
-                ushort[] portArray = (minPort > 0 && maxPort >= minPort)
-                    ? (minPort == maxPort ? [minPort] : Enumerable.Range(minPort, maxPort - minPort + 1).Select(p => (ushort)p).ToArray())
-                    : (minPort > 0 ? [minPort] : Array.Empty<ushort>());
-
-                int senderControlPort = minPort > 0 ? minPort : (remoteEndPoint is IPEndPoint ipPort ? ipPort.Port : 0);
-                if (minPort == 0) minPort = (ushort)senderControlPort;
-                if (maxPort == 0) maxPort = (ushort)senderControlPort;
+                ushort[] portArray = PortAdvertisementCodec.ReadDiscovery(r, flags, "Hello");
+                ushort hostPort = PortAdvertisementCodec.ReadHostPort(r, flags);
+                int senderControlPort = portArray.Length > 0
+                    ? portArray[0]
+                    : (remoteEndPoint is IPEndPoint ipPort ? ipPort.Port : 0);
 
                 IPEndPoint targetControlEndPoint;
                 if (remoteEndPoint is IPEndPoint remoteIpEp)
@@ -98,12 +93,6 @@ namespace QuicPunch.PacketHandler
                 var remoteTicks = r.ReadInt64();
                 long nowTicks = PreciseTime.GetCorrectTime().Ticks;
                 long diffTicks = nowTicks - remoteTicks;
-
-                if (Math.Abs(diffTicks) > 30_000_000)
-                {
-                    QuicPunchLog.Info($"HELLO: Packet from {remoteEndPoint} rejected. Timestamp drifted by {diffTicks / 10_000.0}ms.");
-                    return;
-                }
 
                 var challengeNonce = ReadRequiredBytes(r, 24);
                 var passwordConnection = r.ReadByte() > 0;
@@ -159,7 +148,7 @@ namespace QuicPunch.PacketHandler
                         }
                         ecdhKeyRaw = ecdhExt.RawData;
 
-                        var calculatedHash = SHA3_256.HashData(cert.GetPublicKey());
+                        var calculatedHash = Sha3Crypto.Hash256(cert.GetPublicKey());
                         if (!CryptographicOperations.FixedTimeEquals(calculatedHash, certHash))
                         {
                             QuicPunchLog.Info("Corrupted cert hash from " + remoteEndPoint);
@@ -176,7 +165,7 @@ namespace QuicPunch.PacketHandler
 
                     using (var ecdsa = signingCert.GetECDsaPublicKey())
                     {
-                        if (ecdsa == null || !ecdsa.VerifyData(buffer.AsSpan(0, payloadLength), signature, HashAlgorithmName.SHA3_256))
+                        if (ecdsa == null || !Sha3Crypto.VerifyData(ecdsa, buffer.AsSpan(0, payloadLength), signature))
                         {
                             QuicPunchLog.Info("HELLO: Received invalid signature from " + remoteEndPoint);
                             return;
@@ -185,7 +174,7 @@ namespace QuicPunch.PacketHandler
 
                     if (passwordConnection && qc.PasswordHash != null && passwordNonce != null && remotePop != null)
                     {
-                        byte[] pop = HMACSHA3_256.HashData(Utilities.Combine(challengeNonce, passwordNonce, certHash), qc.PasswordHash!);
+                        byte[] pop = Sha3Crypto.Hmac256(qc.PasswordHash!, Utilities.Combine(challengeNonce, passwordNonce, certHash));
                         if (!CryptographicOperations.FixedTimeEquals(pop, remotePop))
                         {
                             QuicPunchLog.Info("Error: the peer could not prove password ownership.");
@@ -195,6 +184,9 @@ namespace QuicPunch.PacketHandler
 
                     using var pendingChallenge = qc.ConsumePendingChallenge(challengeNonce);
                     bool isChallengeFresh = pendingChallenge != null;
+                    // A signed answer to our unexpired one-use challenge proves freshness
+                    // without requiring synchronized wall clocks.
+                    if (!isChallengeFresh && !PreciseTime.IsTimestampFresh(remoteTicks, nowTicks)) return;
                     if (pendingChallenge?.ExpectedCertHash is { Length: > 0 } expectedCertHash &&
                         !CryptographicOperations.FixedTimeEquals(expectedCertHash, certHash))
                     {
@@ -211,10 +203,11 @@ namespace QuicPunch.PacketHandler
                             TorChannel = torChannel,
                             OnionAddress = torChannel?.RemoteOnion,
                             Addresses = addresses,
-                            PortArray = portArray,
                             Name = Encoding.UTF8.GetString(nameBytes),
-                            NetworkType = flags.IsTor ? QuicPunch.NetworkType.Tor : QuicPunch.NetworkType.Static,
+                            NetworkType = Utilities.GetNetworkType(flags),
                             ConnectionFlags = flags,
+                            PortArray = portArray,
+                            PreferredPort = hostPort,
                             LastSeenHelloTicks = remoteTicks,
                             SessionNonce = remoteSessionNonce,
                             EphemeralEcdhPublicKey = remoteEphemeralKey
@@ -228,35 +221,20 @@ namespace QuicPunch.PacketHandler
                             peerInfo.InitSession(qc, transport);
                             peerInfo.MarkSeen();
 
-                            if (qc.TryAddAvailablePeer(peerId, peerInfo))
+                            if (qc.TryAdmitAuthenticatedPeer(peerInfo))
                             {
                                 certTransferred = true;
                                 QuicPunchLog.Info($"[HELLO HANDLER] Node '{qc.GetCurrentPeer(transport).Name}' added peer {peerId} ({peerInfo.Name}) to AvailablePeers!");
                                 qc.RaisePeerAvailable(peerInfo);
                                 qc.CancelMatchingInterrogations(peerInfo);
                                 qc.UpdateSavedPeerIfPresent(peerInfo);
+                                qc.RecordAuthenticatedPeerActivity(peerInfo);
 
                                 var responseHello = qc.GenerateHelloPayload(MessageType.Hello, true, challengeNonce, transport, targetPeer: peerInfo);
                                 _ = qc.SendResponseAsync(responseHello, targetControlEndPoint, transport, torChannel);
                                 _ = qc.SendResponseAsync(qc.GenerateAck(qc.SharePeers, transport), targetControlEndPoint, transport, torChannel);
 
-                                bool shouldAutoConnect = qc.AutoConnectOnDiscovery
-                                    || (qc.PeerStore != null && peerInfo.CertHash != null && qc.PeerStore.TryGet(peerInfo.CertHash, out var sp) && sp != null && sp.AutoConnect);
 
-                                if (shouldAutoConnect && (qc.AutoAcceptUntrustedConnections || qc.IsTrustedPeer(peerInfo)) && !qc.IsPeerMultiplexerActiveOrConnecting(peerInfo.Id))
-                                {
-                                    Task.Run(async () =>
-                                    {
-                                        try
-                                        {
-                                            await qc.EnsureMultiplexerConnectedAsync(peerInfo).ConfigureAwait(false);
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            QuicPunchLog.Info($"[HELLO AUTO-CONNECT] Failed for {peerInfo.Name}: {ex.Message}");
-                                        }
-                                    }).ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
-                                }
                             }
                             else
                             {
@@ -266,7 +244,9 @@ namespace QuicPunch.PacketHandler
                         }
                         catch
                         {
-                            peerInfo.Dispose();
+                            // Once admitted, the node owns this peer. An application
+                            // callback failure must not dispose its live certificate.
+                            if (!certTransferred) peerInfo.Dispose();
                             certTransferred = true;
                             throw;
                         }
@@ -294,24 +274,10 @@ namespace QuicPunch.PacketHandler
                         {
                             peer.Addresses = addresses;
                         }
-                        if (portArray.Length > 0) peer.PortArray = portArray;
                         peer.ConnectionFlags = flags;
-                        peer.NetworkType = flags.IsTor ? QuicPunch.NetworkType.Tor : QuicPunch.NetworkType.Static;
-
-                        if (torChannel != null && (peer.TorChannel == null || peer.TorChannel.IsClosed || !ReferenceEquals(peer.TorChannel, torChannel)))
-                        {
-                            if (peer.TorChannel != null && !ReferenceEquals(peer.TorChannel, torChannel))
-                            {
-                                try { peer.TorChannel.Dispose(); } catch { }
-                            }
-                            peer.TorChannel = torChannel;
-                            peer.OnionAddress = torChannel.RemoteOnion;
-                        }
-
-                        if (peer.Name == null || peer.Name.Length != nameBytes.Length || peer.Name != Encoding.UTF8.GetString(nameBytes))
-                        {
-                            peer.Name = Encoding.UTF8.GetString(nameBytes);
-                        }
+                        peer.PreferredPort = hostPort;
+                        if (portArray.Length > 0) peer.PortArray = portArray;
+                        peer.NetworkType = Utilities.GetNetworkType(flags);
 
                         bool remoteChanged = peer.SessionNonce == null || !CryptographicOperations.FixedTimeEquals(peer.SessionNonce, remoteSessionNonce);
                         bool localChanged = peer.ActiveLocalSessionNonce == null || !CryptographicOperations.FixedTimeEquals(peer.ActiveLocalSessionNonce, peer.LocalSessionNonce);
@@ -319,6 +285,32 @@ namespace QuicPunch.PacketHandler
 
                         peer.SessionNonce = remoteSessionNonce;
                         peer.EphemeralEcdhPublicKey = remoteEphemeralKey;
+
+                        if (torChannel != null)
+                        {
+                            bool hasActiveMux = qc.IsPeerMultiplexerActiveOrConnecting(peer.Id)
+                                || (qc.TryGetPeerMultiplexer(peer.Id, out var existingMux) && existingMux != null && !existingMux.IsDisposed);
+
+                            if (peer.TorChannel == null || peer.TorChannel.IsClosed)
+                            {
+                                peer.TorChannel = torChannel;
+                                peer.OnionAddress = torChannel.RemoteOnion;
+                            }
+                            else if (!ReferenceEquals(peer.TorChannel, torChannel))
+                            {
+                                if (sessionChanged && !hasActiveMux)
+                                {
+                                    try { peer.TorChannel.Dispose(); } catch { }
+                                    peer.TorChannel = torChannel;
+                                    peer.OnionAddress = torChannel.RemoteOnion;
+                                }
+                            }
+                        }
+
+                        if (peer.Name == null || peer.Name.Length != nameBytes.Length || peer.Name != Encoding.UTF8.GetString(nameBytes))
+                        {
+                            peer.Name = Encoding.UTF8.GetString(nameBytes);
+                        }
 
                         if ((!peer.IsSessionReady || sessionChanged) && peer.EcdhPublicKey != null)
                         {
@@ -334,24 +326,9 @@ namespace QuicPunch.PacketHandler
                         peer.MarkSeen();
                         qc.CancelMatchingInterrogations(peer);
                         qc.UpdateSavedPeerIfPresent(peer);
+                        qc.RecordAuthenticatedPeerActivity(peer);
 
-                        bool shouldAutoConnectKnown = qc.AutoConnectOnDiscovery
-                            || (qc.PeerStore != null && peer.CertHash != null && qc.PeerStore.TryGet(peer.CertHash, out var spK) && spK != null && spK.AutoConnect);
 
-                        if (shouldAutoConnectKnown && (qc.AutoAcceptUntrustedConnections || qc.IsTrustedPeer(peer)) && !qc.IsPeerMultiplexerActiveOrConnecting(peer.Id))
-                        {
-                            Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    await qc.EnsureMultiplexerConnectedAsync(peer).ConfigureAwait(false);
-                                }
-                                catch (Exception ex)
-                                {
-                                    QuicPunchLog.Info($"[HELLO AUTO-CONNECT] Failed for {peer.Name}: {ex.Message}");
-                                }
-                            }).ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
-                        }
                     }
 
                     _ = qc.SendResponseAsync(qc.GenerateAck(qc.SharePeers, transport), remoteEndPoint, transport, torChannel);

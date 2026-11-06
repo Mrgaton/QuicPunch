@@ -16,11 +16,12 @@ namespace QuicPunch
     /// the event content is a normal QuicPunch endpoint token and trust is
     /// established locally after QuicPunch authenticates the peer certificate.
     /// </summary>
-    public sealed class NostrDiscovery : IAsyncDisposable, IDisposable
+    public sealed partial class NostrDiscovery : IAsyncDisposable, IDisposable
     {
         public const int DiscoveryKind = 27227;
         private static readonly TimeSpan PublishInterval = TimeSpan.FromSeconds(45);
         private static readonly TimeSpan EventMaxAge = TimeSpan.FromMinutes(3);
+        public static TimeSpan AnnouncementMaxAge => EventMaxAge;
         private static readonly TimeSpan EventFutureTolerance = TimeSpan.FromMinutes(1);
         private const int MaxEventBytes = 64 * 1024;
         private const int MaxTokenLength = 16 * 1024;
@@ -42,6 +43,15 @@ namespace QuicPunch
         private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
         private readonly ConcurrentDictionary<string, RelayConnection> _connections = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, long> _seenEvents = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, long> _pendingAnnouncements = new(StringComparer.Ordinal);
+        private long _lastAnnouncedTicks, _lastAcknowledgedTicks;
+        public DateTime? LastAnnouncedUtc => ReadUtc(ref _lastAnnouncedTicks);
+        public DateTime? LastAcknowledgedUtc => ReadUtc(ref _lastAcknowledgedTicks);
+        private static DateTime? ReadUtc(ref long ticks)
+        {
+            long value = Interlocked.Read(ref ticks);
+            return value > 0 ? new DateTime(value, DateTimeKind.Utc) : null;
+        }
         private readonly Func<IWebProxy?>? _proxyProvider;
         private IWebProxy? _proxy;
         private CancellationTokenSource? _runCts;
@@ -50,9 +60,11 @@ namespace QuicPunch
 
         public event Action<string>? OnTokenFound;
         public event Action<string, string>? OnEventDiscovered;
+        /// <summary>Verified event author, content and original signed creation time in UTC.</summary>
+        public event Action<string, string, DateTime>? OnAnnouncementDiscovered;
 
         public bool IsRunning => _runCts is { IsCancellationRequested: false };
-        public int ConnectedRelayCount => _connections.Count;
+        public int ConnectedRelayCount => _connections.Values.Count(c => c.IsOpen);
         public string ChannelTag => _channelTag;
         public string? Scope => _scope;
         public string PublicKeyHex => _publicKeyHex;
@@ -161,6 +173,15 @@ namespace QuicPunch
             try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { }
         }
 
+        internal static void ConfigureRelayProxy(ClientWebSocket socket, string? scope, IWebProxy? proxy, Uri relay)
+        {
+            if (string.Equals(scope?.Trim(), "tor", StringComparison.OrdinalIgnoreCase) &&
+                (proxy == null || proxy.IsBypassed(relay) || proxy.GetProxy(relay) == relay))
+                throw new InvalidOperationException("Tor discovery requires a working proxy; direct relay connections are forbidden.");
+            // A rejected proxy configuration must not silently become a direct connection.
+            if (proxy != null) socket.Options.Proxy = proxy;
+        }
+
         private async Task RelayLoopAsync(string relay, CancellationToken token)
         {
             int failures = 0;
@@ -168,17 +189,15 @@ namespace QuicPunch
             {
                 RelayConnection? connection = null;
                 ClientWebSocket? pendingSocket = null;
+                Task? receiver = null;
                 try
                 {
                     pendingSocket = new ClientWebSocket();
-                    pendingSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+                    pendingSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+                    pendingSocket.Options.KeepAliveTimeout = TimeSpan.FromSeconds(10);
                     try { pendingSocket.Options.SetRequestHeader("User-Agent", "QuicPunch-Discovery/1.0"); } catch { }
 
-                    var proxy = Proxy ?? _proxyProvider?.Invoke();
-                    if (proxy != null)
-                    {
-                        try { pendingSocket.Options.Proxy = proxy; } catch { }
-                    }
+                    ConfigureRelayProxy(pendingSocket, _scope, Proxy ?? _proxyProvider?.Invoke(), new Uri(relay));
 
                     using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(token);
                     connectCts.CancelAfter(TimeSpan.FromSeconds(10));
@@ -189,13 +208,13 @@ namespace QuicPunch
                     _connections[relay] = connection;
                     failures = 0;
 
+                    receiver = ReceiveLoopAsync(connection, token);
                     await SubscribeAsync(connection, token).ConfigureAwait(false);
 
                     string? initialToken = _tokenProvider();
                     if (!string.IsNullOrWhiteSpace(initialToken) && initialToken.Length <= MaxTokenLength)
                         await PublishAsync(connection, initialToken, token).ConfigureAwait(false);
 
-                    Task receiver = ReceiveLoopAsync(connection, token);
                     while (!token.IsCancellationRequested && connection.IsOpen)
                     {
                         int jitterSeconds = RandomNumberGenerator.GetInt32(-10, 11);
@@ -237,6 +256,7 @@ namespace QuicPunch
                     {
                         pendingSocket?.Dispose();
                     }
+                    if (receiver != null) { try { await receiver.ConfigureAwait(false); } catch { } }
                 }
 
                 if (token.IsCancellationRequested)
@@ -299,7 +319,11 @@ namespace QuicPunch
                 Sig = sig
             };
 
+            foreach (var stale in _pendingAnnouncements.Where(x => Stopwatch.GetElapsedTime(x.Value) > EventMaxAge).Select(x => x.Key))
+                _pendingAnnouncements.TryRemove(stale, out _);
+            if (_pendingAnnouncements.Count < 128) _pendingAnnouncements[id] = Stopwatch.GetTimestamp();
             await connection.SendJsonAsync(new object[] { "EVENT", evt }, linked.Token).ConfigureAwait(false);
+            Interlocked.Exchange(ref _lastAnnouncedTicks, DateTime.UtcNow.Ticks);
         }
 
         private async Task ReceiveLoopAsync(RelayConnection connection, CancellationToken token)
@@ -341,6 +365,13 @@ namespace QuicPunch
                 JsonElement root = document.RootElement;
                 if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() < 3)
                     return;
+                if (root[0].ValueKind == JsonValueKind.String && root[0].GetString() == "OK")
+                {
+                    if (root[1].ValueKind == JsonValueKind.String && root[2].ValueKind == JsonValueKind.True &&
+                        _pendingAnnouncements.TryRemove(root[1].GetString()!, out _))
+                        Interlocked.Exchange(ref _lastAcknowledgedTicks, DateTime.UtcNow.Ticks);
+                    return;
+                }
                 if (!string.Equals(root[0].GetString(), "EVENT", StringComparison.Ordinal))
                     return;
 
@@ -387,6 +418,7 @@ namespace QuicPunch
                     return;
                 PruneSeenEvents();
 
+                OnAnnouncementDiscovered?.Invoke(pubKey, content, DateTimeOffset.FromUnixTimeSeconds(createdAt).UtcDateTime);
                 OnEventDiscovered?.Invoke(pubKey, content);
                 OnTokenFound?.Invoke(content);
             }
@@ -576,13 +608,16 @@ namespace QuicPunch
             public async Task SendJsonAsync(object payload, CancellationToken token)
             {
                 byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(payload, NostrJson.Options);
-                await _sendLock.WaitAsync(token).ConfigureAwait(false);
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+                deadline.CancelAfter(TimeSpan.FromSeconds(10));
+                await _sendLock.WaitAsync(deadline.Token).ConfigureAwait(false);
                 try
                 {
                     if (Socket.State != WebSocketState.Open)
-                        return;
-                    await Socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, token).ConfigureAwait(false);
+                        throw new WebSocketException("Discovery relay socket is no longer open.");
+                    await Socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, deadline.Token).ConfigureAwait(false);
                 }
+                catch { Abort(); throw; }
                 finally
                 {
                     _sendLock.Release();
@@ -597,7 +632,7 @@ namespace QuicPunch
             public void Dispose()
             {
                 try { Socket.Dispose(); } catch { }
-                _sendLock.Dispose();
+                // In-flight sends may still release this managed semaphore after socket disposal.
             }
         }
 
@@ -619,11 +654,19 @@ namespace QuicPunch
             public string Sig { get; set; } = "";
         }
 
+        [System.Text.Json.Serialization.JsonSourceGenerationOptions(GenerationMode = System.Text.Json.Serialization.JsonSourceGenerationMode.Metadata)]
+        [System.Text.Json.Serialization.JsonSerializable(typeof(NostrEvent))]
+        [System.Text.Json.Serialization.JsonSerializable(typeof(Dictionary<string, object>))]
+        [System.Text.Json.Serialization.JsonSerializable(typeof(object[]))]
+        [System.Text.Json.Serialization.JsonSerializable(typeof(int[]))]
+        [System.Text.Json.Serialization.JsonSerializable(typeof(string[]))]
+        private partial class DiscoveryJsonContext : System.Text.Json.Serialization.JsonSerializerContext { }
         private static class NostrJson
         {
             public static readonly JsonSerializerOptions Options = new()
             {
                 Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+                TypeInfoResolver = DiscoveryJsonContext.Default,
                 WriteIndented = false
             };
         }

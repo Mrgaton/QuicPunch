@@ -32,7 +32,10 @@ public sealed class DatagramFrameReassembler
         }
     }
 
-    private readonly ConcurrentDictionary<ushort, FrameBuffer> _pendingFrames = new();
+    private readonly ConcurrentDictionary<(byte Category, ushort Id), FrameBuffer> _pendingFrames = new();
+    private readonly object _gate = new();
+    private const int MaxPendingFrames = 32;
+    private const int MaxFrameBytes = 2 * 1024 * 1024;
     private readonly long _frameTtlMs;
     private long _lastCleanupMs;
 
@@ -56,7 +59,7 @@ public sealed class DatagramFrameReassembler
         isKeyFrame = envelope.IsKeyFrame;
         framePayload = default;
 
-        if (!envelope.IsFragmented || envelope.TotalFragments <= 1)
+        if (!envelope.IsFragmented)
         {
             // Single packet frame
             framePayload = envelope.Payload.ToArray();
@@ -69,17 +72,27 @@ public sealed class DatagramFrameReassembler
         byte cat = envelope.Category;
         bool key = envelope.IsKeyFrame;
 
-        if (fragIndex >= totalFrags || totalFrags > 1024)
+        if (totalFrags == 0 || fragIndex >= totalFrags || totalFrags > 1024 || envelope.Payload.Length > 65535)
         {
             return false; // Malformed fragment index
         }
 
-        MaybeCleanupStaleFrames();
-
-        var fb = _pendingFrames.GetOrAdd(frameId, id => new FrameBuffer(id, cat, key, totalFrags));
-
-        lock (fb)
+        lock (_gate)
         {
+            MaybeCleanupStaleFrames();
+            var frameKey = (cat, frameId);
+            if (!_pendingFrames.TryGetValue(frameKey, out var fb))
+            {
+                if (_pendingFrames.Count >= MaxPendingFrames) return false;
+                fb = new FrameBuffer(frameId, cat, key, totalFrags);
+                _pendingFrames[frameKey] = fb;
+            }
+            if (fb.TotalFragments != totalFrags || fb.IsKeyFrame != key ||
+                fb.TotalPayloadLength + envelope.Payload.Length > MaxFrameBytes)
+            {
+                _pendingFrames.TryRemove(frameKey, out _);
+                return false;
+            }
             if (fb.Fragments[fragIndex] == null)
             {
                 byte[] fragData = envelope.Payload.ToArray();
@@ -89,7 +102,7 @@ public sealed class DatagramFrameReassembler
 
                 if (fb.ReceivedFragmentsCount == fb.TotalFragments)
                 {
-                    _pendingFrames.TryRemove(frameId, out _);
+                    _pendingFrames.TryRemove(frameKey, out _);
 
                     byte[] complete = new byte[fb.TotalPayloadLength];
                     int offset = 0;
@@ -133,5 +146,5 @@ public sealed class DatagramFrameReassembler
         }
     }
 
-    public void Clear() => _pendingFrames.Clear();
+    public void Clear() { lock (_gate) _pendingFrames.Clear(); }
 }

@@ -42,7 +42,7 @@ namespace QuicPunch
 
             if (_certificate != null)
             {
-                certHash = _certHash = SHA3_256.HashData(_certificate.GetPublicKey());
+                certHash = _certHash = global::QuicPunch.Helpers.Sha3Crypto.Hash256(_certificate.GetPublicKey());
                 return true;
             }
 
@@ -63,8 +63,16 @@ namespace QuicPunch
                 return true;
             }
 
-            if (!TryGetCertificateHash(out var certHash))
+            if (!TryGetCertificateHash(out var certHash) || certHash.Length == 0)
             {
+                if (!string.IsNullOrWhiteSpace(NostrPubKey))
+                {
+                    _idRaw ??= XxHash128.Hash(System.Text.Encoding.UTF8.GetBytes(NostrPubKey.ToLowerInvariant()));
+                    _id = new Guid(_idRaw);
+                    id = _id.Value;
+                    return true;
+                }
+
                 id = Guid.Empty;
                 return false;
             }
@@ -85,6 +93,21 @@ namespace QuicPunch
         private ECDsa? _curve;
         public ECDsa Curve => _curve ??= Certificate?.GetECDsaPublicKey() ?? throw new InvalidOperationException("Certificate does not contain an ECDSA public key.");
 
+        internal bool VerifySignature(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> signature)
+        {
+            lock (_sessionLock)
+            {
+                if (_isDisposed || _certificate == null) return false;
+                try
+                {
+                    _curve ??= _certificate.GetECDsaPublicKey();
+                    return _curve != null && Sha3Crypto.VerifyData(_curve, payload, signature);
+                }
+                catch (CryptographicException) { return false; }
+                catch (ObjectDisposedException) { return false; }
+            }
+        }
+
         public string? Name;
 
         public QuicPunch.NetworkType NetworkType;
@@ -94,32 +117,32 @@ namespace QuicPunch
 
         public IPEndPoint? ActiveEndPoint;
 
+        /// <summary>The QUIC data path; never used for discovery/control routing or persisted as such.</summary>
+        public IPEndPoint? QuicEndPoint { get; internal set; }
+
         public Helpers.QuicConnectionTelemetry? LastTelemetry;
 
         public IPAddress[] Addresses = Array.Empty<IPAddress>();
+        /// <summary>
+        /// Exact host/LAN control port, separate from public STUN port lists or ranges.
+        /// Zero means the advertisement did not include a local port.
+        /// </summary>
+        public ushort PreferredPort { get; set; }
+
         private ushort[] _portArray = Array.Empty<ushort>();
         public ushort[] PortArray
         {
             get => _portArray;
             set
             {
-                _portArray = value ?? Array.Empty<ushort>();
+                _portArray = PortAdvertisementCodec.Normalize(value);
                 if (_portArray.Length <= 1)
                 {
                     ConnectionFlags.PortMode = PortMode.Single;
                 }
                 else if (ConnectionFlags.PortMode == PortMode.Single)
                 {
-                    bool isContiguous = true;
-                    for (int i = 1; i < _portArray.Length; i++)
-                    {
-                        if (_portArray[i] != _portArray[i - 1] + 1)
-                        {
-                            isContiguous = false;
-                            break;
-                        }
-                    }
-                    ConnectionFlags.PortMode = (isContiguous || _portArray.Length > 8) ? PortMode.Range : PortMode.Multiple;
+                    ConnectionFlags.PortMode = PortAdvertisementCodec.SelectMode(_portArray);
                 }
             }
         }
@@ -139,7 +162,15 @@ namespace QuicPunch
         public TimeSpan? Ping { get; set; }
         public DateTime? LastPingResponseUtc { get; set; }
 
-        public bool IsConnectedAndResponsive(TimeSpan? timeout = null)
+        internal long LastAvailabilityProbeTimestamp;
+        public string? LastQuicConnectionError { get; internal set; }
+        public DateTime? LastQuicConnectionAttemptUtc { get; internal set; }
+
+        // Discovery liveness says nothing about an established QUIC tunnel.
+        /// <summary>Compatibility alias for discovery availability; does not indicate QUIC connectivity.</summary>
+        public bool IsConnectedAndResponsive(TimeSpan? timeout = null) => IsAvailableAndResponsive(timeout);
+
+        public bool IsAvailableAndResponsive(TimeSpan? timeout = null)
         {
             var maxAge = timeout ?? TimeSpan.FromMinutes(1);
             var now = DateTime.UtcNow;

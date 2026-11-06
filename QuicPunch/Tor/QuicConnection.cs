@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 
 global using QuicConnection = QuicPunch.QuicConnection;
 global using QuicStream = QuicPunch.QuicStream;
@@ -21,11 +21,14 @@ namespace QuicPunch;
 
 public sealed class QuicConnection : IAsyncDisposable
 {
-    private static IQuicConnectionFactory s_transportFactory =
-        NativeQuicConnectionFactory.Instance;
-
     private readonly IQuicConnectionTransport _transport;
+    internal CancellationToken ApplicationSessionToken =>
+        (_transport as Multiplexer.MultiplexedQuicConnectionTransport)?.SessionToken ?? CancellationToken.None;
     private int _disposed;
+    public Guid SessionId => (_transport as Multiplexer.MultiplexedQuicConnectionTransport)?.SessionGuid ?? Guid.Empty;
+    public bool IsRecoveredSession => (_transport as Multiplexer.MultiplexedQuicConnectionTransport)?.IsRecoveredSession ?? false;
+    public bool TransportLost => (_transport as Multiplexer.MultiplexedQuicConnectionTransport)?.TransportLost ?? false;
+    internal bool IsTransportClosed => _transport.IsClosed;
 
     private QuicConnection(IQuicConnectionTransport transport)
     {
@@ -33,17 +36,7 @@ public sealed class QuicConnection : IAsyncDisposable
             throw new ArgumentNullException(nameof(transport));
     }
 
-    public static IQuicConnectionFactory TransportFactory
-    {
-        get => Volatile.Read(ref s_transportFactory);
-        set
-        {
-            ArgumentNullException.ThrowIfNull(value);
-            Volatile.Write(ref s_transportFactory, value);
-        }
-    }
-
-    public static bool IsSupported => TransportFactory.IsSupported;
+    public static bool IsSupported => NativeQuicConnection.IsSupported;
 
     public EndPoint? LocalEndPoint => _transport.LocalEndPoint;
 
@@ -74,25 +67,12 @@ public sealed class QuicConnection : IAsyncDisposable
     public NativeQuicConnection? NativeConnection =>
         (_transport as NativeConnectionTransport)?.InnerConnection;
 
-    private Helpers.IQuicDatagramChannel? _datagramChannel;
 
     /// <summary>
     /// Gets the RFC 9221 unreliable datagram channel attached to this connection (native or virtual).
     /// </summary>
-    public Helpers.IQuicDatagramChannel? DatagramChannel
-    {
-        get
-        {
-            if (_transport.DatagramChannel != null)
-                return _transport.DatagramChannel;
-
-            if (_datagramChannel == null && NativeConnection != null && Helpers.MsQuicDatagramChannel.IsSupported)
-            {
-                try { _datagramChannel = Helpers.MsQuicDatagramChannel.Attach(NativeConnection); } catch { }
-            }
-            return _datagramChannel;
-        }
-    }
+    public Helpers.IQuicDatagramChannel? DatagramChannel =>
+        Volatile.Read(ref _disposed) == 0 ? _transport.DatagramChannel : null;
 
     /// <summary>
     /// Transmits an unreliable QUIC datagram over this connection without retransmissions or head-of-line blocking.
@@ -225,12 +205,20 @@ public sealed class QuicConnection : IAsyncDisposable
     /// <summary>
     /// Gets the current dynamically discovered Path MTU in bytes (e.g. 1280 to 1500, or up to 9000 for Jumbo Frames).
     /// </summary>
-    public ushort PathMtu => Helpers.MsQuicTuner.TryGetPathMtu(this, out var mtu) ? mtu : (ushort)1500;
+    public ushort PathMtu => TryGetPathMtu(out var mtu) ? mtu : (ushort)1500;
 
     /// <summary>
     /// Attempts to retrieve the dynamically discovered Path MTU in bytes for this connection.
     /// </summary>
-    public bool TryGetPathMtu(out ushort pathMtu) => Helpers.MsQuicTuner.TryGetPathMtu(this, out pathMtu);
+    public bool TryGetPathMtu(out ushort pathMtu)
+    {
+        if (_transport.TryGetTelemetry(out var telemetry) && telemetry.PathMtu > 0)
+        {
+            pathMtu = telemetry.PathMtu;
+            return true;
+        }
+        return Helpers.MsQuicTuner.TryGetPathMtu(this, out pathMtu);
+    }
 
     /// <summary>
     /// Cached 0-RTT session resumption ticket for fast reconnects.
@@ -281,8 +269,20 @@ public sealed class QuicConnection : IAsyncDisposable
     /// <summary>
     /// Atomically applies optimal native MsQuic tunings (BBR, Pacing, HyStart, PMTUD, 16MB/4MB flow control, and 5s keepalive) to this connection.
     /// </summary>
-    public bool ApplyOptimalTuning() =>
-        NativeConnection != null && Helpers.MsQuicTuner.TryApplyOptimalTuning(NativeConnection);
+    public bool ApplyOptimalTuning(Helpers.QuicDscpPriority? dscp = null) =>
+        NativeConnection != null && Helpers.MsQuicTuner.TryApplyOptimalTuning(NativeConnection, dscp: dscp);
+
+    /// <summary>
+    /// Queries real-time network and congestion control statistics from this connection.
+    /// </summary>
+    public bool TryGetNetworkStatistics(out Helpers.QuicNetworkStatistics stats) =>
+        Helpers.MsQuicTuner.TryGetNetworkStatistics(this, out stats);
+
+    /// <summary>
+    /// Queries the ideal processor core assigned by MsQuic to process packets for this connection.
+    /// </summary>
+    public bool TryGetIdealProcessor(out ushort processor) =>
+        Helpers.MsQuicTuner.TryGetIdealProcessor(this, out processor);
 
     public static async ValueTask<QuicConnection> ConnectAsync(
         NativeQuicClientConnectionOptions options,
@@ -290,24 +290,12 @@ public sealed class QuicConnection : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        Helpers.MsQuicTuner.EnsureOptimalConfiguration();
-
-        if (Helpers.MsQuicDatagramChannel.IsSupported)
-        {
-            Helpers.MsQuicDatagramChannel.EnableDatagramsOnConfigurationCache();
-        }
-
         IQuicConnectionTransport transport =
-            await TransportFactory
+            await NativeQuicConnectionFactory.Instance
                 .ConnectAsync(options, cancellationToken)
                 .ConfigureAwait(false);
 
-        var conn = new QuicConnection(transport);
-        if (conn.NativeConnection != null)
-        {
-            conn.ApplyOptimalTuning();
-        }
-        return conn;
+        return new QuicConnection(transport);
     }
 
     public static async ValueTask<QuicConnection> ConnectAsync(
@@ -323,12 +311,7 @@ public sealed class QuicConnection : IAsyncDisposable
                 .ConnectAsync(options, cancellationToken)
                 .ConfigureAwait(false);
 
-        var conn = new QuicConnection(transport);
-        if (conn.NativeConnection != null)
-        {
-            conn.ApplyOptimalTuning();
-        }
-        return conn;
+        return new QuicConnection(transport);
     }
 
     public static QuicConnection CreateDummy(
@@ -381,8 +364,6 @@ public sealed class QuicConnection : IAsyncDisposable
         NativeQuicConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        Helpers.MsQuicTuner.EnsureOptimalConfiguration();
-        Helpers.MsQuicTuner.TryApplyOptimalTuning(connection);
         var conn = new QuicConnection(
             new NativeConnectionTransport(connection));
         return conn;
@@ -444,12 +425,8 @@ public sealed class QuicConnection : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        _datagramChannel?.Dispose();
         await _transport.DisposeAsync().ConfigureAwait(false);
     }
-
-    public static void UseNativeTransport() =>
-        TransportFactory = NativeQuicConnectionFactory.Instance;
 
     private void ThrowIfDisposed()
     {
@@ -577,6 +554,7 @@ public interface IQuicStreamTransport : IDisposable, IAsyncDisposable
 
 public interface IQuicConnectionTransport : IAsyncDisposable
 {
+    bool IsClosed => false;
     QuicPunch.TransportType TransportType => QuicPunch.TransportType.Wan;
 
     EndPoint? LocalEndPoint { get; }
@@ -642,13 +620,15 @@ public sealed class NativeQuicConnectionFactory :
 
         Helpers.MsQuicTuner.EnsureOptimalConfiguration();
 
+        if (Helpers.MsQuicDatagramChannel.IsSupported)
+        {
+            Helpers.MsQuicDatagramChannel.EnsureClientConfigurationPatched(options);
+        }
+
         System.Net.Quic.QuicConnection connection =
             await System.Net.Quic.QuicConnection
                 .ConnectAsync(options, cancellationToken)
                 .ConfigureAwait(false);
-
-        Helpers.MsQuicTuner.EnsureOptimalConfiguration();
-        Helpers.MsQuicTuner.TryApplyOptimalTuning(connection);
 
         return new NativeConnectionTransport(connection);
     }

@@ -9,21 +9,32 @@ using System.Text.Json.Serialization.Metadata;
 
 namespace QuicPunch.Helpers;
 
-public sealed class PeerStore : IDisposable
+public enum PeerProfile { Friend, Administrator }
+
+public sealed partial class PeerStore : IDisposable
 {
     public sealed record SavedPeer
     {
         public IPAddress[] Addresses { get; init; }
         public ushort[] PortArray { get; init; } = [];
+        public ushort PreferredPort { get; init; }
         public byte[] CertHash { get; init; }
         public byte[]? EcdhPublicKey { get; init; }
         public string? Name { get; init; }
         public string? OnionAddress { get; init; }
         public bool AutoConnect { get; init; } = true;
+        public bool Trusted { get; init; } = true;
+        public string[] AutomaticPermissions { get; init; } = [];
+        public PeerProfile Profile { get; init; } = PeerProfile.Friend;
         public QuicPunch.NetworkType NetworkType { get; init; } = QuicPunch.NetworkType.Static;
         public ConnectionFlags ConnectionFlags { get; init; } = new();
         public string? NostrPubKey { get; init; }
         public byte[]? ResumptionTicket { get; init; }
+        public DateTime? LastConnectedUtc { get; init; }
+        public DateTime? LastAuthenticatedActivityUtc { get; init; }
+        public string? LastKnownIp { get; init; }
+        public DateTime? LastUsedUtc { get; init; }
+        public long UsageCount { get; init; }
 
         // Certificate hash is the stable peer identity. Addresses and ports can change with NAT.
         internal string Key => PeerStore.Key(CertHash);
@@ -31,7 +42,7 @@ public sealed class PeerStore : IDisposable
         public SavedPeer(IPAddress[] addresses, ushort[] portArray, byte[] certHash, byte[]? ecdhPublicKey = null, string? name = null, string? onionAddress = null, bool autoConnect = true, QuicPunch.NetworkType networkType = QuicPunch.NetworkType.Static, string? nostrPubKey = null, byte[]? resumptionTicket = null, ConnectionFlags? connectionFlags = null)
         {
             Addresses = NormalizeAddresses(addresses);
-            PortArray = portArray ?? [];
+            PortArray = PortAdvertisementCodec.Normalize(portArray);
 
             if (certHash is null || certHash.Length == 0)
                 throw new ArgumentException("Certificate hash cannot be empty.", nameof(certHash));
@@ -42,12 +53,15 @@ public sealed class PeerStore : IDisposable
             OnionAddress = onionAddress;
             AutoConnect = autoConnect;
             NetworkType = networkType;
-            ConnectionFlags = connectionFlags ?? new ConnectionFlags
-            {
-                IsTor = networkType == QuicPunch.NetworkType.Tor,
-                MultipleIps = Addresses.Length > 1,
-                PortMode = PortArray.Length <= 1 ? PortMode.Single : PortMode.Multiple
-            };
+            ConnectionFlags = connectionFlags != null
+                ? new ConnectionFlags(connectionFlags.RawValue)
+                : new ConnectionFlags
+                {
+                    IsTor = networkType == QuicPunch.NetworkType.Tor,
+                    MultipleIps = Addresses.Length > 1
+                };
+            ConnectionFlags.PortMode = PortAdvertisementCodec.ResolveMode(PortArray, ConnectionFlags.PortMode);
+            PortArray = PortAdvertisementCodec.NormalizeForMode(PortArray, ConnectionFlags.PortMode);
             NostrPubKey = nostrPubKey;
             ResumptionTicket = resumptionTicket?.ToArray();
         }
@@ -57,17 +71,20 @@ public sealed class PeerStore : IDisposable
         {
         }
 
-        internal SavedPeer Copy() => new(Addresses.Select(CloneAddress).ToArray(), (ushort[])PortArray.Clone(), CertHash.ToArray(), EcdhPublicKey?.ToArray(), Name, OnionAddress, AutoConnect, NetworkType, NostrPubKey, ResumptionTicket?.ToArray(), new ConnectionFlags(ConnectionFlags.RawValue));
+        internal SavedPeer Copy() => new SavedPeer(Addresses.Select(CloneAddress).ToArray(), (ushort[])PortArray.Clone(), CertHash.ToArray(), EcdhPublicKey?.ToArray(), Name, OnionAddress, AutoConnect, NetworkType, NostrPubKey, ResumptionTicket?.ToArray(), new ConnectionFlags(ConnectionFlags.RawValue)) { PreferredPort = PreferredPort, AutomaticPermissions = (string[])AutomaticPermissions.Clone(), Profile = Profile, Trusted = Trusted, LastConnectedUtc = LastConnectedUtc, LastAuthenticatedActivityUtc = LastAuthenticatedActivityUtc, LastKnownIp = LastKnownIp, LastUsedUtc = LastUsedUtc, UsageCount = UsageCount };
 
         internal bool SameCertificate(SavedPeer other) =>
             CertHash.AsSpan().SequenceEqual(other.CertHash);
 
         internal bool SameValue(SavedPeer other) =>
-            SameCertificate(other) &&
-            PortArray.SequenceEqual(other.PortArray) &&
+            SameCertificate(other) && LastConnectedUtc == other.LastConnectedUtc && LastAuthenticatedActivityUtc == other.LastAuthenticatedActivityUtc && LastKnownIp == other.LastKnownIp && LastUsedUtc == other.LastUsedUtc && UsageCount == other.UsageCount &&
+            PortArray.SequenceEqual(other.PortArray) && PreferredPort == other.PreferredPort &&
             Name == other.Name &&
             OnionAddress == other.OnionAddress &&
             AutoConnect == other.AutoConnect &&
+            Trusted == other.Trusted &&
+            Profile == other.Profile &&
+            AutomaticPermissions.Order(StringComparer.Ordinal).SequenceEqual(other.AutomaticPermissions.Order(StringComparer.Ordinal), StringComparer.Ordinal) &&
             NetworkType == other.NetworkType &&
             ConnectionFlags.RawValue == other.ConnectionFlags.RawValue &&
             string.Equals(NostrPubKey, other.NostrPubKey, StringComparison.OrdinalIgnoreCase) &&
@@ -77,7 +94,7 @@ public sealed class PeerStore : IDisposable
 
     private sealed class Db
     {
-        public int Version { get; set; } = 2;
+        public int Version { get; set; } = 4;
         public List<Row> SavedPeers { get; set; } = [];
     }
 
@@ -88,6 +105,9 @@ public sealed class PeerStore : IDisposable
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public ushort[]? Ports { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public ushort PreferredPort { get; set; }
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public int? MinPort { get; set; }
@@ -102,6 +122,9 @@ public sealed class PeerStore : IDisposable
         public string? OnionAddress { get; set; }
 
         public bool AutoConnect { get; set; } = true;
+        public bool Trusted { get; set; } = true;
+        public string[] AutomaticPermissions { get; set; } = [];
+        public PeerProfile Profile { get; set; } = PeerProfile.Friend;
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? EcdhPublicKey { get; set; }
@@ -116,6 +139,11 @@ public sealed class PeerStore : IDisposable
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? ResumptionTicket { get; set; }
+        public DateTime? LastConnectedUtc { get; set; }
+        public DateTime? LastAuthenticatedActivityUtc { get; set; }
+        public string? LastKnownIp { get; set; }
+        public DateTime? LastUsedUtc { get; set; }
+        public long UsageCount { get; set; }
 
         // Legacy-read support for older files that used { Ip, Port, CertHash }.
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -177,6 +205,94 @@ public sealed class PeerStore : IDisposable
 
     public IReadOnlyList<SavedPeer> GetAll() => SavedPeers;
 
+    public static readonly IReadOnlySet<string> SupportedAutomaticPermissions = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "chat", "voice", "vpn", "speedtest", "watch", "screen-share-request", "screen-settings", "virtual-disk"
+    };
+
+    public bool HasAutomaticPermission(byte[]? certificate, string permission)
+    {
+        if (certificate is null || !SupportedAutomaticPermissions.Contains(permission)) return false;
+        lock (_sync)
+            return _peers.TryGetValue(Key(certificate), out var peer) && peer.Trusted &&
+                (peer.Profile == PeerProfile.Administrator || peer.AutomaticPermissions.Contains(permission, StringComparer.Ordinal));
+    }
+
+    public bool IsAdministrator(byte[]? certificate) => certificate != null &&
+        TryGet(certificate, out var peer) && peer?.Trusted == true && peer.Profile == PeerProfile.Administrator;
+
+    public bool SetProfile(byte[] certificate, PeerProfile profile)
+    {
+        ThrowIfDisposed();
+        if (!Enum.IsDefined(profile)) throw new ArgumentOutOfRangeException(nameof(profile));
+        SavedPeer previous;
+        SavedPeer updated;
+        lock (_sync)
+        {
+            if (!_peers.TryGetValue(Key(certificate), out previous!)) return false;
+            updated = previous with { Profile = profile };
+            _peers[updated.Key] = updated;
+            UpdateCacheLocked();
+        }
+        try { Save(); }
+        catch
+        {
+            lock (_sync) { _peers[updated.Key] = previous; UpdateCacheLocked(); }
+            throw;
+        }
+        Safe(() => PeerModified?.Invoke(updated.Copy(), false));
+        return true;
+    }
+
+    public bool SetTrusted(byte[] certificate, bool trusted)
+    {
+        ThrowIfDisposed();
+        SavedPeer previous;
+        SavedPeer updated;
+        lock (_sync)
+        {
+            if (!_peers.TryGetValue(Key(certificate), out previous!)) return false;
+            if (previous.Trusted == trusted) return true;
+            updated = previous with { Trusted = trusted };
+            _peers[updated.Key] = updated;
+            UpdateCacheLocked();
+        }
+        try { Save(); }
+        catch
+        {
+            lock (_sync) { _peers[updated.Key] = previous; UpdateCacheLocked(); }
+            throw;
+        }
+        Safe(() => PeerModified?.Invoke(updated.Copy(), false));
+        return true;
+    }
+
+    public bool SetAutomaticPermission(byte[] certificate, string permission, bool allowed)
+    {
+        ThrowIfDisposed();
+        if (certificate is null || !SupportedAutomaticPermissions.Contains(permission)) return false;
+        SavedPeer updated;
+        SavedPeer previous;
+        lock (_sync)
+        {
+            if (!_peers.TryGetValue(Key(certificate), out var old)) return false;
+            previous = old;
+            var next = old.AutomaticPermissions.Where(value => value != permission).ToList();
+            if (allowed) next.Add(permission);
+            updated = old with { AutomaticPermissions = next.Order(StringComparer.Ordinal).ToArray() };
+            _peers[updated.Key] = updated;
+            UpdateCacheLocked();
+        }
+        try { Save(); }
+        catch
+        {
+            lock (_sync) { _peers[updated.Key] = previous; UpdateCacheLocked(); }
+            throw;
+        }
+        Safe(() => PeerModified?.Invoke(updated.Copy(), false));
+        return true;
+    }
+
     public bool TryGet(byte[] certificate, out SavedPeer? peer)
     {
         if (certificate is null || certificate.Length == 0)
@@ -216,7 +332,7 @@ public sealed class PeerStore : IDisposable
         lock (_sync)
         {
             if (!_peers.TryGetValue(Key(certificate), out var old)) return false;
-            var updated = new SavedPeer(old.Addresses, old.PortArray, old.CertHash, old.EcdhPublicKey, old.Name, old.OnionAddress, old.AutoConnect, old.NetworkType, old.NostrPubKey, ticket, old.ConnectionFlags);
+            var updated = old with { ResumptionTicket = ticket.ToArray() };
             _peers[old.Key] = updated;
             UpdateCacheLocked();
         }
@@ -274,7 +390,8 @@ public sealed class PeerStore : IDisposable
             return false;
 
         var ports = new List<ushort>(peer.PortArray ?? []);
-        if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Port > 0)
+        if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Port > 0 &&
+            !(peer.PreferredPort > 0 && Utilities.IsPrivateLanAddress(peer.ActiveEndPoint.Address)))
         {
             ushort activePort = (ushort)peer.ActiveEndPoint.Port;
             if (!ports.Contains(activePort))
@@ -282,13 +399,15 @@ public sealed class PeerStore : IDisposable
                 ports.Add(activePort);
             }
         }
-        var portArray = ports.ToArray();
+        var portArray = PortAdvertisementCodec.Normalize(ports);
+        PortMode portMode = PortAdvertisementCodec.ResolveMode(portArray, peer.ConnectionFlags.PortMode);
+        portArray = PortAdvertisementCodec.NormalizeForMode(portArray, portMode);
 
         peer.PortArray = portArray;
         peer.ConnectionFlags.MultipleIps = addrsList.Count > 1;
-        peer.ConnectionFlags.PortMode = portArray.Length <= 1 ? PortMode.Single : (peer.ConnectionFlags.PortMode == PortMode.Single ? PortMode.Multiple : peer.ConnectionFlags.PortMode);
+        peer.ConnectionFlags.PortMode = portMode;
         
-        return AddOrUpdate(addrsList, portArray, peer.CertHash, peer.EcdhPublicKey, peer.Name, peer.OnionAddress, autoConnect, save, peer.NetworkType, peer.NostrPubKey, peer.ResumptionTicket, peer.ConnectionFlags);
+        return AddOrUpdate(addrsList, portArray, peer.CertHash, peer.EcdhPublicKey, peer.Name, peer.OnionAddress, autoConnect, save, peer.NetworkType, peer.NostrPubKey, peer.ResumptionTicket, peer.ConnectionFlags, peer.PreferredPort);
     }
 
     public bool AddOrUpdate(PeerInfo peer, bool autoConnect, bool save, string? nostrPubKey)
@@ -320,7 +439,8 @@ public sealed class PeerStore : IDisposable
             return false;
 
         var ports = new List<ushort>(peer.PortArray ?? []);
-        if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Port > 0)
+        if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Port > 0 &&
+            !(peer.PreferredPort > 0 && Utilities.IsPrivateLanAddress(peer.ActiveEndPoint.Address)))
         {
             ushort activePort = (ushort)peer.ActiveEndPoint.Port;
             if (!ports.Contains(activePort))
@@ -328,13 +448,15 @@ public sealed class PeerStore : IDisposable
                 ports.Add(activePort);
             }
         }
-        var portArray = ports.ToArray();
+        var portArray = PortAdvertisementCodec.Normalize(ports);
+        PortMode portMode = PortAdvertisementCodec.ResolveMode(portArray, peer.ConnectionFlags.PortMode);
+        portArray = PortAdvertisementCodec.NormalizeForMode(portArray, portMode);
 
         peer.PortArray = portArray;
         peer.ConnectionFlags.MultipleIps = addrsList.Count > 1;
-        peer.ConnectionFlags.PortMode = portArray.Length <= 1 ? PortMode.Single : (peer.ConnectionFlags.PortMode == PortMode.Single ? PortMode.Multiple : peer.ConnectionFlags.PortMode);
+        peer.ConnectionFlags.PortMode = portMode;
 
-        return AddOrUpdate(addrsList, portArray, peer.CertHash, peer.EcdhPublicKey, peer.Name, peer.OnionAddress, autoConnect, save, peer.NetworkType, peer.NostrPubKey ?? nostrPubKey, peer.ResumptionTicket, peer.ConnectionFlags);
+        return AddOrUpdate(addrsList, portArray, peer.CertHash, peer.EcdhPublicKey, peer.Name, peer.OnionAddress, autoConnect, save, peer.NetworkType, peer.NostrPubKey ?? nostrPubKey, peer.ResumptionTicket, peer.ConnectionFlags, peer.PreferredPort);
     }
 
     public bool AddOrUpdate(IPAddress[] addresses, ushort[] portArray, byte[] certificate, bool save) =>
@@ -349,7 +471,7 @@ public sealed class PeerStore : IDisposable
     public bool AddOrUpdate(IEnumerable<IPAddress> addresses, ushort[] portArray, byte[] certificate, byte[]? ecdhPublicKey = null, bool save = true) =>
         AddOrUpdate(addresses, portArray, certificate, ecdhPublicKey, null, null, true, save);
 
-    public bool AddOrUpdate(IEnumerable<IPAddress> addresses, ushort[] portArray, byte[] certificate, byte[]? ecdhPublicKey = null, string? name = null, string? onionAddress = null, bool autoConnect = true, bool save = true, QuicPunch.NetworkType networkType = QuicPunch.NetworkType.Static, string? nostrPubKey = null, byte[]? resumptionTicket = null, ConnectionFlags? connectionFlags = null)
+    public bool AddOrUpdate(IEnumerable<IPAddress> addresses, ushort[] portArray, byte[] certificate, byte[]? ecdhPublicKey = null, string? name = null, string? onionAddress = null, bool autoConnect = true, bool save = true, QuicPunch.NetworkType networkType = QuicPunch.NetworkType.Static, string? nostrPubKey = null, byte[]? resumptionTicket = null, ConnectionFlags? connectionFlags = null, ushort preferredPort = 0)
     {
         ThrowIfDisposed();
 
@@ -361,7 +483,7 @@ public sealed class PeerStore : IDisposable
         {
             if (!_peers.TryGetValue(Key(certificate), out var old))
             {
-                var peer = new SavedPeer(addresses, portArray, certificate, ecdhPublicKey, name, onionAddress, autoConnect, networkType, nostrPubKey, resumptionTicket, connectionFlags);
+                var peer = new SavedPeer(addresses, portArray, certificate, ecdhPublicKey, name, onionAddress, autoConnect, networkType, nostrPubKey, resumptionTicket, connectionFlags) { PreferredPort = preferredPort };
                 _peers[peer.Key] = peer;
                 savedPeerToNotify = peer;
                 added = true;
@@ -377,7 +499,8 @@ public sealed class PeerStore : IDisposable
                 byte[]? mergedTicket = (resumptionTicket != null && resumptionTicket.Length > 0) ? resumptionTicket : old.ResumptionTicket;
                 var mergedFlags = connectionFlags ?? old.ConnectionFlags;
 
-                var mergedPeer = new SavedPeer(addresses, portArray, certificate, mergedEcdh, mergedName, mergedOnion, autoConnect, networkType, mergedNostrPubKey, mergedTicket, mergedFlags);
+                // A full port advertisement can also withdraw the previous preferred port.
+                var mergedPeer = new SavedPeer(addresses, portArray, certificate, mergedEcdh, mergedName, mergedOnion, autoConnect, networkType, mergedNostrPubKey, mergedTicket, mergedFlags) { PreferredPort = connectionFlags != null || preferredPort > 0 ? preferredPort : old.PreferredPort, AutomaticPermissions = (string[])old.AutomaticPermissions.Clone(), Profile = old.Profile, Trusted = old.Trusted, LastConnectedUtc = old.LastConnectedUtc, LastAuthenticatedActivityUtc = old.LastAuthenticatedActivityUtc, LastKnownIp = old.LastKnownIp, LastUsedUtc = old.LastUsedUtc, UsageCount = old.UsageCount };
                 if (!old.SameValue(mergedPeer))
                 {
                     _peers[mergedPeer.Key] = mergedPeer;
@@ -575,9 +698,9 @@ public sealed class PeerStore : IDisposable
             return new(StringComparer.Ordinal);
 
         using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var db = JsonSerializer.Deserialize<Db>(fs, _json) ?? new Db();
+        var db = JsonSerializer.Deserialize(fs, PeerStoreJsonContext.Default.Db) ?? new Db();
 
-        if (db.Version is < 1 or > 2)
+        if (db.Version is < 1 or > 4)
             throw new InvalidDataException($"VersiÃ³n no soportada: {db.Version}");
 
         var result = new Dictionary<string, SavedPeer>(StringComparer.Ordinal);
@@ -601,7 +724,9 @@ public sealed class PeerStore : IDisposable
                 ? r.Ports
                 : (minP == maxP
                     ? (minP > 0 ? [(ushort)minP] : [])
-                    : Enumerable.Range(minP, Math.Max(0, maxP - minP + 1)).Select(p => (ushort)p).ToArray());
+                    : minP > 0 && maxP >= minP && maxP <= ushort.MaxValue
+                        ? [(ushort)minP, (ushort)maxP]
+                        : []);
 
             var legacyNetworkType = r.NetworkType;
             var flags = r.ConnectionFlags is byte rawFlags
@@ -617,7 +742,18 @@ public sealed class PeerStore : IDisposable
                 };
             var netType = flags.IsTor ? QuicPunch.NetworkType.Tor : QuicPunch.NetworkType.Static;
 
-            var p = new SavedPeer(addresses, portArray, certHash, ecdhPublicKey, r.Name, r.OnionAddress, r.AutoConnect, netType, r.NostrPubKey, resumptionTicket, flags);
+            var p = new SavedPeer(addresses, portArray, certHash, ecdhPublicKey, r.Name, r.OnionAddress, r.AutoConnect, netType, r.NostrPubKey, resumptionTicket, flags)
+            {
+                PreferredPort = r.PreferredPort,
+                LastConnectedUtc = r.LastConnectedUtc,
+                LastAuthenticatedActivityUtc = r.LastAuthenticatedActivityUtc,
+                LastKnownIp = IPAddress.TryParse(r.LastKnownIp, out var lastIp) ? lastIp.ToString() : null,
+                LastUsedUtc = r.LastUsedUtc,
+                UsageCount = Math.Max(0, r.UsageCount),
+                Trusted = r.Trusted,
+                AutomaticPermissions = (r.AutomaticPermissions ?? []).Where(SupportedAutomaticPermissions.Contains).Distinct(StringComparer.Ordinal).ToArray(),
+                Profile = db.Version >= 3 && Enum.IsDefined(r.Profile) ? r.Profile : PeerProfile.Friend
+            };
 
             result[p.Key] = p;
         }
@@ -639,10 +775,19 @@ public sealed class PeerStore : IDisposable
                 {
                     Ips = p.Addresses.Select(a => a.ToString()).ToArray(),
                     Ports = p.PortArray,
+                    PreferredPort = p.PreferredPort,
+                    LastConnectedUtc = p.LastConnectedUtc,
+                    LastAuthenticatedActivityUtc = p.LastAuthenticatedActivityUtc,
+                    LastKnownIp = p.LastKnownIp,
+                    LastUsedUtc = p.LastUsedUtc,
+                    UsageCount = p.UsageCount,
                     CertHash = Convert.ToBase64String(p.CertHash),
                     Name = p.Name,
                     OnionAddress = p.OnionAddress,
                     AutoConnect = p.AutoConnect,
+                    Trusted = p.Trusted,
+                    AutomaticPermissions = p.AutomaticPermissions,
+                    Profile = p.Profile,
                     EcdhPublicKey = p.EcdhPublicKey != null ? Convert.ToBase64String(p.EcdhPublicKey) : null,
                     NetworkType = (int)p.NetworkType,
                     ConnectionFlags = p.ConnectionFlags.RawValue,
@@ -656,7 +801,7 @@ public sealed class PeerStore : IDisposable
         {
             using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.WriteThrough))
             {
-                JsonSerializer.Serialize(fs, db, _json);
+                JsonSerializer.Serialize(fs, db, PeerStoreJsonContext.Default.Db);
                 fs.Flush(true);
             }
 

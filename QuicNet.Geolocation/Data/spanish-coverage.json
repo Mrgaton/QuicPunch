@@ -1,0 +1,176 @@
+{
+  "regions": [
+    {
+      "id": "AN",
+      "name": "Andalucía",
+      "addresses": 10,
+      "ipv4": 10,
+      "ipv6": 0,
+      "sites": 10,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "AR",
+      "name": "Aragón",
+      "addresses": 0,
+      "ipv4": 0,
+      "ipv6": 0,
+      "sites": 0,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "AS",
+      "name": "Asturias",
+      "addresses": 2,
+      "ipv4": 2,
+      "ipv6": 0,
+      "sites": 1,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "CB",
+      "name": "Cantabria",
+      "addresses": 0,
+      "ipv4": 0,
+      "ipv6": 0,
+      "sites": 0,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "CE",
+      "name": "Ceuta",
+      "addresses": 0,
+      "ipv4": 0,
+      "ipv6": 0,
+      "sites": 0,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "CL",
+      "name": "Castilla y León",
+      "addresses": 4,
+      "ipv4": 4,
+      "ipv6": 0,
+      "sites": 3,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "CM",
+      "name": "Castilla-La Mancha",
+      "addresses": 3,
+      "ipv4": 3,
+      "ipv6": 0,
+      "sites": 3,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "CN",
+      "name": "Canarias",
+      "addresses": 4,
+      "ipv4": 4,
+      "ipv6": 0,
+      "sites": 4,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "CT",
+      "name": "Cataluña",
+      "addresses": 16,
+      "ipv4": 13,
+      "ipv6": 3,
+      "sites": 4,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "EX",
+      "name": "Extremadura",
+      "addresses": 5,
+      "ipv4": 5,
+      "ipv6": 0,
+      "sites": 5,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "GA",
+      "name": "Galicia",
+      "addresses": 1,
+      "ipv4": 1,
+      "ipv6": 0,
+      "sites": 1,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "IB",
+      "name": "Illes Balears",
+      "addresses": 4,
+      "ipv4": 4,
+      "ipv6": 0,
+      "sites": 2,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "MC",
+      "name": "Región de Murcia",
+      "addresses": 11,
+      "ipv4": 11,
+      "ipv6": 0,
+      "sites": 7,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "MD",
+      "name": "Comunidad de Madrid",
+      "addresses": 27,
+      "ipv4": 19,
+      "ipv6": 8,
+      "sites": 11,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "ML",
+      "name": "Melilla",
+      "addresses": 1,
+      "ipv4": 1,
+      "ipv6": 0,
+      "sites": 1,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "NA",
+      "name": "Navarra",
+      "addresses": 0,
+      "ipv4": 0,
+      "ipv6": 0,
+      "sites": 0,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "PV",
+      "name": "País Vasco",
+      "addresses": 3,
+      "ipv4": 3,
+      "ipv6": 0,
+      "sites": 1,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "RI",
+      "name": "La Rioja",
+      "addresses": 0,
+      "ipv4": 0,
+      "ipv6": 0,
+      "sites": 0,
+      "physicallyVerifiedSites": 0
+    },
+    {
+      "id": "VC",
+      "name": "Comunitat Valenciana",
+      "addresses": 10,
+      "ipv4": 10,
+      "ipv6": 0,
+      "sites": 10,
+      "physicallyVerifiedSites": 0
+    }
+  ],
+  "policy": "Catalogue coverage is not reachability or physically certified coverage."
+}

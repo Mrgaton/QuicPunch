@@ -1,0 +1,178 @@
+  <!-- 4. LAN BRIDGE VIEW -->
+  <div id="view-vpn" class="spa-view hidden">
+    <main class="workspace">
+      <header class="page-head compact-head vpn-page-head">
+        <div>
+          <div>
+            <div class="vpn-title-row">
+              <h1>Tu red privada</h1>
+              <span id="lanLiveBadge" class="badge" role="status">Inactivo</span>
+            </div>
+            <p>Conecta tus equipos como si estuvieran en la misma red local.</p>
+          </div>
+          <div>
+            <button class="btn sm" id="refreshVpnBtn" title="Actualizar el estado de la red">Actualizar</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Admin Required Alert Banner -->
+      <div id="adminRequiredBanner" class="attention hidden" role="status">
+        <div>
+          <div>
+            <strong>Faltan permisos para activar la red</strong>
+            <span>Puedes guardar tus ajustes. Para conectar, reinicia como administrador o utiliza el servicio VPN.</span>
+          </div>
+          <button class="btn" id="restartAdminBtn">Reiniciar como administrador</button>
+        </div>
+      </div>
+
+      <!-- LAN Summary KPI Cards -->
+      <section class="summary-line">
+        <div class="summary-item">
+          <label>IP de este equipo</label>
+          <div>
+            <button class="ip-chip lg" id="myIpChip" type="button" title="Clic para copiar IP al portapapeles">
+              <span id="virtualIp">—</span>
+              <span class="ip-icon">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </span>
+            </button>
+          </div>
+          <small id="addressMode">Automática</small>
+        </div>
+        <div class="summary-item">
+          <label>Máscara de subred</label>
+          <strong class="mono" id="lanMaskSummary">255.255.255.0</strong>
+          <small id="lanMtuSummary">MTU: 1420</small>
+        </div>
+        <div class="summary-item">
+          <label>Conexiones de red</label>
+          <strong id="lanPeerCount">0</strong>
+          <small id="lanPeerCountSub">0 sesiones activas</small>
+        </div>
+        <div class="summary-item vpn-traffic-card">
+          <div class="vpn-traffic-heading"><label for="vpnTrafficRange">Tráfico acumulado</label>
+            <select id="vpnTrafficRange" class="vpn-traffic-range" aria-label="Intervalo del gráfico de tráfico"><option value="30">30 s</option><option value="60" selected>1 min</option><option value="300">5 min</option></select>
+          </div>
+          <svg id="vpnTrafficChart" class="vpn-traffic-chart" role="img" aria-label="Recogiendo muestras de tráfico RX y TX" preserveAspectRatio="none"></svg>
+          <strong id="lanTraffic">0 B</strong>
+          <small id="lanTrafficPackets">0 paquetes</small>
+          <div class="vpn-traffic-rates"><span class="vpn-traffic-rx">↓ Recepción <b id="vpnRxRate">—</b></span><span class="vpn-traffic-tx">↑ Envío <b id="vpnTxRate">—</b></span></div>
+        </div>
+      </section>
+
+      <!-- Configuration & Contactos Grid -->
+      <div class="split-2 vpn-layout">
+        <!-- Adapter Settings -->
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Configura tu red</h2>
+              <p>Ajustes del adaptador compartido por tus conexiones.</p>
+            </div>
+          </div>
+          <div class="section-body">
+            <p id="vpnConfigError" class="inline-help" role="status"></p>
+            <!-- Direct Activation Switch -->
+            <div class="service-row">
+              <div class="service">
+                <div>
+                  <strong>Activar red privada</strong>
+                  <span id="lanSwitchHint">Habilitar ahora y al abrir la aplicación</span>
+                </div>
+                <label class="switch" aria-label="Activar red privada">
+                  <input id="lanEnabled" type="checkbox" aria-label="Activar red privada">
+                  <span class="switch-track"></span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Auto Assign Toggle -->
+            <div class="field space-top vpn-auto-row">
+              <div>
+                <strong>IP automática</strong>
+                <small class="muted">Una dirección estable para este equipo.</small>
+              </div>
+              <label class="switch">
+                <input aria-label="Asignación automática de IP" id="lanAutoAssign" type="checkbox" checked>
+                <span class="switch-track"></span>
+              </label>
+            </div>
+
+            <div class="form-row space-top">
+              <div class="field">
+                <label for="lanIp">Dirección IPv4</label>
+                <input class="input mono" id="lanIp" placeholder="10.0.0.x" disabled>
+              </div>
+              <div class="field">
+                <label for="lanMask">Máscara de subred</label>
+                <input class="input mono" id="lanMask" value="255.255.255.0" disabled>
+              </div>
+            </div>
+
+            <div class="field space-top">
+              <label for="lanMtu">Tamaño máximo de paquete (MTU)</label>
+              <div class="vpn-mtu-row">
+                <input class="input mono" id="lanMtu" type="number" min="1200" max="9000" value="1420" placeholder="1420">
+                <button type="button" class="btn sm" id="resetMtuBtn" title="Restablecer a 1420">Restablecer</button>
+              </div>
+              <small class="muted">Recomendado: 1420 bytes. Rango permitido: 1200–9000.</small>
+            </div>
+
+            <div class="toolbar space-top">
+              <button class="btn primary" id="applyLanBtn">Guardar configuración</button>
+              <span class="muted" id="lanApplyStatus" role="status"></span>
+            </div>
+            <div class="inline-help space-top" id="lanError"></div>
+            <details class="vpn-details"><summary>Detalles de configuración</summary><p id="vpnConfigLocation" class="muted"></p></details>
+          </div>
+        </section>
+
+        <!-- Trusted Contactos for LAN -->
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Dispositivos y contactos</h2>
+              <p>Configura cómo se conecta cada equipo a tu red.</p>
+            </div>
+            <button class="btn sm ghost" id="connectAllBtn">Conectar todos</button>
+          </div>
+          <div class="section-body no-pad">
+            <p id="vpnConnectHint" class="vpn-connect-hint"></p>
+            <div id="vpnPeers" class="peer-list"></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Active Sessions -->
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>Conexiones de red activas</h2>
+            <p>Tráfico por contacto y pruebas de latencia de tu red privada.</p>
+          </div>
+        </div>
+        <div class="section-body no-pad">
+          <div class="table-wrap borderless">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Contacto</th>
+                  <th>IP Virtual</th>
+                  <th>Conectado desde</th>
+                  <th>Tráfico RX</th>
+                  <th>Tráfico TX</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="lanSessions"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>

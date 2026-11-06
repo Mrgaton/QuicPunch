@@ -28,9 +28,9 @@ public sealed class PortMappingCoordinator : IPortMapper
     public PortMappingResult? LastResult => _lastResult;
     public UpnpPortMapper UpnpMapper => _upnp;
 
-    public PortMappingCoordinator(IPAddress? gatewayAddress = null)
+    public PortMappingCoordinator(IPAddress? gatewayAddress = null, IPAddress? localClientAddress = null)
     {
-        _pcp = new PcpPortMapper(gatewayAddress);
+        _pcp = new PcpPortMapper(gatewayAddress, localClientAddress);
         _natPmp = new NatPmpPortMapper(gatewayAddress);
         _upnp = new UpnpPortMapper();
     }
@@ -45,69 +45,136 @@ public sealed class PortMappingCoordinator : IPortMapper
         if (Volatile.Read(ref _disposed) != 0)
             return PortMappingResult.Failed(ProtocolName, "Coordinator is disposed.");
 
-        // 1. Try PCP (RFC 6887) - Fastest, modern standard
-        try
-        {
-            using var pcpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            pcpCts.CancelAfter(TimeSpan.FromMilliseconds(500));
+        ct.ThrowIfCancellationRequested();
 
-            var pcpResult = await _pcp.TryMapPortAsync(internalPort, requestedExternalPort, protocol, lifetime, pcpCts.Token).ConfigureAwait(false);
-            if (pcpResult.Success)
+        int preferredExternalPort = requestedExternalPort;
+        IPortMapper? failedRenewalMapper = null;
+        PortMappingResult? lastFailure = null;
+
+        // Renew the protocol that granted the lease first. If renewal fails, do not get
+        // stuck on that mapper forever: fall through to the other gateway protocols.
+        if (_activeMapper is { } activeMapper &&
+            _lastResult is { Success: true } previous &&
+            previous.InternalPort == internalPort)
+        {
+            preferredExternalPort = previous.ExternalPort;
+            try
             {
-                _activeMapper = _pcp;
-                _lastResult = pcpResult;
-                QuicPunchLog.Info($"[PORT-MAP] Successfully mapped port via {_pcp.ProtocolName}: external {pcpResult.ExternalPort} -> internal {internalPort}");
-                return pcpResult;
+                var renewed = await activeMapper
+                    .TryMapPortAsync(internalPort, preferredExternalPort, protocol, lifetime, ct)
+                    .ConfigureAwait(false);
+                if (renewed.Success)
+                {
+                    _lastResult = renewed;
+                    return renewed;
+                }
+
+                failedRenewalMapper = activeMapper;
+                lastFailure = renewed;
+                _activeMapper = null;
+                _lastResult = renewed;
+                QuicPunchLog.Info($"[PORT-MAP] Renewal via {activeMapper.ProtocolName} failed; trying fallback protocols. {renewed.ErrorMessage}");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                failedRenewalMapper = activeMapper;
+                lastFailure = PortMappingResult.Failed(activeMapper.ProtocolName, $"Renewal failed: {ex.Message}");
+                _activeMapper = null;
+                _lastResult = lastFailure;
+                QuicPunchLog.Info($"[PORT-MAP] Renewal via {activeMapper.ProtocolName} threw; trying fallback protocols. {ex.Message}");
             }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
-        catch (Exception ex)
-        {
-            QuicPunchLog.Info($"[PORT-MAP] PCP attempt notice: {ex.Message}");
-        }
 
-        // 2. Try NAT-PMP (RFC 6886) - Fast binary protocol on port 5351
-        try
+        // 1. Try PCP (RFC 6887) - Fastest, modern standard.
+        if (!ReferenceEquals(failedRenewalMapper, _pcp))
         {
-            using var natPmpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            natPmpCts.CancelAfter(TimeSpan.FromMilliseconds(500));
-
-            var natPmpResult = await _natPmp.TryMapPortAsync(internalPort, requestedExternalPort, protocol, lifetime, natPmpCts.Token).ConfigureAwait(false);
-            if (natPmpResult.Success)
+            try
             {
-                _activeMapper = _natPmp;
-                _lastResult = natPmpResult;
-                QuicPunchLog.Info($"[PORT-MAP] Successfully mapped port via {_natPmp.ProtocolName}: external {natPmpResult.ExternalPort} -> internal {internalPort}");
-                return natPmpResult;
+                using var pcpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pcpCts.CancelAfter(TimeSpan.FromMilliseconds(500));
+
+                var pcpResult = await _pcp.TryMapPortAsync(internalPort, preferredExternalPort, protocol, lifetime, pcpCts.Token).ConfigureAwait(false);
+                if (pcpResult.Success)
+                {
+                    _activeMapper = _pcp;
+                    _lastResult = pcpResult;
+                    QuicPunchLog.Info($"[PORT-MAP] Successfully mapped port via {_pcp.ProtocolName}: external {pcpResult.ExternalPort} -> internal {internalPort}");
+                    return pcpResult;
+                }
+                lastFailure = pcpResult;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                lastFailure = PortMappingResult.Failed(_pcp.ProtocolName, "PCP attempt timed out.");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                lastFailure = PortMappingResult.Failed(_pcp.ProtocolName, ex.Message);
+                QuicPunchLog.Info($"[PORT-MAP] PCP attempt notice: {ex.Message}");
             }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
-        catch (Exception ex)
-        {
-            QuicPunchLog.Info($"[PORT-MAP] NAT-PMP attempt notice: {ex.Message}");
-        }
 
-        // 3. Fall back to UPnP IGD (SSDP discovery + XML/SOAP control)
-        try
+        // 2. Try NAT-PMP (RFC 6886) - Fast binary protocol on port 5351.
+        if (!ReferenceEquals(failedRenewalMapper, _natPmp))
         {
-            var upnpResult = await _upnp.TryMapPortAsync(internalPort, requestedExternalPort, protocol, lifetime, ct).ConfigureAwait(false);
-            if (upnpResult.Success)
+            try
             {
-                _activeMapper = _upnp;
-                _lastResult = upnpResult;
-                QuicPunchLog.Info($"[PORT-MAP] Successfully mapped port via {_upnp.ProtocolName}: external {upnpResult.ExternalPort} -> internal {internalPort}");
-                return upnpResult;
-            }
+                using var natPmpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                natPmpCts.CancelAfter(TimeSpan.FromMilliseconds(500));
 
-            _lastResult = upnpResult;
-            return upnpResult;
+                var natPmpResult = await _natPmp.TryMapPortAsync(internalPort, preferredExternalPort, protocol, lifetime, natPmpCts.Token).ConfigureAwait(false);
+                if (natPmpResult.Success)
+                {
+                    _activeMapper = _natPmp;
+                    _lastResult = natPmpResult;
+                    QuicPunchLog.Info($"[PORT-MAP] Successfully mapped port via {_natPmp.ProtocolName}: external {natPmpResult.ExternalPort} -> internal {internalPort}");
+                    return natPmpResult;
+                }
+                lastFailure = natPmpResult;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                lastFailure = PortMappingResult.Failed(_natPmp.ProtocolName, "NAT-PMP attempt timed out.");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                lastFailure = PortMappingResult.Failed(_natPmp.ProtocolName, ex.Message);
+                QuicPunchLog.Info($"[PORT-MAP] NAT-PMP attempt notice: {ex.Message}");
+            }
         }
-        catch (Exception ex)
+
+        // 3. Fall back to UPnP IGD (SSDP discovery + XML/SOAP control).
+        if (!ReferenceEquals(failedRenewalMapper, _upnp))
         {
-            var failedResult = PortMappingResult.Failed(ProtocolName, $"All port mapping providers failed. Last UPnP error: {ex.Message}");
-            _lastResult = failedResult;
-            return failedResult;
+            try
+            {
+                var upnpResult = await _upnp.TryMapPortAsync(internalPort, preferredExternalPort, protocol, lifetime, ct).ConfigureAwait(false);
+                if (upnpResult.Success)
+                {
+                    _activeMapper = _upnp;
+                    _lastResult = upnpResult;
+                    QuicPunchLog.Info($"[PORT-MAP] Successfully mapped port via {_upnp.ProtocolName}: external {upnpResult.ExternalPort} -> internal {internalPort}");
+                    return upnpResult;
+                }
+                lastFailure = upnpResult;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                lastFailure = PortMappingResult.Failed(_upnp.ProtocolName, ex.Message);
+                QuicPunchLog.Info($"[PORT-MAP] UPnP attempt notice: {ex.Message}");
+            }
         }
+
+        _activeMapper = null;
+        _lastResult = lastFailure ?? PortMappingResult.Failed(ProtocolName, "All port mapping providers failed.");
+        return _lastResult;
     }
 
     public async Task<bool> TryUnmapPortAsync(

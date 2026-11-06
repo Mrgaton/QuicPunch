@@ -86,7 +86,7 @@ public sealed class TorControlClient : IAsyncDisposable
             {
                 return await ExecuteCoreAsync(command, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
+            catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
             {
                 // A control connection can disappear during Tor shutdown/restart.
                 ResetConnection();

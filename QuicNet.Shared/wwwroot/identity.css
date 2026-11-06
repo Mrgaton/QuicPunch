@@ -1,0 +1,204 @@
+.ci {
+  --ci-hue: 155;
+  --ci-saturation: 28%;
+  --ci-accent: light-dark(hsl(var(--ci-hue) var(--ci-saturation) 36%), hsl(var(--ci-hue) var(--ci-saturation) 67%));
+  --ci-surface: var(--surface);
+  --ci-ink: var(--text-strong);
+  --ci-line: var(--line);
+  --ci-radius: 12px;
+  --ci-outer-clip: inset(0 round var(--ci-radius));
+  --ci-inner-clip: inset(0 round calc(var(--ci-radius) - 1px));
+  --ci-height: 44px;
+  --ci-avatar-size: 28px;
+  --ci-text-size: 13px;
+  --ci-gap: 9px;
+  --ci-pad: 7px;
+  --ci-tint: 6%;
+  --ci-pattern-alpha: .20;
+  --ci-tile: 8px 8px;
+  --ci-pattern: repeating-linear-gradient(125deg, transparent 0 5px, var(--ci-accent) 5px 6px, transparent 6px 9px);
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  padding: 1px;
+  max-width: 100%;
+  min-width: 0;
+  border-radius: var(--ci-radius);
+  vertical-align: middle;
+  font: 600 var(--ci-text-size)/1.25 "Segoe UI", system-ui, sans-serif;
+  color: var(--ci-ink);
+  text-decoration: none;
+}
+.ci::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  clip-path: var(--ci-outer-clip);
+  background: linear-gradient(115deg,
+    color-mix(in srgb, var(--ci-accent) 55%, var(--ci-line)),
+    var(--ci-line) 37%,
+    color-mix(in srgb, var(--ci-accent) 22%, var(--ci-line)) 75%,
+    color-mix(in srgb, var(--ci-accent) 65%, var(--ci-line)));
+}
+.ci > .ci-body {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  gap: var(--ci-gap);
+  min-height: calc(var(--ci-height) - 2px);
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+  padding: calc(var(--ci-pad) - 1px) 23px calc(var(--ci-pad) - 1px) calc(var(--ci-pad) - 1px);
+  background: color-mix(in srgb, var(--ci-accent) var(--ci-tint), var(--ci-surface));
+  clip-path: var(--ci-inner-clip);
+}
+.ci-body::before,
+.ci-body::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--ci-pattern);
+  background-size: var(--ci-tile);
+}
+.ci-body::before {
+  inset: 0;
+  opacity: var(--ci-pattern-alpha);
+  mask-image: linear-gradient(90deg, #000, #0003 24%, #0002 65%, #000);
+}
+.ci-body::after {
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 11px;
+  opacity: .48;
+  mask-image: linear-gradient(90deg, transparent, #000);
+}
+.ci-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 var(--ci-avatar-size);
+  width: var(--ci-avatar-size);
+  height: var(--ci-avatar-size);
+  overflow: hidden;
+  border-radius: 7px;
+  background: light-dark(#e4eeea, #354642);
+  background: color-mix(in srgb, var(--ci-accent) 16%, var(--ci-surface));
+  color: var(--ci-ink);
+  font: 600 11px/1 "Segoe UI", system-ui, sans-serif;
+  letter-spacing: -.2px;
+}
+.ci-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ci-name { min-width: 0; overflow-wrap: anywhere; }
+
+/* Edge geometry. The diagonal border is made from two nested silhouettes,
+   so there are no missing strokes at the cut corners. */
+.ci[data-edge="cut"] {
+  --ci-radius: 4px;
+  --ci-outer-clip: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  --ci-inner-clip: polygon(0 0, calc(100% - 7.4px) 0, 100% 7.4px, 100% 100%, 7.4px 100%, 0 calc(100% - 7.4px));
+}
+.ci[data-edge="soft"] {
+  --ci-radius: 16px;
+  --ci-outer-clip: inset(0 round 16px 7px 16px 7px);
+  --ci-inner-clip: inset(0 round 15px 6px 15px 6px);
+}
+
+/* Texture is independent of the certificate-derived hue and edge. */
+
+.ci[data-pattern="orbita"] {
+  --ci-pattern: repeating-radial-gradient(circle at 0 100%, transparent 0 5px, var(--ci-accent) 5px 6px, transparent 6px 10px);
+  --ci-tile: 27px 27px;
+}
+.ci[data-pattern="trama"] {
+  --ci-pattern: linear-gradient(45deg, transparent 46%, var(--ci-accent) 47% 53%, transparent 54%), linear-gradient(-45deg, transparent 46%, var(--ci-accent) 47% 53%, transparent 54%);
+  --ci-tile: 11px 11px;
+}
+.ci[data-pattern="pulso"] {
+  --ci-pattern: radial-gradient(ellipse at center, var(--ci-accent) 0 1px, transparent 1.4px);
+  --ci-tile: 6px 7px;
+}
+.ci[data-pattern="estrato"] {
+  --ci-pattern: repeating-linear-gradient(0deg, transparent 0 3px, var(--ci-accent) 3px 4px, transparent 4px 8px);
+  --ci-tile: 8px 8px;
+}
+.ci[data-pattern="mosaico"] {
+  --ci-pattern: linear-gradient(90deg, var(--ci-accent) 1px, transparent 1px), linear-gradient(0deg, var(--ci-accent) 1px, transparent 1px);
+  --ci-tile: 8px 8px;
+}
+
+/* Optical sizing: the border and texture pitch stay at 1:1, rather than scaling
+   the component as an image. The avatar and spacing change independently. */
+.ci[data-size="compact"] {
+  --ci-height: 30px;
+  --ci-avatar-size: 20px;
+  --ci-text-size: 12px;
+  --ci-gap: 6px;
+  --ci-pad: 4px;
+  --ci-radius: 9px;
+}
+.ci[data-size="compact"] .ci-avatar { border-radius: 5px; font-size: 9px; }
+.ci[data-size="compact"] .ci-body { padding-right: 18px; }
+.ci[data-size="large"] {
+  --ci-height: 54px;
+  --ci-avatar-size: 36px;
+  --ci-text-size: 14px;
+  --ci-gap: 11px;
+  --ci-pad: 8px;
+}
+.ci[data-size="large"] .ci-avatar { border-radius: 9px; font-size: 12px; }
+@media (forced-colors: active) {
+  .ci { border: 1px solid CanvasText; }
+  .ci::before, .ci-body::before, .ci-body::after { display: none; }
+  .ci > .ci-body { background: Canvas; color: CanvasText; clip-path: none; }
+}
+
+/* A capsule is a button only when it opens identity details; list selection
+   buttons contain a static capsule, never another interactive control. */
+.ci.identity-mark { appearance:none; border:0; background:transparent; text-align:left; cursor:pointer; box-shadow:none; min-height:0; white-space:normal; }
+.ci.identity-mark:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.ci.identity-mark:hover { filter:brightness(1.08); }
+.ci.identity-mark:disabled { cursor:default; opacity:1; }
+@media (forced-colors:active) { .ci.identity-mark { border:1px solid CanvasText; } }
+.ci[data-identity-state=pending] { --ci-accent:var(--muted); --ci-tint:0%; }
+.ci[data-identity-state=pending] .ci-body::before,.ci[data-identity-state=pending] .ci-body::after { display:none; }
+.ci .ci-name,.home-workspace .contact-list .contact-card-name .ci .ci-name { display:block; font:600 var(--ci-text-size)/1.25 'Segoe UI',system-ui,sans-serif; color:var(--ci-ink); white-space:normal; overflow-wrap:anywhere; text-align:left; }
+.ci .ci-avatar { display:grid; margin:0; color:var(--ci-ink); font:600 11px/1 'Segoe UI',system-ui,sans-serif; }
+.ci[data-size=compact] .ci-avatar { font-size:9px; }
+.ci[data-size=large] .ci-avatar { font-size:12px; }
+.contact-identity { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.identity-transport { font-size:11px; color:var(--muted); }
+.conversation-identity .ci .ci-body { font-size:var(--ci-text-size); }
+#chatIdentity { min-width:0; max-width:100%; }
+#chatPeerMeta { display:block; margin-top:5px; }
+.dm-peer-copy { min-width:0; width:100%; }
+.dm-peer-meta { display:flex; align-items:center; gap:5px; }
+.dm-peer-title-line { flex-wrap:wrap; }
+.dm-peer-name:has(.ci) { overflow:visible; white-space:normal; min-width:0; }
+.message-row.has-identity .message-body { max-width:min(100%,680px); }
+.message-grouped .ci.message-author { display:none; }
+.incoming-call-banner .incoming-call-info { min-width:0; flex:1 1 240px; }
+.incoming-call-actions { flex-wrap:wrap; max-width:100%; }
+.incoming-call-info .incoming-call-sub { display:block; margin-top:6px; }
+.incoming-call-banner:has(.ci) { flex-wrap:wrap; }
+#incomingCallIdentity { max-width:100%; }
+#view-voice .voice-contact-copy .ci { align-self:flex-start; }
+#view-voice .voice-contact-copy .ci .ci-name { font:600 var(--ci-text-size)/1.25 'Segoe UI',system-ui,sans-serif; white-space:normal; color:var(--ci-ink); }
+@media (pointer:coarse) { .ci.identity-mark[data-size=compact] { min-height:44px; } }
+.identity-dialog{width:min(540px,calc(100vw - 32px));overflow-wrap:anywhere}
+.identity-dialog-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:8px}
+.identity-dialog-header h2{font-size:20px;line-height:1.35;margin:0}
+.identity-preview{display:flex;align-items:center;justify-content:center;min-height:88px;margin:12px 0 16px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:var(--muted);font-size:13px}
+.identity-explanation{font-size:13px;line-height:1.6;color:var(--muted)}
+.identity-fingerprint-label{font-size:13px;margin:20px 0 8px}
+.identity-fingerprint{display:block;padding:14px;border:1px solid var(--line);border-radius:7px;background:var(--surface-2);font-size:12px;line-height:1.9;word-spacing:3px;overflow-wrap:anywhere;user-select:all}
+.identity-copy{margin-top:12px}
+.identity-name-warning{padding:10px 12px;border:1px solid var(--warn-border);border-radius:7px;background:var(--warn-soft);color:var(--warn);font-size:13px;line-height:1.5}
+@media(max-width:420px){.identity-dialog{padding:18px}}

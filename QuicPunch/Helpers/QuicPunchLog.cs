@@ -73,7 +73,7 @@ namespace QuicPunch
         {
             if (EnableErrorLogging || EnableLogging)
             {
-                string text = ex != null ? $"{message}: {ex.GetType().Name}: {ex.Message}" : message;
+                string text = ex != null ? $"{message}: {ex}" : message;
                 string formatted = $"[{DateTime.Now:HH:mm:ss.fff}] [ERROR] {text}";
 
                 if (ErrorHandler != null)

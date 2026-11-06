@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -17,16 +17,17 @@ namespace QuicPunch.Helpers;
 /// </summary>
 public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
 {
+    private const uint QuicNetParamConnCallbackHandler = 0x0500FF51;
     private const uint QuicParamConfigSettings = 0x03000000;
     private const uint QuicParamConnDatagramReceiveEnabled = 0x0500000D;
     private const uint QuicParamConnDatagramSendEnabled = 0x0500000E;
-    private const uint QuicParamConnDatagramMaxLength = 0x0500000F;
     private const uint QuicParamConnSettings = 0x05000004;
+    private const uint QuicSendFlagDgramPriority = 0x0008;
 
     private const int EventDatagramReceived = 11;
     private const int EventDatagramStateChanged = 10;
     private const int EventDatagramSendStateChanged = 12;
-    private const int EventPeerAddressChanged = 14;
+    private const int EventPeerAddressChanged = 5;
 
     private const int StatusSuccess = 0;
     private const int StatusPendingLinux = -2; // QUIC_STATUS_PENDING on POSIX/Linux (0xFFFFFFFE)
@@ -67,6 +68,9 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
     private static SetCallbackDelegate? SetCallback;
 
     private static readonly ConcurrentDictionary<IntPtr, MsQuicDatagramChannel> ActiveChannels = new();
+    // Retain forwarding after channel disposal until SHUTDOWN_COMPLETE. The native
+    // connection still owns stream shutdown and datagram send-completion callbacks.
+    private static readonly ConcurrentDictionary<IntPtr, IntPtr> OriginalCallbacks = new();
     private static readonly object ConfigPatchLock = new();
     private static bool s_isConfigPatched;
     public static bool IsConfigurationCachePatched => s_isConfigPatched;
@@ -79,7 +83,6 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
         {
             EnsureInitialized();
             return HandleField != null &&
-                   OriginalNativeCallbackPtr != IntPtr.Zero &&
                    SetParam != null &&
                    GetParam != null &&
                    DatagramSend != null &&
@@ -112,7 +115,10 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
                 NativeCallbackMethod = qcType.GetMethod("NativeCallback", BindingFlags.NonPublic | BindingFlags.Static);
                 if (NativeCallbackMethod != null)
                 {
-                    OriginalNativeCallbackPtr = NativeCallbackMethod.MethodHandle.GetFunctionPointer();
+                    // JIT fallback for system MsQuic builds without our private query.
+                    // Native AOT uses the already installed callback from native code.
+                    if (RuntimeFeature.IsDynamicCodeSupported)
+                        OriginalNativeCallbackPtr = NativeCallbackMethod.MethodHandle.GetFunctionPointer();
                 }
 
                 var apiType = asm.GetType("System.Net.Quic.MsQuicApi");
@@ -246,7 +252,7 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
         }
         catch (Exception ex)
         {
-            QuicPunchLog.Error("[EnsureClientConfig] Exception", ex);
+            QuicPunchLog.Error("[EnsureClientConfig] Exception", ex.GetBaseException());
         }
         return false;
     }
@@ -292,7 +298,7 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
         }
         catch (Exception ex)
         {
-            QuicPunchLog.Error("[EnsureServerConfig] Exception", ex);
+            QuicPunchLog.Error("[EnsureServerConfig] Exception", ex.GetBaseException());
         }
         return false;
     }
@@ -312,7 +318,8 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
                     {
                         if (entry.Value is SafeHandle sh && !sh.IsInvalid)
                         {
-                            IntPtr hConfig = sh.DangerousGetHandle();
+                            using var lease = new NativeHandleLease(sh);
+                            IntPtr hConfig = lease.Handle;
                             unsafe
                             {
                                 fixed (byte* p = cfgSettings)
@@ -342,51 +349,39 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
             using var pfxCert = CertManager.GenerateIdentityCertificate("warmup", ecdh);
 
             var alpn = customProtocols ?? QuicPunchConnection.SupportedProtocols;
-            var listenerTask = System.Net.Quic.QuicListener.ListenAsync(new System.Net.Quic.QuicListenerOptions
-            {
-                ListenEndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0),
-                ApplicationProtocols = alpn,
-                ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(new System.Net.Quic.QuicServerConnectionOptions
-                {
-                    DefaultStreamErrorCode = 0,
-                    DefaultCloseErrorCode = 0,
-                    ServerAuthenticationOptions = new System.Net.Security.SslServerAuthenticationOptions
-                    {
-                        ServerCertificate = pfxCert,
-                        ApplicationProtocols = alpn,
-                        ClientCertificateRequired = true,
-                        RemoteCertificateValidationCallback = delegate { return true; }
-                    }
-                })
-            }).AsTask();
 
-            var listener = listenerTask.GetAwaiter().GetResult();
-            try
+            var clientOpts = new global::System.Net.Quic.QuicClientConnectionOptions
             {
-                var serverTask = listener.AcceptConnectionAsync().AsTask();
-                var clientConnTask = System.Net.Quic.QuicConnection.ConnectAsync(new System.Net.Quic.QuicClientConnectionOptions
+                DefaultStreamErrorCode = 0,
+                DefaultCloseErrorCode = 0,
+                ClientAuthenticationOptions = new System.Net.Security.SslClientAuthenticationOptions
                 {
-                    RemoteEndPoint = listener.LocalEndPoint,
-                    DefaultStreamErrorCode = 0,
-                    DefaultCloseErrorCode = 0,
-                    ClientAuthenticationOptions = new System.Net.Security.SslClientAuthenticationOptions
-                    {
-                        ApplicationProtocols = alpn,
-                        ClientCertificates = new System.Security.Cryptography.X509Certificates.X509Certificate2Collection(pfxCert),
-                        RemoteCertificateValidationCallback = delegate { return true; }
-                    }
-                }).AsTask();
+                    TargetHost = "localhost",
+                    ApplicationProtocols = alpn,
+                    ClientCertificates = new System.Security.Cryptography.X509Certificates.X509Certificate2Collection(pfxCert),
+                    RemoteCertificateValidationCallback = delegate { return true; }
+                }
+            };
+            EnsureClientConfigurationPatched(clientOpts);
 
-                Task.WaitAll([serverTask, clientConnTask], 2000);
-                try { clientConnTask.Result.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
-                try { serverTask.Result.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
-            }
-            finally
+            var serverOpts = new global::System.Net.Quic.QuicServerConnectionOptions
             {
-                try { listener.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
-            }
+                DefaultStreamErrorCode = 0,
+                DefaultCloseErrorCode = 0,
+                ServerAuthenticationOptions = new System.Net.Security.SslServerAuthenticationOptions
+                {
+                    ServerCertificate = pfxCert,
+                    ApplicationProtocols = alpn,
+                    ClientCertificateRequired = true,
+                    RemoteCertificateValidationCallback = delegate { return true; }
+                }
+            };
+            EnsureServerConfigurationPatched(serverOpts, string.Empty);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            QuicPunchLog.Info($"[MsQuicDatagram] WarmUpCache warning: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -398,6 +393,7 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
         if (SetParam == null || configHandle.IsInvalid) return false;
         try
         {
+            using var lease = new NativeHandleLease(configHandle);
             byte[] cfgSettings = new byte[144];
             ulong isSetFlags = (1UL << 27) | (1UL << 26) | (1UL << 23) | (1UL << 22);
             BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(0, 8), isSetFlags);
@@ -409,8 +405,8 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
             {
                 fixed (byte* p = cfgSettings)
                 {
-                    int res = SetParam(configHandle.DangerousGetHandle(), QuicParamConfigSettings, 144, (IntPtr)p);
-                    return res == StatusSuccess;
+                    int res = SetParam(lease.Handle, QuicParamConfigSettings, 144, (IntPtr)p);
+                    return res == StatusSuccess && MsQuicTuner.TryApplyOptimalConfiguration(configHandle);
                 }
             }
         }
@@ -424,7 +420,8 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
     public IntPtr OriginalContext { get; }
     public bool IsSendEnabled { get; private set; }
     public bool IsReceiveEnabled { get; private set; }
-    public ushort MaxSendDatagramLength { get; private set; } = 1420;
+    // Conservative payload budget until DATAGRAM_STATE_CHANGED supplies the negotiated limit.
+    public ushort MaxSendDatagramLength { get; private set; } = 1150;
 
     public Channel<byte[]> IncomingDatagrams { get; } = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1024)
     {
@@ -437,10 +434,13 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
     public event Action<System.Net.IPEndPoint>? OnPeerAddressChanged;
 
     private int _disposed;
+    private readonly SafeHandle _safeHandle;
+    private static readonly object AttachmentGate = new();
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
-    private MsQuicDatagramChannel(IntPtr hConn, IntPtr origContext)
+    private MsQuicDatagramChannel(IntPtr hConn, IntPtr origContext, SafeHandle safeHandle)
     {
+        _safeHandle = safeHandle;
         ConnectionHandle = hConn;
         OriginalContext = origContext;
         RefreshStatus();
@@ -459,6 +459,12 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
         if (HandleField?.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
             throw new ArgumentException("Invalid QuicConnection native handle.", nameof(connection));
 
+        lock (AttachmentGate)
+        {
+        bool held = false;
+        try
+        {
+        safeHandle.DangerousAddRef(ref held);
         IntPtr hConn = safeHandle.DangerousGetHandle();
         if (ActiveChannels.TryGetValue(hConn, out var existing) && existing != null && !existing.IsDisposed)
         {
@@ -476,7 +482,21 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
             origContext = GetContext(hConn);
         }
 
-        var channel = new MsQuicDatagramChannel(hConn, origContext);
+        if (!OriginalCallbacks.TryGetValue(hConn, out var originalCallback))
+        {
+            unsafe
+            {
+                IntPtr installed = IntPtr.Zero;
+                uint length = (uint)IntPtr.Size;
+                int status = GetParam!(hConn, QuicNetParamConnCallbackHandler, (IntPtr)(&length), (IntPtr)(&installed));
+                originalCallback = status == StatusSuccess ? installed : OriginalNativeCallbackPtr;
+            }
+            if (originalCallback == IntPtr.Zero)
+                throw new NotSupportedException("Native MsQuic callback query is required by the AOT datagram bridge.");
+            OriginalCallbacks[hConn] = originalCallback;
+        }
+
+        var channel = new MsQuicDatagramChannel(hConn, origContext, safeHandle);
         ActiveChannels[hConn] = channel;
 
         unsafe
@@ -487,6 +507,9 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
 
         channel.RefreshStatus();
         return channel;
+        }
+        finally { if (held) safeHandle.DangerousRelease(); }
+        }
     }
 
     /// <summary>
@@ -494,7 +517,11 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
     /// </summary>
     public void RefreshStatus()
     {
-        if (GetParam == null) return;
+        if (GetParam == null || IsDisposed || _safeHandle.IsClosed) return;
+        bool held = false;
+        try
+        {
+        _safeHandle.DangerousAddRef(ref held);
         unsafe
         {
             byte recv = 0;
@@ -511,22 +538,16 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
                 IsSendEnabled = send != 0;
             }
 
-            ushort maxLen = 0;
-            uint lenMax = sizeof(ushort);
-            if (GetParam(ConnectionHandle, QuicParamConnDatagramMaxLength, (IntPtr)(&lenMax), (IntPtr)(&maxLen)) == 0 && maxLen > 0)
-            {
-                MaxSendDatagramLength = maxLen;
-            }
         }
+        }
+        catch (ObjectDisposedException) { }
+        finally { if (held) _safeHandle.DangerousRelease(); }
     }
 
-    private struct NativeSendPair
-    {
-        public IntPtr QuicBufferPtr;
-        public IntPtr DataBufferPtr;
-    }
-
-    private static readonly ConcurrentDictionary<long, NativeSendPair> PendingSendBuffers = new();
+    // One allocation contains both QUIC_BUFFER and its payload. MsQuic owns
+    // their lifetime until the send callback (which may run synchronously).
+    private static readonly ConcurrentDictionary<long, IntPtr> PendingSendBuffers = new();
+    internal static int PendingSendBufferCount => PendingSendBuffers.Count;
     private static long s_nextSendId = 1;
 
     /// <summary>
@@ -536,7 +557,7 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
     /// </summary>
     public bool Send(ReadOnlySpan<byte> datagram)
     {
-        if (_disposed != 0 || DatagramSend == null) return false;
+        if (_disposed != 0 || DatagramSend == null || datagram.Length > MaxSendDatagramLength) return false;
 
         if (!IsSendEnabled)
         {
@@ -547,47 +568,76 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
             }
         }
 
+        bool held = false;
+        try
+        {
+        _safeHandle.DangerousAddRef(ref held);
         unsafe
         {
             long id = Interlocked.Increment(ref s_nextSendId);
 
-            IntPtr dataPtr = Marshal.AllocHGlobal(datagram.Length);
-            datagram.CopyTo(new Span<byte>((void*)dataPtr, datagram.Length));
-
-            // Allocate native memory for the QuicBuffer struct so it survives stack unwinding
-            IntPtr qbPtr = Marshal.AllocHGlobal(sizeof(QuicBuffer));
-            QuicBuffer* pQb = (QuicBuffer*)qbPtr;
-            pQb->Length = (uint)datagram.Length;
-            pQb->Buffer = dataPtr;
-
-            PendingSendBuffers[id] = new NativeSendPair
+            IntPtr qbPtr = Marshal.AllocHGlobal(checked(sizeof(QuicBuffer) + datagram.Length));
+            try
             {
-                QuicBufferPtr = qbPtr,
-                DataBufferPtr = dataPtr
-            };
+                QuicBuffer* pQb = (QuicBuffer*)qbPtr;
+                pQb->Length = (uint)datagram.Length;
+                pQb->Buffer = qbPtr + sizeof(QuicBuffer);
+                datagram.CopyTo(new Span<byte>((void*)pQb->Buffer, datagram.Length));
+                PendingSendBuffers[id] = qbPtr;
+            }
+            catch
+            {
+                Marshal.FreeHGlobal(qbPtr);
+                throw;
+            }
 
-            int res = DatagramSend(ConnectionHandle, qbPtr, 1, 0, (IntPtr)id);
+            int res;
+            try { res = DatagramSend(ConnectionHandle, qbPtr, 1, QuicSendFlagDgramPriority, (IntPtr)id); }
+            catch
+            {
+                ReleaseSendBuffer(id);
+                throw;
+            }
             if (!IsSuccessOrPending(res))
             {
                 QuicPunchLog.Info($"[MsQuicDatagram] Send returned status 0x{res:X}");
-                if (PendingSendBuffers.TryRemove(id, out var pair))
-                {
-                    Marshal.FreeHGlobal(pair.DataBufferPtr);
-                    Marshal.FreeHGlobal(pair.QuicBufferPtr);
-                }
+                ReleaseSendBuffer(id);
                 return false;
             }
 
             return true;
         }
+        }
+        catch (ObjectDisposedException) { return false; }
+        finally { if (held) _safeHandle.DangerousRelease(); }
+    }
+
+    private static void ReleaseSendBuffer(long id)
+    {
+        if (PendingSendBuffers.TryRemove(id, out var buffer))
+            Marshal.FreeHGlobal(buffer);
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static unsafe int NativeHookedCallback(IntPtr connection, IntPtr context, IntPtr connectionEventPtr)
     {
+        int eventType = Marshal.ReadInt32(connectionEventPtr, 0);
+        IntPtr originalCallback = OriginalCallbacks.TryGetValue(connection, out var callback) ? callback : OriginalNativeCallbackPtr;
         try
         {
-            int eventType = Marshal.ReadInt32(connectionEventPtr, 0);
+            // Keep the native close reason before System.Net.Quic translates it
+            // into a generic stream error. Never let an observer block forwarding.
+            if (eventType == 1 || eventType == 2)
+            {
+                try
+                {
+                    string reason = eventType == 1
+                        ? $"transport status=0x{unchecked((uint)Marshal.ReadInt32(connectionEventPtr, 8)):X8}, error=0x{Marshal.ReadInt64(connectionEventPtr, 16):X}"
+                        : $"peer application error=0x{Marshal.ReadInt64(connectionEventPtr, 8):X}";
+                    QuicPunchLog.Info($"[QUIC SHUTDOWN] Connection 0x{connection.ToInt64():X}: {reason}");
+                }
+                catch { }
+            }
 
             // QUIC_CONNECTION_EVENT_TYPE:
             // 10: DATAGRAM_STATE_CHANGED
@@ -618,7 +668,8 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
             {
                 if (ActiveChannels.TryGetValue(connection, out var channel) && channel != null)
                 {
-                    channel.RefreshStatus();
+                    channel.IsSendEnabled = Marshal.ReadByte(connectionEventPtr, 8) != 0;
+                    channel.MaxSendDatagramLength = (ushort)Marshal.ReadInt16(connectionEventPtr, 10);
                 }
                 return StatusSuccess;
             }
@@ -626,11 +677,7 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
             if (eventType == EventDatagramSendStateChanged)
             {
                 long id = Marshal.ReadInt64(connectionEventPtr, 8);
-                if (PendingSendBuffers.TryRemove(id, out var pair))
-                {
-                    Marshal.FreeHGlobal(pair.DataBufferPtr);
-                    Marshal.FreeHGlobal(pair.QuicBufferPtr);
-                }
+                ReleaseSendBuffer(id);
                 return StatusSuccess;
             }
 
@@ -649,17 +696,17 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
                     }
                 }
                 // Forward peer address changes to System.Net.Quic so its internal remote endpoint updates
-                if (OriginalNativeCallbackPtr != IntPtr.Zero)
+                if (originalCallback != IntPtr.Zero)
                 {
-                    var orig = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)OriginalNativeCallbackPtr;
+                    var orig = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)originalCallback;
                     return orig(connection, context, connectionEventPtr);
                 }
                 return StatusSuccess;
             }
 
-            if (OriginalNativeCallbackPtr != IntPtr.Zero)
+            if (originalCallback != IntPtr.Zero)
             {
-                var orig = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)OriginalNativeCallbackPtr;
+                var orig = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, int>)originalCallback;
                 return orig(connection, context, connectionEventPtr);
             }
 
@@ -670,6 +717,11 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
             QuicPunchLog.Info($"[MsQuicDatagram] Callback error: {ex.Message}");
             return StatusSuccess;
         }
+        finally
+        {
+            if (eventType == 3) // QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE
+                OriginalCallbacks.TryRemove(connection, out _);
+        }
     }
 
     public void Dispose()
@@ -678,15 +730,8 @@ public sealed class MsQuicDatagramChannel : IQuicDatagramChannel
 
         ActiveChannels.TryRemove(ConnectionHandle, out _);
 
-        if (SetCallback != null && OriginalNativeCallbackPtr != IntPtr.Zero)
-        {
-            try
-            {
-                SetCallback(ConnectionHandle, OriginalNativeCallbackPtr, OriginalContext);
-            }
-            catch { }
-        }
-
+        // Keep the forwarding callback installed until native shutdown: outstanding
+        // DATAGRAM_SEND_STATE_CHANGED events still own unmanaged send buffers.
         IncomingDatagrams.Writer.TryComplete();
     }
 }

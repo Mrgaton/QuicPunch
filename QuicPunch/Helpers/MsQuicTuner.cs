@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers.Binary;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -7,7 +7,7 @@ namespace QuicPunch.Helpers;
 
 /// <summary>
 /// Low-level tuning utility for Microsoft MsQuic native engine.
-/// Allows querying and dynamically switching congestion control algorithms (e.g. CUBIC to BBR),
+/// Configures congestion control before connecting and queries native connection diagnostics,
 /// stream priorities (QUIC_PARAM_STREAM_PRIORITY), Path MTU Discovery, and DSCP QoS tagging
 /// on live System.Net.Quic connections via internal native SetParam calls.
 /// </summary>
@@ -23,19 +23,48 @@ public static class MsQuicTuner
     private static readonly GetParamDelegate? GetParam;
     private static readonly bool Initialized;
 
+    public const uint QuicParamGlobalPerfCounters = 0x01000003;
+    public const uint QuicParamGlobalLibraryVersion = 0x01000004;
+    public const uint QuicParamGlobalLibraryGitHash = 0x01000008;
+    public const uint QuicParamGlobalSettings = 0x01000005;
     public const uint QuicParamConfigSettings = 0x03000000;
     public const uint QuicParamConnSettings = 0x05000004;
     public const uint QuicParamConnLocalAddress = 0x05000001;
     public const uint QuicParamConnRemoteAddress = 0x05000002;
+    public const uint QuicParamConnIdealProcessor = 0x05000003;
     public const uint QuicParamConnStreamSchedulingScheme = 0x0500000C;
     public const uint QuicParamConnStatisticsV2 = 0x05000016;
     public const uint QuicParamConnSendDscp = 0x05000019;
+    public const uint QuicParamConnNetworkStatistics = 0x05000020;
     public const uint QuicParamStreamPriority = 0x08000003;
+    public const uint QuicParamStreamStatistics = 0x08000004;
     public const uint QuicParamConnResumptionTicket = 0x05000010;
+    public const uint QuicParamConnTlsSecrets = 0x05000013;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public unsafe struct QuicTlsSecrets
+    {
+        public byte SecretLength;
+        public byte IsSet;
+        public fixed byte ClientRandom[32];
+        public fixed byte ClientEarlyTrafficSecret[64];
+        public fixed byte ClientHandshakeTrafficSecret[64];
+        public fixed byte ServerHandshakeTrafficSecret[64];
+        public fixed byte ClientTrafficSecret0[64];
+        public fixed byte ServerTrafficSecret0[64];
+    }
 
     public const int QuicSettingsSize = 144;
     public const int CongestionAlgorithmOffset = 92;
     public const ulong CongestionAlgorithmIsSetBit = 1UL << 17; // Bit 17 in IsSetFlags
+    private const ulong XdpIsSetBit = 1UL << 43;
+    private const ulong XdpEnabledFlag = 1UL << 6; // QUIC_SETTINGS.Flags at offset 120
+
+    /// <summary>
+    /// Whether XDP was requested globally for new listeners and connections.
+    /// MsQuic can fall back to OS sockets; this does not report actual packet routing.
+    /// </summary>
+    public static bool IsXdpRequested { get; private set; }
 
     static MsQuicTuner()
     {
@@ -79,6 +108,8 @@ public static class MsQuicTuner
             }
             Initialized = true;
 
+            ConfigureXdp();
+
             try { EnsurePathMtuDiscovery(); } catch { }
         }
         catch
@@ -92,48 +123,61 @@ public static class MsQuicTuner
     /// </summary>
     public static bool IsSupported => Initialized && SetParam != null && GetParam != null;
 
-    /// <summary>
-    /// Dynamically changes the congestion control algorithm of an active QUIC connection (e.g. to BBR).
-    /// </summary>
-    public static bool TrySetCongestionControl(System.Net.Quic.QuicConnection connection, QuicCongestionAlgorithm algorithm)
+    private static unsafe void ConfigureXdp()
     {
-        if (!Initialized || SetParam == null || HandleField == null)
-            return false;
-
-        try
+        // The pinned MsQuic only implements XDP for Windows. Listener bindings
+        // use GLOBAL settings before the server configuration callback runs.
+        if (!OperatingSystem.IsWindows() || SetParam == null) return;
+        bool enabled = Environment.GetEnvironmentVariable("QUICNET_XDP") != "0";
+        Span<byte> settings = stackalloc byte[QuicSettingsSize];
+        settings.Clear();
+        BinaryPrimitives.WriteUInt64LittleEndian(settings, XdpIsSetBit);
+        BinaryPrimitives.WriteUInt64LittleEndian(settings.Slice(120), enabled ? XdpEnabledFlag : 0);
+        fixed (byte* p = settings)
         {
-            if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
-                return false;
-
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
-            if (connHandle == IntPtr.Zero)
-                return false;
-
-            Span<byte> settings = stackalloc byte[QuicSettingsSize];
-            settings.Clear();
-
-            // Set bit 17 in IsSetFlags (Anonymous1 at offset 0)
-            BinaryPrimitives.WriteUInt64LittleEndian(settings[..8], CongestionAlgorithmIsSetBit);
-            // Set CongestionControlAlgorithm enum value at offset 92
-            BinaryPrimitives.WriteUInt16LittleEndian(settings.Slice(CongestionAlgorithmOffset, 2), (ushort)algorithm);
-
-            unsafe
-            {
-                fixed (byte* p = settings)
-                {
-                    int status = SetParam(connHandle, QuicParamConnSettings, QuicSettingsSize, (IntPtr)p);
-                    return status == 0;
-                }
-            }
-        }
-        catch
-        {
-            return false;
+            int status = SetParam(IntPtr.Zero, QuicParamGlobalSettings, QuicSettingsSize, (IntPtr)p);
+            IsXdpRequested = status == 0 && enabled;
+            QuicPunchLog.Info(status == 0
+                ? $"[MsQuic] XDP requested={enabled}; native socket fallback remains available. QUICNET_XDP=0 disables XDP on restart."
+                : $"[MsQuic] XDP configuration rejected (0x{status:X}); using OS sockets.");
         }
     }
 
+    /// <summary>Reads the connection's XDP request setting, not proof that XDP is carrying packets.</summary>
+    public static unsafe bool TryGetXdpEnabled(System.Net.Quic.QuicConnection connection, out bool enabled)
+    {
+        enabled = false;
+        if (!Initialized || GetParam == null || HandleField == null) return false;
+        try
+        {
+            if (HandleField.GetValue(connection) is not SafeHandle handle || handle.IsInvalid) return false;
+            using var lease = new NativeHandleLease(handle);
+            Span<byte> settings = stackalloc byte[QuicSettingsSize];
+            uint length = QuicSettingsSize;
+            fixed (byte* p = settings)
+            {
+                if (GetParam(lease.Handle, QuicParamConnSettings, &length, (IntPtr)p) != 0 || length < 128)
+                    return false;
+            }
+            enabled = (BinaryPrimitives.ReadUInt64LittleEndian(settings.Slice(120)) & XdpEnabledFlag) != 0;
+            return true;
+        }
+        catch { return false; }
+    }
+
     /// <summary>
-    /// Dynamically changes the congestion control algorithm of an active QUIC connection (e.g. to BBR).
+    /// Checks an idempotent congestion control request. Changing the algorithm requires a new configuration and connection.
+    /// </summary>
+    public static bool TrySetCongestionControl(System.Net.Quic.QuicConnection connection, QuicCongestionAlgorithm algorithm)
+    {
+        // System.Net.Quic exposes connections only after starting. MsQuic accepts a
+        // change to the stored setting, but keeps running the original controller.
+        // An idempotent request is safe; a different algorithm requires reconnecting.
+        return TryGetCongestionControl(connection, out var current) && current == algorithm;
+    }
+
+    /// <summary>
+    /// Checks an idempotent congestion control request. Changing the algorithm requires a new configuration and connection.
     /// </summary>
     public static bool TrySetCongestionControl(global::QuicPunch.QuicConnection connection, QuicCongestionAlgorithm algorithm)
     {
@@ -165,7 +209,9 @@ public static class MsQuicTuner
             if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
                 return false;
 
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(safeHandle);
+
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero)
                 return false;
 
@@ -213,7 +259,8 @@ public static class MsQuicTuner
         {
             if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
                 return false;
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(safeHandle);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             byte dscp = dscpValue;
@@ -240,7 +287,8 @@ public static class MsQuicTuner
         {
             if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
                 return false;
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(safeHandle);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             uint val = (uint)scheme;
@@ -276,7 +324,8 @@ public static class MsQuicTuner
         {
             if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
                 return false;
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(safeHandle);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             uint val = 0;
@@ -322,7 +371,8 @@ public static class MsQuicTuner
         {
             if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
                 return false;
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(safeHandle);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             unsafe
@@ -346,6 +396,16 @@ public static class MsQuicTuner
 
                     TryGetLocalAddress(connection, out var localEp);
                     TryGetRemoteAddress(connection, out var remoteEp);
+
+                    uint tlsGroup = 0;
+                    if (MsQuicPqcHandshake.TryGetNegotiatedGroup(connection, out var grp))
+                    {
+                        tlsGroup = grp;
+                    }
+
+                    TryGetNetworkStatistics(connection, out var netStats);
+                    ushort? idealProc = null;
+                    if (TryGetIdealProcessor(connection, out var p)) idealProc = p;
 
                     telemetry = new QuicConnectionTelemetry
                     {
@@ -382,6 +442,13 @@ public static class MsQuicTuner
                         CongestionAlgorithm = congestionAlgorithm,
                         NativeLocalEndPoint = localEp,
                         NativeRemoteEndPoint = remoteEp,
+                        NegotiatedTlsGroup = tlsGroup,
+                        EstimatedBandwidthBps = netStats.Bandwidth,
+                        BytesInFlight = netStats.BytesInFlight,
+                        IdealSendBufferBytes = netStats.IdealBytes,
+                        SmoothedRttMs = netStats.SmoothedRtt > 0 ? netStats.SmoothedRtt / 1000.0 : stats.Rtt / 1000.0,
+                        IdealProcessor = idealProc,
+                        XdpRequested = TryGetXdpEnabled(connection, out var xdp) ? xdp : null,
                         TimestampUtc = DateTime.UtcNow
                     };
                     return true;
@@ -419,7 +486,8 @@ public static class MsQuicTuner
         {
             if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
                 return false;
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(safeHandle);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             Span<byte> buf = stackalloc byte[128];
@@ -437,6 +505,164 @@ public static class MsQuicTuner
                 }
             }
             return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Queries real-time network and congestion control statistics (bytes in flight, estimated bandwidth, smoothed RTT) directly from MsQuic.
+    /// </summary>
+    public static bool TryGetNetworkStatistics(System.Net.Quic.QuicConnection connection, out QuicNetworkStatistics netStats)
+    {
+        netStats = default;
+        if (!Initialized || GetParam == null || HandleField == null) return false;
+        try
+        {
+            if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
+                return false;
+            using var handleLease = new NativeHandleLease(safeHandle);
+            IntPtr connHandle = handleLease.Handle;
+            if (connHandle == IntPtr.Zero) return false;
+
+            unsafe
+            {
+                QuicNetworkStatistics stats = default;
+                uint len = (uint)sizeof(QuicNetworkStatistics);
+                int status = GetParam(connHandle, QuicParamConnNetworkStatistics, &len, (IntPtr)(&stats));
+                if (status == 0)
+                {
+                    netStats = stats;
+                    return true;
+                }
+                return false;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Queries real-time network and congestion control statistics directly from an active QuicPunch QUIC connection.
+    /// </summary>
+    public static bool TryGetNetworkStatistics(global::QuicPunch.QuicConnection connection, out QuicNetworkStatistics netStats)
+    {
+        netStats = default;
+        var native = connection?.NativeConnection;
+        return native != null && TryGetNetworkStatistics(native, out netStats);
+    }
+
+    /// <summary>
+    /// Queries the ideal CPU processor core assigned by MsQuic to process packets for this connection.
+    /// </summary>
+    public static bool TryGetIdealProcessor(System.Net.Quic.QuicConnection connection, out ushort processor)
+    {
+        processor = 0;
+        if (!Initialized || GetParam == null || HandleField == null) return false;
+        try
+        {
+            if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
+                return false;
+            using var handleLease = new NativeHandleLease(safeHandle);
+            IntPtr connHandle = handleLease.Handle;
+            if (connHandle == IntPtr.Zero) return false;
+
+            unsafe
+            {
+                ushort val = 0;
+                uint len = sizeof(ushort);
+                int status = GetParam(connHandle, QuicParamConnIdealProcessor, &len, (IntPtr)(&val));
+                if (status == 0)
+                {
+                    processor = val;
+                    return true;
+                }
+                return false;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Queries the ideal CPU processor core assigned by MsQuic to process packets for this QuicPunch QUIC connection.
+    /// </summary>
+    public static bool TryGetIdealProcessor(global::QuicPunch.QuicConnection connection, out ushort processor)
+    {
+        processor = 0;
+        var native = connection?.NativeConnection;
+        return native != null && TryGetIdealProcessor(native, out processor);
+    }
+
+    /// <summary>
+    /// Queries global performance and health counters from the MsQuic native subsystem.
+    /// </summary>
+    public static bool TryGetGlobalPerfCounters(out ulong[] counters)
+    {
+        counters = Array.Empty<ulong>();
+        if (!Initialized || GetParam == null) return false;
+        try
+        {
+            unsafe
+            {
+                const int MaxCounters = 40;
+                ulong* buf = stackalloc ulong[MaxCounters];
+                uint len = (uint)(MaxCounters * sizeof(ulong));
+                int status = GetParam(IntPtr.Zero, QuicParamGlobalPerfCounters, &len, (IntPtr)buf);
+                if (status == 0 && len >= sizeof(ulong))
+                {
+                    int count = (int)(len / sizeof(ulong));
+                    counters = new ulong[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        counters[i] = buf[i];
+                    }
+                    return true;
+                }
+                return false;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Queries the loaded MsQuic native library version and Git commit hash.
+    /// </summary>
+    public static bool TryGetLibraryVersion(out string version, out string gitHash)
+    {
+        version = string.Empty;
+        gitHash = string.Empty;
+        if (!Initialized || GetParam == null) return false;
+        try
+        {
+            unsafe
+            {
+                uint* ver = stackalloc uint[4];
+                uint verLen = 4 * sizeof(uint);
+                if (GetParam(IntPtr.Zero, QuicParamGlobalLibraryVersion, &verLen, (IntPtr)ver) == 0 && verLen >= 4 * sizeof(uint))
+                {
+                    version = $"{ver[0]}.{ver[1]}.{ver[2]}.{ver[3]}";
+                }
+
+                byte* hash = stackalloc byte[65];
+                uint hashLen = 64;
+                if (GetParam(IntPtr.Zero, QuicParamGlobalLibraryGitHash, &hashLen, (IntPtr)hash) == 0 && hashLen > 0)
+                {
+                    hash[hashLen < 64 ? hashLen : 64] = 0;
+                    gitHash = Marshal.PtrToStringAnsi((IntPtr)hash) ?? string.Empty;
+                }
+
+                return !string.IsNullOrEmpty(version);
+            }
         }
         catch
         {
@@ -470,10 +696,10 @@ public static class MsQuicTuner
 
     #region Stream Priority Tuning (QUIC_PARAM_STREAM_PRIORITY)
 
-    private static IntPtr GetStreamNativeHandle(System.IO.Stream stream, out object? rawQuicStream)
+    private static SafeHandle? GetStreamSafeHandle(System.IO.Stream stream, out object? rawQuicStream)
     {
         rawQuicStream = null;
-        if (stream == null) return IntPtr.Zero;
+        if (stream == null) return null;
 
         object? current = stream;
         int depth = 0;
@@ -484,8 +710,8 @@ public static class MsQuicTuner
             {
                 rawQuicStream = current;
                 if (StreamHandleField?.GetValue(current) is SafeHandle sh && !sh.IsInvalid)
-                    return sh.DangerousGetHandle();
-                return IntPtr.Zero;
+                    return sh;
+                return null;
             }
 
             var innerProp = type.GetProperty("InnerStream", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
@@ -517,7 +743,7 @@ public static class MsQuicTuner
             break;
         }
 
-        return IntPtr.Zero;
+        return null;
     }
 
     /// <summary>
@@ -527,10 +753,20 @@ public static class MsQuicTuner
     /// </summary>
     public static bool TrySetStreamPriority(System.IO.Stream stream, ushort priority)
     {
+        // Android and other transports have their own priority implementation.
+        // Route through the transport before requiring System.Net.Quic handles.
+        if (stream is global::QuicPunch.QuicStream wrapped)
+        {
+            try { wrapped.Priority16 = priority; return true; }
+            catch { return false; }
+        }
         if (!Initialized || SetParam == null) return false;
         try
         {
-            IntPtr streamHandle = GetStreamNativeHandle(stream, out var rawQuicStream);
+            var safeStreamHandle = GetStreamSafeHandle(stream, out var rawQuicStream);
+            if (safeStreamHandle == null) return false;
+            using var handleLease = new NativeHandleLease(safeStreamHandle);
+            IntPtr streamHandle = handleLease.Handle;
             if (streamHandle == IntPtr.Zero) return false;
 
             unsafe
@@ -566,10 +802,18 @@ public static class MsQuicTuner
     public static bool TryGetStreamPriority(System.IO.Stream stream, out ushort priority)
     {
         priority = (ushort)QuicStreamPriority.Normal;
+        if (stream is global::QuicPunch.QuicStream wrapped)
+        {
+            try { priority = wrapped.Priority16; return true; }
+            catch { return false; }
+        }
         if (!Initialized || GetParam == null) return false;
         try
         {
-            IntPtr streamHandle = GetStreamNativeHandle(stream, out _);
+            var safeStreamHandle = GetStreamSafeHandle(stream, out _);
+            if (safeStreamHandle == null) return false;
+            using var handleLease = new NativeHandleLease(safeStreamHandle);
+            IntPtr streamHandle = handleLease.Handle;
             if (streamHandle == IntPtr.Zero) return false;
 
             unsafe
@@ -603,6 +847,40 @@ public static class MsQuicTuner
         }
         priority = QuicStreamPriority.Normal;
         return false;
+    }
+
+    /// <summary>
+    /// Queries performance, pacing, and flow control delay statistics for a specific active QUIC stream.
+    /// </summary>
+    public static bool TryGetStreamStatistics(System.IO.Stream stream, out QuicStreamStatistics stats)
+    {
+        stats = default;
+        if (!Initialized || GetParam == null) return false;
+        try
+        {
+            var safeStreamHandle = GetStreamSafeHandle(stream, out _);
+            if (safeStreamHandle == null) return false;
+            using var handleLease = new NativeHandleLease(safeStreamHandle);
+            IntPtr streamHandle = handleLease.Handle;
+            if (streamHandle == IntPtr.Zero) return false;
+
+            unsafe
+            {
+                QuicStreamStatistics s = default;
+                uint len = (uint)sizeof(QuicStreamStatistics);
+                int status = GetParam(streamHandle, QuicParamStreamStatistics, &len, (IntPtr)(&s));
+                if (status == 0)
+                {
+                    stats = s;
+                    return true;
+                }
+                return false;
+            }
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     #endregion
@@ -677,103 +955,10 @@ public static class MsQuicTuner
                 var cacheObj = cacheField?.GetValue(null);
                 if (cacheObj == null) return false;
 
-                byte[] cfgSettings = new byte[QuicSettingsSize];
-                // Bit  3: MtuDiscoverySearchCompleteTimeoutUs
-                // Bit  6: StreamRecvWindowDefault
-                // Bit  7: StreamRecvBufferDefault
-                // Bit  8: ConnFlowControlWindow
-                // Bit 11: InitialWindowPackets
-                // Bit 16: KeepAliveIntervalMs
-                // Bit 17: CongestionControlAlgorithm (BBR)
-                // Bit 22: MinimumMtu
-                // Bit 23: MaximumMtu
-                // Bit 24: SendBufferingEnabled
-                // Bit 25: PacingEnabled
-                // Bit 26: MigrationEnabled
-                // Bit 27: DatagramReceiveEnabled
-                // Bit 28: ServerResumptionLevel
-                // Bit 30: MtuDiscoveryMissingProbeCount
-                // Bit 32: GreaseQuicBitEnabled
-                // Bit 33: EcnEnabled
-                // Bit 34: HyStartEnabled
-                // Bit 35: StreamRecvWindowBidiLocalDefault
-                // Bit 36: StreamRecvWindowBidiRemoteDefault
-                // Bit 37: StreamRecvWindowUnidiDefault
-                ulong isSetFlags =
-                    (1UL << 3)
-                    | (1UL << 6)
-                    | (1UL << 7)
-                    | (1UL << 8)
-                    | (1UL << 11)
-                    | (1UL << 16)
-                    | (1UL << 17)
-                    | (1UL << 22)
-                    | (1UL << 23)
-                    | (1UL << 24)
-                    | (1UL << 25)
-                    | (1UL << 26)
-                    | (1UL << 27)
-                    | (1UL << 28)
-                    | (1UL << 30)
-                    | (1UL << 32)
-                    | (1UL << 33)
-                    | (1UL << 34)
-                    | (1UL << 35)
-                    | (1UL << 36)
-                    | (1UL << 37);
-
-                BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(0, 8), isSetFlags);
-
-                // MTU search complete timeout (600s = 600,000,000 us)
-                BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(32, 8), mtuDiscoveryTimeoutUs);
-
-                // Stream receive default buffer & window (4 MB)
-                BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(48, 4), streamRecvWindow);
-                BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(52, 4), streamRecvWindow);
-
-                // Connection flow control window (16 MB)
-                BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(56, 4), connFlowControlWindow);
-
-                // Initial window packets (IW10 standard = 10)
-                BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(68, 4), initialWindowPackets);
-
-                // KeepAlive interval (5000 ms)
-                BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(88, 4), keepAliveIntervalMs);
-
-                // Congestion Control Algorithm (1 = BBR)
-                BinaryPrimitives.WriteUInt16LittleEndian(cfgSettings.AsSpan(92, 2), (ushort)QuicCongestionAlgorithm.Bbr);
-
-                // Minimum & Maximum MTU
-                BinaryPrimitives.WriteUInt16LittleEndian(cfgSettings.AsSpan(102, 2), minMtu);
-                BinaryPrimitives.WriteUInt16LittleEndian(cfgSettings.AsSpan(104, 2), maxMtu);
-
-                // Offset 106: _bitfield
-                // bit 0 = SendBufferingEnabled
-                // bit 1 = PacingEnabled
-                // bit 2 = MigrationEnabled
-                // bit 3 = DatagramReceiveEnabled
-                // bits 4-5 = ServerResumptionLevel (2 = QUIC_SERVER_RESUME_AND_ZERORTT)
-                // bit 6 = GreaseQuicBitEnabled
-                // bit 7 = EcnEnabled
-                byte bitfield = (byte)((1 << 0) | (1 << 2) | (1 << 3) | (1 << 6));
-                if (pacing) bitfield |= (1 << 1);
-                if (enableZeroRtt) bitfield |= (byte)(2 << 4);
-                if (ecn) bitfield |= (byte)(1 << 7);
-                cfgSettings[106] = bitfield;
-
-                // MTU missing probe count (3)
-                cfgSettings[108] = mtuDiscoveryMissingProbeCount;
-
-                // Flags at offset 120: bit 0 = HyStartEnabled
-                if (hyStart)
-                {
-                    BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(120, 8), 1UL);
-                }
-
-                // Stream Bidi / Unidi receive windows (4 MB)
-                BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(128, 4), streamRecvWindow);
-                BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(132, 4), streamRecvWindow);
-                BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(136, 4), streamRecvWindow);
+                var cfgSettings = CreateOptimalConfigurationSettings(minMtu, maxMtu,
+                    connFlowControlWindow, streamRecvWindow, keepAliveIntervalMs,
+                    mtuDiscoveryTimeoutUs, mtuDiscoveryMissingProbeCount, initialWindowPackets,
+                    enableZeroRtt, pacing, ecn, hyStart);
 
                 int patched = PatchConfigurations(cacheObj, cfgSettings);
                 s_isMtuConfigured = patched > 0;
@@ -786,9 +971,178 @@ public static class MsQuicTuner
         }
     }
 
+    // Patch the exact configuration created for these options, before ConnectionStart /
+    // ConnectionSetConfiguration. Updating a cache before its first entry exists misses
+    // the first connection, and changing Settings.CongestionControlAlgorithm afterwards
+    // does not reinitialize MsQuic's congestion controller.
+    internal static bool TryApplyOptimalConfiguration(SafeHandle configuration)
+    {
+        if (!Initialized || SetParam == null || configuration.IsInvalid) return false;
+        try
+        {
+            using var lease = new NativeHandleLease(configuration);
+            var settings = CreateOptimalConfigurationSettings();
+            unsafe
+            {
+                fixed (byte* p = settings)
+                    return SetParam(lease.Handle, QuicParamConfigSettings, (uint)settings.Length, (IntPtr)p) == 0;
+            }
+        }
+        catch { return false; }
+    }
+
+    private static byte[] CreateOptimalConfigurationSettings(
+        ushort minMtu = 1280,
+        ushort maxMtu = 1500,
+        uint connFlowControlWindow = 16 * 1024 * 1024,
+        uint streamRecvWindow = 4 * 1024 * 1024,
+        uint keepAliveIntervalMs = 5000,
+        ulong mtuDiscoveryTimeoutUs = 600_000_000UL,
+        byte mtuDiscoveryMissingProbeCount = 3,
+        uint initialWindowPackets = 10,
+        bool enableZeroRtt = true,
+        bool pacing = true,
+        bool ecn = true,
+        bool hyStart = true)
+    {
+        byte[] cfgSettings = new byte[QuicSettingsSize];
+        // Bit  3: MtuDiscoverySearchCompleteTimeoutUs
+        // Bit  6: StreamRecvWindowDefault
+        // Bit  7: StreamRecvBufferDefault
+        // Bit  8: ConnFlowControlWindow
+        // Bit 11: InitialWindowPackets
+        // Bit 13: InitialRttMs
+        // Bit 14: MaxAckDelayMs
+        // Bit 16: KeepAliveIntervalMs
+        // Bit 17: CongestionControlAlgorithm (BBR)
+        // Bit 18: PeerBidiStreamCount
+        // Bit 19: PeerUnidiStreamCount
+        // Bit 22: MinimumMtu
+        // Bit 23: MaximumMtu
+        // Bit 24: SendBufferingEnabled
+        // Bit 25: PacingEnabled
+        // Bit 26: MigrationEnabled
+        // Bit 27: DatagramReceiveEnabled
+        // Bit 28: ServerResumptionLevel
+        // Bit 30: MtuDiscoveryMissingProbeCount
+        // Bit 31: DestCidUpdateIdleTimeoutMs
+        // Bit 32: GreaseQuicBitEnabled
+        // Bit 33: EcnEnabled
+        // Bit 34: HyStartEnabled
+        // Bit 35: StreamRecvWindowBidiLocalDefault
+        // Bit 36: StreamRecvWindowBidiRemoteDefault
+        // Bit 37: StreamRecvWindowUnidiDefault
+        ulong isSetFlags =
+            (1UL << 3)
+            | (1UL << 6)
+            | (1UL << 7)
+            | (1UL << 8)
+            | (1UL << 11)
+            | (1UL << 13)
+            | (1UL << 14)
+            | (1UL << 16)
+            | (1UL << 17)
+            | (1UL << 18)
+            | (1UL << 19)
+            | (1UL << 22)
+            | (1UL << 23)
+            | (1UL << 24)
+            | (1UL << 25)
+            | (1UL << 26)
+            | (1UL << 27)
+            | (1UL << 28)
+            | (1UL << 30)
+            | (1UL << 31)
+            | (1UL << 32)
+            | (1UL << 33)
+            | (1UL << 34)
+            | (1UL << 35)
+            | (1UL << 36)
+            | (1UL << 37);
+
+        BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(0, 8), isSetFlags);
+
+        // Apply the same policy to client configurations, including the first
+        // connection. Do not change a live connection's immutable datapath.
+        if (OperatingSystem.IsWindows())
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(0, 8), isSetFlags | XdpIsSetBit);
+        }
+
+        // MTU search complete timeout (600s = 600,000,000 us)
+        BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(32, 8), mtuDiscoveryTimeoutUs);
+
+        // Stream receive default buffer & window (4 MB)
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(48, 4), streamRecvWindow);
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(52, 4), streamRecvWindow);
+
+        // Connection flow control window (16 MB)
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(56, 4), connFlowControlWindow);
+
+        // Initial window packets (IW10 standard = 10)
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(68, 4), initialWindowPackets);
+
+        // Initial RTT (100 ms) and Max ACK delay (10 ms)
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(76, 4), 100);
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(80, 4), 10);
+
+        // KeepAlive interval (5000 ms)
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(88, 4), keepAliveIntervalMs);
+
+        // Congestion Control Algorithm (1 = BBR)
+        BinaryPrimitives.WriteUInt16LittleEndian(cfgSettings.AsSpan(92, 2), (ushort)QuicCongestionAlgorithm.Bbr);
+
+        // Concurrent bidirectional and unidirectional stream counts (2048)
+        BinaryPrimitives.WriteUInt16LittleEndian(cfgSettings.AsSpan(94, 2), 2048);
+        BinaryPrimitives.WriteUInt16LittleEndian(cfgSettings.AsSpan(96, 2), 2048);
+
+        // Minimum & Maximum MTU
+        BinaryPrimitives.WriteUInt16LittleEndian(cfgSettings.AsSpan(102, 2), minMtu);
+        BinaryPrimitives.WriteUInt16LittleEndian(cfgSettings.AsSpan(104, 2), maxMtu);
+
+        // Offset 106: _bitfield
+        // bit 0 = SendBufferingEnabled
+        // bit 1 = PacingEnabled
+        // bit 2 = MigrationEnabled
+        // bit 3 = DatagramReceiveEnabled
+        // bits 4-5 = ServerResumptionLevel (2 = QUIC_SERVER_RESUME_AND_ZERORTT)
+        // bit 6 = GreaseQuicBitEnabled
+        // bit 7 = EcnEnabled
+        byte bitfield = (byte)((1 << 0) | (1 << 2) | (1 << 3) | (1 << 6));
+        if (pacing) bitfield |= (1 << 1);
+        if (enableZeroRtt) bitfield |= (byte)(2 << 4);
+        if (ecn) bitfield |= (byte)(1 << 7);
+        cfgSettings[106] = bitfield;
+
+        // MTU missing probe count (3)
+        cfgSettings[108] = mtuDiscoveryMissingProbeCount;
+
+        // Dest CID update idle timeout (20000 ms)
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(112, 4), 20000);
+
+        // Flags at offset 120: bit 0 = HyStartEnabled
+        if (hyStart)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(120, 8), 1UL);
+        }
+
+        if (IsXdpRequested)
+        {
+            ulong flags = BinaryPrimitives.ReadUInt64LittleEndian(cfgSettings.AsSpan(120, 8));
+            BinaryPrimitives.WriteUInt64LittleEndian(cfgSettings.AsSpan(120, 8), flags | XdpEnabledFlag);
+        }
+
+        // Stream Bidi / Unidi receive windows (4 MB)
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(128, 4), streamRecvWindow);
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(132, 4), streamRecvWindow);
+        BinaryPrimitives.WriteUInt32LittleEndian(cfgSettings.AsSpan(136, 4), streamRecvWindow);
+
+        return cfgSettings;
+    }
+
     /// <summary>
-    /// Atomically applies optimal native MsQuic tuning to an active connection:
-    /// BBR congestion control, Pacing, HyStart, Datagrams, Migration, Send Buffering, Grease Bit,
+    /// Applies runtime-safe settings to an active connection. BBR and ECN must be
+    /// configured before the handshake and are never changed here. Pacing, Datagrams, Migration, Send Buffering, Grease Bit,
     /// 16MB connection flow control window, 4MB stream receive windows, 5s Keepalive, PMTUD discovery timing,
     /// and Round-Robin stream multiplexing.
     /// </summary>
@@ -807,7 +1161,9 @@ public static class MsQuicTuner
         bool sendBuffering = true,
         bool greaseQuicBit = true,
         bool hyStart = true,
-        QuicStreamSchedulingScheme streamSchedulingScheme = QuicStreamSchedulingScheme.RoundRobin)
+        bool ecn = true,
+        QuicStreamSchedulingScheme streamSchedulingScheme = QuicStreamSchedulingScheme.RoundRobin,
+        QuicDscpPriority? dscp = null)
     {
         if (!Initialized || SetParam == null || HandleField == null)
             return false;
@@ -823,12 +1179,15 @@ public static class MsQuicTuner
                 mtuDiscoveryMissingProbeCount: mtuDiscoveryMissingProbeCount,
                 initialWindowPackets: initialWindowPackets,
                 pacing: pacing,
+                ecn: ecn,
                 hyStart: hyStart);
 
             if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
                 return false;
 
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(safeHandle);
+
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero)
                 return false;
 
@@ -841,13 +1200,17 @@ public static class MsQuicTuner
                 (1UL << 7)  | // StreamRecvBufferDefault
                 (1UL << 8)  | // ConnFlowControlWindow
                 (1UL << 11) | // InitialWindowPackets
+                (1UL << 13) | // InitialRttMs
+                (1UL << 14) | // MaxAckDelayMs
                 (1UL << 16) | // KeepAliveIntervalMs
-                (1UL << 17) | // CongestionControlAlgorithm (BBR)
+                (1UL << 18) | // PeerBidiStreamCount
+                (1UL << 19) | // PeerUnidiStreamCount
                 (1UL << 24) | // SendBufferingEnabled
                 (1UL << 25) | // PacingEnabled
                 (1UL << 26) | // MigrationEnabled
                 (1UL << 27) | // DatagramReceiveEnabled
                 (1UL << 30) | // MtuDiscoveryMissingProbeCount
+                (1UL << 31) | // DestCidUpdateIdleTimeoutMs
                 (1UL << 32) | // GreaseQuicBitEnabled
                 (1UL << 34) | // HyStartEnabled
                 (1UL << 35) | // StreamRecvWindowBidiLocalDefault
@@ -860,8 +1223,11 @@ public static class MsQuicTuner
             BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(52, 4), streamRecvWindow);
             BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(56, 4), connFlowControlWindow);
             BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(68, 4), initialWindowPackets);
+            BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(76, 4), 100); // InitialRttMs = 100ms
+            BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(80, 4), 10);  // MaxAckDelayMs = 10ms
             BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(88, 4), keepAliveIntervalMs);
-            BinaryPrimitives.WriteUInt16LittleEndian(settings.Slice(92, 2), (ushort)congestionAlgorithm);
+            BinaryPrimitives.WriteUInt16LittleEndian(settings.Slice(94, 2), 2048); // PeerBidiStreamCount
+            BinaryPrimitives.WriteUInt16LittleEndian(settings.Slice(96, 2), 2048); // PeerUnidiStreamCount
 
             byte bf = 0;
             if (sendBuffering) bf |= (1 << 0);
@@ -871,6 +1237,7 @@ public static class MsQuicTuner
             if (greaseQuicBit) bf |= (1 << 6);
             settings[106] = bf;
             settings[108] = mtuDiscoveryMissingProbeCount;
+            BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(112, 4), 20000); // DestCidUpdateIdleTimeoutMs
 
             if (hyStart)
             {
@@ -881,18 +1248,25 @@ public static class MsQuicTuner
             BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(132, 4), streamRecvWindow);
             BinaryPrimitives.WriteUInt32LittleEndian(settings.Slice(136, 4), streamRecvWindow);
 
+            bool settingsApplied;
             unsafe
             {
                 fixed (byte* p = settings)
                 {
                     int status = SetParam(connHandle, QuicParamConnSettings, QuicSettingsSize, (IntPtr)p);
-                    if (status != 0)
-                        return false;
+                    settingsApplied = status == 0;
                 }
             }
 
             TrySetStreamSchedulingScheme(connection, streamSchedulingScheme);
-            return true;
+            if (dscp.HasValue)
+            {
+                TrySetDscp(connection, dscp.Value);
+            }
+            try { TryDumpSslKeyLog(connection); } catch { }
+            // Do not claim the requested controller is active when a caller wrapped
+            // an independently-created connection without preparing its configuration.
+            return settingsApplied && TryGetCongestionControl(connection, out var current) && current == congestionAlgorithm;
         }
         catch
         {
@@ -918,7 +1292,9 @@ public static class MsQuicTuner
         bool sendBuffering = true,
         bool greaseQuicBit = true,
         bool hyStart = true,
-        QuicStreamSchedulingScheme streamSchedulingScheme = QuicStreamSchedulingScheme.RoundRobin)
+        bool ecn = true,
+        QuicStreamSchedulingScheme streamSchedulingScheme = QuicStreamSchedulingScheme.RoundRobin,
+        QuicDscpPriority? dscp = null)
     {
         var native = connection?.NativeConnection;
         return native != null && TryApplyOptimalTuning(
@@ -936,7 +1312,9 @@ public static class MsQuicTuner
             sendBuffering,
             greaseQuicBit,
             hyStart,
-            streamSchedulingScheme);
+            ecn,
+            streamSchedulingScheme,
+            dscp);
     }
 
     /// <summary>
@@ -959,7 +1337,9 @@ public static class MsQuicTuner
             if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
                 return false;
 
-            IntPtr connHandle = safeHandle.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(safeHandle);
+
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero)
                 return false;
 
@@ -1018,7 +1398,8 @@ public static class MsQuicTuner
         {
             var handleObj = HandleField.GetValue(connection);
             if (handleObj is not SafeHandle sh || sh.IsInvalid) return false;
-            IntPtr connHandle = sh.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(sh);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             byte[] connSettings = new byte[QuicSettingsSize];
@@ -1065,7 +1446,8 @@ public static class MsQuicTuner
         {
             var handleObj = HandleField.GetValue(connection);
             if (handleObj is not SafeHandle sh || sh.IsInvalid) return false;
-            IntPtr connHandle = sh.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(sh);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             byte[] connSettings = new byte[QuicSettingsSize];
@@ -1121,7 +1503,8 @@ public static class MsQuicTuner
         {
             var handleObj = HandleField.GetValue(connection);
             if (handleObj is not SafeHandle sh || sh.IsInvalid) return false;
-            IntPtr connHandle = sh.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(sh);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             unsafe
@@ -1166,7 +1549,8 @@ public static class MsQuicTuner
         {
             var handleObj = HandleField.GetValue(connection);
             if (handleObj is not SafeHandle sh || sh.IsInvalid) return false;
-            IntPtr connHandle = sh.DangerousGetHandle();
+            using var handleLease = new NativeHandleLease(sh);
+            IntPtr connHandle = handleLease.Handle;
             if (connHandle == IntPtr.Zero) return false;
 
             unsafe
@@ -1189,6 +1573,81 @@ public static class MsQuicTuner
         return native != null && TrySetResumptionTicket(native, ticket);
     }
 
+    /// <summary>
+    /// Checks if SSLKEYLOGFILE environment variable is defined and dumps the connection TLS 1.3 secrets
+    /// for packet inspection in Wireshark.
+    /// </summary>
+    public static bool TryDumpSslKeyLog(System.Net.Quic.QuicConnection connection)
+    {
+        string? keyLogPath = Environment.GetEnvironmentVariable("SSLKEYLOGFILE");
+        if (string.IsNullOrWhiteSpace(keyLogPath) || !Initialized || GetParam == null || HandleField == null)
+            return false;
+
+        try
+        {
+            if (HandleField.GetValue(connection) is not SafeHandle safeHandle || safeHandle.IsInvalid)
+                return false;
+
+            using var handleLease = new NativeHandleLease(safeHandle);
+
+            IntPtr connHandle = handleLease.Handle;
+            if (connHandle == IntPtr.Zero) return false;
+
+            unsafe
+            {
+                QuicTlsSecrets secrets = default;
+                uint len = (uint)sizeof(QuicTlsSecrets);
+                int status = GetParam(connHandle, QuicParamConnTlsSecrets, &len, (IntPtr)(&secrets));
+                if (status != 0 || (secrets.IsSet & 0x01) == 0) return false;
+
+                byte[] randomBytes = new byte[32];
+                Marshal.Copy((IntPtr)secrets.ClientRandom, randomBytes, 0, 32);
+                string randomHex = Convert.ToHexString(randomBytes).ToLowerInvariant();
+                int secretLen = secrets.SecretLength;
+                if (secretLen <= 0 || secretLen > 64) secretLen = 32;
+
+                var sb = new System.Text.StringBuilder();
+
+                if ((secrets.IsSet & (1 << 2)) != 0)
+                {
+                    byte[] s = new byte[secretLen];
+                    Marshal.Copy((IntPtr)secrets.ClientHandshakeTrafficSecret, s, 0, secretLen);
+                    sb.AppendLine($"CLIENT_HANDSHAKE_TRAFFIC_SECRET {randomHex} {Convert.ToHexString(s).ToLowerInvariant()}");
+                }
+                if ((secrets.IsSet & (1 << 3)) != 0)
+                {
+                    byte[] s = new byte[secretLen];
+                    Marshal.Copy((IntPtr)secrets.ServerHandshakeTrafficSecret, s, 0, secretLen);
+                    sb.AppendLine($"SERVER_HANDSHAKE_TRAFFIC_SECRET {randomHex} {Convert.ToHexString(s).ToLowerInvariant()}");
+                }
+                if ((secrets.IsSet & (1 << 4)) != 0)
+                {
+                    byte[] s = new byte[secretLen];
+                    Marshal.Copy((IntPtr)secrets.ClientTrafficSecret0, s, 0, secretLen);
+                    sb.AppendLine($"CLIENT_TRAFFIC_SECRET_0 {randomHex} {Convert.ToHexString(s).ToLowerInvariant()}");
+                }
+                if ((secrets.IsSet & (1 << 5)) != 0)
+                {
+                    byte[] s = new byte[secretLen];
+                    Marshal.Copy((IntPtr)secrets.ServerTrafficSecret0, s, 0, secretLen);
+                    sb.AppendLine($"SERVER_TRAFFIC_SECRET_0 {randomHex} {Convert.ToHexString(s).ToLowerInvariant()}");
+                }
+
+                string text = sb.ToString();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    lock (MtuConfigLock)
+                    {
+                        System.IO.File.AppendAllText(keyLogPath, text);
+                    }
+                    return true;
+                }
+            }
+        }
+        catch { }
+        return false;
+    }
+
     #endregion
 
 
@@ -1207,7 +1666,8 @@ public static class MsQuicTuner
                     {
                         if (entry.Value is SafeHandle sh && !sh.IsInvalid)
                         {
-                            IntPtr hConfig = sh.DangerousGetHandle();
+                            using var handleLease = new NativeHandleLease(sh);
+                            IntPtr hConfig = handleLease.Handle;
                             unsafe
                             {
                                 fixed (byte* p = cfgSettings)
@@ -1263,7 +1723,8 @@ public enum QuicStreamPriority : ushort
     Normal = 0x7FFF,   // Default in MsQuic (32767)
     High = 0xC000,
     VeryHigh = 0xE000,
-    Critical = 0xFFFF   // Highest priority (65535)
+    Critical = 0xFFFF,  // Highest priority (65535)
+    Highest = 0xFFFF
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -1307,12 +1768,41 @@ public struct QuicStatisticsV2
     public uint RttVariance;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+public struct QuicNetworkStatistics
+{
+    public uint BytesInFlight;
+    private uint _padding0;
+    public ulong PostedBytes;
+    public ulong IdealBytes;
+    public ulong SmoothedRtt; // microseconds
+    public uint CongestionWindow;
+    private uint _padding1;
+    public ulong Bandwidth; // bits per second
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct QuicStreamStatistics
+{
+    public ulong ConnBlockedBySchedulingUs;
+    public ulong ConnBlockedByPacingUs;
+    public ulong ConnBlockedByAmplificationProtUs;
+    public ulong ConnBlockedByCongestionControlUs;
+    public ulong ConnBlockedByFlowControlUs;
+    public ulong StreamBlockedByIdFlowControlUs;
+    public ulong StreamBlockedByFlowControlUs;
+    public ulong StreamBlockedByAppUs;
+}
+
 /// <summary>
 /// Represents real-time performance telemetry, protocol statistics, and connection metadata
 /// queried directly from the native MsQuic engine.
 /// </summary>
 public record QuicConnectionTelemetry
 {
+    /// <summary>XDP requested in native settings; fallback may still use OS sockets.</summary>
+    public bool? XdpRequested { get; init; }
+
     /// <summary>Gets the smoothed round-trip time in milliseconds.</summary>
     public double RttMs { get; init; }
 
@@ -1430,9 +1920,46 @@ public record QuicConnectionTelemetry
     /// <summary>Gets the UTC timestamp at which this telemetry sample was queried.</summary>
     public DateTime TimestampUtc { get; init; } = DateTime.UtcNow;
 
+    /// <summary>Gets the negotiated TLS key exchange group ID (e.g. 4588 for X25519MLKEM768).</summary>
+    public uint NegotiatedTlsGroup { get; init; }
+
+    /// <summary>Gets the human-readable name of the negotiated TLS key exchange group.</summary>
+    public string NegotiatedTlsGroupName => NegotiatedTlsGroup switch
+    {
+        4588 => "X25519MLKEM768 (PQC)",
+        512 => "MLKEM512 (PQC)",
+        513 => "MLKEM768 (PQC)",
+        514 => "MLKEM1024 (PQC)",
+        4587 => "SecP256r1MLKEM768 (PQC)",
+        4589 => "SecP384r1MLKEM1024 (PQC)",
+        29 => "X25519",
+        23 => "secp256r1",
+        24 => "secp384r1",
+        _ => NegotiatedTlsGroup != 0 ? $"Group_{NegotiatedTlsGroup}" : "Unknown"
+    };
+
+    /// <summary>Indicates whether post-quantum cryptography was negotiated during the TLS handshake.</summary>
+    public bool IsPostQuantum => NegotiatedTlsGroup is 4588 or 512 or 513 or 514 or 4587 or 4589;
+
+    /// <summary>Gets the live estimated bottleneck bandwidth in bits per second computed by BBR.</summary>
+    public ulong EstimatedBandwidthBps { get; init; }
+
+    /// <summary>Gets the live number of bytes in flight currently awaiting acknowledgment.</summary>
+    public uint BytesInFlight { get; init; }
+
+    /// <summary>Gets the ideal send buffer size in bytes to prevent throughput starvation.</summary>
+    public ulong IdealSendBufferBytes { get; init; }
+
+    /// <summary>Gets the smoothed RTT in milliseconds from network statistics.</summary>
+    public double SmoothedRttMs { get; init; }
+
+    /// <summary>Gets the processor index assigned to process packets for this connection.</summary>
+    public ushort? IdealProcessor { get; init; }
+
     /// <summary>Gets the estimated packet loss ratio based on total and lost transmitted packets.</summary>
     public double PacketLossRatio => SendTotalPackets == 0 ? 0.0 :
-        Math.Max(0.0, (double)(SendSuspectedLostPackets - SendSpuriousLostPackets) / SendTotalPackets);
+        SendSuspectedLostPackets <= SendSpuriousLostPackets ? 0.0 :
+        Math.Min(1.0, (double)(SendSuspectedLostPackets - SendSpuriousLostPackets) / SendTotalPackets);
 }
 
 /// <summary>
@@ -1457,6 +1984,12 @@ public static class QuicStreamExtensions
     /// </summary>
     public static QuicStreamPriority GetQuicPriority(this System.IO.Stream stream) =>
         MsQuicTuner.TryGetStreamPriority(stream, out QuicStreamPriority p) ? p : QuicStreamPriority.Normal;
+
+    /// <summary>
+    /// Queries performance and bottleneck statistics for this active QUIC stream.
+    /// </summary>
+    public static bool GetStreamStatistics(this System.IO.Stream stream, out QuicStreamStatistics stats) =>
+        MsQuicTuner.TryGetStreamStatistics(stream, out stats);
 }
 
 /// <summary>
@@ -1467,14 +2000,38 @@ public static class QuicConnectionExtensions
     /// <summary>
     /// Atomically applies BBR congestion control, Pacing, HyStart, PMTUD, 16MB/4MB flow control windows, and keepalive to this connection.
     /// </summary>
-    public static bool ApplyOptimalTuning(this System.Net.Quic.QuicConnection connection) =>
-        MsQuicTuner.TryApplyOptimalTuning(connection);
+    public static bool ApplyOptimalTuning(this System.Net.Quic.QuicConnection connection, QuicDscpPriority? dscp = null) =>
+        MsQuicTuner.TryApplyOptimalTuning(connection, dscp: dscp);
 
     /// <summary>
     /// Atomically applies BBR congestion control, Pacing, HyStart, PMTUD, 16MB/4MB flow control windows, and keepalive to this connection.
     /// </summary>
-    public static bool ApplyOptimalTuning(this global::QuicPunch.QuicConnection connection) =>
-        MsQuicTuner.TryApplyOptimalTuning(connection);
+    public static bool ApplyOptimalTuning(this global::QuicPunch.QuicConnection connection, QuicDscpPriority? dscp = null) =>
+        MsQuicTuner.TryApplyOptimalTuning(connection, dscp: dscp);
+
+    /// <summary>
+    /// Queries real-time network and congestion control statistics from this native QUIC connection.
+    /// </summary>
+    public static bool TryGetNetworkStatistics(this System.Net.Quic.QuicConnection connection, out QuicNetworkStatistics stats) =>
+        MsQuicTuner.TryGetNetworkStatistics(connection, out stats);
+
+    /// <summary>
+    /// Queries real-time network and congestion control statistics from this QuicPunch QUIC connection.
+    /// </summary>
+    public static bool TryGetNetworkStatistics(this global::QuicPunch.QuicConnection connection, out QuicNetworkStatistics stats) =>
+        MsQuicTuner.TryGetNetworkStatistics(connection, out stats);
+
+    /// <summary>
+    /// Queries the ideal CPU processor core assigned by MsQuic to process packets for this connection.
+    /// </summary>
+    public static bool TryGetIdealProcessor(this System.Net.Quic.QuicConnection connection, out ushort processor) =>
+        MsQuicTuner.TryGetIdealProcessor(connection, out processor);
+
+    /// <summary>
+    /// Queries the ideal CPU processor core assigned by MsQuic to process packets for this QuicPunch QUIC connection.
+    /// </summary>
+    public static bool TryGetIdealProcessor(this global::QuicPunch.QuicConnection connection, out ushort processor) =>
+        MsQuicTuner.TryGetIdealProcessor(connection, out processor);
 
     /// <summary>
     /// Queries the active congestion control algorithm of this native QUIC connection.

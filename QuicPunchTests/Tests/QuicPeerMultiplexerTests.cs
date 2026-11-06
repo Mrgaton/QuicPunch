@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Net;
 using System.Net.Quic;
@@ -21,21 +21,59 @@ namespace QuicPunchTests.Tests
     {
         private static readonly Guid ChatProtocolId = Guid.Parse("11111111-2222-3333-4444-555555555555");
         private static readonly Guid FileProtocolId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        private sealed class PresencePlatform : QuicNet.Notifications.IAppPlatform
+        {
+            public TimeSpan Idle;
+            public TimeSpan? GetUserIdleTime() => Idle;
+            public bool StartupSupported => false;
+            public string Description => "Presence fixture";
+            public void SetStartWithSystem(bool enabled) { }
+            public Task NotifyAsync(QuicNet.Notifications.AppNotice notice, bool desktop, CancellationToken ct) => Task.CompletedTask;
+            public Task PlayRingtoneAsync(int volume, CancellationToken ct) => Task.CompletedTask;
+        }
+
+        private sealed class PriorityTransport : IQuicStreamTransport
+        {
+            public long Id => 0;
+            public QuicPunch.QuicStreamType Type => QuicPunch.QuicStreamType.Bidirectional;
+            public bool CanRead => true;
+            public bool CanWrite => true;
+            public Stream Stream { get; } = new MemoryStream();
+            public Task ReadsClosed => Task.CompletedTask;
+            public Task WritesClosed => Task.CompletedTask;
+            public byte Priority { get => (byte)(Priority16 >> 8); set => Priority16 = (ushort)(value << 8); }
+            public ushort Priority16 { get; set; }
+            public void CompleteWrites() { }
+            public void Abort(QuicPunch.QuicAbortDirection direction, long errorCode) { }
+            public void Dispose() => Stream.Dispose();
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
 
         private static X509Certificate2 GenerateTestCert()
         {
             using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             var req = new CertificateRequest("CN=MultiplexerTest", ecdsa, HashAlgorithmName.SHA256);
             var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddHours(2));
-            return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), null);
+            return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), null,
+                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
         }
 
         public static async Task RunAsync()
         {
+            System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(QuicPunchConnection).TypeHandle);
             Console.WriteLine("==================================================");
             Console.WriteLine("     QUIC PEER MULTIPLEXER END-TO-END TESTS       ");
             Console.WriteLine("==================================================");
 
+            using (var transport = new PriorityTransport())
+            using (var wrapped = new QuicPunch.QuicStream(transport))
+            {
+                // A transport without a System.Net.Quic native handle must still
+                // receive the control priority. Android uses this path under load.
+                if (!wrapped.SetQuicPriority(QuicStreamPriority.Highest) || transport.Priority16 != ushort.MaxValue ||
+                    wrapped.GetQuicPriority() != QuicStreamPriority.Highest)
+                    throw new Exception("Control priority did not reach the non-System.Net.Quic transport.");
+            }
             await Test_Multiplexer_TwoConcurrentVirtualProtocolsAsync();
             Test_Multiplexer_BinaryControlFrameRoundtrip();
             await Test_UdpAutoScalingToQuicMultiplexingPipelineAsync();
@@ -100,7 +138,7 @@ namespace QuicPunchTests.Tests
             var clientPeer = new PeerInfo(clientCert, null) { Name = "ClientPeer" };
 
             var serverChatReceivedTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var serverFileReceivedTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var serverFileReceivedTcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // Mock protocol handlers on the server
             var mockChatHandler = new TestProtocolHandler(ChatProtocolId, async (conn, stream, peer, ct) =>
@@ -125,33 +163,95 @@ namespace QuicPunchTests.Tests
                 byte[] lenBuf = new byte[4];
                 await stream.ReadExactlyAsync(lenBuf, ct);
                 int totalBytes = BitConverter.ToInt32(lenBuf);
-                byte[] buf = new byte[4096];
-                int readTotal = 0;
-                while (readTotal < totalBytes)
-                {
-                    int r = await stream.ReadAsync(buf.AsMemory(0, Math.Min(buf.Length, totalBytes - readTotal)), ct);
-                    if (r <= 0) break;
-                    readTotal += r;
-                }
-                serverFileReceivedTcs.TrySetResult(readTotal);
+                if (totalBytes != 64 * 1024)
+                    throw new InvalidDataException($"Unexpected file frame size: {totalBytes}");
+                byte[] data = new byte[totalBytes];
+                await stream.ReadExactlyAsync(data, ct);
+                serverFileReceivedTcs.TrySetResult(data);
             });
 
+            int chatAuthorizationAttempts = 0;
+            bool serverTrusted = true;
+            var pendingConsent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var cancelledConsent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var serverMux = new QuicPeerMultiplexer(
                 serverQuicConn,
                 clientPeer,
                 isServer: true,
                 protocolLookup: id => id == ChatProtocolId ? mockChatHandler : id == FileProtocolId ? mockFileHandler : null,
-                accessCheck: _ => true);
+                accessCheck: _ => serverTrusted,
+                sessionAccessCheck: async (_, id, ct) =>
+                {
+                    if (id != ChatProtocolId) return true;
+                    int attempt = Interlocked.Increment(ref chatAuthorizationAttempts);
+                    if (attempt == 2)
+                    {
+                        pendingConsent.TrySetResult();
+                        try { await Task.Delay(Timeout.Infinite, ct); }
+                        finally { cancelledConsent.TrySetResult(); }
+                    }
+                    return attempt > 1;
+                });
 
             var clientMux = new QuicPeerMultiplexer(
                 clientQuicConn,
                 serverPeer,
                 isServer: false,
-                protocolLookup: _ => null,
+                protocolLookup: id => id == ChatProtocolId ? mockChatHandler : null,
                 accessCheck: _ => true);
 
             await serverMux.StartAsync();
             await clientMux.StartAsync();
+
+            long lastApplicationUse = clientMux.LastApplicationActivityTimestamp;
+            foreach (var (afk, accepts) in new[] { (false, true), (true, true), (false, false), (true, false) })
+            {
+                await clientMux.SendUserPresenceAsync(afk, accepts);
+                using var presenceDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                while (serverMux.RemoteUserPresence is not { } presence || presence.IsAfk != afk || presence.AcceptsNotifications != accepts)
+                    await Task.Delay(10, presenceDeadline.Token);
+            }
+            if (chatAuthorizationAttempts != 0 || clientMux.HasApplicationSessions || clientMux.LastApplicationActivityTimestamp != lastApplicationUse)
+                throw new Exception("Presence opened a session, requested consent or kept an idle application transport active.");
+            await serverMux.SendUserPresenceAsync(false, true);
+            using (var presenceDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                while (clientMux.RemoteUserPresence is not { IsAfk: false, AcceptsNotifications: true }) await Task.Delay(10, presenceDeadline.Token);
+            serverTrusted = false;
+            if (serverMux.RemoteUserPresence != null) throw new Exception("Revoked trust exposed user presence.");
+            serverTrusted = true;
+
+            if (clientMux.GetRemoteProtocolAvailability(ChatProtocolId) != null)
+                throw new Exception("Remote capability must start unknown on each transport.");
+            mockChatHandler.CanStartSession = false;
+            await clientMux.RefreshRemoteProtocolAvailabilityAsync(ChatProtocolId);
+            using (var capabilityTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                while (clientMux.GetRemoteProtocolAvailability(ChatProtocolId) != false) await Task.Delay(10, capabilityTimeout.Token);
+            if (chatAuthorizationAttempts != 0 || clientMux.HasApplicationSessions)
+                throw new Exception("Capability discovery opened an application or requested permission.");
+            mockChatHandler.CanStartSession = true;
+            await Task.Delay(5100);
+            await clientMux.RefreshRemoteProtocolAvailabilityAsync(ChatProtocolId);
+            using (var capabilityTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                while (clientMux.GetRemoteProtocolAvailability(ChatProtocolId) != true) await Task.Delay(10, capabilityTimeout.Token);
+
+            try
+            {
+                await clientMux.OpenVirtualSessionAsync(ChatProtocolId);
+                throw new Exception("The server accepted a session rejected by the per-protocol permission gate.");
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("rejected session", StringComparison.Ordinal)) { }
+
+            // Hanging up before the recipient accepts must cancel its consent
+            // workflow, so a native ringtone cannot continue until the timeout.
+            using (var cancelCall = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                var ringing = clientMux.OpenVirtualSessionAsync(ChatProtocolId, cancelCall.Token);
+                await pendingConsent.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                cancelCall.Cancel();
+                try { await ringing; throw new Exception("Cancelled request was accepted"); }
+                catch (OperationCanceledException) { }
+                await cancelledConsent.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            }
 
             // 1. Client opens Virtual Chat Session
             await using var clientChatConn = await clientMux.OpenVirtualSessionAsync(ChatProtocolId);
@@ -187,9 +287,9 @@ namespace QuicPunchTests.Tests
             if (echoMsg != "Echo: Hello via Multiplexer!")
                 throw new Exception($"Chat echo mismatch. Got: {echoMsg}");
 
-            int fileBytesReceived = await serverFileReceivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            if (fileBytesReceived != TestFileSize)
-                throw new Exception($"File size mismatch. Expected {TestFileSize}, got {fileBytesReceived}");
+            byte[] fileBytesReceived = await serverFileReceivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (!fileBytesReceived.AsSpan().SequenceEqual(filePayload))
+                throw new Exception("Concurrent file session delivered corrupted data or data from another virtual session.");
 
             bool hasTelemetry = clientMux.TryGetTelemetry(out var telemetry);
             if (hasTelemetry)
@@ -203,6 +303,9 @@ namespace QuicPunchTests.Tests
 
             // Clean up
             await clientMux.DisposeAsync();
+            if (clientMux.RemoteUserPresence != null) throw new Exception("A closed transport retained user presence.");
+            if (clientMux.GetRemoteProtocolAvailability(ChatProtocolId) != null)
+                throw new Exception("A closed transport retained remote capability.");
             await serverMux.DisposeAsync();
         }
 
@@ -257,7 +360,7 @@ namespace QuicPunchTests.Tests
             Directory.CreateDirectory(tempDirA);
             Directory.CreateDirectory(tempDirB);
 
-            var protoChat = Guid.NewGuid();
+            var protoChat = Guid.Parse("00000000-0000-0000-0000-000000000001");
             var protoFile = Guid.NewGuid();
             var protoVoice = Guid.NewGuid();
 
@@ -297,8 +400,8 @@ namespace QuicPunchTests.Tests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 42311, autoAcceptConnections: true);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 42312, autoAcceptConnections: true);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 42311) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 42312) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 qpB.RegisterProtocol(handlerChatB);
                 qpB.RegisterProtocol(handlerFileB);
@@ -330,6 +433,18 @@ namespace QuicPunchTests.Tests
                 };
                 qpB.AvailablePeers[peerA_on_B.Id] = peerA_on_B;
                 qpB.TrustPeer(peerA_on_B.CertHash);
+                // Chat must deliver without any session petition, including on the first connection.
+                int chatPetitions = 0;
+                qpB.Manager.HandshakeRequested += async (request, ct) =>
+                {
+                    if (request.ProtocolId == protoChat) Interlocked.Increment(ref chatPetitions);
+                    // A real user can take longer than the old 30/35 s consent and
+                    // multiplexing deadlines. Heartbeats must keep the tunnel alive.
+                    if (request.ProtocolId == protoVoice) await Task.Delay(TimeSpan.FromSeconds(36), ct);
+                    return new QuicPunch.Helpers.HandshakeDecision(
+                        request.PeerId == peerA_on_B.Id && (request.ProtocolId == protoFile || request.ProtocolId == protoVoice),
+                        0, CancellationToken.None);
+                };
 
                 // Step 1: Subprotocol 1 (Chat) -> Triggers UDP hole punch and establishes physical QUIC + Stream 0
                 var chatSendTask = Task.Run(async () =>
@@ -349,6 +464,7 @@ namespace QuicPunchTests.Tests
                 string receivedChat = await chatMessages.Reader.ReadAsync();
                 if (receivedChat != "Chat Message 1")
                     throw new Exception($"Chat message mismatch: {receivedChat}");
+                if (chatPetitions != 0) throw new Exception("Direct chat required a session petition.");
 
                 // Verify single physical QUIC multiplexer is established on both Node A and Node B
                 if (!qpA.TryGetPeerMultiplexer(peerB_on_A.Id, out var muxA) || muxA == null || muxA.IsDisposed)
@@ -358,6 +474,27 @@ namespace QuicPunchTests.Tests
                     throw new Exception("Node B does not have an active QuicPeerMultiplexer!");
 
                 int udpHandshakeSessionsAfterChat = qpB.IncomingHandshakeSessions.Count;
+                var presencePreferencesA = new QuicNet.Settings.AppPreferencesStore(Path.Combine(tempDirA, "presence.json"));
+                var presencePreferencesB = new QuicNet.Settings.AppPreferencesStore(Path.Combine(tempDirB, "presence.json"));
+                presencePreferencesA.Update(p => { p.Notifications.DoNotDisturb = true; p.PresenceIdleMinutes = 1; });
+                var activityA = new PresencePlatform();
+                using var presenceLifetime = new CancellationTokenSource();
+                using var presenceA = new QuicNet.Presence.UserPresenceService(qpA, presencePreferencesA, () => activityA, presenceLifetime.Token);
+                using var presenceB = new QuicNet.Presence.UserPresenceService(qpB, presencePreferencesB, () => null, presenceLifetime.Token);
+                async Task WaitForPresence(bool afk, bool accepts)
+                {
+                    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                    while (!presenceB.RemoteSnapshot().TryGetValue(peerA_on_B.Id.ToString(), out var value) || value.IsAfk != afk || value.AcceptsNotifications != accepts)
+                        await Task.Delay(20, deadline.Token);
+                }
+                await WaitForPresence(false, false);
+                activityA.Idle = TimeSpan.FromMinutes(2);
+                await WaitForPresence(true, false);
+                activityA.Idle = TimeSpan.Zero;
+                presencePreferencesA.Update(p => p.Notifications.DoNotDisturb = false);
+                await WaitForPresence(false, true);
+                if (qpB.IncomingHandshakeSessions.Count != udpHandshakeSessionsAfterChat)
+                    throw new Exception("Presence caused an additional UDP handshake.");
 
                 // Step 2: Subprotocol 2 (File Transfer with 32KB binary data).
                 // Reuses the persistent multiplexer in <1ms without any UDP hole punch or handshake!
@@ -399,7 +536,7 @@ namespace QuicPunchTests.Tests
                     await qpA.InitQuicConnection(protoVoice, peerB_on_A);
                 });
 
-                await voiceSendTask.WaitAsync(TimeSpan.FromSeconds(10));
+                await voiceSendTask.WaitAsync(TimeSpan.FromSeconds(50));
                 string receivedVoice = await voiceMessages.Reader.ReadAsync();
                 if (receivedVoice != "Voice Control Signal Frame")
                     throw new Exception($"Voice datagram mismatch: {receivedVoice}");
@@ -478,7 +615,7 @@ namespace QuicPunchTests.Tests
 
             public Guid ProtocolId { get; }
             public string ProtocolName => "TestHandler";
-            public System.IO.Compression.ZstandardCompressionOptions? CompressionOptions => null;
+            public bool CanStartSession { get; set; } = true;
 
             public Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct) =>
                 _handler(connection, stream, peer, ct);

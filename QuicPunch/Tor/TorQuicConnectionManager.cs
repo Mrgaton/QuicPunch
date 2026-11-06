@@ -15,12 +15,14 @@ namespace QuicPunch;
 public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposable, IAsyncDisposable
 {
     private const int DefaultMaxMessageBytes = 4 * 1024 * 1024;
+    private const ushort DefaultMaxDatagramBytes = 1420;
 
     private readonly TorManager _tor;
     private readonly TorPeerTransportHub _hub;
     private readonly TorPeerTransportHub.RouteState _route;
     private readonly SemaphoreSlim _messageWriteLock = new(1, 1);
     private readonly Channel<byte[]> _messages;
+    private readonly TorEmulatedDatagramChannel _datagramChannel;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly ConcurrentDictionary<TorTcpConnection, byte> _openLanes = new();
     private readonly Task _messagePump;
@@ -53,6 +55,13 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
                 AllowSynchronousContinuations = false
             });
 
+        _datagramChannel = new TorEmulatedDatagramChannel(
+            DefaultMaxDatagramBytes,
+            (payload, cancellationToken) => SendFrameAsync(
+                TorMessageFrameType.Datagram,
+                payload,
+                cancellationToken));
+
         _messagePump = Task.Run(MessagePumpAsync);
     }
 
@@ -65,6 +74,7 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
 
     public EndPoint? LocalEndPoint => new DnsEndPoint(_hub.OnionAddress, _hub.VirtualPort);
     public EndPoint? RemoteEndPoint => new DnsEndPoint(RemoteOnion, RemoteVirtualPort);
+    public Helpers.IQuicDatagramChannel? DatagramChannel => _datagramChannel;
 
     public static async ValueTask<TorQuicConnectionManager> ConnectAsync(
         TorManager tor,
@@ -166,10 +176,19 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
         return (manager.CreateQuicConnection(), manager);
     }
 
-    public ValueTask SendDatagramAsync(
+    public async ValueTask SendDatagramAsync(
         ReadOnlyMemory<byte> payload,
-        CancellationToken cancellationToken = default) =>
-        SendMessageAsync(payload, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfUnavailable();
+        if (payload.Length > DefaultMaxDatagramBytes)
+            throw new ArgumentOutOfRangeException(nameof(payload), $"Datagram exceeds {DefaultMaxDatagramBytes} bytes.");
+
+        await SendFrameAsync(
+            TorMessageFrameType.Datagram,
+            payload,
+            cancellationToken).ConfigureAwait(false);
+    }
 
     public async ValueTask SendMessageAsync(
         ReadOnlyMemory<byte> payload,
@@ -186,8 +205,14 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
     }
 
     public async ValueTask<ReadOnlyMemory<byte>> ReceiveDatagramAsync(
-        CancellationToken cancellationToken = default) =>
-        await ReceiveMessageAsync(cancellationToken).ConfigureAwait(false);
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        byte[] datagram = await _datagramChannel.IncomingDatagrams.Reader
+            .ReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return datagram;
+    }
 
     public async ValueTask<ReadOnlyMemory<byte>> ReceiveMessageAsync(
         CancellationToken cancellationToken = default)
@@ -296,6 +321,7 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
         }
 
         _shutdown.Cancel();
+        _datagramChannel.Dispose();
         _messages.Writer.TryComplete();
 
         foreach (TorTcpConnection lane in _openLanes.Keys)
@@ -329,6 +355,7 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
         finally
         {
             _shutdown.Cancel();
+            _datagramChannel.Dispose();
             try { await _messagePump.ConfigureAwait(false); } catch { }
             _messages.Writer.TryComplete();
             _messageWriteLock.Dispose();
@@ -409,11 +436,15 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
                 {
                     (byte)TorMessageFrameType.Message => TorMessageFrameType.Message,
                     (byte)TorMessageFrameType.ConnectionClose => TorMessageFrameType.ConnectionClose,
+                    (byte)TorMessageFrameType.Datagram => TorMessageFrameType.Datagram,
                     _ => throw new InvalidDataException("Unknown Tor message-lane frame type.")
                 };
 
                 int length = checked((int)BinaryPrimitives.ReadUInt32BigEndian(header.AsSpan(1, 4)));
-                if (length < 0 || length > _maxMessageBytes)
+                int maxPayloadBytes = type == TorMessageFrameType.Datagram
+                    ? DefaultMaxDatagramBytes
+                    : _maxMessageBytes;
+                if (length < 0 || length > maxPayloadBytes)
                     throw new InvalidDataException("Tor message-lane frame exceeds configured maximum.");
 
                 byte[] payload = new byte[length];
@@ -429,6 +460,12 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
                         BinaryPrimitives.ReadInt64BigEndian(payload));
                     CloseFromRemoteOrFailure(error: null);
                     break;
+                }
+
+                if (type == TorMessageFrameType.Datagram)
+                {
+                    _datagramChannel.Dispatch(payload);
+                    continue;
                 }
 
                 if (!_messages.Writer.TryWrite(payload))
@@ -454,6 +491,8 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
     {
         Interlocked.Exchange(ref _closed, 1);
         _shutdown.Cancel();
+
+        _datagramChannel.Dispose();
 
         if (error is null)
             _messages.Writer.TryComplete();
@@ -490,14 +529,22 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
         try
         {
             TorTcpConnection stream = _route.GetMessageLane();
-            byte[] header = new byte[5];
-            header[0] = (byte)type;
-            BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(1, 4), checked((uint)payload.Length));
+            byte[] frame = GC.AllocateUninitializedArray<byte>(checked(5 + payload.Length));
+            frame[0] = (byte)type;
+            BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(1, 4), checked((uint)payload.Length));
+            payload.Span.CopyTo(frame.AsSpan(5));
 
-            await stream.WriteAsync(header, cancellationToken).ConfigureAwait(false);
-            if (!payload.IsEmpty)
-                await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+            // Header + payload are one Stream.WriteAsync operation. A cancellation or
+            // transport failure therefore cannot leave a reusable lane parked between
+            // the two logical halves of a frame; the catch below closes the route on
+            // any partial/failed write.
+            await stream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
             await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            CloseFromRemoteOrFailure(ex);
+            throw;
         }
         finally
         {
@@ -529,6 +576,7 @@ public sealed class TorQuicConnectionManager : IDummyQuicLaneProvider, IDisposab
     private enum TorMessageFrameType : byte
     {
         Message = 1,
-        ConnectionClose = 2
+        ConnectionClose = 2,
+        Datagram = 3
     }
 }

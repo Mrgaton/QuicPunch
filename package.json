@@ -1,0 +1,13 @@
+{
+  "name": "quicnet-ui-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:web": "node scripts/test-web.mjs --web",
+    "test:browser": "node scripts/test-web.mjs --browser",
+    "test:browser:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

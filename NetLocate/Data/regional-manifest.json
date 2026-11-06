@@ -1,0 +1,131 @@
+{
+  "snapshot": "2026-10-18",
+  "fetchedUtc": "2026-10-18T18:43:41.4060205+00:00",
+  "sourceRecords": 14213,
+  "endpoints": 7013,
+  "sites": 5453,
+  "ipv4": 2451,
+  "ipv6": 4562,
+  "countries": 133,
+  "spainEndpoints": 64,
+  "sha256": "D9D9C33D62567AFA60F046675E83A1259809FC56F61D444EC21D451678B5D6BB",
+  "policy": "Public, connected, non-anchor, works + stable-30d; exclude disputed/on-hold, declared VPN/tunnel/anycast and IPv4 NAT. IP deduplicated. No physical verification: separate conditional bounds only, nominal 50 km metadata uncertainty is not calibrated.",
+  "sources": [
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&status=1&page_size=500",
+      "sha256": "AB337254CFDF6CA133939BD413230A372AC9AAFA4BD8BA2577F0E4D477CF11CD"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=2&page_size=500&status=1",
+      "sha256": "451C06516ECAAD20D760497B6CD81BDF833DA136E19014C597F84067DEFEEF76"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=3&page_size=500&status=1",
+      "sha256": "142BADC48254960F619E68D9860FC8E9BE4D504B1D2260A0B26DEA88D00FB679"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=4&page_size=500&status=1",
+      "sha256": "38D0893DE3303613D90518B2FF11FE71C07B75F495AE257F7B115ECC95FE505C"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=5&page_size=500&status=1",
+      "sha256": "682B8A1068B1D28097EF0B2E5C8E99A215389E32AF8987ABC2FBC5CED498EF55"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=6&page_size=500&status=1",
+      "sha256": "04746E249CD441DC8AA04E33CBBF99E8EA72B323C2AB96D1621A543E679A1B91"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=7&page_size=500&status=1",
+      "sha256": "9D199BA0F61796737C5AF49C3E7937E5D0C4D9617B0BB4E901D480EA3C140517"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=8&page_size=500&status=1",
+      "sha256": "A2C7D015D069653CF631E12482BFB72E9E7D6728780B56AAA07F56848FC32BB3"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=9&page_size=500&status=1",
+      "sha256": "775C42E371E9943018843FE2AF31F3F28615F5A5FDA412A789A6E168BFB03BC5"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=10&page_size=500&status=1",
+      "sha256": "F8ED2CB92514C9AD26AE82086C34E7E128E8E9B7DCA5A3F2FFED6E252B19674F"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=11&page_size=500&status=1",
+      "sha256": "2F1FE84D683192BC7CDE3D1CE6A6D2F099C7799C6BFBF6A8A6A861697384349E"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=12&page_size=500&status=1",
+      "sha256": "8D742848FE56BB2ABFE32690063D1667C2FBE05360E9DE39F029D2E7677A10DD"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=13&page_size=500&status=1",
+      "sha256": "EAF097C02DB81801F4CA3CA9C8E3D4B70ADBA4ACE72C160976A1ED200E4C0C28"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=14&page_size=500&status=1",
+      "sha256": "548487A7A27518C2BC2B1E12DA9B939548D332ABAC6B00183847F0B4D36BCAD1"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=15&page_size=500&status=1",
+      "sha256": "5487F16617FBFEC080AF9E56E19E7FFAABA81EF13A8A1E36DD2B5604DDF80E6D"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=16&page_size=500&status=1",
+      "sha256": "1192D934D67F7B6420006C7BE0442C284FE6A6E1D56796A3FDD2F484E42BC4BD"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=17&page_size=500&status=1",
+      "sha256": "9AA4244090BEC921BF15B7A5729CF824409400EA363474D93F98CBD5A4A77963"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=18&page_size=500&status=1",
+      "sha256": "9A1A80341D3CB8BC27CFDF8BAFAE2A696623B43410C602AD79FC040F1EE41C88"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=19&page_size=500&status=1",
+      "sha256": "A69D762B14994AC4A6159B40699205C709EB15C974EDA79182F160E152C5C4B7"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=20&page_size=500&status=1",
+      "sha256": "74B15B295788DF7BA9D44CAE1798EE2A30600BBD6E277F3330C962FD004F6FCE"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=21&page_size=500&status=1",
+      "sha256": "4A1ED7F1EB424435C4332563D504662C40EE3FDC5C6D22EBE709512782E79806"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=22&page_size=500&status=1",
+      "sha256": "5C714E850DBB97578EF9D645199B56734DC688991B20DD792059CBB6C48EC327"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=23&page_size=500&status=1",
+      "sha256": "B2F6C62F7BFE6136B6A1627F72F2CC7D0D426B6E1EFC26448260F84A954AB771"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=24&page_size=500&status=1",
+      "sha256": "B4DC790AB1839C1A0BD4F41395966B44F11092CD89A162ECDE321C2415FD0AC8"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=25&page_size=500&status=1",
+      "sha256": "E6D073E89B8A2C9D14FAF5B6C5DB55495CDDC7D5548FF50B489306652561359B"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=26&page_size=500&status=1",
+      "sha256": "190AFF35BA622C4F105665D30E87849D34C9A2F839306ABA4BCDB32F8FEE3E6A"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=27&page_size=500&status=1",
+      "sha256": "4AA913999233B6C42C9F9DCB76F04DB8D976886A6765FACC72CD0E559E792454"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=28&page_size=500&status=1",
+      "sha256": "C2484E6682EDF14DC609004ED9CAD0AB68C8197C69C8943A5A53FBDD5641F483"
+    },
+    {
+      "url": "https://atlas.ripe.net/api/v2/probes/?is_public=true&page=29&page_size=500&status=1",
+      "sha256": "69E74EB9C3D360B085F87C33131B1D365A10DD1DAC1BF4DC6FE477F06CC8B69D"
+    }
+  ]
+}

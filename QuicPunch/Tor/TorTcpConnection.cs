@@ -140,36 +140,19 @@ public sealed class TorTcpConnection : Stream, IAsyncDisposable
 
     public override void Write(ReadOnlySpan<byte> buffer) => _stream.Write(buffer);
 
-    public override async ValueTask WriteAsync(
+    public override ValueTask WriteAsync(
         ReadOnlyMemory<byte> buffer,
         CancellationToken cancellationToken = default)
     {
-        if (Volatile.Read(ref _disposed) != 0)
-            return;
-        try
-        {
-            await _stream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is NullReferenceException or ObjectDisposedException or SocketException or IOException)
-        {
-        }
+        ThrowIfDisposed();
+        return _stream.WriteAsync(buffer, cancellationToken);
     }
 
-    public override async Task WriteAsync(
-        byte[] buffer,
-        int offset,
-        int count,
-        CancellationToken cancellationToken)
+    public override Task WriteAsync(
+        byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _disposed) != 0)
-            return;
-        try
-        {
-            await _stream.WriteAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is NullReferenceException or ObjectDisposedException or SocketException or IOException)
-        {
-        }
+        ThrowIfDisposed();
+        return _stream.WriteAsync(buffer, offset, count, cancellationToken);
     }
 
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();

@@ -1,0 +1,24 @@
+import {readFileSync} from 'node:fs';
+import {Script, createContext} from 'node:vm';
+import assert from 'node:assert/strict';
+import {attachApp} from '../Fixtures/WebAppRuntime.mjs';
+const source=readFileSync(new URL('../../QuicNet.Shared/wwwroot/chat.js',import.meta.url),'utf8');
+const input={value:'',style:{}};
+const state=new Set();
+const document={getElementById:id=>id==='messageInput'?input:id==='chatContainer'?{classList:{toggle:(name,on)=>on?state.add(name):state.delete(name)}}:null};
+const context=createContext({document,URLSearchParams,location:{search:'?peer=alice'}});
+// Include selection's real helpers/state; do not cut the script at an unrelated declaration.
+attachApp(context);
+new Script(source+'\nglobalThis.select = selectChatPeer;').runInContext(context);
+input.value='Borrador privado para Alice';
+context.select('bob');
+assert.equal(input.value,'','A draft for Alice must not appear in Bob’s composer');
+input.value='Borrador para Bob';context.select('global');
+assert.equal(input.value,'','A private draft must not appear in the public channel');
+context.select('alice');assert.equal(input.value,'Borrador privado para Alice');
+context.select('bob');assert.equal(input.value,'Borrador para Bob');
+input.value='';context.select('alice');context.select('bob');
+assert.equal(input.value,'','A sent or cleared draft must not reappear');
+const renderPrelude=source.slice(source.indexOf('function renderChat('),source.indexOf('// 1. Public channel'));
+assert.ok(!/selectedPeerId\s*=\s*'global'/.test(renderPrelude),'Unavailable contacts must not silently select a public channel');
+console.log('PASS conversation privacy: drafts remain per-contact, cleared drafts stay empty, no fallback to public chat');

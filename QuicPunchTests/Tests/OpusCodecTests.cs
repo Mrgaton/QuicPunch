@@ -83,6 +83,16 @@ public static class OpusCodecTests
         if (codec.Bitrate != 96000)
             throw new Exception($"Expected bitrate 96000, got {codec.Bitrate}");
 
+        foreach (int bitrate in new[] { 160000, 192000, 256000, 300000 })
+        {
+            codec.Bitrate = bitrate;
+            if (codec.Bitrate != bitrate)
+                throw new Exception($"Expected bitrate {bitrate}, got {codec.Bitrate}");
+            byte[] packet = codec.EncodeFramed(GenerateSineWave(440, 48000, 960), 1, 20);
+            if (codec.Decode(packet, 960).Length != 960)
+                throw new Exception($"High-bitrate round trip failed at {bitrate}");
+        }
+
         Console.WriteLine("PASSED");
     }
 

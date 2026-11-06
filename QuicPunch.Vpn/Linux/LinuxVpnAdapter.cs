@@ -1,170 +1,114 @@
-using System;
 using System.Buffers.Binary;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Net;
+using System.Net.Sockets;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
 
 namespace QuicPunch.Vpn.Linux;
 
 public sealed class LinuxVpnAdapter : IVpnAdapter
 {
-    private int _tunFd = -1;
-    private bool _disposed;
+    public static bool HasNetworkAdministration
+    {
+        get
+        {
+            if (!OperatingSystem.IsLinux()) return false;
+            try
+            {
+                string? effective = File.ReadLines("/proc/self/status").FirstOrDefault(line => line.StartsWith("CapEff:", StringComparison.Ordinal));
+                return effective != null && ulong.TryParse(effective.AsSpan(7).Trim(), System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture, out ulong capabilities) && (capabilities & (1UL << 12)) != 0;
+            }
+            catch (IOException) { return false; }
+            catch (UnauthorizedAccessException) { return false; }
+        }
+    }
 
+    private readonly SafeFileHandle _tun;
     public string Name { get; }
-    public bool IsActive => _tunFd >= 0 && !_disposed;
+    public bool IsActive => !_tun.IsClosed && !_tun.IsInvalid;
     public IPAddress? LocalIp { get; private set; }
     public string? SubnetMask { get; private set; }
     public int Mtu { get; private set; } = 1420;
 
     public LinuxVpnAdapter(string name = "qp-tun0")
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-
-        int fd = LinuxTunApi.Open("/dev/net/tun", LinuxTunApi.O_RDWR);
+        ValidateName(name);
+        if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException("Linux TUN requires Linux.");
+        int fd = LinuxTunApi.Open("/dev/net/tun", LinuxTunApi.O_RDWR | LinuxTunApi.O_NONBLOCK | LinuxTunApi.O_CLOEXEC);
         if (fd < 0)
-        {
-            int errno = Marshal.GetLastPInvokeError();
-            throw new Win32Exception(errno, $"Failed to open /dev/net/tun (errno {errno}). Ensure the 'tun' kernel module is loaded and you have sufficient permissions.");
-        }
-
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot open /dev/net/tun. Install/load the tun kernel module and allow access to the device.");
+        _tun = new SafeFileHandle((nint)fd, ownsHandle: true);
         try
         {
             unsafe
             {
                 IfReq ifr = default;
-                byte[] nameBytes = Encoding.ASCII.GetBytes(name);
-                int copyLen = Math.Min(nameBytes.Length, 15);
-                for (int i = 0; i < copyLen; i++)
-                {
-                    ifr.IfName[i] = nameBytes[i];
-                }
-                ifr.IfName[copyLen] = 0;
-
-                ifr.IfFlags = (short)(LinuxTunApi.IFF_TUN | LinuxTunApi.IFF_NO_PI);
-
-                int ret = LinuxTunApi.Ioctl(fd, LinuxTunApi.TUNSETIFF, &ifr);
-                if (ret < 0)
-                {
-                    int errno = Marshal.GetLastPInvokeError();
-                    throw new Win32Exception(errno, $"Failed to create Linux TUN device '{name}' (errno {errno}). Root or CAP_NET_ADMIN privileges are required.");
-                }
-
-                var sb = new StringBuilder();
-                for (int i = 0; i < 16 && ifr.IfName[i] != 0; i++)
-                {
-                    sb.Append((char)ifr.IfName[i]);
-                }
-                Name = sb.Length > 0 ? sb.ToString() : name;
+                for (int i = 0; i < name.Length; i++) ifr.IfName[i] = (byte)name[i];
+                // Refuse to attach to an existing persistent device owned by another session.
+                ifr.IfFlags = (short)(LinuxTunApi.IFF_TUN | LinuxTunApi.IFF_NO_PI | LinuxTunApi.IFF_TUN_EXCL);
+                if (LinuxTunApi.Ioctl(fd, LinuxTunApi.TUNSETIFF, &ifr) < 0)
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), $"Cannot create Linux TUN '{name}'. CAP_NET_ADMIN (or the VPN broker) is required; the name must be unused.");
             }
+            Name = name;
+        }
+        catch { _tun.Dispose(); throw; }
+    }
 
-            _tunFd = fd;
-        }
-        catch
-        {
-            LinuxTunApi.Close(fd);
-            throw;
-        }
+    internal static void ValidateName(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (name.Length > 15 || name is "." or ".." || name.Any(c => c <= ' ' || c >= 127 || c is '/' or ':' or '%'))
+            throw new ArgumentException("TUN names must contain 1-15 ASCII characters without whitespace, '/', ':' or '%'.", nameof(name));
+    }
+
+    internal static int PrefixLength(IPAddress ip, string subnetMask)
+    {
+        ArgumentNullException.ThrowIfNull(ip);
+        if (ip.AddressFamily != AddressFamily.InterNetwork)
+            throw new ArgumentException("The VPN currently supports IPv4 only.", nameof(ip));
+        if (!IPAddress.TryParse(subnetMask, out var mask) || mask.AddressFamily != AddressFamily.InterNetwork)
+            throw new ArgumentException("An IPv4 subnet mask is required.", nameof(subnetMask));
+        uint value = BinaryPrimitives.ReadUInt32BigEndian(mask.GetAddressBytes());
+        uint inverse = ~value;
+        if ((inverse & (inverse + 1)) != 0)
+            throw new ArgumentException("Subnet mask must be contiguous.", nameof(subnetMask));
+        return BitOperations.PopCount(value);
     }
 
     public void SetIpAddress(IPAddress ip, string subnetMask)
     {
-        ArgumentNullException.ThrowIfNull(ip);
-        ArgumentException.ThrowIfNullOrWhiteSpace(subnetMask);
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
-        if (!IPAddress.TryParse(subnetMask, out var maskIp))
-            throw new ArgumentException("Invalid subnet mask", nameof(subnetMask));
-
-        uint maskUint = BinaryPrimitives.ReadUInt32BigEndian(maskIp.GetAddressBytes());
-        int cidr = BitOperations.PopCount(maskUint);
-
-        using var process = Process.Start(new ProcessStartInfo
-        {
-            FileName = "ip",
-            Arguments = $"addr replace {ip}/{cidr} dev {Name}",
-            UseShellExecute = false,
-            CreateNoWindow = true
-        });
-        process?.WaitForExit();
-        if (process is { ExitCode: not 0 })
-            throw new InvalidOperationException($"ip command failed while assigning {ip}/{cidr} to {Name} (exit code {process.ExitCode}).");
-
+        ObjectDisposedException.ThrowIf(_tun.IsClosed, this);
+        int cidr = PrefixLength(ip, subnetMask);
+        // Linux does not infer the directed broadcast unless explicitly requested.
+        VpnCommand.Run("ip", "-4", "address", "replace", $"{ip}/{cidr}", "broadcast", "+", "dev", Name);
+        if (LocalIp != null && (!LocalIp.Equals(ip) || SubnetMask != subnetMask))
+            VpnCommand.Run("ip", "-4", "address", "del", $"{LocalIp}/{PrefixLength(LocalIp, SubnetMask!)}", "dev", Name);
         LocalIp = ip;
         SubnetMask = subnetMask;
     }
 
     public void SetMtu(int mtu)
     {
-        if (mtu < 1200 || mtu > 9000)
+        if (mtu is < 1200 or > 9000)
             throw new ArgumentOutOfRangeException(nameof(mtu), "MTU must be between 1200 and 9000.");
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
-        using var process = Process.Start(new ProcessStartInfo
-        {
-            FileName = "ip",
-            Arguments = $"link set dev {Name} mtu {mtu} up",
-            UseShellExecute = false,
-            CreateNoWindow = true
-        });
-        process?.WaitForExit();
-        if (process is { ExitCode: not 0 })
-            throw new InvalidOperationException($"ip command failed while setting MTU {mtu} on {Name} (exit code {process.ExitCode}).");
-
+        ObjectDisposedException.ThrowIf(_tun.IsClosed, this);
+        VpnCommand.Run("ip", "link", "set", "dev", Name, "mtu", mtu.ToString(System.Globalization.CultureInfo.InvariantCulture), "up");
         Mtu = mtu;
     }
 
     public IVpnSession StartSession(uint bufferCapacity = 0x400000 * 4)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_tunFd < 0)
-            throw new InvalidOperationException("TUN adapter is closed.");
-
-        int sessionFd = LinuxTunApi.Dup(_tunFd);
-        if (sessionFd < 0)
-        {
-            int errno = Marshal.GetLastPInvokeError();
-            throw new Win32Exception(errno, $"Failed to duplicate TUN file descriptor (errno {errno}).");
-        }
-
-        return new LinuxVpnSession(sessionFd);
+        ObjectDisposedException.ThrowIf(_tun.IsClosed, this);
+        int fd = LinuxTunApi.Duplicate(_tun, LinuxTunApi.F_DUPFD_CLOEXEC, 0);
+        if (fd < 0) throw new Win32Exception(Marshal.GetLastPInvokeError(), "Cannot duplicate the TUN descriptor.");
+        return new LinuxVpnSession(fd);
     }
 
     public void Close() => Dispose();
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            try
-            {
-                using var process = Process.Start(new ProcessStartInfo
-                {
-                    FileName = "ip",
-                    Arguments = $"link set dev {Name} down",
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                });
-                process?.WaitForExit();
-            }
-            catch { }
-
-            int fd = Interlocked.Exchange(ref _tunFd, -1);
-            if (fd >= 0)
-            {
-                LinuxTunApi.Close(fd);
-            }
-            _disposed = true;
-        }
-    }
-
-    public ValueTask DisposeAsync()
-    {
-        Dispose();
-        return ValueTask.CompletedTask;
-    }
+    // Nonpersistent TUN and its connected routes disappear when the last session closes.
+    public void Dispose() => _tun.Dispose();
+    public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
 }

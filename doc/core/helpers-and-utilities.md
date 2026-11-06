@@ -1,4 +1,4 @@
-# Helpers & Cryptographic Utilities
+﻿# Helpers & Cryptographic Utilities
 
 > Comprehensive reference of helper utilities, time synchronization engines, native MsQuic reflection tuners, datagram pipelines, audio codecs, and persistent peer databases.
 
@@ -8,13 +8,12 @@
 
 | Helper Class | File | Responsibility |
 | :--- | :--- | :--- |
-| [`MsQuicTuner`](../../QuicPunch/Helpers/MsQuicTuner.cs) | `Helpers/MsQuicTuner.cs` | Native MsQuic reflection tuner: dynamic BBR congestion control, DSCP QoS voice/video tagging, microsecond stats. |
-| [`MsQuicDatagramChannel`](../../QuicPunch/Helpers/MsQuicDatagrams.cs) | `Helpers/MsQuicDatagrams.cs` | RFC 9221 unbuffered datagram channel and native configuration cache patcher for real-time audio/video. |
-| [`RotatingFileLogger`](../../QuicPunch/Helpers/RotatingFileLogger.cs) | `Helpers/RotatingFileLogger.cs` | Asynchronous channel-backed file logger with 50MB limits, daily rolling, and gzip archiving. |
+| [`MsQuicTuner`](../../QuicPunch/Helpers/MsQuicTuner.cs) | `Helpers/MsQuicTuner.cs` | Native MsQuic tuner: BBR configuration before the handshake, DSCP QoS voice/video tagging, microsecond stats. |
+| [`MsQuicDatagramChannel`](../../QuicPunch/Helpers/MsQuicDatagramChannel.cs) | `Helpers/MsQuicDatagramChannel.cs` | RFC 9221 unbuffered datagram channel and native configuration cache patcher for real-time audio/video. |
+| [`RotatingFileLogger`](../../QuicPunch/Helpers/RotatingFileLogger.cs) | `Helpers/RotatingFileLogger.cs` | Asynchronous channel-backed file logger with flush barriers, 50MB limits, daily rolling, and Zstandard archiving. |
 | [`OpusVoiceCodec`](../../QuicPunch/Helpers/OpusVoiceCodec.cs) | `Helpers/OpusVoiceCodec.cs` | Concentus pure C# Opus 48kHz encoder/decoder with adaptive bitrate and in-band Forward Error Correction (FEC). |
 | [`AntiReplayWindow`](../../QuicPunch/Helpers/AntiReplayWindow.cs) | `Helpers/AntiReplayWindow.cs` | RFC 6479 128-packet sliding bitmap anti-replay filter. |
 | [`CertManager`](../../QuicPunch/Helpers/CertManager.cs) | `Helpers/CertManager.cs` | ECDSA certificate lifecycle, PKCS#12 bundle storage (`QPID` format), Nostr secp256k1 keys. |
-| [`CompressedTransparentStream`](../../QuicPunch/Helpers/CompressedTransparentStream.cs) | `Helpers/CompressedTransparentStream.cs` | Transparent two-way stream wrapper with Zstandard compression. |
 | [`HandshakeManager`](../../QuicPunch/Helpers/HandshakeManager.cs) | `Helpers/HandshakeManager.cs` | Asynchronous task completion tracking for protocol requests. |
 | [`IpRateLimiter`](../../QuicPunch/Helpers/IpRateLimiter.cs) | `Helpers/IpRateLimiter.cs` | Per-IP sliding time window (1-sec window) rate limiter with bounded dictionary capacity. |
 | [`PeerStore`](../../QuicPunch/Helpers/PeerStore.cs) | `Helpers/PeerStore.cs` | Thread-safe, cross-process atomic JSON database with multi-index lookups. |
@@ -29,10 +28,11 @@
 [`MsQuicTuner`](../../QuicPunch/Helpers/MsQuicTuner.cs) uses high-performance reflection into .NET 11 `System.Net.Quic` internals (`MsQuicApi`, `<ApiTable>k__BackingField`, and `_handle`) to manipulate native MsQuic parameters on both **Linux** and **Windows**:
 
 ### Capabilities
-1. **Dynamic Congestion Control Algorithm (BBR / Cubic)**:
-   - Queries current algorithm via `GetCongestionControlAlgorithm(connection)`.
-   - Modifies algorithm in-flight using `SetCongestionControlAlgorithm(connection, CongestionControlAlgorithm.BBR)`.
-   - Patches `QUIC_SETTINGS` struct (144 bytes, offset 92, bitfield mask `0x00020000`).
+1. **Congestion control before connecting (BBR / CUBIC)**:
+   - Prepare the exact client/server configuration after it is created and before starting the handshake, including the first connection in a process. The native Android bridge configures BBR in `ConfigurationOpen`.
+   - `TrySetCongestionControl` accepts an idempotent request only. A different controller needs a new connection: MsQuic otherwise updates the stored setting without replacing the running controller.
+   - ECN is configured before the handshake. The runtime tuner excludes immutable ECN; settings updates are not atomic and can fail after partially modifying stored fields.
+   - Native AOT obtains the callback already installed by .NET using the application-local native query `0x0500FF51`. This is a local `GetParam` extension, never a wire message. The JIT fallback can still use the reflected callback on an unpatched native library. Forwarding is retained through `SHUTDOWN_COMPLETE` after channel disposal.
 2. **Differentiated Services Code Point (DSCP) QoS Tagging**:
    - Sets IP DSCP flags on underlying UDP sockets for enterprise QoS:
      - `DscpTag.Voice_EF` (Expedited Forwarding, DSCP 46, hex `0xB8`).
@@ -57,9 +57,10 @@
 ## Asynchronous Rotating File Logger (`RotatingFileLogger`)
 
 [`RotatingFileLogger`](../../QuicPunch/Helpers/RotatingFileLogger.cs) provides non-blocking disk logging:
-- **Unbounded Async Channel**: Worker thread pulls log messages from a memory channel without blocking network threads.
-- **50 MB File Size Cap & Rolling**: Automatically rotates files upon reaching 50 MB or at midnight UTC (`quicpunch_YYYY-MM-DD_NN.log`).
-- **Background Gzip Compression**: Automatically compresses previous day's inactive logs into `.log.gz` archives with `CompressionLevel.Optimal`.
+- **Bounded async channel**: Capacity defaults to 10,000 commands (minimum 100). `Write` never blocks; when full it drops the new message. Accepted flush, rotation and directory-change commands are never evicted.
+- **One writer and flush barriers**: The channel consumer owns the `StreamWriter`. `FlushAsync` waits until prior accepted messages are written and flushed to the stream; it does not promise physical disk persistence (`fsync`). Concurrent barriers are supported, and a writer failure faults pending barriers. Disposal drains accepted commands before closing.
+- **50 MB file size cap and rolling**: Rotates at 50 MB or a local calendar-date change (`quicpunch_YYYY-MM-DD_NNN.log` for numbered files).
+- **Background Zstandard compression**: Compresses inactive logs into `.log.zst` archives with `CompressionLevel.Optimal`.
 
 ---
 

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8"><title>FFmpeg → WebCodecs verification</title>
+<style>body { font-family:system-ui; margin:2rem; background:#151922; color:#eee } canvas { width:320px; margin:1rem } pre { white-space:pre-wrap }</style>
+<h1>FFmpeg → WebCodecs</h1><p>Solo imágenes sintéticas generadas por los tests. No captura pantalla ni micrófono.</p>
+<button id="run">Verificar decodificación</button><pre id="results">Listo.</pre><div id="canvases"></div>
+<script>
+document.getElementById('run').onclick = async () => {
+  const results = document.getElementById('results'); results.textContent = 'Verificando…';
+  try {
+    const source = await (await fetch('voice.js')).text();
+    const start = source.indexOf('  function handleWebCodecsVideoChunk(');
+    const end = source.indexOf('  function onScreenShareStarted(', start);
+    // Exercise the production decoder, not a second implementation of it.
+    const handle = new Function(source.slice(start, end) + '; return handleWebCodecsVideoChunk;')();
+    const fixtures = await (await fetch('fixtures.json')).json();
+    const messages = [];
+    for (const fixture of fixtures) {
+      const config = { codec: fixture.codec, codedWidth: fixture.width, codedHeight: fixture.height, hardwareAcceleration:'no-preference', optimizeForLatency:true };
+      if (fixture.description) config.description = Uint8Array.from(atob(fixture.description), c => c.charCodeAt(0));
+      const supported = await VideoDecoder.isConfigSupported(config);
+      if (!supported.supported) { messages.push(fixture.encoder + ': UNSUPPORTED ' + fixture.codec); continue; }
+      const canvas = document.createElement('canvas'); document.getElementById('canvases').append(canvas);
+      const ctx = canvas.getContext('2d'); let rendered = 0;
+      const entry = { peerId:fixture.encoder, width:fixture.width, height:fixture.height, fps:30, canvasEl:canvas,
+        canvasCtx:{ drawImage(...args) { rendered++; ctx.drawImage(...args); } } };
+      for (const base64 of fixture.packets) {
+        handle(entry, fixture.codecId, Uint8Array.from(atob(base64), c => c.charCodeAt(0)));
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      if (entry.videoDecoder?.state === 'configured') await entry.videoDecoder.flush();
+      messages.push(fixture.encoder + ': ' + (rendered === fixture.packets.length ? 'PASS' : 'FAIL') + ' · ' + rendered + '/' + fixture.packets.length + ' frames · ' + fixture.codec);
+      entry.videoDecoder?.close();
+    }
+    results.textContent = messages.join('\n');
+  } catch (error) { results.textContent = 'FAIL: ' + error.stack; }
+};
+</script></html>

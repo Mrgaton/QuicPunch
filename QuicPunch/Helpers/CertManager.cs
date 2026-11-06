@@ -61,15 +61,20 @@ namespace QuicPunch.Helpers
             if (_isLoaded)
                 return;
 
+            // Serialize first creation/migration across managers and processes sharing this identity.
+            using var identityLock = AcquireIdentityLock();
+
             if (File.Exists(IdentityPath))
             {
                 if (TryLoadBundle(IdentityPath, out var loadedCert, out var loadedEcdh))
                 {
                     _peerCertificate = loadedCert;
                     _ecdhKey = loadedEcdh;
+                    SanitizeTorCertificateLocked(persist: true);
                     _isLoaded = true;
                     return;
                 }
+                throw new InvalidDataException($"The existing identity '{IdentityPath}' is invalid or unreadable. Restore it from a backup; it has not been overwritten.");
             }
 
             if (File.Exists(CertPath) && File.Exists(EcdhKeyPath))
@@ -78,19 +83,37 @@ namespace QuicPunch.Helpers
                 {
                     _peerCertificate = legacyCert;
                     _ecdhKey = legacyEcdh;
-                    _isLoaded = true;
+                    SanitizeTorCertificateLocked(persist: false);
                     SaveBundleAtomic(IdentityPath, _peerCertificate!, _ecdhKey!);
+                    _isLoaded = true;
                     return;
                 }
+                throw new InvalidDataException("The existing legacy identity is invalid or unreadable. Restore the certificate and ECDH key from a backup.");
             }
+
+            if (File.Exists(CertPath) || File.Exists(EcdhKeyPath))
+                throw new InvalidDataException("The legacy identity is incomplete. Restore its missing file before starting the node.");
 
             GenerateAndSaveAtomicIdentity();
             _isLoaded = true;
         }
 
-        private static X509KeyStorageFlags DefaultKeyStorageFlags => OperatingSystem.IsWindows()
-            ? (X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet)
-            : (X509KeyStorageFlags.EphemeralKeySet | X509KeyStorageFlags.Exportable);
+        private FileStream AcquireIdentityLock()
+        {
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            while (true)
+            {
+                try { return new FileStream(IdentityPath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+                catch (IOException) when (System.Diagnostics.Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(10))
+                {
+                    Thread.Sleep(20);
+                }
+            }
+        }
+
+        // The bundle is the persisted identity; loading it must not create extra persisted OS keys.
+        private static X509KeyStorageFlags DefaultKeyStorageFlags =>
+            X509KeyStorageFlags.EphemeralKeySet | X509KeyStorageFlags.Exportable;
 
         private static bool TryLoadBundle(string path, out X509Certificate2? cert, out ECDiffieHellman? ecdh)
         {
@@ -207,7 +230,13 @@ namespace QuicPunch.Helpers
 
             var ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
             var (username, hostname, _) = Utilities.GenerateRandomIdentityNames();
-            var cert = GenerateIdentityCertificate(hostname, username, ecdh);
+            X509Certificate2 cert;
+            if (IsTorIdentity)
+            {
+                using var signingKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+                cert = GenerateTorIdentityCertificate(signingKey, ecdh);
+            }
+            else cert = GenerateIdentityCertificate(hostname, username, ecdh);
 
             SaveBundleAtomic(IdentityPath, cert, ecdh);
 
@@ -215,7 +244,7 @@ namespace QuicPunch.Helpers
             _ecdhKey = ecdh;
         }
 
-        private static void SaveBundleAtomic(string targetPath, X509Certificate2 cert, ECDiffieHellman ecdh)
+        private static void SaveBundleAtomic(string targetPath, X509Certificate2 cert, ECDiffieHellman ecdh, bool overwrite = false)
         {
             byte[] pfxBytes = cert.Export(X509ContentType.Pfx);
             byte[] ecdhBytes = ecdh.ExportPkcs8PrivateKey();
@@ -239,18 +268,25 @@ namespace QuicPunch.Helpers
             ecdhBytes.CopyTo(bundle.AsSpan(offset));
 
             string tempFile = targetPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            File.WriteAllBytes(tempFile, bundle);
-
-            if (!OperatingSystem.IsWindows())
+            try
             {
-                try
+                var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write,
+                    Share = FileShare.None, Options = FileOptions.WriteThrough };
+                if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                using (var file = new FileStream(tempFile, options))
                 {
-                    File.SetUnixFileMode(tempFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                    file.Write(bundle);
+                    file.Flush(flushToDisk: true);
                 }
-                catch { }
+                File.Move(tempFile, targetPath, overwrite);
             }
-
-            File.Move(tempFile, targetPath, overwrite: true);
+            finally
+            {
+                CryptographicOperations.ZeroMemory(pfxBytes);
+                CryptographicOperations.ZeroMemory(ecdhBytes);
+                CryptographicOperations.ZeroMemory(bundle);
+                if (File.Exists(tempFile)) File.Delete(tempFile);
+            }
         }
 
         public X509Certificate2 PeerCertificate
@@ -272,6 +308,7 @@ namespace QuicPunch.Helpers
                 lock (_lock)
                 {
                     EnsureLoadedLocked();
+                    if (IsTorIdentity) return TorPseudonym(_peerCertificate!);
                     string? upn = _peerCertificate?.GetNameInfo(X509NameType.UpnName, false);
                     if (!string.IsNullOrWhiteSpace(upn))
                         return upn;
@@ -295,7 +332,7 @@ namespace QuicPunch.Helpers
                         return _peerCertPublicHash;
 
                     EnsureLoadedLocked();
-                    return _peerCertPublicHash = SHA3_256.HashData(_peerCertificate!.GetPublicKey());
+                    return _peerCertPublicHash = Sha3Crypto.Hash256(_peerCertificate!.GetPublicKey());
                 }
             }
         }
@@ -370,7 +407,7 @@ namespace QuicPunch.Helpers
                     if (_curveHash != null)
                         return _curveHash;
 
-                    return _curveHash = SHA3_256.HashData(Curve.ExportSubjectPublicKeyInfo());
+                    return _curveHash = Sha3Crypto.Hash256(Curve.ExportSubjectPublicKeyInfo());
                 }
             }
         }
@@ -434,10 +471,67 @@ namespace QuicPunch.Helpers
             }
         }
 
+        private bool IsTorIdentity => string.Equals(_prefix, "tor", StringComparison.OrdinalIgnoreCase);
+
+        internal static string TorPseudonym(X509Certificate2 certificate)
+        {
+            using var key = certificate.GetECDsaPublicKey() ?? throw new CryptographicException("Tor identity requires an ECDSA key.");
+            return TorPseudonym(key);
+        }
+
+        private static string TorPseudonym(ECDsa key) =>
+            "tor-" + Convert.ToHexString(SHA256.HashData(key.ExportSubjectPublicKeyInfo()).AsSpan(0, 8)).ToLowerInvariant();
+
+        private static SubjectAlternativeNameBuilder IdentityNames(string hostname, string? username)
+        {
+            var san = new SubjectAlternativeNameBuilder();
+            if (username != null) san.AddUserPrincipalName($"{username}@{hostname}");
+            san.AddDnsName(hostname);
+            san.AddDnsName("quic-punch");
+            san.AddDnsName("cloudflare-quic.com");
+            san.AddDnsName("cdn.cloudflare.net");
+            san.AddDnsName("localhost");
+            if (username != null)
+            {
+                san.AddIpAddress(IPAddress.Loopback);
+                san.AddIpAddress(IPAddress.IPv6Loopback);
+                san.AddIpAddress(IPAddress.Any);
+            }
+            return san;
+        }
+
+        private static X509Certificate2 GenerateTorIdentityCertificate(ECDsa signingKey, ECDiffieHellman ecdh) =>
+            GenerateIdentityCertificate(TorPseudonym(signingKey), null, ecdh, signingKey);
+
+        private void SanitizeTorCertificateLocked(bool persist)
+        {
+            if (!IsTorIdentity) return;
+            string name = TorPseudonym(_peerCertificate!);
+            var expectedSan = IdentityNames(name, null).Build().RawData;
+            var san = _peerCertificate!.Extensions["2.5.29.17"];
+            string[] allowedExtensions = ["2.5.29.19", "2.5.29.15", "2.5.29.37", "2.5.29.17", "2.5.29.14", EcdhExtensionOid];
+            if (_peerCertificate.Subject == "CN=" + name && _peerCertificate.Issuer == _peerCertificate.Subject &&
+                san != null && san.RawData.AsSpan().SequenceEqual(expectedSan) &&
+                _peerCertificate.Extensions.All(e => allowedExtensions.Contains(e.Oid?.Value))) return;
+
+            // Reissue public metadata with the SAME signing/ECDH keys. Certificate
+            // public-key pins, peer IDs, Nostr identity and saved trust stay valid.
+            using var signingKey = _peerCertificate.GetECDsaPrivateKey() ?? throw new CryptographicException("Tor identity has no signing key.");
+            var sanitized = GenerateTorIdentityCertificate(signingKey, _ecdhKey!);
+            try { if (persist) SaveBundleAtomic(IdentityPath, sanitized, _ecdhKey!, overwrite: true); }
+            catch { sanitized.Dispose(); throw; }
+            _peerCertificate.Dispose();
+            _peerCertificate = sanitized;
+        }
+
         public static X509Certificate2 GenerateIdentityCertificate(string hostname, string username, ECDiffieHellman ecdh)
         {
             using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            return GenerateIdentityCertificate(hostname, username, ecdh, ecdsa);
+        }
 
+        private static X509Certificate2 GenerateIdentityCertificate(string hostname, string? username, ECDiffieHellman ecdh, ECDsa ecdsa)
+        {
             var request = new CertificateRequest(
                 $"CN={hostname}",
                 ecdsa,
@@ -466,18 +560,7 @@ namespace QuicPunch.Helpers
                     eku,
                     critical: true));
 
-            var san = new SubjectAlternativeNameBuilder();
-            string upn = $"{username}@{hostname}";
-            san.AddUserPrincipalName(upn);
-            san.AddDnsName(hostname);
-            san.AddDnsName("quic-punch");
-            san.AddDnsName("cloudflare-quic.com");
-            san.AddDnsName("cdn.cloudflare.net");
-            san.AddDnsName("localhost");
-            san.AddIpAddress(IPAddress.Loopback);
-            san.AddIpAddress(IPAddress.IPv6Loopback);
-            san.AddIpAddress(IPAddress.Any);
-            request.CertificateExtensions.Add(san.Build());
+            request.CertificateExtensions.Add(IdentityNames(hostname, username).Build());
 
             request.CertificateExtensions.Add(
                 new X509SubjectKeyIdentifierExtension(
@@ -494,7 +577,7 @@ namespace QuicPunch.Helpers
             var notBefore = DateTimeOffset.UtcNow.AddMinutes(-5);
             var notAfter = notBefore.AddYears(20);
 
-            var cert = request.CreateSelfSigned(
+            using var cert = request.CreateSelfSigned(
                 notBefore,
                 notAfter);
 

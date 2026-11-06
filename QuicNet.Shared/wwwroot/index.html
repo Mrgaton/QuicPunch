@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#151c21">
+  <title>Inicio · QuicNet</title>
+  <script>(function(){if(/Android/i.test(navigator.userAgent)||window.__qp_is_android){document.documentElement.classList.add('platform-android');}})();</script>
+  <link rel="stylesheet" href="/app.css">
+  <script defer src="/diagnostics.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/presence.js"></script>
+  <script defer src="/identity.js"></script>
+  <script defer src="/network-telemetry.js"></script>
+  <script defer src="/dashboard.js"></script>
+  <script defer src="/tor-discovery-warning.js"></script>
+  <script defer src="/chat-markdown.js"></script>
+  <script defer src="/chat.js"></script>
+  <script defer src="/chat-social.js"></script>
+  <script defer src="/screen-audio-capture.js"></script>
+  <script defer src="/screen-audio-playback.js"></script>
+  <script defer src="/screen-video-decoder.js"></script>
+  <script defer src="/voice.js"></script>
+  <script defer src="/vpn.js"></script>
+  <script defer src="/vpn-traffic.js"></script>
+  <script defer src="/speedtest.js"></script>
+  <script defer src="/virtual-disk.js"></script>
+  <link rel="stylesheet" href="/virtual-disk.css">
+  <script defer src="/connection-modes.js"></script>
+  <script defer src="/experience.js"></script>
+  <script defer src="/updates.js"></script>
+  <script defer src="/profile.js"></script>
+  <script defer src="/app-settings.js"></script>
+  <script defer src="/settings-navigation.js"></script>
+  <script defer src="/geolocation.js"></script>
+  <script type="module" src="/profile-photo.js"></script>
+</head>
+<body data-page="dashboard">
+<a class="skip-link" href="#spaContainer">Saltar al contenido</a>
+<header class="topbar">
+  <div class="update-notice update-notice-mobile" id="mobileUpdateNotice" hidden>
+    <span class="update-notice-dot" aria-hidden="true"></span>
+    <div class="update-notice-copy"><div role="status" aria-live="polite" aria-atomic="true"><strong id="mobileUpdateTitle">Actualización disponible</strong><span id="mobileUpdateDetail"></span></div>
+      <progress id="mobileUpdateProgress" max="1" value="0" hidden aria-label="Descarga de actualización"></progress>
+    </div>
+    <button class="btn accent" id="mobileUpdateInstall" type="button">Instalar actualización</button>
+  </div>
+</header>
+<div id="connectionNotice" class="connection-notice hidden" role="status"><span id="connectionNoticeText">Se ha perdido la conexión con la aplicación. Intentando reconectar…</span><button class="btn sm" id="retryConnectionBtn">Reintentar</button></div>
+<!-- Global Incoming Call Alert Banner -->
+<div id="incomingCallBanner" class="incoming-call-banner hidden">
+  <div class="incoming-call-pulse"></div>
+  <div class="incoming-call-info">
+    <div id="incomingCallIdentity"><strong id="incomingCallPeerName">Contacto</strong></div>
+    <span class="incoming-call-sub">Llamada de voz entrante P2P…</span>
+  </div>
+  <div class="incoming-call-actions">
+    <button class="btn sm green" id="acceptIncomingCallBtn" title="Aceptar y abrir llamada">📞 Contestar</button>
+    <button class="btn sm danger" id="declineIncomingCallBtn" title="Rechazar llamada">❌ Rechazar</button>
+  </div>
+</div>
+
+<!-- Persistent global active call bar -->
+<div id="globalActiveCallBar" class="global-call-bar hidden">
+  <div class="call-bar-left" id="globalCallBarInfo">
+    <div class="live-dot-pulse"></div>
+    <div class="avatar sm" id="globalCallAvatar">QP</div>
+    <div>
+      <strong id="globalCallPeerName">En llamada</strong>
+      <span id="globalCallMeta">Audio conectado</span>
+    </div>
+  </div>
+  <div class="call-bar-controls">
+    <button class="btn sm ghost" id="globalCallMicBtn" type="button" aria-label="Silenciar micrófono" aria-pressed="false" title="Silenciar micrófono"></button>
+    <button class="btn sm ghost" id="globalCallDeafenBtn" type="button" aria-label="Silenciar audio de la llamada" aria-pressed="false" title="Silenciar audio de la llamada"></button>
+    <button class="btn sm call-hangup" id="globalCallHangupBtn" type="button" aria-label="Colgar llamada" title="Colgar llamada"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16v-4c5-5 13-5 18 0v4l-5 1-1-4a12 12 0 0 0-6 0l-1 4z"/></svg><span class="call-state-label">Colgar</span></button>
+    <button class="btn sm accent" id="globalCallGoToVoiceBtn" type="button" title="Abrir sala de llamada">Ver llamada</button>
+  </div>
+</div>
+
+<aside class="nav-wrap"><a class="brand" href="/" aria-label="QuicNet, inicio"><span class="brand-mark">q</span><span>QuicNet<span class="brand-period">.</span><small>Conecta. Comparte. Disfruta.</small></span></a><span class="nav-caption">TU ESPACIO</span><nav class="nav" aria-label="Navegación principal"><a class="nav-link" data-page="dashboard" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span class="nav-label">Inicio</span><span class="peer-attention-count hidden" id="untrustedNavCount"></span></a><a class="nav-link" data-page="chat" href="/chat.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg><span class="nav-label">Mensajes</span></a><a class="nav-link" data-page="voice" href="/call.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-4l-5-2-2 2a15 15 0 0 1-6-6l2-2-2-5z"/></svg><span class="nav-label">Llamadas</span></a><a class="nav-link" data-page="watch" href="/watch.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m10 8 6 4-6 4z"/></svg><span class="nav-label">Ver juntos</span></a><span class="nav-caption nav-tools">HERRAMIENTAS</span><a class="nav-link" data-page="vpn" href="/vpn.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="6" rx="1"/><rect x="2" y="16" width="8" height="5" rx="1"/><rect x="14" y="16" width="8" height="5" rx="1"/><path d="M12 9v4M6 16v-3h12v3"/></svg><span class="nav-label">Red privada</span></a><a class="nav-link" data-page="speedtest" href="/speedtest.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a9 9 0 1 1 16 0M12 13l5-5M4 12h2M12 3v2M18 12h2"/><circle cx="12" cy="13" r="1"/></svg><span class="nav-label">Velocidad</span></a><a class="nav-link" data-page="settings" href="/settings.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg><span class="nav-label">Ajustes</span></a></nav><div class="update-notice update-notice-menu" id="menuUpdateNotice" hidden>
+  <span class="update-notice-dot" aria-hidden="true"></span>
+  <div class="update-notice-copy"><div role="status" aria-live="polite" aria-atomic="true"><strong id="menuUpdateTitle">Actualización disponible</strong><span id="menuUpdateDetail"></span></div>
+    <progress id="menuUpdateProgress" max="1" value="0" hidden aria-label="Descarga de actualización"></progress>
+  </div>
+  <button class="btn accent" id="menuUpdateInstall" type="button">Instalar y reiniciar</button>
+</div><div class="sidebar-bottom" id="selfPresenceArea"><button class="sidebar-device" id="selfPresenceButton" type="button" aria-haspopup="dialog" aria-controls="userPresenceDialog" aria-label="Configurar estado"><span class="self-presence-avatar"><span class="avatar" id="sidebarAvatar">Q</span><span class="user-presence-dot" id="sidebarPresenceDot" aria-hidden="true"></span></span><span class="self-presence-copy"><strong id="sidebarNodeName">Este dispositivo</strong><span id="sidebarPresenceText">Tu estado</span></span></button><p>Una conexión más cercana.</p></div></aside>
+<div id="spaContainer" tabindex="-1">
+<svg class="presence-icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+  <symbol id="presence-icon-available" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8 12 2.5 2.5L16 9"/></symbol>
+  <symbol id="presence-icon-afk" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="presence-icon-dnd" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8 12h8"/></symbol>
+  <symbol id="presence-icon-afk-dnd" viewBox="0 0 24 24"><path d="M11.5 19a8 8 0 1 1 7.5-7.5M11 6.5V11l2.5 1.5"/><circle cx="18" cy="18" r="4.5" class="presence-combined-dnd"/><path d="M16 18h4" class="presence-combined-dnd"/></symbol>
+  <symbol id="presence-icon-check" viewBox="0 0 24 24"><path d="m6 12 4 4 8-8"/></symbol>
+  <symbol id="presence-icon-close" viewBox="0 0 24 24"><path d="m7 7 10 10M7 17 17 7"/></symbol>
+  <symbol id="presence-icon-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></symbol>
+</defs></svg>
+<dialog id="userPresenceDialog" class="user-presence-dialog" aria-labelledby="userPresenceTitle" aria-describedby="presenceIntro">
+  <header><div><h2 id="userPresenceTitle">Tu estado</h2><p id="presenceIntro">Elige cómo quieres aparecer.</p></div><button class="presence-close" id="presenceClose" type="button" aria-label="Cerrar estado"><svg class="presence-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#presence-icon-close"/></svg></button></header>
+  <div class="presence-current" id="presenceCurrentBadge"><svg class="presence-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="presenceCurrentIcon" href="#presence-icon-available"/></svg><p id="userPresenceCurrent" role="status"></p></div>
+  <div class="presence-choices" role="group" aria-label="Notificaciones y disponibilidad">
+    <button class="presence-choice" id="presenceAvailable" type="button" aria-pressed="false"><span class="presence-choice-icon" data-user-presence="available"><svg class="presence-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#presence-icon-available"/></svg></span><span class="presence-choice-copy"><strong>Disponible</strong><small>Recibe mensajes y llamadas.</small></span><span class="presence-selection" aria-hidden="true"><svg class="presence-icon" viewBox="0 0 24 24"><use href="#presence-icon-check"/></svg></span></button>
+    <button class="presence-choice" id="presenceDnd" type="button" aria-pressed="false"><span class="presence-choice-icon" data-user-presence="dnd"><svg class="presence-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#presence-icon-dnd"/></svg></span><span class="presence-choice-copy"><strong>No molestar</strong><small>Silencia avisos y llamadas hasta que lo desactives.</small></span><span class="presence-selection" aria-hidden="true"><svg class="presence-icon" viewBox="0 0 24 24"><use href="#presence-icon-check"/></svg></span></button>
+  </div>
+  <section class="presence-idle" aria-labelledby="presenceIdleLabel">
+    <div class="presence-idle-heading"><div class="presence-idle-title"><svg class="presence-icon" viewBox="0 0 24 24" data-user-presence="afk" aria-hidden="true"><use href="#presence-icon-afk"/></svg><div><label id="presenceIdleLabel" for="presenceIdleMinutes">Ausencia automática</label><span>Mostrar «Ausente» tras</span></div></div><div class="presence-select-wrap"><select class="select" id="presenceIdleMinutes" aria-describedby="presenceActivityHelp"><option value="1">1 minuto</option><option value="2">2 minutos</option><option value="5">5 minutos</option><option value="10">10 minutos</option><option value="15">15 minutos</option><option value="30">30 minutos</option><option value="60">1 hora</option></select><svg class="presence-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#presence-icon-chevron"/></svg></div></div>
+    <p id="presenceActivityHelp" class="muted"></p>
+  </section>
+  <details class="presence-state-guide"><summary>Cómo se muestran los estados<svg class="presence-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#presence-icon-chevron"/></svg></summary>
+    <div class="user-presence-legend" aria-label="Significado de los estados">
+      <div><svg class="presence-icon" viewBox="0 0 24 24" data-user-presence="available" aria-hidden="true"><use href="#presence-icon-available"/></svg><span><strong>Disponible</strong><small>Notificaciones activadas</small></span></div>
+      <div><svg class="presence-icon" viewBox="0 0 24 24" data-user-presence="afk" aria-hidden="true"><use href="#presence-icon-afk"/></svg><span><strong>Ausente (AFK)</strong><small>Inactivo · Notificaciones activadas</small></span></div>
+      <div><svg class="presence-icon" viewBox="0 0 24 24" data-user-presence="dnd" aria-hidden="true"><use href="#presence-icon-dnd"/></svg><span><strong>No molestar</strong><small>Notificaciones silenciadas</small></span></div>
+      <div><svg class="presence-icon" viewBox="0 0 24 24" data-user-presence="afk-dnd" aria-hidden="true"><use href="#presence-icon-afk-dnd"/></svg><span><strong>Ausente y no molestar</strong><small>Inactivo · Notificaciones silenciadas</small></span></div>
+    </div>
+  </details>
+  <footer><p id="presenceSaveStatus" role="status" data-state="idle">Los cambios se guardan automáticamente.</p></footer>
+</dialog>
+  <!-- @include views/dashboard.html -->
+  <!-- @include views/chat.html -->
+  <!-- @include views/voice.html -->
+  <!-- @include views/vpn.html -->
+  <!-- @include views/speedtest.html -->
+  <!-- @include views/watch.html -->
+  <!-- @include views/virtual-disk.html -->
+  <!-- @include views/settings.html -->
+</div>
+
+<!-- MODALS -->
+<div class="modal-backdrop hidden" id="savedPeerModal">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="savedPeerModalTitle">
+    <div class="modal-head"><div><h2 id="savedPeerModalTitle">Editar contacto</h2><p>Los cambios se guardan en este dispositivo.</p></div><button class="btn sm ghost" id="closeSavedPeerModalBtn">Cerrar</button></div>
+    <div class="modal-body">
+      <div class="form-grid two-col">
+        <div class="field"><label>Nombre</label><input class="input" id="savedName" maxlength="128"></div>
+        <div class="field"><label>Transporte</label><select class="select" id="savedNetworkType"><option>Wan</option><option>Tor</option></select></div>
+      </div>
+      <div class="field space-top"><label>Huella del certificado (Base64)</label><input class="input mono" id="savedCertHash" autocomplete="off"></div>
+      <div class="field space-top"><label>Direcciones IP <span class="muted">separadas por comas, espacios o saltos de línea</span></label><textarea class="textarea mono compact-area" id="savedAddresses" placeholder="203.0.113.10&#10;198.51.100.20"></textarea></div>
+      <div class="field space-top"><label>Dirección Onion</label><input class="input mono" id="savedOnion" placeholder="example.onion"></div>
+      <div class="field space-top"><label>Puertos <span class="muted">uno (443), varios (5000, 5002) o un rango (5000-5010)</span></label><input class="input mono" id="savedPorts" placeholder="443, 5000-5010"></div>
+      <label class="check-line space-top"><input id="savedAutoConnect" type="checkbox"><span>Reconectar al iniciar</span></label>
+      <div class="modal-error hidden" id="savedPeerModalError"></div>
+    </div>
+    <div class="modal-foot"><button class="btn" id="cancelSavedPeerBtn">Cancelar</button><button class="btn primary" id="saveSavedPeerBtn">Guardar cambios</button></div>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="stunModal">
+  <div class="modal-card stun-modal-card" role="dialog" aria-modal="true" aria-labelledby="stunModalTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="stunModalTitle">Direcciones públicas detectadas</h2>
+        <p id="stunModalSubtitle">Respuestas recibidas de los servidores STUN.</p>
+      </div>
+      <button class="btn sm ghost" id="closeStunModalBtn">Cerrar</button>
+    </div>
+    <div class="modal-body">
+      <div class="stun-modal-stats" id="stunModalStats"></div>
+      <div class="table-wrap borderless stun-modal-table-wrap">
+        <table class="data-table stun-modal-table">
+          <thead>
+            <tr>
+              <th style="width:50px">#</th>
+              <th>Endpoint</th>
+              <th style="width:130px">STUN Hits</th>
+              <th style="width:70px"></th>
+            </tr>
+          </thead>
+          <tbody id="stunModalList"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="copyAllStunBtn">Copiar todo</button>
+      <button class="btn primary" id="closeStunModalFootBtn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Screen Share Configuration Modal (Video Codec, FPS, Bitrate, Resolution) -->
+<div id="screenShareSettingsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="mediaSettingsTitle">
+  <div class="modal-card media-studio">
+    <div class="modal-head">
+      <div>
+        <span class="eyebrow">ESTUDIO DE LLAMADAS</span><h2 id="mediaSettingsTitle">Audio y vídeo</h2>
+        <p>Explora lo que puede hacer tu equipo y ajusta cada transmisión.</p>
+      </div>
+      <button class="btn sm ghost" id="closeScreenModalBtn" aria-label="Cerrar ajustes">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="media-tabs" role="tablist" aria-label="Ajustes multimedia">
+        <button class="btn active" id="mediaVideoTab" role="tab" aria-selected="true" aria-controls="mediaVideoPanel">Vídeo y pantalla</button>
+        <button class="btn" id="mediaAudioTab" role="tab" aria-selected="false" aria-controls="mediaAudioPanel" tabindex="-1">Audio y dispositivos</button>
+      </div>
+      <section id="mediaAudioPanel" class="hidden" role="tabpanel" aria-labelledby="mediaAudioTab">
+        <section class="section">
+          <div class="section-head">
+            <div>
+              <h2>Dispositivos de audio</h2>
+              <p>Elige tu micrófono y dónde quieres escuchar.</p>
+            </div>
+          </div>
+          <div class="section-body">
+            <div class="field">
+              <label for="micSelect">Micrófono (Dispositivo de Entrada)</label>
+              <select class="select" id="micSelect"></select>
+            </div>
+            <div class="field space-top">
+              <label for="speakerSelect">Altavoces / Auriculares (Dispositivo de Salida)</label>
+              <select class="select" id="speakerSelect"></select>
+            </div>
+            
+            <p class="inline-help" id="voiceAudioStatus" role="status">El micrófono se abrirá al llamar o al iniciar una prueba.</p>
+            <div class="field space-top">
+              <div>
+                <label for="masterVolumeSlider">Volumen Maestro de Salida</label>
+                <span id="masterVolumeLabel" class="mono">100%</span>
+              </div>
+              <input type="range" id="masterVolumeSlider" min="0" max="200" step="5" value="100">
+            </div>
+
+            <div class="field space-top">
+              <label>Nivel de Actividad del Micrófono (Vúmetro)</label>
+              <div class="meter">
+                <span id="micMeter"></span>
+              </div>
+            </div>
+            <div class="toolbar space-top">
+              <button class="btn" id="testMicBtn">🎤 Probar micrófono</button>
+              <button class="btn ghost" id="retryVoiceAudioBtn">Reintentar micrófono</button>
+
+            </div>
+          </div>
+        </section><section class="media-block" id="opusModal"><h3>Voz · Opus</h3>      <div class="field">
+        <label for="opusBitrateSelect">Calidad de audio y consumo de datos</label>
+        <select class="select" id="opusBitrateSelect">
+          <option value="16000">16 kbps · Ahorro de datos</option>
+          <option value="24000">24 kbps · Voz estándar</option>
+          <option value="32000">32 kbps · Voz clara</option>
+          <option value="48000">48 kbps · Voz de alta calidad</option>
+          <option value="64000">64 kbps · Alta calidad</option>
+          <option value="96000" selected>96 kbps · Máxima calidad de voz</option>
+          <option value="128000">128 kbps · Música y audio detallado</option>
+          <option value="160000">160 kbps</option>
+          <option value="192000">192 kbps</option>
+          <option value="256000">256 kbps</option>
+          <option value="300000">300 kbps · Máximo para voz mono</option>
+        </select>
+      </div>
+
+      <p class="inline-help space-top">Una calidad más alta utiliza más datos. La llamada puede adaptarse a tu conexión para mantener el audio fluido.</p>
+<button class="btn primary" id="saveOpusModalBtn">Aplicar calidad de audio</button></section><p class="inline-help">Los cambios de dispositivo y volumen se aplican al instante.</p></section>
+      <section id="mediaVideoPanel" role="tabpanel" aria-labelledby="mediaVideoTab">
+      <div class="media-detection"><span id="mediaDetectionStatus" role="status" aria-live="polite">Consultando el equipo…</span><button class="btn sm" id="refreshMediaCapabilitiesBtn">Volver a detectar</button></div>
+
+      <section id="ffmpegInstallationGuide" class="ffmpeg-install-guide hidden" aria-label="Instalación de FFmpeg" aria-live="polite"></section>
+      <div class="field">
+        <label for="screenBackendSelect">1 · Motor de captura y vídeo</label>
+        <select class="select" id="screenBackendSelect">
+          <option value="ffmpeg">Este equipo · FFmpeg (GPU o CPU)</option>
+          <option value="web">Este navegador · WebCodecs</option>
+        </select>
+        <p class="inline-help" id="screenNativeStatus">Probando los codificadores disponibles…</p>
+      </div>
+      <div class="field space-top">
+        <label for="screenCodecSelect">2 · Formato y procesamiento</label>
+        <select class="select" id="screenCodecSelect"><option value="h264:gpu">H.264 / AVC · GPU · comprobando</option></select>
+        <p class="inline-help">El formato es lo que recibe el contacto. H.264 es la primera opción por compatibilidad. Las opciones de GPU aparecen arriba; las de CPU, debajo.</p>
+        <p class="inline-help" id="screenCodecCompatibility" role="status">Comprobando compatibilidad con los participantes…</p>
+      </div>
+      <div class="field space-top"><label for="screenEncoderSelect" id="screenEncoderLabel">Codificador que produce ese formato</label>
+          <select class="select" id="screenEncoderSelect"></select>
+          <p class="inline-help" id="screenEncoderHelp">Se preselecciona un codificador comprobado con el motor elegido.</p>
+      </div>
+      <div class="field space-top">
+        <label for="screenResolutionSelect">3 · Resolución máxima, sin ampliar</label>
+        <select class="select" id="screenResolutionSelect"><option value="native">Original · pendiente de detectar la fuente</option></select>
+      </div>
+
+      <div class="split-2 space-top">
+        <div class="field">
+          <label for="screenFpsSelect">FPS objetivo</label>
+          <select class="select" id="screenFpsSelect"><option value="60">60 FPS</option></select><p class="inline-help" id="screenFpsHelp">Ritmo de envío solicitado; se muestra también el ritmo real del codificador.</p>
+        </div>
+
+        <div class="field">
+          <label for="screenBitrateSelect">Uso máximo de datos</label>
+          <select class="select" id="screenBitrateSelect">
+            <option value="2000000">2.0 Mbps · Conexiones lentas</option>
+            <option value="4000000">4.0 Mbps · Calidad estándar</option>
+            <option value="8000000">8.0 Mbps · Alta calidad</option>
+            <option value="12000000" selected>12.0 Mbps · Más detalle y movimiento</option>
+            <option value="18000000">18.0 Mbps · Muy alta calidad</option>
+            <option value="25000000">25.0 Mbps · Para conexiones rápidas</option>
+            <option value="30000000">30.0 Mbps · Máximo consumo</option>
+          </select>
+        </div>
+      </div>
+
+      <details class="advanced-settings space-top"><summary>Afinar la codificación</summary>
+      <div class="field space-top" id="screenEncoderPresetField"><label for="screenEncoderPresetSelect">Preset del codificador FFmpeg</label>
+        <select class="select" id="screenEncoderPresetSelect"><option value="">Automático según la prioridad</option></select>
+        <p class="inline-help" id="screenEncoderPresetHelp" role="status"></p>
+      </div>
+      <div class="split-2 space-top">
+        <div class="field"><label for="screenPresetSelect">Prioridad</label>
+          <select class="select" id="screenPresetSelect"><option value="speed">Velocidad</option><option value="balanced" selected>Equilibrado</option><option value="quality">Calidad</option></select></div>
+        <div class="field"><label for="screenRateControlSelect">Control de bitrate</label>
+          <select class="select" id="screenRateControlSelect"><option value="cbr">CBR · bitrate estable</option><option value="vbr">VBR · consumo variable</option></select></div>
+      </div>
+      <div class="split-2 space-top">
+        <div class="field"><label for="screenGopInput">Intervalo de fotogramas clave (ms)</label>
+          <input class="input" id="screenGopInput" type="number" min="250" max="5000" step="50" value="1000"></div>
+        <div class="field"><label for="screenBufferInput">Buffer de bitrate (ms)</label>
+          <input class="input" id="screenBufferInput" type="number" min="16" max="250" step="1" value="50"></div>
+      </div>
+      <div class="field space-top"><label for="screenQualityInput">Calidad VBR para NVENC y CPU (menor = más calidad)</label>
+        <input class="input" id="screenQualityInput" type="number" min="0" max="51" value="23">
+        <p class="inline-help">Los controles desactivados no se aplican al motor seleccionado. El intervalo de fotogramas clave también se utiliza en WebCodecs.</p>
+      </div>
+      </details>
+
+      <details class="advanced-settings space-top"><summary>Decodificación en este dispositivo</summary>
+        <div class="field space-top"><label for="screenDecoderAccelerationSelect">Procesamiento de los vídeos que ves</label>
+          <select class="select" id="screenDecoderAccelerationSelect"><option value="no-preference">Automático · recomendado</option><option value="prefer-hardware">Preferir GPU</option><option value="prefer-software">Preferir CPU</option></select>
+          <p class="inline-help" id="screenDecoderHelp" role="status">Se aplica al instante a la vista previa y a los vídeos recibidos. Cada participante controla su propia decodificación.</p>
+        </div>
+      </details>
+
+      <details class="media-block"><summary>Diagnóstico del motor seleccionado</summary><p class="inline-help">FFmpeg prueba sus propios codificadores con vídeo de muestra a 320×180. WebCodecs prueba una imagen al tamaño y FPS solicitados, también sin preferencia forzada si el navegador rechaza GPU y CPU. Solo se muestra el diagnóstico del motor elegido. El perfil final se comprueba al iniciar.</p><div class="table-wrap"><table class="data-table media-capabilities"><thead><tr><th>Códec</th><th id="mediaGpuColumn">GPU</th><th id="mediaCpuColumn">CPU</th><th id="mediaBrowserColumn">Preferencia del navegador</th><th>Recibir en este navegador</th></tr></thead><tbody id="mediaCodecMatrix"></tbody></table></div><p class="inline-help">H.264 prioriza interoperabilidad. HEVC, VP9 y AV1 ofrecen alternativas de compresión; compara su rendimiento con tu contenido. El perfil exacto se negocia con los receptores al iniciar.</p></details>
+      <div class="opus-specs-grid space-top">
+        <div class="opus-spec-item">
+          <label>Formatos disponibles</label>
+          <strong id="modalHwAccelStatus">Comprobando…</strong>
+        </div>
+        <div class="opus-spec-item">
+          <label>FPS de la captura</label>
+          <strong id="modalEffectiveFps">Se informa al compartir</strong>
+        </div>
+        <div class="opus-spec-item">
+          <label>Consumo de datos</label>
+          <strong>Preferencia estable</strong>
+        </div>
+      </div>
+
+      <p class="inline-help space-top">
+        La calidad disponible depende de tu equipo, de la conexión y de los participantes. Si una opción no es compatible, te indicaremos el motivo.
+      </p>
+          </section>
+    </div>
+    <div class="modal-foot">
+      <button class="btn primary" id="saveScreenModalBtn">Aplicar ajustes de vídeo</button>
+    </div>
+  </div>
+</div>
+
+<div id="screenNativeCaptureModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="screenNativeCaptureTitle">
+  <div class="modal-card capture-picker">
+    <div class="modal-head"><div><h2 id="screenNativeCaptureTitle">Elige qué quieres compartir</h2><p>Busca una pantalla o ventana y comprueba su imagen antes de transmitir.</p></div>
+      <button class="btn ghost" id="screenNativeCaptureCancel">Cancelar</button></div>
+    <div class="modal-body">
+      <div class="capture-picker-toolbar">
+        <label class="field" for="screenCaptureSearch">Buscar por nombre
+          <input class="input" id="screenCaptureSearch" type="search" placeholder="Pantalla, navegador, aplicación…" autocomplete="off" data-dialog-autofocus aria-controls="screenCaptureGallery"></label>
+        <button class="btn" id="screenCaptureRefresh">Actualizar fuentes</button>
+      </div>
+      <div class="toolbar" aria-label="Filtrar fuentes">
+        <button class="btn" id="screenCaptureAll">Todas</button><button class="btn" id="screenCaptureDisplays">Pantallas</button><button class="btn" id="screenCaptureWindows">Ventanas</button>
+      </div>
+      <p class="capture-keyboard-help"><span id="screenCaptureResults" role="status"></span><span>Escribe para buscar · ↑ ↓ ← → moverse · Enter elegir · Esc cancelar</span></p>
+      <div class="capture-picker-layout space-top">
+        <div class="capture-gallery" id="screenCaptureGallery" role="listbox" aria-label="Fuentes de captura"></div>
+        <aside class="capture-selected">
+          <h3>Fuente seleccionada</h3><img id="screenCapturePreview" alt="Vista previa de la fuente seleccionada">
+          <p id="screenCaptureSelection" role="status">Selecciona una pantalla o ventana.</p>
+          <p class="inline-help">La vista previa se actualiza mientras eliges. Las ventanas minimizadas o protegidas pueden no estar disponibles. El navegador ofrece su propio selector para capturar también audio del sistema.</p>
+        </aside>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="screenNativeCaptureWeb">Elegir con el navegador</button>
+      <button class="btn primary" id="screenNativeCaptureStart" disabled>Compartir fuente seleccionada</button>
+    </div>
+  </div>
+</div>
+<div id="avatarCropModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="avatarCropTitle">
+<div class="modal-card avatar-crop-dialog">
+<div class="modal-head"><div><span class="eyebrow">TU FOTO DE PERFIL</span><h2 id="avatarCropTitle">Hazla tuya</h2><p>Arrastra la imagen y ajusta el encuadre.</p></div><button class="btn ghost" id="avatarCropClose" type="button" aria-label="Cancelar recorte">×</button></div>
+<div class="modal-body avatar-crop-body">
+<div class="avatar-crop-stage"><canvas id="avatarCropCanvas" width="512" height="512" tabindex="0" aria-label="Encuadre cuadrado. Arrastra para mover la foto o utiliza las flechas del teclado."></canvas><div class="avatar-crop-guides" aria-hidden="true"></div></div>
+<div class="avatar-crop-tools"><label for="avatarCropZoom">Zoom <output id="avatarCropZoomValue">100 %</output></label><input id="avatarCropZoom" type="range" min="1" max="4" step="0.01" value="1"><div class="toolbar"><button class="btn sm" id="avatarCropRotate" type="button">Girar 90°</button><button class="btn sm" id="avatarCropReset" type="button">Centrar</button></div></div>
+<div id="avatarAnimationControls" class="avatar-animation-controls hidden">
+<div class="field"><label for="avatarClipStart">Inicio del fragmento <output id="avatarClipStartValue">0,0 s</output></label><input id="avatarClipStart" type="range" min="0" max="0" step="0.05" value="0"></div>
+<div class="field"><label for="avatarClipLength">Duración <output id="avatarClipLengthValue">3,0 s</output></label><input id="avatarClipLength" type="range" min="0.1" max="10" step="0.05" value="3"></div>
+<div class="toolbar"><button class="btn sm" id="avatarClipPlay" type="button">Pausar vista previa</button><label for="avatarAnimationFps">Fluidez</label><select class="select" id="avatarAnimationFps"><option value="6">6 FPS</option><option value="8" selected>8 FPS</option><option value="12">12 FPS</option></select><label for="avatarAnimationBackground">Fondo</label><input id="avatarAnimationBackground" type="color" value="#ffffff"></div>
+<p class="inline-help">Hasta 10 s, sin sonido y en bucle. La calidad y la resolución se ajustan para no superar 512 KB.</p>
+</div>
+<div class="avatar-crop-preview-row"><canvas id="avatarCropPreview" width="80" height="80" aria-label="Vista previa de tu foto"></canvas><div><strong>Así te verán tus contactos</strong><p id="avatarCropSize" class="inline-help">512 × 512 · AVIF</p></div></div>
+<p id="avatarCropStatus" class="muted" role="status" aria-live="polite">El original se queda en tu dispositivo.</p>
+</div>
+<div class="modal-foot"><button class="btn" id="avatarCropCancel" type="button">Cancelar</button><button class="btn accent" id="avatarCropSave" type="button">Guardar foto</button></div>
+</div></div>
+</body>
+</html>

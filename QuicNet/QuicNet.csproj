@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../Release.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishAot>False</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <RootNamespace>QuicNet</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Photino.NET" Version="4.0.16" />
+    <PackageReference Include="System.Drawing.Common" Version="11.0.0-rc.2.26504.105" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\QuicPunch\QuicPunch.csproj" />
+    <ProjectReference Include="..\QuicPunch.Vpn\QuicPunch.Vpn.csproj" />
+    <ProjectReference Include="..\QuicNet.Shared\QuicNet.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="QuicNet.Protocols" />
+    <Using Include="QuicNet.Settings" />
+    <Using Include="QuicNet.WebUi" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="QuicPunchTests" />
+  </ItemGroup>
+
+
+<PropertyGroup Condition="'$(PublishAot)' == 'true'"><JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault></PropertyGroup><ItemGroup Condition="'$(PublishAot)' == 'true'"><TrimmerRootDescriptor Include="AotRoots.xml" /></ItemGroup></Project>

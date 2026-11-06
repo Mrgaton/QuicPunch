@@ -1,0 +1,32 @@
+#nullable enable
+using System.Text.Json.Serialization;
+namespace QuicNet.Serialization;
+
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage1))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage10))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage11))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage12))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage13))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage14))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage15))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage16))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage17))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage18))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage19))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage2))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage20))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage21))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage22))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage23))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage24))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage3))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage4))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage5))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage6))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage7))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage8))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage9))]
+[JsonSerializable(typeof(global::QuicNet.WebUi.WebUiServer.ClipboardItem))]
+[JsonSerializable(typeof(ConnectionTokenTransportError))]
+[JsonSerializable(typeof(object))]
+internal partial class SharedJsonContext : JsonSerializerContext { }

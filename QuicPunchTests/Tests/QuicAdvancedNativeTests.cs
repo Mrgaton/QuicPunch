@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Security;
@@ -103,18 +103,14 @@ public static class QuicAdvancedNativeTests
         bool dscpVideoOk = MsQuicTuner.TrySetDscp(clientConn, QuicDscpPriority.Video);
         Console.WriteLine(dscpVideoOk ? "SUCCESS" : "SKIPPED/FAILED");
 
-        // 2b. Test Dynamic Congestion Control Switching (BBR)
-        Console.Write("[TEST 2b] Querying initial Congestion Control... ");
-        bool getCcOk = MsQuicTuner.TryGetCongestionControl(clientConn, out var initialCc);
-        Console.WriteLine(getCcOk ? $"SUCCESS ({initialCc})" : "FAILED");
-
-        Console.Write("[TEST 2b] Switching Congestion Control to BBR... ");
-        bool setBbrOk = MsQuicTuner.TrySetCongestionControl(clientConn, QuicCongestionAlgorithm.Bbr);
-        Console.WriteLine(setBbrOk ? "SUCCESS" : "FAILED");
-
-        Console.Write("[TEST 2b] Verifying active Congestion Control is BBR... ");
-        bool getActiveCcOk = MsQuicTuner.TryGetCongestionControl(clientConn, out var activeCc);
-        Console.WriteLine(getActiveCcOk && activeCc == QuicCongestionAlgorithm.Bbr ? $"PASSED ({activeCc})" : $"FAILED (Active={activeCc})");
+        // A setting accepted after the handshake does not reinitialize MsQuic's controller.
+        if (!MsQuicTuner.TryGetCongestionControl(clientConn, out var initialCc))
+            throw new InvalidOperationException("Cannot query the configured controller.");
+        var differentCc = initialCc == QuicCongestionAlgorithm.Bbr ? QuicCongestionAlgorithm.Cubic : QuicCongestionAlgorithm.Bbr;
+        if (MsQuicTuner.TrySetCongestionControl(clientConn, differentCc) ||
+            !MsQuicTuner.TryGetCongestionControl(clientConn, out var activeCc) || activeCc != initialCc)
+            throw new InvalidOperationException("A live controller switch must require a new connection.");
+        Console.WriteLine($"[TEST 2b] Live controller changes rejected; configured controller remains {activeCc}: PASSED");
 
         // 3. Test Native Endpoint Discovery
         Console.Write("[TEST 3] Querying Native Endpoints via MsQuic... ");

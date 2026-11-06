@@ -1,0 +1,75 @@
+name: MsQuic PQC and reliability
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "QuicPunch.NativeBuilder/**"
+      - "QuicPunch/**"
+      - "QuicPunch.Vpn/**"
+      - "QuicNet/**"
+      - "QuicNet.Shared/**"
+      - "QuicPunchTests/**"
+      - "global.json"
+      - "scripts/test.ps1"
+      - ".github/workflows/native-msquic-pqc.yml"
+  pull_request:
+    paths:
+      - "QuicPunch.NativeBuilder/**"
+      - "QuicPunch/**"
+      - "QuicPunch.Vpn/**"
+      - "QuicNet/**"
+      - "QuicNet.Shared/**"
+      - "QuicPunchTests/**"
+      - "global.json"
+      - "scripts/test.ps1"
+      - ".github/workflows/native-msquic-pqc.yml"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            rid: win-x64
+            artifact: msquic-win-x64
+            path: QuicPunch/runtimes/win-x64/native/msquic.dll
+          - os: ubuntu-24.04
+            rid: linux-x64
+            artifact: msquic-linux-x64
+            path: QuicPunch/runtimes/linux-x64/native/libmsquic.so
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+      - name: Install Windows native toolchain helpers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install cmake strawberryperl nasm powershell-core --yes --no-progress
+      - name: Install Linux native toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes build-essential clang cmake liblttng-ust-dev libnuma-dev liburing-dev nasm perl
+      - name: Build and verify native MsQuic
+        run: dotnet run --project QuicPunch.NativeBuilder -c Release -- --rid ${{ matrix.rid }}
+      - name: Build managed solution with native asset
+        run: dotnet build QuicPunch.slnx -c Release
+      - name: Verify PQC handshake
+        run: dotnet QuicPunchTests/bin/Release/net11.0/QuicPunchTests.dll --test-pqc-handshake
+      - name: Verify managed reliability and security
+        shell: pwsh
+        run: ./scripts/test.ps1 -Configuration Release -NoBuild -Web -Tests session-recovery,critical-reliability,sha3,antireplay,peer-acl,connectivity-security,webui-security,nostr-mailbox,handshake-cancellation,multiplexer,connection-recovery,automatic-transport
+      - uses: actions/upload-artifact@v5
+        if: failure()
+        with:
+          name: test-diagnostics-${{ matrix.rid }}
+          path: .artifacts/test-output/
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error

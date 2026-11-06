@@ -20,7 +20,7 @@ namespace QuicPunch.Discovery
     /// Autonomous coordinator managing Nostr decentralized signaling (WAN and Tor),
     /// local LAN multicast discovery beaconing, and the discovered peer table.
     /// </summary>
-    public sealed class PeerDiscoveryManager : IDisposable
+    public sealed partial class PeerDiscoveryManager : IDisposable
     {
         public const int DefaultLanDiscoveryPort = 7227;
         public const string DefaultLanDiscoveryMulticast = "239.255.72.27";
@@ -95,7 +95,7 @@ namespace QuicPunch.Discovery
                 var localPeer = _context.LocalWanPeer;
 
                 // 1. If peer's port matches our local bound port and shares any IP address:
-                if (_context.LocalBoundPort > 0 && peer.PortArray != null && peer.PortArray.Contains((ushort)_context.LocalBoundPort))
+                if (Utilities.HasExactAdvertisedPort(peer.ConnectionFlags, peer.PortArray, _context.LocalBoundPort))
                 {
                     if (peer.Addresses != null && (localIps.Any(a => peer.Addresses.Contains(a)) || (localPeer?.Addresses != null && peer.Addresses.Intersect(localPeer.Addresses).Any())))
                         return true;
@@ -117,7 +117,7 @@ namespace QuicPunch.Discovery
                 // 3. If all peer addresses are local/loopback IPs and port matches our local bound port:
                 if (peer.Addresses != null && peer.Addresses.Length > 0 && peer.Addresses.All(a => localIps.Contains(a) || IPAddress.IsLoopback(a)))
                 {
-                    if (_context.LocalBoundPort > 0 && peer.PortArray != null && peer.PortArray.Contains((ushort)_context.LocalBoundPort))
+                    if (Utilities.HasExactAdvertisedPort(peer.ConnectionFlags, peer.PortArray, _context.LocalBoundPort))
                         return true;
                 }
             }
@@ -134,7 +134,7 @@ namespace QuicPunch.Discovery
             return false;
         }
 
-        public void RecordDiscoveredPeer(PeerInfo peer, string token, string source = "Nostr")
+        public void RecordDiscoveredPeer(PeerInfo peer, string token, string source = "Nostr", DateTime? announcedAtUtc = null)
         {
             if (peer == null || !peer.TryGetCertificateHash(out var hash))
                 return;
@@ -182,12 +182,14 @@ namespace QuicPunch.Discovery
                 Addresses = peer.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>(),
                 OnionAddress = peer.OnionAddress ?? "",
                 PortArray = peer.PortArray,
+                PreferredPort = peer.PreferredPort,
                 NetworkType = peer.NetworkType,
                 ConnectionFlags = peer.ConnectionFlags != null ? new ConnectionFlags(peer.ConnectionFlags.RawValue) : new ConnectionFlags(),
                 NostrPubKey = peer.NostrPubKey,
                 Source = source,
                 DiscoveredAt = DateTime.UtcNow,
                 LastSeen = DateTime.UtcNow,
+                LastNostrAnnouncementUtc = peer.IsCertVerified ? announcedAtUtc : null,
                 IsCertVerified = peer.IsCertVerified,
                 CertPublicKey = peer.CertPublicKey,
                 CertPublicKeyBase64 = peer.CertPublicKey != null ? Convert.ToBase64String(peer.CertPublicKey) : null
@@ -204,6 +206,8 @@ namespace QuicPunch.Discovery
                 {
                     existing.Token = token;
                     existing.LastSeen = DateTime.UtcNow;
+                    if (peer.IsCertVerified && announcedAtUtc is { } announced)
+                        existing.ObserveNostrAnnouncement(announced);
                     if (!string.IsNullOrWhiteSpace(resolvedName) && resolvedName != "Discovered Peer")
                         existing.Name = resolvedName;
                     else if (!string.IsNullOrWhiteSpace(peer.Name) && peer.Name != "Discovered Peer")
@@ -219,6 +223,7 @@ namespace QuicPunch.Discovery
                         existing.NostrPubKey = peer.NostrPubKey;
 
                     existing.PortArray = peer.PortArray;
+                    existing.PreferredPort = peer.PreferredPort;
                     existing.NetworkType = peer.NetworkType;
                     if (peer.ConnectionFlags != null)
                         existing.ConnectionFlags = new ConnectionFlags(peer.ConnectionFlags.RawValue);
@@ -276,7 +281,7 @@ namespace QuicPunch.Discovery
                     {
                         var parsed = kv.Value.Addresses?.Select(a => IPAddress.TryParse(a, out var ip) ? ip : null).Where(a => a != null && !IPAddress.IsLoopback(a)).Cast<IPAddress>().ToList() ?? new List<IPAddress>();
 
-                        if (boundPort > 0 && kv.Value.PortArray != null && kv.Value.PortArray.Contains((ushort)boundPort))
+                        if (Utilities.HasExactAdvertisedPort(kv.Value.ConnectionFlags, kv.Value.PortArray, boundPort))
                         {
                             if (parsed.Any(a => localIps.Contains(a)) || (localPeerAddrs != null && parsed.Any(a => localPeerAddrs.Contains(a))))
                                 isSelf = true;
@@ -296,7 +301,7 @@ namespace QuicPunch.Discovery
 
                         if (!isSelf && parsed.Count > 0 && parsed.All(a => localIps.Contains(a)))
                         {
-                            if (boundPort > 0 && kv.Value.PortArray != null && kv.Value.PortArray.Contains((ushort)boundPort))
+                            if (Utilities.HasExactAdvertisedPort(kv.Value.ConnectionFlags, kv.Value.PortArray, boundPort))
                                 isSelf = true;
                         }
                     }
@@ -415,13 +420,14 @@ namespace QuicPunch.Discovery
             await StopWanNostrDiscoveryCoreAsync().ConfigureAwait(false);
 
             byte[]? poolId = _context.PoolId is { Length: 20 } p ? p : null;
+            _wanPresenceNonce = Guid.NewGuid().ToString("N");
             var discovery = new NostrDiscovery(
                 poolId,
                 GetWanNostrDiscoveryPayload,
                 scope: "wan",
                 nostrPrivateKey: _context.WanNostrPrivateKey);
 
-            discovery.OnEventDiscovered += OnWanNostrEventDiscovered;
+            discovery.OnAnnouncementDiscovered += OnWanNostrAnnouncementDiscovered;
             discovery.OnTokenFound += OnWanNostrTokenDiscovered;
             WanNostrDiscovery = discovery;
 
@@ -458,7 +464,7 @@ namespace QuicPunch.Discovery
             if (previous == null)
                 return;
 
-            previous.OnEventDiscovered -= OnWanNostrEventDiscovered;
+            previous.OnAnnouncementDiscovered -= OnWanNostrAnnouncementDiscovered;
             previous.OnTokenFound -= OnWanNostrTokenDiscovered;
             try { await previous.StopAsync().ConfigureAwait(false); } catch { }
             previous.Dispose();
@@ -503,6 +509,7 @@ namespace QuicPunch.Discovery
             await StopTorNostrDiscoveryCoreAsync().ConfigureAwait(false);
 
             byte[]? poolId = _context.PoolId is { Length: 20 } p ? p : null;
+            _torPresenceNonce = Guid.NewGuid().ToString("N");
             var discovery = new NostrDiscovery(
                 poolId,
                 GetTorNostrDiscoveryPayload,
@@ -510,7 +517,7 @@ namespace QuicPunch.Discovery
                 proxyProvider: _context.GetTorSocksProxy,
                 nostrPrivateKey: _context.TorNostrPrivateKey);
 
-            discovery.OnEventDiscovered += OnTorNostrEventDiscovered;
+            discovery.OnAnnouncementDiscovered += OnTorNostrAnnouncementDiscovered;
             discovery.OnTokenFound += OnTorNostrTokenDiscovered;
             TorNostrDiscovery = discovery;
 
@@ -547,7 +554,7 @@ namespace QuicPunch.Discovery
             if (previous == null)
                 return;
 
-            previous.OnEventDiscovered -= OnTorNostrEventDiscovered;
+            previous.OnAnnouncementDiscovered -= OnTorNostrAnnouncementDiscovered;
             previous.OnTokenFound -= OnTorNostrTokenDiscovered;
             try { await previous.StopAsync().ConfigureAwait(false); } catch { }
             previous.Dispose();
@@ -618,7 +625,7 @@ namespace QuicPunch.Discovery
 
         #region Nostr Token Generation & Inbound Processing
 
-        private string? GetWanNostrDiscoveryPayload()
+        internal string? GetWanNostrDiscoveryPayload()
         {
             try
             {
@@ -634,18 +641,18 @@ namespace QuicPunch.Discovery
 
                 byte[] sig = Utilities.SignToken(token, cert);
 
-                return JsonSerializer.Serialize(new
-                {
-                    wan = token,
-                    name = _context.LocalWanPeer?.Name,
-                    certPubKey = Convert.ToBase64String(certPubKey),
-                    sig = Convert.ToBase64String(sig)
-                });
+                return JsonSerializer.Serialize(new WanAnnouncement(token, _context.LocalWanPeer?.Name,
+                    Convert.ToBase64String(certPubKey), Convert.ToBase64String(sig), _wanPresenceNonce),
+                    AnnouncementJsonContext.Default.WanAnnouncement);
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                QuicPunchLog.Error("[NOSTR-WAN] Cannot create the local discovery announcement", ex);
+                return null;
+            }
         }
 
-        private string? GetTorNostrDiscoveryPayload()
+        internal string? GetTorNostrDiscoveryPayload()
         {
             try
             {
@@ -661,15 +668,15 @@ namespace QuicPunch.Discovery
 
                 byte[] sig = Utilities.SignToken(token, torCert);
 
-                return JsonSerializer.Serialize(new
-                {
-                    tor = token,
-                    name = _context.LocalTorPeer?.Name,
-                    certPubKey = Convert.ToBase64String(certPubKey),
-                    sig = Convert.ToBase64String(sig)
-                });
+                return JsonSerializer.Serialize(new TorAnnouncement(token, _context.LocalTorPeer?.Name,
+                    Convert.ToBase64String(certPubKey), Convert.ToBase64String(sig), _torPresenceNonce),
+                    AnnouncementJsonContext.Default.TorAnnouncement);
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                QuicPunchLog.Error("[NOSTR-TOR] Cannot create the local discovery announcement", ex);
+                return null;
+            }
         }
 
         public void ProcessWanNostrEndpointToken(string token, string? nostrPubKeyHex = null, byte[]? certPubKey = null, byte[]? signature = null) =>
@@ -682,6 +689,12 @@ namespace QuicPunch.Discovery
             OnWanNostrEventDiscovered(string.Empty, token);
 
         public void OnWanNostrEventDiscovered(string nostrPubKeyHex, string token)
+            => ProcessWanNostrEvent(nostrPubKeyHex, token, null);
+
+        private void OnWanNostrAnnouncementDiscovered(string nostrPubKeyHex, string token, DateTime announcedAtUtc)
+            => ProcessWanNostrEvent(nostrPubKeyHex, token, announcedAtUtc);
+
+        private void ProcessWanNostrEvent(string nostrPubKeyHex, string token, DateTime? announcedAtUtc)
         {
             if (!WanNostrDiscoveryEnabled || !_context.IsStarted || string.IsNullOrWhiteSpace(token))
                 return;
@@ -724,7 +737,7 @@ namespace QuicPunch.Discovery
                         string? wan = wanEl.GetString();
                         if (!string.IsNullOrWhiteSpace(wan))
                         {
-                            ProcessNostrEndpointTokenCore(wan, nostrPubKeyHex, certPubKeyBytes, sigBytes, isTor: false, advertisedName: name);
+                            ProcessNostrEndpointTokenCore(wan, nostrPubKeyHex, certPubKeyBytes, sigBytes, isTor: false, advertisedName: name, presenceNonce: document.RootElement.TryGetProperty("presence", out var presence) && presence.ValueKind == JsonValueKind.String ? presence.GetString() : null, announcedAtUtc: announcedAtUtc);
                             return;
                         }
                     }
@@ -732,13 +745,19 @@ namespace QuicPunch.Discovery
                 catch (JsonException) { return; }
             }
 
-            ProcessNostrEndpointTokenCore(trimmed, nostrPubKeyHex, null, null, isTor: false);
+            ProcessNostrEndpointTokenCore(trimmed, nostrPubKeyHex, null, null, isTor: false, announcedAtUtc: announcedAtUtc);
         }
 
         private void OnTorNostrTokenDiscovered(string token) =>
             OnTorNostrEventDiscovered(string.Empty, token);
 
         public void OnTorNostrEventDiscovered(string nostrPubKeyHex, string token)
+            => ProcessTorNostrEvent(nostrPubKeyHex, token, null);
+
+        private void OnTorNostrAnnouncementDiscovered(string nostrPubKeyHex, string token, DateTime announcedAtUtc)
+            => ProcessTorNostrEvent(nostrPubKeyHex, token, announcedAtUtc);
+
+        private void ProcessTorNostrEvent(string nostrPubKeyHex, string token, DateTime? announcedAtUtc)
         {
             if (!TorNostrDiscoveryEnabled || !_context.IsStarted || string.IsNullOrWhiteSpace(token))
                 return;
@@ -781,7 +800,7 @@ namespace QuicPunch.Discovery
                         string? tor = torEl.GetString();
                         if (!string.IsNullOrWhiteSpace(tor))
                         {
-                            ProcessNostrEndpointTokenCore(tor, nostrPubKeyHex, certPubKeyBytes, sigBytes, isTor: true, advertisedName: name);
+                            ProcessNostrEndpointTokenCore(tor, nostrPubKeyHex, certPubKeyBytes, sigBytes, isTor: true, advertisedName: name, presenceNonce: document.RootElement.TryGetProperty("presence", out var presence) && presence.ValueKind == JsonValueKind.String ? presence.GetString() : null, announcedAtUtc: announcedAtUtc);
                             return;
                         }
                     }
@@ -789,10 +808,10 @@ namespace QuicPunch.Discovery
                 catch (JsonException) { return; }
             }
 
-            ProcessNostrEndpointTokenCore(trimmed, nostrPubKeyHex, null, null, isTor: true);
+            ProcessNostrEndpointTokenCore(trimmed, nostrPubKeyHex, null, null, isTor: true, announcedAtUtc: announcedAtUtc);
         }
 
-        private void ProcessNostrEndpointTokenCore(string token, string? nostrPubKeyHex, byte[]? certPubKey, byte[]? signature, bool isTor, string? advertisedName = null)
+        private void ProcessNostrEndpointTokenCore(string token, string? nostrPubKeyHex, byte[]? certPubKey, byte[]? signature, bool isTor, string? advertisedName = null, string? presenceNonce = null, DateTime? announcedAtUtc = null)
         {
             string tag = isTor ? "[NOSTR-TOR]" : "[NOSTR-WAN]";
             try
@@ -842,6 +861,13 @@ namespace QuicPunch.Discovery
                     }
                 }
 
+                if (_context.IsTrustedPeer(peerHash) && !peer.IsCertVerified)
+                {
+                    QuicPunchLog.Info($"{tag} Ignored unsigned token for trusted peer {peer.Name ?? Convert.ToHexString(peerHash)[..8]}.");
+                    peer.Dispose();
+                    return;
+                }
+
                 // If this peer is already saved in PeerStore, verify the Nostr author key before applying cooldowns
                 if (_context.PeerStore != null && _context.PeerStore.TryGet(peerHash, out var savedPeer) && savedPeer != null)
                 {
@@ -857,9 +883,12 @@ namespace QuicPunch.Discovery
                 }
 
                 string hexKey = Convert.ToHexString(peerHash);
-                string candidateKey = (string.IsNullOrEmpty(nostrPubKeyHex) ? hexKey : nostrPubKeyHex) + ":" + (isTor ? "Tor" : peer.NetworkType.ToString());
+                string candidateKey = (string.IsNullOrEmpty(nostrPubKeyHex) ? hexKey : nostrPubKeyHex) + ":" +
+                    (isTor ? "Tor" : peer.NetworkType.ToString()) + (peer.IsCertVerified ? ":verified" : ":unsigned");
 
-                // Only update endpoints for peers explicitly saved in PeerStore (exact certHash match)
+                // A signed token proves that the advertised endpoints belong to this certificate.
+                // Unsigned announcements remain visible in discovery but must not change the saved address book.
+                bool trustedAndVerified = peer.IsCertVerified && _context.IsTrustedPeer(peerHash);
                 string? nostrKeyToSave = nostrPubKeyHex;
                 PeerStore.SavedPeer? savedPeerToUpdate = null;
                 if (_context.PeerStore != null && _context.PeerStore.TryGet(peerHash, out savedPeerToUpdate) && savedPeerToUpdate != null)
@@ -867,21 +896,33 @@ namespace QuicPunch.Discovery
                     if (!string.IsNullOrWhiteSpace(savedPeerToUpdate.Name))
                         peer.Name = savedPeerToUpdate.Name;
                     nostrKeyToSave = savedPeerToUpdate.NostrPubKey ?? nostrPubKeyHex;
-                    _context.PeerStore.AddOrUpdate(peer, autoConnect: savedPeerToUpdate.AutoConnect, save: true, nostrPubKey: nostrKeyToSave);
+                    if (peer.IsCertVerified)
+                        _context.PeerStore.AddOrUpdate(peer, autoConnect: savedPeerToUpdate.AutoConnect, save: true, nostrPubKey: nostrKeyToSave);
+                }
+                else if (trustedAndVerified && _context.PeerStore != null)
+                {
+                    _context.PeerStore.AddOrUpdate(peer, autoConnect: true, save: true, nostrPubKey: nostrKeyToSave);
                 }
 
-                bool endpointsChanged = false;
+                bool presenceChanged = trustedAndVerified && _presenceGate.Observe((isTor ? "tor:" : "wan:") + hexKey, presenceNonce);
+                if (presenceChanged) SchedulePresenceReply(isTor);
+                bool endpointsChanged = peer.IsCertVerified && savedPeerToUpdate != null && (isTor
+                    ? !string.Equals(savedPeerToUpdate.OnionAddress, peer.OnionAddress, StringComparison.OrdinalIgnoreCase) ||
+                      !savedPeerToUpdate.PortArray.SequenceEqual(peer.PortArray ?? [])
+                    : !new HashSet<IPAddress>(savedPeerToUpdate.Addresses).SetEquals(peer.Addresses ?? []) ||
+                      !savedPeerToUpdate.PortArray.SequenceEqual(peer.PortArray ?? []) || savedPeerToUpdate.PreferredPort != peer.PreferredPort);
                 if (DiscoveredPeers.TryGetValue(hexKey, out var existingDp))
                 {
+                    if (peer.IsCertVerified) existingDp.LastSeen = DateTime.UtcNow;
                     if (!isTor)
                     {
                         var existingIps = new HashSet<string>(existingDp.Addresses ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
                         var newIps = new HashSet<string>(peer.Addresses?.Select(a => a.ToString()) ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
-                        endpointsChanged = !existingIps.SetEquals(newIps) || !(existingDp.PortArray ?? []).SequenceEqual(peer.PortArray ?? []);
+                        endpointsChanged |= !existingIps.SetEquals(newIps) || !(existingDp.PortArray ?? []).SequenceEqual(peer.PortArray ?? []) || existingDp.PreferredPort != peer.PreferredPort;
                     }
                     else
                     {
-                        endpointsChanged = !string.Equals(existingDp.OnionAddress, peer.OnionAddress, StringComparison.OrdinalIgnoreCase) ||
+                        endpointsChanged |= !string.Equals(existingDp.OnionAddress, peer.OnionAddress, StringComparison.OrdinalIgnoreCase) ||
                                            !(existingDp.PortArray ?? []).SequenceEqual(peer.PortArray ?? []);
                     }
                 }
@@ -904,7 +945,7 @@ namespace QuicPunch.Discovery
                         {
                             var sIps = new HashSet<IPAddress>(s.Peer.Addresses ?? Array.Empty<IPAddress>());
                             var newIps = new HashSet<IPAddress>(peer.Addresses ?? Array.Empty<IPAddress>());
-                            if (!sIps.SetEquals(newIps) || !(s.Peer.PortArray ?? []).SequenceEqual(peer.PortArray ?? []))
+                            if (!sIps.SetEquals(newIps) || !(s.Peer.PortArray ?? []).SequenceEqual(peer.PortArray ?? []) || s.Peer.PreferredPort != peer.PreferredPort)
                             {
                                 interrogationEndpointsDiffer = true;
                                 endpointsChanged = true;
@@ -922,6 +963,47 @@ namespace QuicPunch.Discovery
                     }
                 }
 
+                if (!_context.TryGetActivePeer(peerHash, out var activePeer) && savedPeerToUpdate?.CertHash != null)
+                {
+                    _context.TryGetActivePeer(savedPeerToUpdate.CertHash, out activePeer);
+                }
+
+                if (activePeer != null && peer.IsCertVerified)
+                {
+                    // Refresh the connection target even when an identical announcement is throttled.
+                    endpointsChanged |= isTor
+                        ? !string.Equals(activePeer.OnionAddress, peer.OnionAddress, StringComparison.OrdinalIgnoreCase) ||
+                          !(activePeer.PortArray ?? []).SequenceEqual(peer.PortArray ?? [])
+                        : !new HashSet<IPAddress>(activePeer.Addresses ?? []).SetEquals(peer.Addresses ?? []) ||
+                          !(activePeer.PortArray ?? []).SequenceEqual(peer.PortArray ?? []) || activePeer.PreferredPort != peer.PreferredPort;
+                    if (!isTor)
+                    {
+                        if (peer.Addresses != null && peer.Addresses.Length > 0)
+                            activePeer.Addresses = peer.Addresses;
+                    }
+                    else
+                    {
+                        if (!string.IsNullOrEmpty(peer.OnionAddress))
+                            activePeer.OnionAddress = peer.OnionAddress;
+                    }
+                    if (peer.PortArray != null)
+                        activePeer.PortArray = peer.PortArray;
+                    activePeer.PreferredPort = peer.PreferredPort;
+                    activePeer.ConnectionFlags = new ConnectionFlags(peer.ConnectionFlags.RawValue);
+                    activePeer.NetworkType = peer.NetworkType;
+                    if (!string.IsNullOrEmpty(nostrKeyToSave))
+                        activePeer.NostrPubKey = nostrKeyToSave;
+                    activePeer.IsCertVerified = peer.IsCertVerified;
+                    if (peer.CertPublicKey != null)
+                        activePeer.CertPublicKey = peer.CertPublicKey;
+                    if (!string.IsNullOrWhiteSpace(peer.Name))
+                        activePeer.Name = peer.Name;
+                }
+
+                // Verified state is authoritative independently of the reconnect rate limit.
+                if (peer.IsCertVerified && existingDp != null)
+                    RecordDiscoveredPeer(peer, token, isTor ? "Nostr (Tor)" : "Nostr (WAN)", announcedAtUtc);
+
                 long now = Stopwatch.GetTimestamp();
                 lock (_nostrCandidateLock)
                 {
@@ -933,7 +1015,7 @@ namespace QuicPunch.Discovery
                         _nostrCandidates.Remove(stale);
                     }
 
-                    if (!endpointsChanged &&
+                    if (!endpointsChanged && !presenceChanged &&
                         _nostrCandidates.TryGetValue(candidateKey, out long lastSeen) &&
                         Stopwatch.GetElapsedTime(lastSeen, now) < NostrCandidateCooldown)
                     {
@@ -950,37 +1032,8 @@ namespace QuicPunch.Discovery
                     _nostrCandidates[candidateKey] = now;
                 }
 
-                if (!_context.TryGetActivePeer(peerHash, out var activePeer) && savedPeerToUpdate?.CertHash != null)
-                {
-                    _context.TryGetActivePeer(savedPeerToUpdate.CertHash, out activePeer);
-                }
-
-                if (activePeer != null)
-                {
-                    if (!isTor)
-                    {
-                        if (peer.Addresses != null && peer.Addresses.Length > 0)
-                            activePeer.Addresses = peer.Addresses;
-                    }
-                    else
-                    {
-                        if (!string.IsNullOrEmpty(peer.OnionAddress))
-                            activePeer.OnionAddress = peer.OnionAddress;
-                    }
-                    if (peer.PortArray != null)
-                        activePeer.PortArray = peer.PortArray;
-                    activePeer.NetworkType = peer.NetworkType;
-                    if (!string.IsNullOrEmpty(nostrKeyToSave))
-                        activePeer.NostrPubKey = nostrKeyToSave;
-                    activePeer.IsCertVerified = peer.IsCertVerified;
-                    if (peer.CertPublicKey != null)
-                        activePeer.CertPublicKey = peer.CertPublicKey;
-                    if (!string.IsNullOrWhiteSpace(peer.Name))
-                        activePeer.Name = peer.Name;
-                }
-
                 // If this peer is currently being interrogated and changed endpoints, cancel old sessions
-                if (wasConnecting && interrogationEndpointsDiffer)
+                if (peer.IsCertVerified && wasConnecting && interrogationEndpointsDiffer)
                 {
                     foreach (var s in activeInterrogations)
                     {
@@ -988,19 +1041,23 @@ namespace QuicPunch.Discovery
                     }
                 }
 
-                bool isConnectedAndHealthy = activePeer != null && activePeer.IsConnectedAndResponsive();
+                bool isConnectedAndHealthy = activePeer != null && activePeer.HasCertificate &&
+                    activePeer.ActiveEndPoint != null && activePeer.IsAvailableAndResponsive();
 
                 // Reconnect policy:
                 // Only initiate a connection if:
                 // 1) Peer was connecting and changed endpoints (interrogationEndpointsDiffer == true), OR
                 // 2) Peer is disconnected and NOT already connecting (!wasConnecting), and auto-connect is enabled.
-                bool shouldReconnect = (wasConnecting && interrogationEndpointsDiffer) ||
+                bool shouldReconnect = (presenceChanged && !wasConnecting && (savedPeerToUpdate?.AutoConnect ?? true)) ||
+                                       (peer.IsCertVerified && wasConnecting && interrogationEndpointsDiffer) ||
                                        (!isConnectedAndHealthy && !wasConnecting && (
-                                           _context.AutoConnectOnDiscovery ||
-                                           (savedPeerToUpdate != null && savedPeerToUpdate.AutoConnect)
+                                           _context.AutoConnectDiscoveredPeers ||
+                                           (trustedAndVerified && (savedPeerToUpdate?.AutoConnect ?? true))
                                        ));
 
-                if (shouldReconnect && _context.IsStarted)
+                bool savedContactHandled = !isTor && peer.IsCertVerified && _context.IsStarted &&
+                    _context.QueueSavedPeerReconnect(peer, presenceChanged || interrogationEndpointsDiffer);
+                if (shouldReconnect && _context.IsStarted && !savedContactHandled)
                 {
                     if (!isTor)
                     {
@@ -1040,8 +1097,10 @@ namespace QuicPunch.Discovery
                     }
                 }
 
-                RecordDiscoveredPeer(peer, token, isTor ? "Nostr (Tor)" : "Nostr (WAN)");
+                if (!peer.IsCertVerified || existingDp == null)
+                    RecordDiscoveredPeer(peer, token, isTor ? "Nostr (Tor)" : "Nostr (WAN)", announcedAtUtc);
                 QuicPunchLog.Info($"{tag} Discovered peer: {peer.Name} ({Convert.ToHexString(peerHash)[..8]}...){(peer.IsCertVerified ? " [VERIFIED]" : "")} via Nostr {(isTor ? "Tor" : "WAN")}");
+                if (savedContactHandled) peer.Dispose();
             }
             catch (Exception ex)
             {
@@ -1056,6 +1115,7 @@ namespace QuicPunch.Discovery
         public async Task StartLanDiscoveryAsync(CancellationToken token)
         {
             ThrowIfDisposed();
+            if (LanDiscoveryPort == 0) return;
             await _lanLifecycleLock.WaitAsync(token).ConfigureAwait(false);
             try
             {
@@ -1169,6 +1229,7 @@ namespace QuicPunch.Discovery
 
         public async Task SendLocalLanDiscoveryAsync()
         {
+            if (LanDiscoveryPort == 0) return;
             try
             {
                 var payload = _context.GenerateLanBeaconPayload();
@@ -1194,7 +1255,7 @@ namespace QuicPunch.Discovery
                     try { await udp.SendAsync(payload, new IPEndPoint(IPAddress.Loopback, LanDiscoveryPort)).ConfigureAwait(false); } catch { }
                 }
             }
-            catch { }
+            catch (Exception ex) { QuicPunchLog.Info($"[LAN] Could not send discovery beacon: {ex.Message}"); }
         }
 
         #endregion

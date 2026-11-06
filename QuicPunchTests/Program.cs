@@ -1,291 +1,172 @@
-using System.Diagnostics;
 using System.Net;
-using System.Reflection;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Security.Principal;
 using System.Text;
-using System.Web;
-using Microsoft.Win32;
 using QuicPunch.Helpers;
-using QuicPunchTests.Protocols;
-using QuicPunchTests.Settings;
 using QuicPunchTests.Tests;
-using QuicPunchTests.WebUi;
 
 namespace QuicPunchTests;
 
 internal static class Program
 {
-    public static Process CurrentProcess = Process.GetCurrentProcess();
-    public static string FileName = CurrentProcess.MainModule?.FileName ?? "";
-
     [STAThread]
-    private static async Task Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
         {
-            Console.WriteLine($"[FATAL UNHANDLED EXCEPTION] {e.ExceptionObject}");
+            Console.Error.WriteLine($"[FATAL UNHANDLED EXCEPTION] {e.ExceptionObject}");
         };
         TaskScheduler.UnobservedTaskException += (s, e) =>
         {
-            Console.WriteLine($"[UNOBSERVED TASK EXCEPTION] {e.Exception}");
+            Console.Error.WriteLine($"[UNOBSERVED TASK EXCEPTION] {e.Exception}");
             e.SetObserved();
         };
 
+        if (args.FirstOrDefault() == "--test-discovery-announcements")
+            AppContext.SetSwitch("System.Text.Json.JsonSerializer.IsReflectionEnabledByDefault", false);
         Console.OutputEncoding = Encoding.UTF8;
-        if (args.Length > 0 && (args[0] == "--test-punch-packet" || args[0] == "--test-hole-packet")) { await QuicPunchHolePacketTests.RunAsync(); return; }
-        if (args.Length > 0 && (args[0] == "--test-multiplexer" || args[0] == "--test-mux")) { await QuicPeerMultiplexerTests.RunAsync(); return; }
-        if (args.Length > 0 && (args[0] == "--test-speedtest" || args[0] == "--test-speed-test" || args[0] == "--test-benchmark")) { await SpeedTestTests.RunAsync(); return; }
-        if (args.Length > 0 && (args[0] == "--test-screenshare" || args[0] == "--test-screen-share")) { await ScreenShareTests.RunAsync(); return; }
-        if (args.Length > 0 && (args[0] == "--test-datagram-categorization" || args[0] == "--test-datagram-framing")) { await QuicDatagramCategorizationTests.RunAllTestsAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-antireplay") { await AntiReplayTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-security") { await SecurityDiscoveryTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-singleflight") { await SecurityDiscoveryTests.RunSingleFlightTestAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-handshake-cancellation") { await HandshakeCancellationLifecycleTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-webui-security") { await WebUiSecurityTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-rotating-logger") { await RotatingLoggerTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-peer-acl") { await PeerAccessControllerTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-nat-pin-coordinator") { await NatPinCoordinatorTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-lan-pooling") { await VirtualLanPoolingTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-vpn-adapter") { await VpnAdapterTests.RunAsync(); return; }
-        if (args.Length > 0 && (args[0] == "--test-quic-bbr" || args[0] == "--inspect-quic")) { await TestQuicCongestionControlTuning(); return; }
-        if (args.Length > 0 && args[0] == "--test-quic-datagrams") { await QuicDatagramTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-quic-telemetry") { await QuicAdvancedNativeTests.RunAsync(); return; }
-        if (args.Length > 0 && (args[0] == "--test-quic-optimizations" || args[0] == "--test-native-quic")) { await NativeQuicOptimizationsTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-upnp") { await UpnpTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-port-openers") { await PortOpenerTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-opus") { OpusCodecTests.Run(); return; }
-        if (args.Length > 0 && (args[0] == "--test-native-audio" || args[0] == "--test-audio")) { await NativeAudioServiceTests.RunAsync(); return; }
-        if (args.Length > 0 && args[0] == "--test-tor") { await TestTorFileShare.RunAsync(args); return; }
-        if (args.Length > 0 && (args[0] == "--test-screenshare" || args[0] == "--test-screen")) { await ScreenShareTests.RunAsync(); return; }
-        if (args.Length > 0 && (args[0] == "--test-tor-cascade" || args[0] == "--test-tor-fallback")) { await TorBypassTests.RunAsync(); return; }
-
-        if (args.Length > 0 && args[0].Contains("://"))
-            args = args[0].Split("/").Skip(2).Select(e => HttpUtility.UrlDecode(e)).ToArray();
-
-        if (args.Length > 0)
+        if (args.FirstOrDefault() == "--serve-geolocation-workbench") return await GeolocationWorkbenchTests.ServeAsync();
+        if (args.Contains("--loopback-only"))
         {
-            using var ps = new PeerStore(Path.Combine(QuicPunch.QuicPunch.AppDataPath, "peers.db"));
-            ps.AddOrUpdate(args[0]);
-            return;
+            if (args.FirstOrDefault() is not ("--test-birthday-punch" or "--test-contact-reconnect" or "--test-contact-history" or "--test-discovery-presence" or "--test-automatic-transport" or "--test-geolocation" or "--test-discovery-announcements" or "--test-watch-reliability" or "--test-rotating-logger"))
+                throw new ArgumentException("Loopback isolation has not been validated for this suite.");
+            Fixtures.LoopbackOnlyNetwork.Configure();
         }
 
-        TryRegisterProtocolHandler();
-
-        string preferencesPath = Path.Combine(QuicPunch.QuicPunch.AppDataPath, "ui-settings.json");
-        var preferencesStore = new AppPreferencesStore(preferencesPath);
-        AppPreferences preferences = preferencesStore.Snapshot();
-
-        string? inputPwd = null;
-        if (!Console.IsInputRedirected)
+        Func<Task>? test = args.FirstOrDefault() switch
         {
-            Console.Write("Enter the password for auto connections (leave empty for none): ");
-            inputPwd = Console.ReadLine();
-        }
-        byte[]? pwdBytes = string.IsNullOrEmpty(inputPwd) ? null : Encoding.UTF8.GetBytes(inputPwd);
-
-        using var cts = new CancellationTokenSource();
-        var qcc = new QuicPunch.QuicPunch(cts, null, pwdBytes, preferences.AutoAcceptTrusted)
-        {
-            SharePeers = true,
-            WanEnabled = preferences.WanEnabled
+            "--test-watch-reliability" => WatchReliabilityTests.RunAsync,
+            "--test-output" => TestOutputTests.RunAsync,
+            "--test-virtual-disk" => VirtualDiskTests.RunAsync,
+            "--test-notifications" => NotificationTests.RunAsync,
+              "--test-geolocation" => GeolocationTests.RunAsync,
+            "--test-geolocation-workbench" => GeolocationWorkbenchTests.RunAsync,
+            "--test-updates" => AutoUpdateTests.RunAsync,
+            "--test-discovery-announcements" => DiscoveryAnnouncementTests.RunAsync,
+            "--test-aot-json" => () => { QuicPunch.Helpers.PeerStore.VerifyAotJsonContract(); Console.WriteLine($"Verified {QuicNet.Serialization.AotContractValidation.Run()} JSON contracts."); return Task.CompletedTask; },
+            "--test-critical-reliability" => CriticalReliabilityTests.RunAsync,
+            "--test-resumable-files" => ResumableFileTests.RunAsync,
+            "--test-session-recovery" => SessionRecoveryTests.RunAsync,
+            "--test-vpn-policy" => VpnPolicyTests.RunAsync,
+            "--test-vpn-orchestration" => VpnOrchestrationTests.RunAsync,
+            "--test-vpn-broker" => VpnBrokerTests.RunAsync,
+            "--test-connection-recovery" => ConnectionRecoveryTests.RunAsync,
+            "--test-automatic-transport" => AutomaticPeerTransportTests.RunAsync,
+            "--test-ffmpeg-installation" => FfmpegInstallationTests.RunAsync,
+            "--test-ffmpeg-screen" => FfmpegScreenEncoderTests.RunAsync,
+            "--test-platform-video" => PlatformVideoTests.RunAsync,
+            "--test-screen-audio" => ScreenAudioTests.RunAsync,
+            "--test-peer-state" => PeerConnectionStateTests.RunAsync,
+            "--test-connectivity-security" => ConnectivitySecurityTests.RunAsync,
+            "--test-punch-packet" or "--test-hole-packet" => QuicPunchHolePacketTests.RunAsync,
+            "--test-multiplexer" or "--test-mux" => QuicPeerMultiplexerTests.RunAsync,
+            "--test-speedtest" or "--test-speed-test" or "--test-benchmark" => SpeedTestTests.RunAsync,
+            "--test-screenshare" or "--test-screen-share" or "--test-screen" => ScreenShareTests.RunAsync,
+            "--test-datagram-categorization" or "--test-datagram-framing" => QuicDatagramCategorizationTests.RunAllTestsAsync,
+            "--test-antireplay" => AntiReplayTests.RunAsync,
+            "--test-security" => SecurityDiscoveryTests.RunAsync,
+            "--test-tor-privacy" => TorIdentityPrivacyTests.RunAsync,
+            "--test-nostr-trust" => SecurityDiscoveryTests.RunNostrTrustTestsAsync,
+            "--test-singleflight" => SecurityDiscoveryTests.RunSingleFlightTestAsync,
+            "--test-handshake-cancellation" => HandshakeCancellationLifecycleTests.RunAsync,
+            "--test-webui-security" => WebUiSecurityTests.RunAsync,
+            "--test-rotating-logger" => RotatingLoggerTests.RunAsync,
+            "--test-peer-acl" => PeerAccessControllerTests.RunAsync,
+            "--test-ip-filter" or "--test-ipsum" => IpReputationFilterTests.RunAsync,
+            "--test-nostr-mailbox" or "--test-mailbox" => NostrMailboxTests.RunAsync,
+            "--test-lan-discovery" => SecurityDiscoveryTests.TestLanDiscoveryWithDifferentControlPorts,
+            "--test-birthday-punch" => BirthdayPunchTests.RunAsync,
+            "--test-lan-ports" => LanPortAdvertisementTests.RunAsync,
+            "--test-nat-pin-coordinator" => NatPinCoordinatorTests.RunAsync,
+            "--test-lan-pooling" => VirtualLanPoolingTests.RunAsync,
+            "--test-vpn-adapter" => VpnAdapterTests.RunAsync,
+            "--benchmark-quic" => QuicPerformanceTests.RunAsync,
+            "--benchmark-quic-cubic" => QuicPerformanceTests.RunCubicAsync,
+            "--benchmark-quic-default" => QuicPerformanceTests.RunBaselineAsync,
+            "--test-quic-bbr" or "--inspect-quic" => TestQuicCongestionControlTuning,
+            "--test-quic-datagrams" => QuicDatagramTests.RunAsync,
+            "--test-quic-telemetry" => QuicAdvancedNativeTests.RunAsync,
+            "--test-quic-optimizations" or "--test-native-quic" => NativeQuicOptimizationsTests.RunAsync,
+            "--test-pqc" or "--test-pqc-handshake" => PqcHandshakeTests.RunAsync,
+            "--test-discovery-presence" => DiscoveryPresenceTests.RunAsync,
+            "--test-connection-modes" => ConnectionModeTests.RunAsync,
+            "--test-contact-history" => ContactHistoryTests.RunAsync,
+            "--test-contact-reconnect" => AutomaticContactReconnectTests.RunAsync,
+            "--test-token-readiness" => TokenReadinessTests.RunAsync,
+            "--test-upnp" => UpnpTests.RunAsync,
+            "--test-port-openers" => PortOpenerTests.RunAsync,
+            "--test-opus" => () => { OpusCodecTests.Run(); return Task.CompletedTask; },
+            "--test-native-audio" or "--test-audio" => NativeAudioServiceTests.RunAsync,
+            "--test-sha3" => () => { Sha3Tests.Run(); return Task.CompletedTask; },
+            "--test-tor" => () => TestTorFileShare.RunAsync(args),
+            "--test-tor-cascade" or "--test-tor-fallback" => TorBypassTests.RunAsync,
+            _ => null
         };
-        qcc.Discovery.WanNostrDiscoveryEnabled = preferences.WanNostrDiscoveryEnabled;
-        qcc.Discovery.TorNostrDiscoveryEnabled = preferences.TorNostrDiscoveryEnabled;
 
-        QuicPunch.QuicPunch.EnableLogging = true;
-        QuicPunch.QuicPunch.LogHandler = msg => { Console.WriteLine(msg); WebUiServer.LogEvent(msg); };
-        QuicPunch.QuicPunch.ErrorHandler = msg => { Console.Error.WriteLine(msg); WebUiServer.LogEvent(msg); };
+        if (test != null)
+            return await TestOutput.RunAsync(args[0], test, args.Contains("--verbose"));
 
-        await qcc.Discovery.SetWanPeerDiscoveryEnabledAsync(preferences.WanNostrDiscoveryEnabled, cts.Token);
-        await qcc.Discovery.SetTorPeerDiscoveryEnabledAsync(preferences.TorNostrDiscoveryEnabled, cts.Token);
-        await qcc.StartAsync(cts.Token);
-
-        var lanHandler = new VirtualLanHandler();
-        if (preferences.LanAutoAssign)
-            lanHandler.ConfigureAutoAssignment(qcc.CertManager.CertPublicHash, qcc.PoolId);
-        else if (!lanHandler.ConfigureManualAddress(preferences.LanIp, preferences.LanSubnetMask))
-            lanHandler.ConfigureAutoAssignment(qcc.CertManager.CertPublicHash, qcc.PoolId);
-        lanHandler.SetMtu(preferences.LanMtu);
-
-        var chatHandler = new ChatHandler();
-        using var voiceCallHandler = new VoiceCallHandler(qcc);
-        using var speedTestHandler = new SpeedTestHandler();
-
-        qcc.RegisterProtocol(chatHandler);
-        qcc.RegisterProtocol(voiceCallHandler);
-        qcc.RegisterProtocol(speedTestHandler);
-
-        if (preferences.LanEnabled)
+        if (args.Length > 0 && args[0] is not ("--help" or "-h"))
         {
-            lanHandler.SetupTun();
-            if (lanHandler.IsActive)
-                qcc.RegisterProtocol(lanHandler);
+            Console.Error.WriteLine($"Unknown test: {args[0]}. Use --help to list suites.");
+            return 2;
         }
 
-        var webUi = new WebUiServer(qcc, chatHandler, lanHandler, voiceCallHandler, speedTestHandler, preferencesStore, cts);
-        webUi.Start();
-
-        if (preferences.TorEnabled)
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    WebUiServer.LogEvent("[TOR] Restoring Tor from the previous session...");
-                    await qcc.StartTorAsync(preferences.TorVirtualPort, cancellationToken: cts.Token);
-                    WebUiServer.LogEvent($"[TOR] Hidden service ready at {qcc.TorOnionAddress}");
-                }
-                catch (Exception ex)
-                {
-                    WebUiServer.LogEvent($"[TOR] Automatic startup failed: {ex.Message}");
-                }
-            });
-        }
-
-        string myToken = qcc.GetToken();
-        Console.WriteLine($"Your public endpoints: {string.Join(", ", qcc.CurrentPeer?.Addresses ?? [])}\n");
-        Console.WriteLine($"Your token: {myToken}\n");
-        string quickUri = $"qp://{myToken}";
-        Console.WriteLine($"Share this URI for quick connection: {quickUri}\n");
-
-        qcc.OnPeerAvailable += peer => Console.WriteLine($"Peer available: {peer.Name}");
-
-        while (!cts.Token.IsCancellationRequested)
-        {
-            try
-            {
-                Console.WriteLine("\nSelect a trusted peer to connect, or use the web console.");
-                Console.WriteLine("0: Enter token manually");
-                var trustedPeers = qcc.AvailablePeers.Values.Where(qcc.IsTrustedPeer).ToArray();
-                for (int i = 0; i < trustedPeers.Length; i++)
-                    Console.WriteLine($"{i + 1}: {trustedPeers[i].Name} ({trustedPeers[i].Ping}) - {trustedPeers[i].Id}");
-                if (qcc.AvailablePeers.Count > trustedPeers.Length)
-                    Console.WriteLine($"{qcc.AvailablePeers.Count - trustedPeers.Length} untrusted peer(s) await review in the dashboard.");
-                Console.WriteLine("R: Refresh");
-
-                if (Console.IsInputRedirected)
-                {
-                    await Task.Delay(1000, cts.Token).ConfigureAwait(false);
-                    continue;
-                }
-
-                while (!cts.Token.IsCancellationRequested && !Console.KeyAvailable)
-                {
-                    await Task.Delay(150, cts.Token).ConfigureAwait(false);
-                }
-                if (cts.Token.IsCancellationRequested) break;
-
-                var input = Console.ReadKey(true);
-                if (char.ToLowerInvariant(input.KeyChar) == 'r') continue;
-                if (input.KeyChar == '0')
-                {
-                    Console.Write("\nEnter token: ");
-                    string? token = Console.ReadLine();
-                    if (!string.IsNullOrWhiteSpace(token)) _ = qcc.PeerInterrogation(token, cts.Token);
-                    continue;
-                }
-
-                int index = input.KeyChar - '1';
-                if (index < 0 || index >= trustedPeers.Length) continue;
-                var peer = trustedPeers[index];
-
-                Console.WriteLine("\nSelect protocol:");
-                for (int i = 0; i < qcc.ProtocolHandlers.Count; i++)
-                    Console.WriteLine($"{i}: {qcc.ProtocolHandlers.ElementAt(i).Value.ProtocolName}");
-
-                while (!cts.Token.IsCancellationRequested && !Console.KeyAvailable)
-                {
-                    await Task.Delay(150, cts.Token).ConfigureAwait(false);
-                }
-                if (cts.Token.IsCancellationRequested) break;
-
-                var protocolInput = Console.ReadKey(true);
-                int protocolIndex = protocolInput.KeyChar - '0';
-                if (protocolIndex >= 0 && protocolIndex < qcc.ProtocolHandlers.Count)
-                {
-                    Guid protocolId = qcc.ProtocolHandlers.ElementAt(protocolIndex).Key;
-                    _ = Task.Run(() => qcc.InitQuicConnection(protocolId, peer, 0, cts.Token));
-                }
-            }
-            catch (OperationCanceledException) when (cts.Token.IsCancellationRequested) { break; }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Console loop error: {ex.Message}");
-                try { await Task.Delay(1000, cts.Token); } catch (OperationCanceledException) { break; }
-            }
-        }
-
-        try { lanHandler.Dispose(); } catch { }
-        try { await qcc.DisposeAsync(); } catch { }
-        Environment.Exit(0);
-    }
-
-    private static void TryRegisterProtocolHandler()
-    {
-        const string scheme = "qp";
-        string exe = Environment.ProcessPath ?? Assembly.GetExecutingAssembly().Location;
-
-        if (OperatingSystem.IsWindows())
-        {
-            try
-            {
-                using var existing = Registry.CurrentUser.OpenSubKey($@"Software\Classes\{scheme}\shell\open\command");
-                if (existing?.GetValue("") is string command && command.Contains(exe, StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                using var key = Registry.CurrentUser.CreateSubKey($@"Software\Classes\{scheme}");
-                key.SetValue("", $"URL:{scheme} Protocol");
-                key.SetValue("URL Protocol", "");
-                using var cmd = key.CreateSubKey(@"shell\open\command");
-                cmd.SetValue("", $"\"{exe}\" \"%1\"");
-            }
-            catch (UnauthorizedAccessException)
-            {
-                try
-                {
-                    using var id = WindowsIdentity.GetCurrent();
-                    bool admin = new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
-                    if (!admin)
-                    {
-                        Process.Start(new ProcessStartInfo(exe, "--elevated")
-                        {
-                            UseShellExecute = true,
-                            Verb = "runas"
-                        });
-                    }
-                }
-                catch { }
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"Protocol setup failed: {ex.Message}");
-            }
-        }
-        else if (OperatingSystem.IsLinux())
-        {
-            try
-            {
-                string appsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "applications");
-                Directory.CreateDirectory(appsDir);
-                string desktopFile = Path.Combine(appsDir, "quicpunch.desktop");
-                string content = $"[Desktop Entry]\nType=Application\nName=QuicPunch\nExec=\"{exe}\" %u\nMimeType=x-scheme-handler/qp;x-scheme-handler/qphp;\nNoDisplay=true\nTerminal=false\n";
-                if (!File.Exists(desktopFile) || File.ReadAllText(desktopFile) != content)
-                {
-                    File.WriteAllText(desktopFile, content);
-                    Process.Start(new ProcessStartInfo("xdg-mime", "default quicpunch.desktop x-scheme-handler/qp") { CreateNoWindow = true, UseShellExecute = false })?.WaitForExit(1000);
-                }
-            }
-            catch { }
-        }
-    }
-
-    private static void InspectMsQuicParams()
-    {
-        TestQuicCongestionControlTuning().GetAwaiter().GetResult();
+        Console.WriteLine("==================================================");
+        Console.WriteLine("              QUICPUNCH TEST HARNESS              ");
+        Console.WriteLine("==================================================");
+        Console.WriteLine("Usage: dotnet run --project QuicPunchTests -- [test-flag] [--verbose]");
+        Console.WriteLine("Add --verbose to show the complete test log.");
+        Console.WriteLine("\nAvailable test flags:");
+        Console.WriteLine("  --test-output");
+        Console.WriteLine("  --test-watch-reliability");
+        Console.WriteLine("  --test-geolocation / --test-geolocation-workbench");
+        Console.WriteLine("  --test-virtual-disk");
+        Console.WriteLine("  --test-updates");
+        Console.WriteLine("  --test-critical-reliability");
+        Console.WriteLine("  --test-resumable-files");
+        Console.WriteLine("  --test-session-recovery");
+        Console.WriteLine("  --test-vpn-policy / --test-vpn-orchestration / --test-vpn-broker");
+        Console.WriteLine("  --test-connection-recovery");
+        Console.WriteLine("  --test-automatic-transport");
+        Console.WriteLine("  --test-contact-reconnect (persistent UDP retries; approximately one minute)");
+        Console.WriteLine("  --test-peer-state");
+        Console.WriteLine("  --test-connectivity-security");
+        Console.WriteLine("  --test-punch-packet / --test-hole-packet");
+        Console.WriteLine("  --test-multiplexer / --test-mux");
+        Console.WriteLine("  --test-discovery-announcements (Android/AOT: JSON reflection disabled)");
+        Console.WriteLine("  --test-speedtest / --test-speed-test / --test-benchmark");
+        Console.WriteLine("  --test-screenshare / --test-screen-share");
+        Console.WriteLine("  --test-screen-audio");
+        Console.WriteLine("  --test-ffmpeg-screen");
+        Console.WriteLine("  --test-datagram-categorization");
+        Console.WriteLine("  --test-antireplay");
+        Console.WriteLine("  --test-security");
+        Console.WriteLine("  --test-nostr-trust / --test-tor-privacy");
+        Console.WriteLine("  --test-singleflight");
+        Console.WriteLine("  --test-handshake-cancellation");
+        Console.WriteLine("  --test-webui-security");
+        Console.WriteLine("  --test-rotating-logger");
+        Console.WriteLine("  --test-peer-acl");
+        Console.WriteLine("  --test-birthday-punch / --test-lan-ports / --test-lan-discovery");
+        Console.WriteLine("  --test-nat-pin-coordinator");
+        Console.WriteLine("  --test-lan-pooling");
+        Console.WriteLine("  --test-vpn-adapter");
+        Console.WriteLine("  --benchmark-quic / --benchmark-quic-default (80 ms RTT, 0.2% packet drops, 10 s duplex)");
+        Console.WriteLine("  --test-quic-bbr / --inspect-quic");
+        Console.WriteLine("  --test-quic-datagrams");
+        Console.WriteLine("  --test-quic-telemetry");
+        Console.WriteLine("  --test-quic-optimizations / --test-native-quic");
+        Console.WriteLine("  --test-pqc / --test-pqc-handshake");
+        Console.WriteLine("  --test-token-readiness");
+        Console.WriteLine("  --test-upnp");
+        Console.WriteLine("  --test-port-openers");
+        Console.WriteLine("  --test-opus");
+        Console.WriteLine("  --test-native-audio / --test-audio");
+        Console.WriteLine("  --test-tor");
+        Console.WriteLine("  --test-tor-cascade / --test-tor-fallback");
+        Console.WriteLine("==================================================");
+        return 0;
     }
 
     private static async Task TestQuicCongestionControlTuning()
@@ -349,15 +230,12 @@ internal static class Program
             Console.WriteLine($"[1] Initial Congestion Control: {initialCc} ({(int)initialCc})");
         }
 
-        // 2. Dynamically switch to BBR via native SetParam
-        bool switched = MsQuicTuner.TrySetCongestionControl(clientConn, QuicCongestionAlgorithm.Bbr);
-        Console.WriteLine($"[2] MsQuicTuner.TrySetCongestionControl(Bbr) => {(switched ? "SUCCESS" : "FAILED")}");
-
-        // 3. Confirm with GetParam
-        if (MsQuicTuner.TryGetCongestionControl(clientConn, out var activeCc))
-        {
-            Console.WriteLine($"[3] Active Congestion Control: {activeCc} ({(int)activeCc}) [{(activeCc == QuicCongestionAlgorithm.Bbr ? "CONFIRMED BBR ACTIVATED!" : "FAILED")}]");
-        }
+        // A live change must not overwrite the setting while the old native controller keeps running.
+        var requestedCc = initialCc == QuicCongestionAlgorithm.Bbr ? QuicCongestionAlgorithm.Cubic : QuicCongestionAlgorithm.Bbr;
+        if (MsQuicTuner.TrySetCongestionControl(clientConn, requestedCc) ||
+            !MsQuicTuner.TryGetCongestionControl(clientConn, out var activeCc) || activeCc != initialCc)
+            throw new InvalidOperationException("Live controller switching must require reconnecting.");
+        Console.WriteLine($"[2] Controller remains {activeCc}; changing it requires a prepared configuration and a new connection: PASSED");
 
         // 4. Test Telemetry
         bool telemOk = MsQuicTuner.TryGetTelemetry(clientConn, out var telem);

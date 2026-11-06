@@ -35,6 +35,23 @@ public static class TorBypassTests
             }
         }
 
+        // Packaged runtimes must bypass desktop bundle selection/downloads, and
+        // a broken configured path must fail rather than choosing another binary.
+        string packagedExecutable = Path.GetTempFileName();
+        try
+        {
+            await using var packaged = new TorRuntimeManager(new TorRuntimeOptions { ExecutablePath = packagedExecutable });
+            string resolved = await packaged.EnsureInstalledAsync();
+            Assert(resolved == Path.GetFullPath(packagedExecutable), "Packaged Tor bypasses desktop installation");
+            Assert(packaged.TorExecutablePath == resolved, "Packaged Tor executable is retained for startup");
+            File.Delete(packagedExecutable);
+            bool missingRejected = false;
+            try { await packaged.EnsureInstalledAsync(); }
+            catch (FileNotFoundException) { missingRejected = true; }
+            Assert(missingRejected, "Missing packaged Tor fails without downloading a desktop binary");
+        }
+        finally { File.Delete(packagedExecutable); }
+
         // Test 1: Verify TorBridges defaults
         Console.WriteLine("\n--- Test 1: TorBridges Built-in Configurations ---");
         var snowflakeBridges = TorBridges.GetSnowflakeBridges();

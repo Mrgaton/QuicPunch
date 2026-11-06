@@ -21,8 +21,12 @@ public sealed class OpusVoiceCodec : IDisposable
 
     public const int DefaultSampleRate = 48000;
     public const int DefaultChannels = 1;
-    public const int DefaultFrameDurationMs = 20; // 20 ms frames (Discord / WebRTC standard for ultra-low latency)
+    public const int DefaultFrameDurationMs = 20; // 20 ms frames, a common low-latency VoIP duration
     public const int DefaultFrameSize = (DefaultSampleRate * DefaultFrameDurationMs) / 1000; // 960 samples
+    public const int MinimumBitrate = 8000;
+    // Concentus limits the mono microphone encoder to 300 kbps.
+    public const int MaximumBitrate = 300000;
+    public const int DefaultBitrate = 96000;
 
     private readonly IOpusEncoder _encoder;
     private readonly IOpusDecoder _decoder;
@@ -35,11 +39,11 @@ public sealed class OpusVoiceCodec : IDisposable
     public int Channels { get; }
     public int Bitrate
     {
-        get => _encoder.Bitrate;
-        set => _encoder.Bitrate = Math.Clamp(value, 8000, 128000);
+        get { lock (_encodeLock) return _encoder.Bitrate; }
+        set { lock (_encodeLock) _encoder.Bitrate = Math.Clamp(value, MinimumBitrate, MaximumBitrate); }
     }
 
-    public OpusVoiceCodec(int sampleRate = DefaultSampleRate, int channels = DefaultChannels, int bitrate = 64000)
+    public OpusVoiceCodec(int sampleRate = DefaultSampleRate, int channels = DefaultChannels, int bitrate = DefaultBitrate)
     {
         SampleRate = sampleRate;
         Channels = channels;
@@ -231,7 +235,7 @@ public sealed class OpusVoiceCodec : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        _encoder.ResetState();
-        _decoder.ResetState();
+        lock (_encodeLock) _encoder.ResetState();
+        lock (_decodeLock) _decoder.ResetState();
     }
 }

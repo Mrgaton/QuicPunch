@@ -10,6 +10,13 @@ using QuicPunch.Helpers;
 namespace QuicPunchTests.Tests;
     public static class SecurityDiscoveryTests
     {
+        public static async Task RunNostrTrustTestsAsync()
+        {
+            await TestNostrDiscoveryUpdatesSavedPeerInPeerStoreAndTriggersReconnect();
+            await TestNostrSpoofingRejectedForSavedPeer();
+            await TestNostrCertificateVerificationAndValidation();
+        }
+
         public static async Task RunAsync()
         {
             Console.WriteLine("==================================================");
@@ -26,14 +33,14 @@ namespace QuicPunchTests.Tests;
             await TestHelloDiscoversWithoutAutoPinningOrAutoSaving();
             await TestPingIgnoredForUnknownPeers();
             await TestExplicitSaveAndTrustPeer();
-            await TestDataChannelBidirectionalEncryption();
+            await TestHandshakeDirectionalKeysAndLegacyDataIgnored();
             await TestAtomicIdentityPersistenceAndPermissions();
             await TestIPAddressValidationAndFiltering();
             await TestBigSendZeroAllocStochasticSampling();
             await TestDeterministicRoleAssignmentAndPreciseTimeResilience();
             await TestQuicConnectionTransportIntrospectionAndStunBatching();
             await TestHelloAntiReplayAndSaltDerivation();
-            await TestAutoAcceptSettingsAndPeerTrust();
+            await TestPeerTrustAndTransportPolicy();
             await TestAsymmetricUnrelatedPortHolePunch();
             await TestLanDiscoveryWithDifferentControlPorts();
             await TestIdempotentHandshakeRetransmissions();
@@ -47,11 +54,12 @@ namespace QuicPunchTests.Tests;
             await TestIpRateLimiterEvictionAndBoundedCardinality();
             await TestDiscoveredPeerPruningAndBoundedAdmission();
             await TestMultiPeerIsolationAndNoDesynchronizationOnPeerRemoval();
+            await TestApplicationSessionSurvivesUnrelatedPeerRemoval();
             await TestEndpointOnlyInterrogationDiscoversPeerBidirectionally();
             await TestMultiPeerAsymmetricReconnectDerivesFreshMatchingSession();
             await TestUnilateralInterrogationDiscoversPeerBidirectionally();
-            await TestUntrustedDiscoveredPeerCannotAutoAcceptProtocolHandshake();
-            await TestQuicReadyIsTrustedAndBounded();
+            await TestUntrustedDiscoveredPeerCannotOpenProtocols();
+            await TestQuicReadyIsAuthenticatedAndBounded();
             await TestPingCannotRefreshDiscoveredPeerLiveness();
             TestHandshakeCandidateFramingIsBounded();
             await TestIncomingHandshakeSessionsLifecycleAndHardCap();
@@ -65,6 +73,7 @@ namespace QuicPunchTests.Tests;
             await TestActiveSessionReuse();
             await TestTorTokenFixedOffsetEncodingAndDecoding();
             await TestNostrCertificateVerificationAndValidation();
+            await TestReconnectingDiscoveredPeerWhenEndpointChanges();
             await TestSavedPeerUpdatedWhenConnectedWithNewEndpoints();
             await TestWanServiceStartStopDynamicLifecycle();
             await TestDummyQuicConnectionTransportLeaveOpen();
@@ -78,9 +87,9 @@ namespace QuicPunchTests.Tests;
             Console.WriteLine("==================================================");
         }
 
-        private static async Task TestDataChannelBidirectionalEncryption()
+        private static async Task TestHandshakeDirectionalKeysAndLegacyDataIgnored()
         {
-            Console.Write("[TEST] WireGuard-style directional AEAD cipher (AES-256-GCM + deterministic nonces)... ");
+            Console.Write("[TEST] Handshake directional keys match and retired UDP data is ignored... ");
 
             string tempDirA = Path.Combine(Path.GetTempPath(), "qp_test_cipher_a_" + Guid.NewGuid().ToString("N"));
             string tempDirB = Path.Combine(Path.GetTempPath(), "qp_test_cipher_b_" + Guid.NewGuid().ToString("N"));
@@ -90,8 +99,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -120,94 +129,31 @@ namespace QuicPunchTests.Tests;
                 if (!CryptographicOperations.FixedTimeEquals(peerB_on_A.RxSalt, peerA_on_B.TxSalt))
                     throw new Exception("Directional salt mismatch: Node A RxSalt does not match Node B TxSalt.");
 
-                var readerB = qpB.GetPacketReader(100);
-                var readerA = qpA.GetPacketReader(200);
+                AssertMatchingSession(peerB_on_A, peerA_on_B);
+                AssertMatchingSession(peerA_on_B, peerB_on_A);
 
-                byte[] msgA2B = System.Text.Encoding.UTF8.GetBytes("Secret payload from A to B");
-                ulong seqA = peerB_on_A.GetNextOutboundSequence();
-                int headerAadSize = QuicPunch.QuicPunch.MagicHeader.Length + sizeof(byte) + sizeof(ushort) + sizeof(uint) + sizeof(ulong);
-                int packetLenA = headerAadSize + 16 + msgA2B.Length;
-                byte[] packetA = new byte[packetLenA];
+                var probe = CreateSessionProbe(peerB_on_A);
+                probe.Ciphertext[^1] ^= 0xFF;
+                AssertSessionProbeRejected(peerA_on_B, probe);
 
-                int offset = 0;
-                QuicPunch.QuicPunch.MagicHeader.CopyTo(packetA.AsSpan(offset));
-                offset += QuicPunch.QuicPunch.MagicHeader.Length;
-                packetA[offset++] = (byte)QuicPunchStructures.MessageType.Data;
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(packetA.AsSpan(offset, 2), 100);
-                offset += 2;
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(packetA.AsSpan(offset, 4), qpA.CurrentPeer.ShortId);
-                offset += 4;
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(packetA.AsSpan(offset, 8), seqA);
-                offset += 8;
+                int handled = 0;
+                qpB.RegisterProtocol(new DummyProtocolHandler(Guid.NewGuid(), () => handled++));
+                var endpointBefore = peerA_on_B.ActiveEndPoint;
+                var keyBefore = peerA_on_B.ActiveSessionKeyId!.ToArray();
+                ulong sequence = peerB_on_A.GetNextOutboundSequence();
+                byte[] legacyPacket = BuildLegacyDataPacket(qpA, peerB_on_A, sequence);
 
-                Span<byte> tagA = packetA.AsSpan(offset, 16);
-                offset += 16;
-                Span<byte> cipherA = packetA.AsSpan(offset);
-
-                Span<byte> nonceA = stackalloc byte[12];
-                peerB_on_A.TxSalt.CopyTo(nonceA.Slice(0, 4));
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(nonceA.Slice(4, 8), seqA);
-
-                peerB_on_A.TxCipher!.Encrypt(nonceA, msgA2B, cipherA, tagA, packetA.AsSpan(0, headerAadSize));
-
-                await qpB.ProcessIncomingPacketAsync(packetA, epA, QuicPunch.QuicPunch.TransportType.Wan);
-
-                using var ctsB = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2));
-                var (senderGuidB, receivedPayloadB) = await readerB.ReadAsync(ctsB.Token);
-
-                if (senderGuidB != qpA.CurrentPeer.Id)
-                    throw new Exception("Sender ID mismatch on Node B.");
-
-                if (!System.Text.Encoding.UTF8.GetString(receivedPayloadB).Equals("Secret payload from A to B"))
-                    throw new Exception("Payload corruption in A -> B transmission.");
-
-                byte[] msgB2A = System.Text.Encoding.UTF8.GetBytes("Secret payload from B to A");
-                ulong seqB = peerA_on_B.GetNextOutboundSequence();
-                int packetLenB = headerAadSize + 16 + msgB2A.Length;
-                byte[] packetB = new byte[packetLenB];
-
-                offset = 0;
-                QuicPunch.QuicPunch.MagicHeader.CopyTo(packetB.AsSpan(offset));
-                offset += QuicPunch.QuicPunch.MagicHeader.Length;
-                packetB[offset++] = (byte)QuicPunchStructures.MessageType.Data;
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(packetB.AsSpan(offset, 2), 200);
-                offset += 2;
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(packetB.AsSpan(offset, 4), qpB.CurrentPeer.ShortId);
-                offset += 4;
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(packetB.AsSpan(offset, 8), seqB);
-                offset += 8;
-
-                Span<byte> tagB = packetB.AsSpan(offset, 16);
-                offset += 16;
-                Span<byte> cipherB = packetB.AsSpan(offset);
-
-                Span<byte> nonceB = stackalloc byte[12];
-                peerA_on_B.TxSalt.CopyTo(nonceB.Slice(0, 4));
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(nonceB.Slice(4, 8), seqB);
-
-                peerA_on_B.TxCipher!.Encrypt(nonceB, msgB2A, cipherB, tagB, packetB.AsSpan(0, headerAadSize));
-
-                await qpA.ProcessIncomingPacketAsync(packetB, epB, QuicPunch.QuicPunch.TransportType.Wan);
-
-                using var ctsA = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2));
-                var (senderGuidA, receivedPayloadA) = await readerA.ReadAsync(ctsA.Token);
-
-                if (senderGuidA != qpB.CurrentPeer.Id)
-                    throw new Exception("Sender ID mismatch on Node A.");
-
-                if (!System.Text.Encoding.UTF8.GetString(receivedPayloadA).Equals("Secret payload from B to A"))
-                    throw new Exception("Payload corruption in B -> A transmission.");
-
-                byte[] tamperedPacket = (byte[])packetA.Clone();
-                tamperedPacket[tamperedPacket.Length - 1] ^= 0xFF;
-
-                await qpB.ProcessIncomingPacketAsync(tamperedPacket, epA, QuicPunch.QuicPunch.TransportType.Wan);
-                if (readerB.TryRead(out _))
-                    throw new Exception("Tampered AEAD ciphertext was accepted and decrypted!");
-
-                await qpB.ProcessIncomingPacketAsync(packetA, epA, QuicPunch.QuicPunch.TransportType.Wan);
-                if (readerB.TryRead(out _))
-                    throw new Exception("Replayed packet was accepted a second time!");
+                // Even a trusted peer's correctly authenticated old wire packet must
+                // never enter application delivery or consume replay-window state.
+                await qpB.ProcessIncomingPacketAsync(legacyPacket, epA, QuicPunch.QuicPunch.TransportType.Wan);
+                await qpB.ProcessIncomingPacketAsync(legacyPacket, epA, QuicPunch.QuicPunch.TransportType.Wan);
+                legacyPacket[^1] ^= 0xFF;
+                await qpB.ProcessIncomingPacketAsync(legacyPacket, epA, QuicPunch.QuicPunch.TransportType.Wan);
+                await qpB.ProcessIncomingPacketAsync(legacyPacket[..(QuicPunch.QuicPunch.MagicHeader.Length + 1)], epA, QuicPunch.QuicPunch.TransportType.Wan);
+                if (!peerA_on_B.InboundReplayFilter.Check(sequence) || handled != 0 || qpB.ActiveProtocolSessionCount != 0)
+                    throw new Exception("Retired UDP data reached application/session processing.");
+                if (!Equals(endpointBefore, peerA_on_B.ActiveEndPoint) || !keyBefore.SequenceEqual(peerA_on_B.ActiveSessionKeyId!))
+                    throw new Exception("Retired UDP data mutated authenticated peer state.");
 
                 Console.WriteLine("PASSED");
             }
@@ -230,8 +176,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -277,7 +223,7 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qp.StartAsync();
 
                 long timestamp = PreciseTime.GetCorrectTime().Ticks;
@@ -313,8 +259,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -629,8 +575,8 @@ namespace QuicPunchTests.Tests;
             {
                 byte[] pwd = System.Text.Encoding.UTF8.GetBytes("SuperSecretPassword123!");
 
-                using var qpStandaloneA = new QuicPunch.QuicPunch(appDataPath: tempDirA, connectionPassword: pwd);
-                using var qpStandaloneB = new QuicPunch.QuicPunch(appDataPath: tempDirB, connectionPassword: pwd);
+                using var qpStandaloneA = new QuicPunch.QuicPunch(appDataPath: tempDirA, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpStandaloneB = new QuicPunch.QuicPunch(appDataPath: tempDirB, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 if (qpStandaloneA.PasswordHash == null || qpStandaloneB.PasswordHash == null)
                     throw new Exception("PasswordHash was null on standalone instances.");
@@ -638,13 +584,13 @@ namespace QuicPunchTests.Tests;
                 if (!CryptographicOperations.FixedTimeEquals(qpStandaloneA.PasswordHash, qpStandaloneB.PasswordHash))
                     throw new Exception("Standalone instances with the same password did not derive identical PasswordHash.");
 
-                using var qpWrongPwd = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirA, "wrong"), connectionPassword: System.Text.Encoding.UTF8.GetBytes("WrongPassword!"));
+                using var qpWrongPwd = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirA, "wrong"), connectionPassword: System.Text.Encoding.UTF8.GetBytes("WrongPassword!")) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 if (CryptographicOperations.FixedTimeEquals(qpStandaloneA.PasswordHash, qpWrongPwd.PasswordHash))
                     throw new Exception("Different passwords derived identical PasswordHash!");
 
                 byte[] sharedPoolId = SHA1.HashData(System.Text.Encoding.UTF8.GetBytes("TestPool256"));
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirA, "nodeA"), discoveryId: sharedPoolId, connectionPassword: pwd);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirB, "nodeB"), discoveryId: sharedPoolId, connectionPassword: pwd);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirA, "nodeA"), discoveryId: sharedPoolId, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirB, "nodeB"), discoveryId: sharedPoolId, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 var epB1 = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 4001);
                 var epAttacker = new IPEndPoint(IPAddress.Parse("198.51.100.1"), 9999);
@@ -682,107 +628,21 @@ namespace QuicPunchTests.Tests;
             }
         }
 
-        private static async Task TestAutoAcceptSettingsAndPeerTrust()
+        private static async Task TestPeerTrustAndTransportPolicy()
         {
-            Console.Write("[TEST] Auto-Accept settings (global toggle & peer-specific trust)... ");
-
-            string tempDir = Path.Combine(Path.GetTempPath(), "qp_test_autoaccept_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(tempDir);
-
-            try
-            {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, autoAcceptConnections: false);
-
-                var certHash1 = SHA3_256.HashData(System.Text.Encoding.UTF8.GetBytes("cert-1"));
-                var certHash2 = SHA3_256.HashData(System.Text.Encoding.UTF8.GetBytes("cert-2"));
-
-                var peer1 = new PeerInfo();
-                peer1.SetCertificateHash(certHash1);
-                var peerId1 = peer1.Id;
-
-                var peer2 = new PeerInfo();
-                peer2.SetCertificateHash(certHash2);
-                var peerId2 = peer2.Id;
-
-                qp.AvailablePeers[peerId1] = peer1;
-                qp.AvailablePeers[peerId2] = peer2;
-                qp.TrustPeer(certHash1);
-
-                if (qp.AutoAcceptConnections)
-                    throw new Exception("AutoAcceptConnections was expected to be false.");
-
-                if (qp.IsPeerAutoAccepted(peerId1))
-                    throw new Exception("peerId1 was unexpectedly auto-accepted initially.");
-
-                qp.SetPeerAutoAccept(peerId1, true);
-                if (!qp.IsPeerAutoAccepted(peerId1))
-                    throw new Exception("peerId1 should be auto-accepted after SetPeerAutoAccept(true).");
-
-                if (qp.IsPeerAutoAccepted(peerId2))
-                    throw new Exception("peerId2 should NOT be auto-accepted.");
-
-                qp.SetPeerAutoAccept(peerId1, false);
-                if (qp.IsPeerAutoAccepted(peerId1))
-                    throw new Exception("peerId1 should NOT be auto-accepted after SetPeerAutoAccept(false).");
-
-                qp.SetPeerAutoAccept(certHash1, true);
-                if (!qp.IsPeerAutoAccepted(certHash1))
-                    throw new Exception("certHash1 should be auto-accepted after SetPeerAutoAccept(certHash1, true).");
-
-                if (qp.IsPeerAutoAccepted(certHash2))
-                    throw new Exception("certHash2 should NOT be auto-accepted.");
-
-                qp.TrustPeer(certHash2);
-                qp.SetAutoAcceptAll(true);
-                if (!qp.AutoAcceptConnections)
-                    throw new Exception("AutoAcceptConnections should be true after SetAutoAcceptAll(true);");
-
-                if (!qp.IsPeerAutoAccepted(peerId2))
-                    throw new Exception("peerId2 should be auto-accepted when global AutoAcceptConnections is true.");
-
-                if (!qp.IsPeerAutoAccepted(certHash2))
-                    throw new Exception("certHash2 should be auto-accepted when global AutoAcceptConnections is true.");
-
-                // Test Trust-gated Auto-acceptance:
-                // AutoAcceptConnections is true, but AutoAcceptUntrustedConnections is false:
-                // Only TRUSTED peers should be auto-accepted!
-                qp.UntrustPeer(certHash1);
-                qp.UntrustPeer(certHash2);
-                qp.SetPeerAutoAccept(certHash1, false);
-                qp.SetAutoAcceptAll(false);
-                qp.AutoAcceptConnections = true;
-                qp.AutoAcceptUntrustedConnections = false;
-
-                if (qp.IsTrustedPeer(certHash1))
-                    throw new Exception("certHash1 should NOT be trusted initially.");
-
-                if (qp.IsPeerAutoAccepted(certHash1))
-                    throw new Exception("certHash1 should NOT be auto-accepted when untrusted even if AutoAcceptConnections is true.");
-
-                qp.TrustPeer(certHash1);
-                if (!qp.IsTrustedPeer(certHash1))
-                    throw new Exception("certHash1 should be trusted after TrustPeer.");
-
-                if (!qp.IsPeerAutoAccepted(certHash1))
-                    throw new Exception("certHash1 should be auto-accepted when trusted and AutoAcceptConnections is true.");
-
-                if (qp.IsPeerAutoAccepted(certHash2))
-                    throw new Exception("certHash2 (untrusted) must NOT be auto-accepted when AutoAcceptUntrustedConnections is false.");
-
-                qp.UntrustPeer(certHash1);
-                if (qp.IsTrustedPeer(certHash1))
-                    throw new Exception("certHash1 should NOT be trusted after UntrustPeer.");
-
-                if (qp.IsPeerAutoAccepted(certHash1))
-                    throw new Exception("certHash1 should NOT be auto-accepted after UntrustPeer.");
-
-                Console.WriteLine("PASSED");
-                await Task.CompletedTask;
-            }
-            finally
-            {
-                try { Directory.Delete(tempDir, true); } catch { }
-            }
+            Console.Write("[TEST] Transport defaults do not grant application trust... ");
+            var access = new QuicPunch.Security.PeerAccessController();
+            using var peer = new PeerInfo();
+            peer.SetCertificateHash(RandomNumberGenerator.GetBytes(32));
+            if (!new PeerTransportOptions().AutoConnectDiscoveredPeers)
+                throw new Exception("Discovered transport must be automatic by default.");
+            if (access.IsTrusted(peer)) throw new Exception("Transport policy granted trust.");
+            access.TrustPeer(peer.CertHash);
+            access.EnsureAllowedForApplication(peer);
+            access.UntrustPeer(peer.CertHash);
+            if (access.IsTrusted(peer)) throw new Exception("Revoked identity remained trusted.");
+            Console.WriteLine("PASSED");
+            await Task.CompletedTask;
         }
 
         private static async Task TestAsymmetricUnrelatedPortHolePunch()
@@ -797,8 +657,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -834,10 +694,10 @@ namespace QuicPunchTests.Tests;
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
                 var punchTaskA = QuicPunch.QuicPunchConnection.OpenPortCore(
-                    qpA.CurrentPeer, nudpA, peerBInA, new[] { candidateB }, portB, connectionGuid, cts.Token);
+                    qpA.CurrentPeer, nudpA, peerBInA, new[] { candidateB }, portB, connectionGuid, cts.Token, qpA.CertManager.Curve, qpA.PasswordHash);
 
                 var punchTaskB = QuicPunch.QuicPunchConnection.OpenPortCore(
-                    qpB.CurrentPeer, nudpB, peerAInB, new[] { candidateA }, portA, connectionGuid, cts.Token);
+                    qpB.CurrentPeer, nudpB, peerAInB, new[] { candidateA }, portA, connectionGuid, cts.Token, qpB.CertManager.Curve, qpB.PasswordHash);
 
                 await Task.WhenAll(punchTaskA, punchTaskB);
 
@@ -865,7 +725,7 @@ namespace QuicPunchTests.Tests;
             }
         }
 
-        private static async Task TestLanDiscoveryWithDifferentControlPorts()
+        internal static async Task TestLanDiscoveryWithDifferentControlPorts()
         {
             Console.Write("[TEST] LAN multicast/broadcast discovery across different control ports (41892 vs 52713)... ");
 
@@ -877,9 +737,18 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 41892);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 52713);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 41892) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 52713) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
+                // An installed node may already own the standard discovery port.
+                // Keep this test's shared beacon socket isolated from real contacts.
+                using var beaconPort = new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+                int discoveryPort = ((IPEndPoint)beaconPort.Client.LocalEndPoint!).Port;
+                beaconPort.Close();
+                qpA.Discovery.LanDiscoveryPort = discoveryPort;
+                qpB.Discovery.LanDiscoveryPort = discoveryPort;
+                qpA.EnableUpnp = qpB.EnableUpnp = false;
+                qpA.Discovery.NostrRelays = qpB.Discovery.NostrRelays = ["ws://127.0.0.1:9"];
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -923,7 +792,6 @@ namespace QuicPunchTests.Tests;
         {
             public Guid ProtocolId { get; }
             public string ProtocolName => "DummyTestProtocol";
-            public System.IO.Compression.ZstandardCompressionOptions? CompressionOptions => null;
 
             private readonly Action? _onHandle;
             private readonly Func<Task>? _onHandleAsync;
@@ -964,8 +832,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 42101, autoAcceptConnections: true);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 42102, autoAcceptConnections: true);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 42101) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 42102) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -1030,8 +898,8 @@ namespace QuicPunchTests.Tests;
             try
             {
                 byte[] pwd = System.Text.Encoding.UTF8.GetBytes("ResilientPassword2026!");
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 43001, connectionPassword: pwd);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 43002, connectionPassword: pwd);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 43001, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 43002, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -1085,7 +953,7 @@ namespace QuicPunchTests.Tests;
                 if (new FileInfo(customStunCache).Length == 0)
                     throw new Exception("StunGatherer retained an empty cache file instead of writing valid seeds.");
 
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 43123);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 43123) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qp.StartAsync();
 
                 bool refreshed = await qp.RefreshStunEndpointsAsync(force: false);
@@ -1115,7 +983,7 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 43200);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 43200) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qp.CurrentPeer.Addresses = new[]
                 {
                     IPAddress.Parse("198.51.100.10"),
@@ -1218,20 +1086,19 @@ namespace QuicPunchTests.Tests;
                 byte[] s1_TxSalt_A;
                 byte[] s1_RxSalt_A;
                 byte[] s1_KeyId_A;
-                byte[] s1_PacketA;
+                SessionProbe s1_Probe;
                 byte[] s2_TxSalt_A;
                 byte[] s2_RxSalt_A;
                 byte[] s2_KeyId_A;
-                byte[] s2_PacketA;
+                SessionProbe s2_Probe;
                 byte[] s3_TxSalt_A;
                 byte[] s3_RxSalt_A;
                 byte[] s3_KeyId_A;
-                byte[] s3_PacketA;
-                int headerAadSize = QuicPunch.QuicPunch.MagicHeader.Length + sizeof(byte) + sizeof(ushort) + sizeof(uint) + sizeof(ulong);
+                SessionProbe s3_Probe;
 
                 // --- PHASE 1: Session 1 on initial start ---
-                using (var qpA = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirA).WithPort(0).WithAutoDiscovery(false).Build())
-                using (var qpB = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirB).WithPort(0).WithAutoDiscovery(false).Build())
+                using (var qpA = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirA).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build())
+                using (var qpB = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirB).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build())
                 {
                     await qpA.StartAsync();
                     await qpB.StartAsync();
@@ -1254,38 +1121,9 @@ namespace QuicPunchTests.Tests;
                     s1_RxSalt_A = (byte[])peerB_s1.RxSalt!.Clone();
                     s1_KeyId_A = (byte[])peerB_s1.ActiveSessionKeyId!.Clone();
 
-                    byte[] msgS1 = System.Text.Encoding.UTF8.GetBytes("Session 1 Message");
-                    ulong seqS1 = peerB_s1.GetNextOutboundSequence();
-                    s1_PacketA = new byte[headerAadSize + 16 + msgS1.Length];
-
-                    int offset1 = 0;
-                    QuicPunch.QuicPunch.MagicHeader.CopyTo(s1_PacketA.AsSpan(offset1));
-                    offset1 += QuicPunch.QuicPunch.MagicHeader.Length;
-                    s1_PacketA[offset1++] = (byte)QuicPunchStructures.MessageType.Data;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(s1_PacketA.AsSpan(offset1, 2), 101);
-                    offset1 += 2;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(s1_PacketA.AsSpan(offset1, 4), qpA.CurrentPeer.ShortId);
-                    offset1 += 4;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(s1_PacketA.AsSpan(offset1, 8), seqS1);
-                    offset1 += 8;
-
-                    Span<byte> tag1 = s1_PacketA.AsSpan(offset1, 16);
-                    offset1 += 16;
-                    Span<byte> cipher1 = s1_PacketA.AsSpan(offset1);
-
-                    Span<byte> nonce1 = stackalloc byte[12];
-                    peerB_s1.TxSalt.CopyTo(nonce1.Slice(0, 4));
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(nonce1.Slice(4, 8), seqS1);
-
-                    peerB_s1.TxCipher!.Encrypt(nonce1, msgS1, cipher1, tag1, s1_PacketA.AsSpan(0, headerAadSize));
-
-                    var readerB1 = qpB.GetPacketReader(101);
-                    await qpB.ProcessIncomingPacketAsync(s1_PacketA, epA, QuicPunch.QuicPunch.TransportType.Wan);
-
-                    using var cts1 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2));
-                    var (_, receivedS1) = await readerB1.ReadAsync(cts1.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(receivedS1).Equals("Session 1 Message"))
-                        throw new Exception("Session 1 payload failed to decrypt on Node B.");
+                    s1_Probe = CreateSessionProbe(peerB_s1);
+                    AssertSessionProbeDecrypts(peerA_s1, s1_Probe);
+                    AssertMatchingSession(peerA_s1, peerB_s1);
 
                     // --- PHASE 2: StopAsync -> StartAsync on the SAME instances (P0 fix verification) ---
                     await qpA.StopAsync();
@@ -1315,42 +1153,10 @@ namespace QuicPunchTests.Tests;
                     if (CryptographicOperations.FixedTimeEquals(s1_KeyId_A, s2_KeyId_A))
                         throw new Exception("CRITICAL SECURITY VIOLATION: Session key ID identical across Stop->Start on same instance!");
 
-                    var readerB2 = qpB.GetPacketReader(101);
-                    await qpB.ProcessIncomingPacketAsync(s1_PacketA, epA, QuicPunch.QuicPunch.TransportType.Wan);
-                    if (readerB2.TryRead(out _))
-                        throw new Exception("CRITICAL SECURITY VIOLATION: Packet from Session 1 was accepted in Session 2 after same-instance restart!");
-
-                    byte[] msgS2 = System.Text.Encoding.UTF8.GetBytes("Session 2 Message");
-                    ulong seqS2 = peerB_s2.GetNextOutboundSequence();
-                    s2_PacketA = new byte[headerAadSize + 16 + msgS2.Length];
-
-                    int offset2 = 0;
-                    QuicPunch.QuicPunch.MagicHeader.CopyTo(s2_PacketA.AsSpan(offset2));
-                    offset2 += QuicPunch.QuicPunch.MagicHeader.Length;
-                    s2_PacketA[offset2++] = (byte)QuicPunchStructures.MessageType.Data;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(s2_PacketA.AsSpan(offset2, 2), 101);
-                    offset2 += 2;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(s2_PacketA.AsSpan(offset2, 4), qpA.CurrentPeer.ShortId);
-                    offset2 += 4;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(s2_PacketA.AsSpan(offset2, 8), seqS2);
-                    offset2 += 8;
-
-                    Span<byte> tag2 = s2_PacketA.AsSpan(offset2, 16);
-                    offset2 += 16;
-                    Span<byte> cipher2 = s2_PacketA.AsSpan(offset2);
-
-                    Span<byte> nonce2 = stackalloc byte[12];
-                    peerB_s2.TxSalt.CopyTo(nonce2.Slice(0, 4));
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(nonce2.Slice(4, 8), seqS2);
-
-                    peerB_s2.TxCipher!.Encrypt(nonce2, msgS2, cipher2, tag2, s2_PacketA.AsSpan(0, headerAadSize));
-
-                    await qpB.ProcessIncomingPacketAsync(s2_PacketA, epA, QuicPunch.QuicPunch.TransportType.Wan);
-
-                    using var cts2 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2));
-                    var (_, receivedS2) = await readerB2.ReadAsync(cts2.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(receivedS2).Equals("Session 2 Message"))
-                        throw new Exception("Session 2 payload failed to decrypt on Node B.");
+                    AssertSessionProbeRejected(peerA_s2, s1_Probe);
+                    s2_Probe = CreateSessionProbe(peerB_s2);
+                    AssertSessionProbeDecrypts(peerA_s2, s2_Probe);
+                    AssertMatchingSession(peerA_s2, peerB_s2);
 
                     // --- PHASE 3: Peer removed -> same peer reappears without restart (P0 fix verification) ---
                     if (!qpA.RemovePeer(qpB.CurrentPeer.Id))
@@ -1382,51 +1188,16 @@ namespace QuicPunchTests.Tests;
                     if (CryptographicOperations.FixedTimeEquals(s1_KeyId_A, s3_KeyId_A) || CryptographicOperations.FixedTimeEquals(s2_KeyId_A, s3_KeyId_A))
                         throw new Exception("CRITICAL SECURITY VIOLATION: Session key ID reused after peer removal and re-discovery!");
 
-                    var readerB3 = qpB.GetPacketReader(101);
-                    await qpB.ProcessIncomingPacketAsync(s1_PacketA, epA, QuicPunch.QuicPunch.TransportType.Wan);
-                    if (readerB3.TryRead(out _))
-                        throw new Exception("CRITICAL SECURITY VIOLATION: Packet from Session 1 was accepted in Session 3!");
-
-                    await qpB.ProcessIncomingPacketAsync(s2_PacketA, epA, QuicPunch.QuicPunch.TransportType.Wan);
-                    if (readerB3.TryRead(out _))
-                        throw new Exception("CRITICAL SECURITY VIOLATION: Packet from Session 2 was accepted in Session 3!");
-
-                    byte[] msgS3 = System.Text.Encoding.UTF8.GetBytes("Session 3 Message");
-                    ulong seqS3 = peerB_s3.GetNextOutboundSequence();
-                    s3_PacketA = new byte[headerAadSize + 16 + msgS3.Length];
-
-                    int offset3 = 0;
-                    QuicPunch.QuicPunch.MagicHeader.CopyTo(s3_PacketA.AsSpan(offset3));
-                    offset3 += QuicPunch.QuicPunch.MagicHeader.Length;
-                    s3_PacketA[offset3++] = (byte)QuicPunchStructures.MessageType.Data;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(s3_PacketA.AsSpan(offset3, 2), 101);
-                    offset3 += 2;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(s3_PacketA.AsSpan(offset3, 4), qpA.CurrentPeer.ShortId);
-                    offset3 += 4;
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(s3_PacketA.AsSpan(offset3, 8), seqS3);
-                    offset3 += 8;
-
-                    Span<byte> tag3 = s3_PacketA.AsSpan(offset3, 16);
-                    offset3 += 16;
-                    Span<byte> cipher3 = s3_PacketA.AsSpan(offset3);
-
-                    Span<byte> nonce3 = stackalloc byte[12];
-                    peerB_s3.TxSalt.CopyTo(nonce3.Slice(0, 4));
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(nonce3.Slice(4, 8), seqS3);
-
-                    peerB_s3.TxCipher!.Encrypt(nonce3, msgS3, cipher3, tag3, s3_PacketA.AsSpan(0, headerAadSize));
-
-                    await qpB.ProcessIncomingPacketAsync(s3_PacketA, epA, QuicPunch.QuicPunch.TransportType.Wan);
-
-                    using var cts3 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2));
-                    var (_, receivedS3) = await readerB3.ReadAsync(cts3.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(receivedS3).Equals("Session 3 Message"))
-                        throw new Exception("Session 3 payload failed to decrypt on Node B.");
+                    AssertSessionProbeRejected(peerA_s3, s1_Probe);
+                    AssertSessionProbeRejected(peerA_s3, s2_Probe);
+                    s3_Probe = CreateSessionProbe(peerB_s3);
+                    AssertSessionProbeDecrypts(peerA_s3, s3_Probe);
+                    AssertMatchingSession(peerA_s3, peerB_s3);
                 }
 
                 // --- PHASE 4: Cross-instance restarts also tested ---
-                using (var qpA4 = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirA).WithPort(0).WithAutoDiscovery(false).Build())
-                using (var qpB4 = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirB).WithPort(0).WithAutoDiscovery(false).Build())
+                using (var qpA4 = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirA).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build())
+                using (var qpB4 = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirB).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build())
                 {
                     await qpA4.StartAsync();
                     await qpB4.StartAsync();
@@ -1439,6 +1210,13 @@ namespace QuicPunchTests.Tests;
 
                     if (!qpA4.AvailablePeers.TryGetValue(qpB4.CurrentPeer.Id, out var peerB_s4) || !peerB_s4.IsSessionReady)
                         throw new Exception("Session 4: Peer B is not ready on Node A.");
+
+                    var peerA_s4 = qpB4.AvailablePeers[qpA4.CurrentPeer.Id];
+                    AssertMatchingSession(peerB_s4, peerA_s4);
+                    AssertMatchingSession(peerA_s4, peerB_s4);
+                    AssertSessionProbeRejected(peerA_s4, s1_Probe);
+                    AssertSessionProbeRejected(peerA_s4, s2_Probe);
+                    AssertSessionProbeRejected(peerA_s4, s3_Probe);
 
                     byte[] s4_TxSalt_A = peerB_s4.TxSalt!;
                     byte[] s4_KeyId_A = peerB_s4.ActiveSessionKeyId!;
@@ -1475,8 +1253,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -1535,7 +1313,7 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                var unstartedQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0);
+                var unstartedQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 if (unstartedQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Created)
                     throw new Exception("Expected Created state for unstarted instance.");
                 if (unstartedQp.IsStarted)
@@ -1545,13 +1323,13 @@ namespace QuicPunchTests.Tests;
                 if (!unstartedQp.IsDisposed || unstartedQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Disposed)
                     throw new Exception("Expected Disposed state after calling Dispose on unstarted instance.");
 
-                var unstartedAsyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0);
+                var unstartedAsyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await unstartedAsyncQp.DisposeAsync();
                 if (!unstartedAsyncQp.IsDisposed || unstartedAsyncQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Disposed)
                     throw new Exception("Expected Disposed state after calling DisposeAsync on unstarted instance.");
 
                 QuicPunch.QuicPunch? asyncQpRef = null;
-                await using (var asyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0))
+                await using (var asyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } })
                 {
                     asyncQpRef = asyncQp;
                     await asyncQp.StartAsync();
@@ -1582,7 +1360,7 @@ namespace QuicPunchTests.Tests;
                 if (!asyncCaughtDisposed)
                     throw new Exception("Expected ObjectDisposedException when calling StartAsync after DisposeAsync.");
 
-                var stoppedAsyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0);
+                var stoppedAsyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await stoppedAsyncQp.StartAsync();
                 await stoppedAsyncQp.StopAsync();
                 if (stoppedAsyncQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Stopped)
@@ -1591,7 +1369,7 @@ namespace QuicPunchTests.Tests;
                 if (!stoppedAsyncQp.IsDisposed || stoppedAsyncQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Disposed)
                     throw new Exception("Expected Disposed state after DisposeAsync on stopped instance.");
 
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 47100);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 47100) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qp.StartAsync();
                 if (!qp.IsStarted || qp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Started)
@@ -1636,7 +1414,6 @@ namespace QuicPunchTests.Tests;
 
                 var builderInstance = await new QuicPunch.QuicPunchBuilder()
                     .WithPort(0)
-                    .WithAutoAccept(true)
                     .BuildAndStartAsync();
 
                 if (!builderInstance.IsStarted || builderInstance.CancellationSource.IsCancellationRequested)
@@ -1665,8 +1442,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -1784,7 +1561,7 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDir);
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 var trustedHash = RandomNumberGenerator.GetBytes(32);
                 var trusted = new PeerInfo().SetCertificateHash(trustedHash);
                 qp.TrustPeer(trustedHash);
@@ -1818,40 +1595,69 @@ namespace QuicPunchTests.Tests;
             }
         }
 
-        private static async Task SendDirectDataPacketAsync(
-            QuicPunch.QuicPunch senderQp,
-            QuicPunch.PeerInfo targetPeer,
-            ushort packetType,
-            byte[] payload,
-            QuicPunch.QuicPunch receiverQp,
-            IPEndPoint senderEndPoint)
+        // Probe the handshake-derived ciphers directly. Application delivery belongs
+        // to QUIC; these assertions deliberately do not recreate a UDP data channel.
+        private sealed record SessionProbe(byte[] Nonce, byte[] Ciphertext, byte[] Tag);
+        private static readonly byte[] SessionProbePlaintext = "handshake key agreement"u8.ToArray();
+
+        private static SessionProbe CreateSessionProbe(PeerInfo sender)
         {
-            int headerAadSize = QuicPunch.QuicPunch.MagicHeader.Length + sizeof(byte) + sizeof(ushort) + sizeof(uint) + sizeof(ulong);
-            ulong seq = targetPeer.GetNextOutboundSequence();
-            byte[] packet = new byte[headerAadSize + 16 + payload.Length];
+            byte[] nonce = new byte[12];
+            sender.TxSalt!.CopyTo(nonce, 0);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(nonce.AsSpan(4), sender.GetNextOutboundSequence());
+            byte[] ciphertext = new byte[SessionProbePlaintext.Length];
+            byte[] tag = new byte[16];
+            sender.TxCipher!.Encrypt(nonce, SessionProbePlaintext, ciphertext, tag);
+            return new SessionProbe(nonce, ciphertext, tag);
+        }
 
-            int offset = 0;
-            QuicPunch.QuicPunch.MagicHeader.CopyTo(packet.AsSpan(offset));
-            offset += QuicPunch.QuicPunch.MagicHeader.Length;
-            packet[offset++] = (byte)QuicPunchStructures.MessageType.Data;
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(offset, 2), packetType);
+        private static void AssertSessionProbeDecrypts(PeerInfo receiver, SessionProbe probe)
+        {
+            byte[] plaintext = new byte[probe.Ciphertext.Length];
+            receiver.RxCipher!.Decrypt(probe.Nonce, probe.Ciphertext, probe.Tag, plaintext);
+            if (!plaintext.SequenceEqual(SessionProbePlaintext))
+                throw new Exception("Handshake-derived directional cipher corrupted the probe.");
+        }
+
+        private static void AssertSessionProbeRejected(PeerInfo receiver, SessionProbe probe)
+        {
+            try
+            {
+                receiver.RxCipher!.Decrypt(probe.Nonce, probe.Ciphertext, probe.Tag, new byte[probe.Ciphertext.Length]);
+            }
+            catch (CryptographicException)
+            {
+                return;
+            }
+            throw new Exception("Handshake cipher accepted a tampered or different-session probe.");
+        }
+
+        private static void AssertMatchingSession(PeerInfo sender, PeerInfo receiver)
+        {
+            if (!sender.IsSessionReady || !receiver.IsSessionReady ||
+                !CryptographicOperations.FixedTimeEquals(sender.TxSalt!, receiver.RxSalt!) ||
+                !CryptographicOperations.FixedTimeEquals(sender.ActiveSessionKeyId!, receiver.ActiveSessionKeyId!))
+                throw new Exception("Peers do not have matching directional handshake state.");
+            AssertSessionProbeDecrypts(receiver, CreateSessionProbe(sender));
+        }
+
+        private static byte[] BuildLegacyDataPacket(QuicPunch.QuicPunch sender, PeerInfo target, ulong sequence)
+        {
+            int headerLength = QuicPunch.QuicPunch.MagicHeader.Length + 1 + 2 + 4 + 8;
+            byte[] packet = new byte[headerLength + 16 + SessionProbePlaintext.Length];
+            QuicPunch.QuicPunch.MagicHeader.CopyTo(packet, 0);
+            int offset = QuicPunch.QuicPunch.MagicHeader.Length;
+            packet[offset++] = (byte)'D'; // Reserved retired wire discriminator.
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(offset, 2), 100);
             offset += 2;
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(offset, 4), senderQp.CurrentPeer.ShortId);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(offset, 4), sender.CurrentPeer.ShortId);
             offset += 4;
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(packet.AsSpan(offset, 8), seq);
-            offset += 8;
-
-            Span<byte> tag = packet.AsSpan(offset, 16);
-            offset += 16;
-            Span<byte> cipher = packet.AsSpan(offset);
-
-            Span<byte> nonce = stackalloc byte[12];
-            targetPeer.TxSalt!.CopyTo(nonce.Slice(0, 4));
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(nonce.Slice(4, 8), seq);
-
-            targetPeer.TxCipher!.Encrypt(nonce, payload, cipher, tag, packet.AsSpan(0, headerAadSize));
-
-            await receiverQp.ProcessIncomingPacketAsync(packet, senderEndPoint, QuicPunch.QuicPunch.TransportType.Wan);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(packet.AsSpan(offset, 8), sequence);
+            byte[] nonce = new byte[12];
+            target.TxSalt!.CopyTo(nonce, 0);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(nonce.AsSpan(4), sequence);
+            target.TxCipher!.Encrypt(nonce, SessionProbePlaintext, packet.AsSpan(headerLength + 16), packet.AsSpan(headerLength, 16), packet.AsSpan(0, headerLength));
+            return packet;
         }
 
         private static async Task TestMultiPeerIsolationAndNoDesynchronizationOnPeerRemoval()
@@ -1872,9 +1678,9 @@ namespace QuicPunchTests.Tests;
                 var epB = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 49002);
                 var epC = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 49003);
 
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
-                using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -1914,17 +1720,8 @@ namespace QuicPunchTests.Tests;
                 if (!initialKeyId_AC_on_A.SequenceEqual(initialKeyId_AC_on_C))
                     throw new Exception("Session key ID mismatch between Node A and Node C.");
 
-                // Verify initial data channel communication A -> C
-                var readerC = qpC.GetPacketReader(200);
-                byte[] msg1 = System.Text.Encoding.UTF8.GetBytes("Initial message A->C before B removed");
-                await SendDirectDataPacketAsync(qpA, peerC_on_A, 200, msg1, qpC, epA);
-
-                using (var cts1 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                {
-                    var (_, received1) = await readerC.ReadAsync(cts1.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(received1).Equals("Initial message A->C before B removed"))
-                        throw new Exception("Initial payload from A to C failed to decrypt.");
-                }
+                AssertMatchingSession(peerC_on_A, peerA_on_C);
+                AssertSessionProbeRejected(peerA_on_C, CreateSessionProbe(peerB_on_A));
 
                 // 3. REMOVE PEER B FROM NODE A (The critical test operation)
                 if (!qpA.RemovePeer(qpB.CurrentPeer.Id))
@@ -1944,28 +1741,9 @@ namespace QuicPunchTests.Tests;
                 if (!peerC_on_A.ActiveSessionKeyId!.SequenceEqual(initialKeyId_AC_on_A))
                     throw new Exception("REGRESSION: Node A mutated its session key for Node C after A removed unrelated peer B!");
 
-                // 5. Verify encrypted data channel A -> C STILL WORKS with ZERO MAC failure or desync
-                byte[] msg2 = System.Text.Encoding.UTF8.GetBytes("Payload A->C after B removed");
-                await SendDirectDataPacketAsync(qpA, peerC_on_A, 200, msg2, qpC, epA);
-
-                using (var cts2 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                {
-                    var (_, received2) = await readerC.ReadAsync(cts2.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(received2).Equals("Payload A->C after B removed"))
-                        throw new Exception("CRITICAL REGRESSION: Payload A->C failed to decrypt after B was removed!");
-                }
-
-                // 6. Verify reverse encrypted data channel C -> A STILL WORKS
-                var readerA = qpA.GetPacketReader(201);
-                byte[] msg3 = System.Text.Encoding.UTF8.GetBytes("Payload C->A after B removed");
-                await SendDirectDataPacketAsync(qpC, peerA_on_C, 201, msg3, qpA, epC);
-
-                using (var cts3 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                {
-                    var (_, received3) = await readerA.ReadAsync(cts3.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(received3).Equals("Payload C->A after B removed"))
-                        throw new Exception("CRITICAL REGRESSION: Reverse payload C->A failed to decrypt after B was removed!");
-                }
+                // Unrelated sessions still agree in both directions after removal.
+                AssertMatchingSession(peerC_on_A, peerA_on_C);
+                AssertMatchingSession(peerA_on_C, peerC_on_A);
 
                 // 7. Reconnect B to A and verify B gets fresh session while C remains untouched
                 byte[] helloB_reconnect = qpB.GenerateHelloPayload(QuicPunchStructures.MessageType.Interrogation, true);
@@ -1974,16 +1752,8 @@ namespace QuicPunchTests.Tests;
                 if (!qpA.AvailablePeers.TryGetValue(qpB.CurrentPeer.Id, out var peerB_reconnected) || !peerB_reconnected.IsSessionReady)
                     throw new Exception("Peer B failed to reconnect on Node A.");
 
-                // A <-> C data channel still works after B reconnected
-                byte[] msg4 = System.Text.Encoding.UTF8.GetBytes("Payload A->C after B reconnected");
-                await SendDirectDataPacketAsync(qpA, peerC_on_A, 200, msg4, qpC, epA);
-
-                using (var cts4 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                {
-                    var (_, received4) = await readerC.ReadAsync(cts4.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(received4).Equals("Payload A->C after B reconnected"))
-                        throw new Exception("Payload A->C failed after B reconnected.");
-                }
+                AssertMatchingSession(peerC_on_A, peerA_on_C);
+                AssertMatchingSession(peerA_on_C, peerC_on_A);
 
                 Console.WriteLine("PASSED");
             }
@@ -1993,6 +1763,97 @@ namespace QuicPunchTests.Tests;
                 try { Directory.Delete(tempDirB, true); } catch { }
                 try { Directory.Delete(tempDirC, true); } catch { }
             }
+        }
+
+        private sealed class StreamProbeProtocolHandler(Guid protocolId, Func<Stream, CancellationToken, Task> handle)
+            : QuicPunch.QuicPunch.IProtocolHandler
+        {
+            public Guid ProtocolId => protocolId;
+            public string ProtocolName => "Session isolation probe";
+            public Task HandleAsync(QuicPunch.QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct) => handle(stream, ct);
+            public Task DeniedAsync(PeerInfo peer, CancellationToken ct) => Task.CompletedTask;
+        }
+
+        private static async Task TestApplicationSessionSurvivesUnrelatedPeerRemoval()
+        {
+            Console.Write("[TEST] Removing one peer preserves another peer's bidirectional QUIC application stream... ");
+            string directory = Path.Combine(Path.GetTempPath(), "qp_test_quic_isolation_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                using var a = new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "a")).WithPort(0)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build();
+                using var b = new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "b")).WithPort(0)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build();
+                using var c = new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "c")).WithPort(0)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build();
+                await a.StartAsync();
+                await b.StartAsync();
+                await c.StartAsync();
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+                foreach (var remote in new[] { b, c })
+                {
+                    await remote.ProcessIncomingPacketAsync(a.GenerateHelloPayload(QuicPunchStructures.MessageType.Interrogation, true),
+                        new IPEndPoint(IPAddress.Loopback, a.LocalBoundPort), QuicPunch.QuicPunch.TransportType.Wan);
+                    await a.ProcessIncomingPacketAsync(remote.GenerateHelloPayload(QuicPunchStructures.MessageType.Interrogation, true),
+                        new IPEndPoint(IPAddress.Loopback, remote.LocalBoundPort), QuicPunch.QuicPunch.TransportType.Wan);
+                    a.TrustPeer(remote.CurrentPeer.CertHash);
+                    remote.TrustPeer(a.CurrentPeer.CertHash);
+                }
+
+                var peerB = a.AvailablePeers[b.CurrentPeer.Id];
+                var peerC = a.AvailablePeers[c.CurrentPeer.Id];
+                var muxB = await a.EnsureMultiplexerConnectedAsync(peerB, cancellationToken: deadline.Token);
+                var protocol = Guid.NewGuid();
+                var serverCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                c.RegisterProtocol(new StreamProbeProtocolHandler(protocol, async (stream, ct) =>
+                {
+                    try
+                    {
+                        for (int round = 0; round < 3; round++)
+                        {
+                            byte[] incoming = new byte[1024];
+                            await stream.ReadExactlyAsync(incoming, ct);
+                            if (incoming.Any(value => value != (byte)(round + 1)))
+                                throw new Exception("Application payload was corrupted or crossed peer sessions.");
+                            incoming[0] = (byte)(100 + round);
+                            await stream.WriteAsync(incoming, ct);
+                            await stream.FlushAsync(ct);
+                        }
+                        serverCompleted.TrySetResult();
+                    }
+                    catch (Exception ex) { serverCompleted.TrySetException(ex); throw; }
+                }));
+                c.Manager.HandshakeRequested += (request, _) => Task.FromResult(new HandshakeDecision(
+                    request.PeerId == a.CurrentPeer.Id && request.ProtocolId == protocol, 0, CancellationToken.None));
+                a.RegisterProtocol(new StreamProbeProtocolHandler(protocol, async (stream, ct) =>
+                {
+                    if (!a.TryGetPeerMultiplexer(peerC.Id, out var originalMux) || originalMux == null)
+                        throw new Exception("Application session has no registered multiplexer.");
+                    for (int round = 0; round < 3; round++)
+                    {
+                        byte[] payload = Enumerable.Repeat((byte)(round + 1), 1024).ToArray();
+                        await stream.WriteAsync(payload, ct);
+                        await stream.FlushAsync(ct);
+                        byte[] response = new byte[payload.Length];
+                        await stream.ReadExactlyAsync(response, ct);
+                        payload[0] = (byte)(100 + round);
+                        if (!payload.SequenceEqual(response))
+                            throw new Exception("Bidirectional application delivery failed across unrelated peer removal.");
+                        if (round == 0)
+                        {
+                            if (!a.RemovePeer(peerB.Id)) throw new Exception("Could not remove the unrelated connected peer.");
+                            while (!muxB.IsDisposed) await Task.Delay(10, ct);
+                        }
+                        if (!a.TryGetPeerMultiplexer(peerC.Id, out var currentMux) || !ReferenceEquals(originalMux, currentMux) || currentMux.IsDisposed)
+                            throw new Exception("Removing B replaced or closed C's multiplexer.");
+                    }
+                }));
+                await a.InitQuicConnection(protocol, peerC, cancellationToken: deadline.Token);
+                await serverCompleted.Task.WaitAsync(deadline.Token);
+                Console.WriteLine("PASSED");
+            }
+            finally { try { Directory.Delete(directory, recursive: true); } catch { } }
         }
 
         private static async Task TestEndpointOnlyInterrogationDiscoversPeerBidirectionally()
@@ -2006,8 +1867,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -2044,13 +1905,8 @@ namespace QuicPunchTests.Tests;
                 qpA.TrustPeer(peerBInA.CertHash);
                 qpB.TrustPeer(peerAInB.CertHash);
 
-                var readerB = qpB.GetPacketReader(302);
-                byte[] message = System.Text.Encoding.UTF8.GetBytes("endpoint-only discovery payload");
-                await SendDirectDataPacketAsync(qpA, peerBInA, 302, message, qpB, peerBInA.ActiveEndPoint!);
-                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2));
-                var (_, received) = await readerB.ReadAsync(cts.Token);
-                if (!received.SequenceEqual(message))
-                    throw new Exception("Endpoint-only discovered session could not decrypt data.");
+                AssertMatchingSession(peerBInA, peerAInB);
+                AssertMatchingSession(peerAInB, peerBInA);
 
                 Console.WriteLine("PASSED");
             }
@@ -2074,9 +1930,9 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
-                using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpA.Discovery.WanNostrDiscoveryEnabled = false;
                 qpB.Discovery.WanNostrDiscoveryEnabled = false;
                 qpC.Discovery.WanNostrDiscoveryEnabled = false;
@@ -2159,25 +2015,10 @@ namespace QuicPunchTests.Tests;
                 qpA.TrustPeer(newBOnA.CertHash);
                 qpB.TrustPeer(newAOnB.CertHash);
 
-                var readerB = qpB.GetPacketReader(303);
-                byte[] abMessage = System.Text.Encoding.UTF8.GetBytes("fresh A->B reconnect payload");
-                await SendDirectDataPacketAsync(qpA, newBOnA, 303, abMessage, qpB, newBOnA.ActiveEndPoint!);
-                using (var ctsB = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                {
-                    var (_, received) = await readerB.ReadAsync(ctsB.Token);
-                    if (!received.SequenceEqual(abMessage))
-                        throw new Exception("Fresh A->B session failed to decrypt after asymmetric reconnect.");
-                }
-
-                var readerA = qpA.GetPacketReader(304);
-                byte[] baMessage = System.Text.Encoding.UTF8.GetBytes("fresh B->A reconnect payload");
-                await SendDirectDataPacketAsync(qpB, newAOnB, 304, baMessage, qpA, newAOnB.ActiveEndPoint!);
-                using (var ctsA = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                {
-                    var (_, received) = await readerA.ReadAsync(ctsA.Token);
-                    if (!received.SequenceEqual(baMessage))
-                        throw new Exception("Fresh B->A session failed to decrypt after asymmetric reconnect.");
-                }
+                AssertMatchingSession(newBOnA, newAOnB);
+                AssertMatchingSession(newAOnB, newBOnA);
+                AssertMatchingSession(cOnA, aOnC);
+                AssertSessionProbeRejected(aOnC, CreateSessionProbe(newBOnA));
 
                 Console.WriteLine("PASSED");
             }
@@ -2201,8 +2042,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -2229,51 +2070,12 @@ namespace QuicPunchTests.Tests;
                 if (!qpA.AvailablePeers.TryGetValue(qpB.CurrentPeer.Id, out var peerBInA) || !peerBInA.IsSessionReady)
                     throw new Exception("CRITICAL P0 FAILURE: Node A failed to discover Node B from unilateral interrogation response!");
 
-                // Authentication alone must NOT expose the application Data plane.
-                var readerB = qpB.GetPacketReader(300);
-                var readerA = qpA.GetPacketReader(301);
-
-                byte[] blockedMessage = System.Text.Encoding.UTF8.GetBytes("blocked before trust");
-                await SendDirectDataPacketAsync(qpA, peerBInA, 300, blockedMessage, qpB, peerBInA.ActiveEndPoint!);
-                await Task.Delay(100);
-                if (readerB.TryRead(out _))
-                    throw new Exception("CRITICAL TRUST FAILURE: authenticated/untrusted peer delivered MessageType.Data before TrustPeer.");
-
-                bool outboundApiBlocked = false;
-                try
-                {
-                    await qpA.SendPayloadAsync(peerBInA, 300, blockedMessage);
-                }
-                catch (InvalidOperationException ex) when (ex.Message.Contains("trusted", StringComparison.OrdinalIgnoreCase))
-                {
-                    outboundApiBlocked = true;
-                }
-                if (!outboundApiBlocked)
-                    throw new Exception("SendPayloadAsync allowed an authenticated/untrusted peer.");
-
-                qpA.TrustPeer(peerBInA.CertHash);
-                qpB.TrustPeer(peerAInB.CertHash);
-
-                // After explicit trust the same encrypted application channel works normally.
-                byte[] msgAtoB = System.Text.Encoding.UTF8.GetBytes("Unilateral test message A -> B");
-                await SendDirectDataPacketAsync(qpA, peerBInA, 300, msgAtoB, qpB, peerBInA.ActiveEndPoint!);
-
-                using (var cts1 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                {
-                    var (_, receivedAtoB) = await readerB.ReadAsync(cts1.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(receivedAtoB).Equals("Unilateral test message A -> B"))
-                        throw new Exception("Payload from A to B failed to decrypt after unilateral interrogation!");
-                }
-
-                byte[] msgBtoA = System.Text.Encoding.UTF8.GetBytes("Unilateral test message B -> A");
-                await SendDirectDataPacketAsync(qpB, peerAInB, 301, msgBtoA, qpA, peerAInB.ActiveEndPoint!);
-
-                using (var cts2 = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
-                {
-                    var (_, receivedBtoA) = await readerA.ReadAsync(cts2.Token);
-                    if (!System.Text.Encoding.UTF8.GetString(receivedBtoA).Equals("Unilateral test message B -> A"))
-                        throw new Exception("Payload from B to A failed to decrypt after unilateral interrogation!");
-                }
+                AssertMatchingSession(peerBInA, peerAInB);
+                AssertMatchingSession(peerAInB, peerBInA);
+                if (qpA.IsTrustedPeer(peerBInA) || qpB.IsTrustedPeer(peerAInB))
+                    throw new Exception("Unilateral discovery unexpectedly trusted an authenticated peer.");
+                // TestUntrustedDiscoveredPeerCannotOpenProtocols verifies that these
+                // authenticated identities cannot open application sessions until trusted.
 
                 Console.WriteLine("PASSED");
             }
@@ -2284,9 +2086,9 @@ namespace QuicPunchTests.Tests;
             }
         }
 
-        private static async Task TestUntrustedDiscoveredPeerCannotAutoAcceptProtocolHandshake()
+        private static async Task TestUntrustedDiscoveredPeerCannotOpenProtocols()
         {
-            Console.Write("[TEST] Untrusted discovered peer cannot auto-accept protocol handshake (P0 fix)... ");
+            Console.Write("[TEST] Untrusted discovered peer cannot open application protocols... ");
 
             string tempDirA = Path.Combine(Path.GetTempPath(), "qp_test_untrusted_a_" + Guid.NewGuid().ToString("N"));
             string tempDirB = Path.Combine(Path.GetTempPath(), "qp_test_untrusted_b_" + Guid.NewGuid().ToString("N"));
@@ -2296,8 +2098,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 var dummyProtocolId = Guid.NewGuid();
                 var dummyHandlerB = new DummyProtocolHandler(dummyProtocolId, () => { });
@@ -2322,15 +2124,6 @@ namespace QuicPunchTests.Tests;
                 if (qpB.IsTrustedPeer(peerA_on_B))
                     throw new Exception("Peer A was unexpectedly trusted on Node B without token or TrustPeer!");
 
-                // Global/per-peer auto-accept must never turn discovery into trust.
-                qpB.SetAutoAcceptAll(true);
-                if (qpB.AutoAcceptUntrustedConnections)
-                    throw new Exception("SetAutoAcceptAll unexpectedly enabled the unsafe untrusted bypass.");
-
-                qpB.SetPeerAutoAccept(peerA_on_B.Id, true);
-                if (qpB.IsPeerAutoAccepted(peerA_on_B.Id))
-                    throw new Exception("Untrusted discovered peer became auto-accepted without TrustPeer.");
-
                 bool outboundQuicBlocked = false;
                 try
                 {
@@ -2342,18 +2135,6 @@ namespace QuicPunchTests.Tests;
                 }
                 if (!outboundQuicBlocked)
                     throw new Exception("Untrusted discovered peer could start an outbound QUIC application connection.");
-
-                bool outboundTunnelBlocked = false;
-                try
-                {
-                    await qpB.EnsureMultiplexerConnectedAsync(peerA_on_B);
-                }
-                catch (InvalidOperationException ex) when (ex.Message.Contains("trusted", StringComparison.OrdinalIgnoreCase))
-                {
-                    outboundTunnelBlocked = true;
-                }
-                if (!outboundTunnelBlocked)
-                    throw new Exception("Untrusted discovered peer could start an outbound application connection tunnel.");
 
                 // 3. Node A attempts a protocol handshake with Node B for dummyProtocolId
                 var guid1 = Guid.NewGuid();
@@ -2387,8 +2168,10 @@ namespace QuicPunchTests.Tests;
                 if (!qpB.IncomingHandshakeSessions.TryGetValue(guid2, out var session2))
                     throw new Exception("Node B did not register second handshake session.");
 
-                // Because Node A is now TRUSTED, it must be auto-accepted!
-                using (var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                // Trusted identity plus the explicit test approval permits the application.
+                // An Accept includes STUN/router candidate preparation, whose
+                // configured mapping budget alone can exceed two seconds.
+                using (var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
                 {
                     var responsePayload2 = await session2.ResponsePayloadTcs.Task.WaitAsync(cts2.Token);
                     byte respType2 = responsePayload2[QuicPunch.QuicPunch.MagicHeader.Length + 1 + 16];
@@ -2405,17 +2188,17 @@ namespace QuicPunchTests.Tests;
             }
         }
 
-        private static async Task TestQuicReadyIsTrustedAndBounded()
+        private static async Task TestQuicReadyIsAuthenticatedAndBounded()
         {
-            Console.Write("[TEST] QUIC_READY requires trust and early cache stays bounded... ");
+            Console.Write("[TEST] QUIC_READY requires authenticated identity and early cache stays bounded... ");
             string tempDirA = Path.Combine(Path.GetTempPath(), "qp_test_quicready_a_" + Guid.NewGuid().ToString("N"));
             string tempDirB = Path.Combine(Path.GetTempPath(), "qp_test_quicready_b_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDirA);
             Directory.CreateDirectory(tempDirB);
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -2427,10 +2210,9 @@ namespace QuicPunchTests.Tests;
 
                 byte[] untrustedReady = QuicPunch.PacketHandler.PacketBuilder.BuildQuicReadyPacket(qpB, Guid.NewGuid(), 43000);
                 await qpA.ProcessIncomingPacketAsync(untrustedReady, epB, QuicPunch.QuicPunch.TransportType.Wan);
-                if (qpA.ReceivedQuicReadyCacheCount != 0)
-                    throw new Exception("Untrusted peer populated QUIC_READY cache.");
+                if (qpA.ReceivedQuicReadyCacheCount != 1 || qpA.IsTrustedPeer(peerB))
+                    throw new Exception("Authenticated QUIC_READY must prepare transport without granting trust.");
 
-                qpA.TrustPeer(peerB.CertHash);
                 for (int i = 0; i < 400; i++)
                 {
                     byte[] ready = QuicPunch.PacketHandler.PacketBuilder.BuildQuicReadyPacket(qpB, Guid.NewGuid(), (ushort)(43000 + (i % 100)));
@@ -2461,33 +2243,32 @@ namespace QuicPunchTests.Tests;
                 using var qpA = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
                 qpA.Discovery.LanDiscoveryPort = 48511;
 
                 using var qpB = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
                 qpB.Discovery.LanDiscoveryPort = 48512;
 
+                // Exercise the parser without live Hello replies changing LastSeen concurrently.
+                qpA.WanEnabled = false;
+                qpB.WanEnabled = false;
                 await qpA.StartAsync();
                 await qpB.StartAsync();
-                await Task.Delay(100);
 
-                var epB = new IPEndPoint(IPAddress.Loopback, qpB.LocalBoundPort);
+                var epB = new IPEndPoint(IPAddress.Loopback, 45000);
                 byte[] helloB = qpB.GenerateHelloPayload(QuicPunchStructures.MessageType.Interrogation, true);
                 await qpA.ProcessIncomingPacketAsync(helloB, epB, QuicPunch.QuicPunch.TransportType.Wan);
                 if (!qpA.AvailablePeers.TryGetValue(qpB.CurrentPeer.Id, out var peerB))
                     throw new Exception("Peer B was not discovered on A.");
 
-                // Allow any initial handshake/hello exchange responses to settle
-                await Task.Delay(350);
                 DateTime before = peerB.LastSeen;
                 byte[] ping = qpB.BuildPingPacket(PreciseTime.GetCorrectTime().Ticks, false);
                 await qpA.ProcessIncomingPacketAsync(ping, epB, QuicPunch.QuicPunch.TransportType.Wan);
-                await Task.Delay(50);
                 if (peerB.LastSeen != before)
                     throw new Exception("Unauthenticated Ping refreshed LastSeen and could defeat discovered-peer TTL pruning.");
 
@@ -2507,7 +2288,7 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDir);
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 var candidates = Enumerable.Range(0, 300)
                     .Select(i => new CandidateEndpoint(new IPEndPoint(IPAddress.Loopback, 10000 + i), CandidateType.Host, (uint)i))
                     .ToList();
@@ -2522,6 +2303,7 @@ namespace QuicPunchTests.Tests;
                 r.ReadUInt16();
                 r.ReadBytes(16);
                 r.ReadBytes(16);
+                r.ReadInt64(); // signed handshake freshness timestamp
                 byte count = r.ReadByte();
                 if (count != 32)
                     throw new Exception($"Expected candidate wire cap 32, got {count}.");
@@ -2547,7 +2329,7 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 var peerId = Guid.NewGuid();
                 var protoId = Guid.NewGuid();
@@ -2656,7 +2438,7 @@ namespace QuicPunchTests.Tests;
                 using var qp = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDir)
                     .UsePool("0123456789abcdef0123456789abcdef01234567")
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .WithNostrRelays(customRelays)
                     .Build();
 
@@ -2696,7 +2478,7 @@ namespace QuicPunchTests.Tests;
                 using var qp = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDir)
                     .UsePool("minimal-discovery-pool")
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 if (qp.PoolId.Length != 20)
@@ -2718,7 +2500,7 @@ namespace QuicPunchTests.Tests;
             try
             {
                 byte[] pool = RandomNumberGenerator.GetBytes(20);
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, discoveryId: pool, listeningPort: 0);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, discoveryId: pool, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qp.StartAsync();
 
                 int newPort;
@@ -2889,8 +2671,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -2902,6 +2684,7 @@ namespace QuicPunchTests.Tests;
                 if (!qpA.AvailablePeers.TryGetValue(qpB.CurrentPeer.Id, out var peerBOnA))
                     throw new Exception("Peer B was not discovered before single-flight failure test.");
                 peerBOnA.ActiveEndPoint = epB;
+                qpA.TrustPeer(peerBOnA.CertHash);
 
                 var protocolId = Guid.NewGuid();
                 qpA.RegisterProtocol(new DummyProtocolHandler(protocolId, () => { }));
@@ -2966,8 +2749,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpA.Discovery.WanNostrDiscoveryEnabled = false;
                 qpB.Discovery.WanNostrDiscoveryEnabled = false;
 
@@ -3006,6 +2789,9 @@ namespace QuicPunchTests.Tests;
                 qpB.RegisterProtocol(handlerB);
 
                 // 2. Launch 50 simultaneous concurrent calls to InitQuicConnection for the same (peerB, protocolGuid)
+                qpB.Manager.HandshakeRequested += (request, _) => Task.FromResult(new HandshakeDecision(
+                    request.PeerId == peerA_on_B.Id && request.ProtocolId == protocolGuid, 0, CancellationToken.None));
+
                 int concurrentCalls = 50;
                 var tasks = new List<Task>();
                 for (int i = 0; i < concurrentCalls; i++)
@@ -3090,8 +2876,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0, autoAcceptConnections: true) { AutoAcceptUntrustedConnections = true };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpA.Discovery.WanNostrDiscoveryEnabled = false;
                 qpB.Discovery.WanNostrDiscoveryEnabled = false;
 
@@ -3137,6 +2923,9 @@ namespace QuicPunchTests.Tests;
                 qpB.RegisterProtocol(handlerB);
 
                 // Start connection in background
+                qpB.Manager.HandshakeRequested += (request, _) => Task.FromResult(new HandshakeDecision(
+                    request.PeerId == peerA_on_B.Id && request.ProtocolId == protocolGuid, 0, CancellationToken.None));
+
                 var firstConnTask = Task.Run(async () => await qpA.InitQuicConnection(protocolGuid, peerB_on_A));
 
                 // Wait until session is registered and active
@@ -3242,9 +3031,9 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDirB);
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpA.Discovery.LanDiscoveryPort = 48123;
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpB.Discovery.LanDiscoveryPort = 48124;
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -3415,7 +3204,7 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDir);
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qp.StartAsync();
 
                 // 1. WAN compact token
@@ -3530,13 +3319,13 @@ namespace QuicPunchTests.Tests;
                 using var qpA = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 using var qpB = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 await qpA.StartAsync();
@@ -3564,7 +3353,8 @@ namespace QuicPunchTests.Tests;
                 string newTokenB = qpB.GetWanToken();
 
                 // 3. Inject new Nostr discovery token into qpA via Discovery
-                qpA.Discovery.ProcessWanNostrEndpointToken(newTokenB, qpB.CertManager.NostrPublicKeyHex);
+                qpA.Discovery.ProcessWanNostrEndpointToken(newTokenB, qpB.CertManager.NostrPublicKeyHex,
+                    qpB.CertManager.PeerCertificate.GetPublicKey(), Utilities.SignToken(newTokenB, qpB.CertManager.PeerCertificate));
 
                 // 4. Verify PeerStore in memory was updated to new port 50002
                 if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var savedUpdated) || savedUpdated == null)
@@ -3703,19 +3493,19 @@ namespace QuicPunchTests.Tests;
                 using var qpA = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .UsePool(poolBytes)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 using var qpB = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .UsePool(poolBytes)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 using var qpAttacker = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirAttacker)
                     .UsePool(poolBytes)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 await qpA.StartAsync();
@@ -3757,12 +3547,20 @@ namespace QuicPunchTests.Tests;
                 if (savedAfterAttack.PortArray.Length != 1 || savedAfterAttack.PortArray[0] != 40001)
                     throw new Exception($"Expected port 40001 to remain intact, got {string.Join(", ", savedAfterAttack.PortArray)}");
 
+                // Even an announcement from the known Nostr author cannot replace a saved endpoint
+                // unless the token itself is signed by the certificate it claims to represent.
+                qpA.Discovery.ProcessWanNostrEndpointToken(spoofedToken, qpB.CertManager.NostrPublicKeyHex);
+                if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var savedAfterUnsigned) ||
+                    savedAfterUnsigned == null || savedAfterUnsigned.PortArray.Contains((ushort)6666))
+                    throw new Exception("Unsigned Nostr token changed a trusted peer's saved endpoint.");
+
                 // 2. Legitimate Peer B publishes an update (port 50005) with B's legitimate Nostr key
                 qpB.CurrentPeer.PortArray = [50005];
                 qpB.InvalidateTokenCache();
                 string legitimateUpdateToken = qpB.GetWanToken();
 
-                qpA.Discovery.ProcessWanNostrEndpointToken(legitimateUpdateToken, qpB.CertManager.NostrPublicKeyHex);
+                qpA.Discovery.ProcessWanNostrEndpointToken(legitimateUpdateToken, qpB.CertManager.NostrPublicKeyHex,
+                    qpB.CertManager.PeerCertificate.GetPublicKey(), Utilities.SignToken(legitimateUpdateToken, qpB.CertManager.PeerCertificate));
 
                 // Verify PeerStore WAS updated by the legitimate event
                 if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var savedAfterLegit) || savedAfterLegit == null)
@@ -3799,19 +3597,19 @@ namespace QuicPunchTests.Tests;
                 using var qpA = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 using var qpB = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 using var qpAttacker = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirC)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 await qpA.StartAsync();
@@ -3893,6 +3691,30 @@ namespace QuicPunchTests.Tests;
                 if (qpA.Discovery.DiscoveredPeers.ContainsKey(hexKeyB))
                     throw new Exception("SECURITY VULNERABILITY: Forged Nostr payload with invalid sig was accepted into DiscoveredPeers!");
 
+                // A trusted but unsaved peer becomes a saved auto-connect contact only after
+                // the token signature proves ownership of its certificate.
+                qpA.TrustPeer(qpB.CurrentPeer.CertHash);
+                qpB.CurrentPeer.PortArray = [45001];
+                qpB.InvalidateTokenCache();
+                string trustedToken = qpB.GetWanToken();
+                qpA.Discovery.OnWanNostrEventDiscovered(qpB.CertManager.NostrPublicKeyHex,
+                    System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        wan = trustedToken,
+                        certPubKey = Convert.ToBase64String(certPubKeyB),
+                        sig = Convert.ToBase64String(Utilities.SignToken(trustedToken, qpB.CertManager.PeerCertificate))
+                    }));
+                if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var newlySaved) ||
+                    newlySaved == null || !newlySaved.AutoConnect || !newlySaved.PortArray.Contains((ushort)45001))
+                    throw new Exception("Verified trusted peer was not saved for automatic reconnection.");
+
+                qpB.CurrentPeer.PortArray = [45002];
+                qpB.InvalidateTokenCache();
+                qpA.Discovery.ProcessWanNostrEndpointToken(qpB.GetWanToken(), qpB.CertManager.NostrPublicKeyHex);
+                if (!qpA.PeerStore.TryGet(qpB.CurrentPeer.CertHash, out var afterUnsigned) ||
+                    afterUnsigned == null || afterUnsigned.PortArray.Contains((ushort)45002))
+                    throw new Exception("Unsigned token replaced a verified trusted endpoint.");
+
                 await qpA.StopAsync();
                 await qpB.StopAsync();
                 await qpAttacker.StopAsync();
@@ -3919,13 +3741,13 @@ namespace QuicPunchTests.Tests;
                 using var qpA = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 using var qpB = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 await qpA.StartAsync();
@@ -3940,11 +3762,13 @@ namespace QuicPunchTests.Tests;
 
                 string tokenB1 = qpB.GetWanToken();
                 byte[] certPubKeyB = qpB.CertManager.PeerCertificate.GetPublicKey();
-                byte[] sigB1 = Utilities.SignToken(tokenB1, qpB.CertManager.PeerCertificate);
 
                 // Start interrogation on A for initial token
                 _ = qpA.PeerInterrogation(tokenB1);
-                await Task.Delay(100);
+                var initialDeadline = DateTime.UtcNow.AddSeconds(2);
+                while (!qpA.ActiveInterrogations.Values.Any(s => s.Peer.PortArray.Contains((ushort)41000)) &&
+                       DateTime.UtcNow < initialDeadline)
+                    await Task.Delay(25);
 
                 string hexKeyB = Convert.ToHexString(qpB.CurrentPeer.CertHash);
                 if (!qpA.ActiveInterrogations.Values.Any(s => s.Peer.PortArray.Contains((ushort)41000)))
@@ -4026,13 +3850,13 @@ namespace QuicPunchTests.Tests;
                 using var qpA = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 using var qpB = new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
-                    .WithAutoDiscovery(false)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .Build();
 
                 await qpA.StartAsync();
@@ -4102,8 +3926,9 @@ namespace QuicPunchTests.Tests;
             try
             {
                 using var cts = new CancellationTokenSource();
-                var qp = new QuicPunch.QuicPunch(cts, null, null, true, 0, appDataPath: tempDir)
+                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir)
                 {
+                    PeerTransport = new() { AutoConnectDiscoveredPeers = false },
                     WanEnabled = true
                 };
 
@@ -4188,7 +4013,7 @@ namespace QuicPunchTests.Tests;
             try
             {
                 using var cts = new CancellationTokenSource();
-                var qp = new QuicPunch.QuicPunch(cts, null, null, true, 0, appDataPath: tempDir);
+                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 byte[] certHash = new byte[32];
                 Random.Shared.NextBytes(certHash);
@@ -4229,7 +4054,7 @@ namespace QuicPunchTests.Tests;
             try
             {
                 using var cts = new CancellationTokenSource();
-                var qp = new QuicPunch.QuicPunch(cts, null, null, true, 0, appDataPath: tempDir);
+                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 string wanName = qp.CurrentPeer.Name ?? "";
                 string torName = qp.TorCurrentPeer.Name ?? "";
@@ -4276,7 +4101,7 @@ namespace QuicPunchTests.Tests;
                 }
 
                 // Test persistence: create a new instance with the same directory and ensure names remain stable
-                var qp2 = new QuicPunch.QuicPunch(cts, null, null, true, 0, appDataPath: tempDir);
+                var qp2 = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 if (qp2.CurrentPeer.Name != wanName)
                     throw new Exception($"WAN name did not persist across reloads: expected '{wanName}', got '{qp2.CurrentPeer.Name}'.");
                 if (qp2.TorCurrentPeer.Name != torName)
@@ -4297,7 +4122,7 @@ namespace QuicPunchTests.Tests;
             try
             {
                 using var cts = new CancellationTokenSource();
-                var qp = new QuicPunch.QuicPunch(cts, null, null, true, 0, appDataPath: tempDir);
+                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qp.SharePeers = true;
 
                 // Create a WAN peer
@@ -4313,7 +4138,6 @@ namespace QuicPunchTests.Tests;
                 wanPeer.SetCertificateHash(wanCertHash);
                 qp.AvailablePeers.TryAdd(wanPeer.Id, wanPeer);
                 qp.ExpectedPeerCerts.Add(wanCertHash);
-                qp.SetPeerAutoAccept(wanPeer.Id, true);
 
                 // Create a Tor peer
                 byte[] torCertHash = new byte[32];
@@ -4328,7 +4152,6 @@ namespace QuicPunchTests.Tests;
                 torPeer.SetCertificateHash(torCertHash);
                 qp.AvailablePeers.TryAdd(torPeer.Id, torPeer);
                 qp.ExpectedPeerCerts.Add(torCertHash);
-                qp.SetPeerAutoAccept(torPeer.Id, true);
 
                 // Generate Tor ACK
                 byte[] torAck = qp.GenerateAck(true, QuicPunch.QuicPunch.TransportType.Tor);
@@ -4396,8 +4219,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -4424,14 +4247,16 @@ namespace QuicPunchTests.Tests;
                 if (peerBOnA.LastSeenPingTimestamp == staleTicks)
                     throw new Exception("Stale (>5s) ping response was accepted into LastSeenPingTimestamp!");
 
-                // 3. Valid recent timestamp (e.g. 15ms ago) must be ACCEPTED and update Ping RTT
+                // Legacy unsigned pongs must not update RTT or liveness, even with a recent timestamp.
+                var previousPing = peerBOnA.Ping;
+                var previousResponse = peerBOnA.LastPingResponseUtc;
+                var previousTimestamp = peerBOnA.LastSeenPingTimestamp;
                 long recentTicks = PreciseTime.GetCorrectTime().Ticks - TimeSpan.FromMilliseconds(15).Ticks;
                 byte[] validPingResponse = qpB.BuildPingPacket(recentTicks, isResponse: true);
                 await qpA.ProcessIncomingPacketAsync(validPingResponse, epB, QuicPunch.QuicPunch.TransportType.Wan);
-                if (peerBOnA.LastSeenPingTimestamp != recentTicks)
-                    throw new Exception("Valid recent ping response was not accepted!");
-                if (!peerBOnA.Ping.HasValue || peerBOnA.Ping.Value.TotalMilliseconds < 0.1)
-                    throw new Exception("Valid recent ping response did not calculate Peer.Ping!");
+                if (peerBOnA.LastSeenPingTimestamp != previousTimestamp || peerBOnA.Ping != previousPing
+                    || peerBOnA.LastPingResponseUtc != previousResponse)
+                    throw new Exception("Unsigned ping response changed RTT or liveness!");
 
                 Console.WriteLine("PASSED");
             }
@@ -4442,3 +4267,4 @@ namespace QuicPunchTests.Tests;
             }
         }
     }
+

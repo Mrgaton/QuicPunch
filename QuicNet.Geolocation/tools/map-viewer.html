@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'">
+<title>QuicNet · mapa local</title>
+<style>body{font:16px system-ui;background:#10151c;color:#edf1f5;margin:24px}h1{font-size:24px}canvas{width:100%;background:#182432;border:1px solid #4a5969}p{max-width:90ch;line-height:1.5}label{display:block;margin:16px 0}pre{white-space:pre-wrap}button,input{font:inherit}</style>
+<h1>QuicNet · afinidad geográfica</h1><p>Visor completamente local. No descarga mapas ni transmite el archivo. Las formas son zonas compatibles o condicionadas al catálogo, no límites administrativos ni probabilidades. La cuadrícula está en longitud/latitud.</p>
+<label>Cargar exportación GeoJSON: <input type="file" accept=".json,.geojson"></label><canvas width="1200" height="600"></canvas><pre id="status">Sin archivo.</pre>
+<script>
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d'),status=document.querySelector('#status');
+document.querySelector('input').addEventListener('change',async e=>{
+ try{const f=e.target.files[0];if(!f)return;if(f.size>64*1024*1024)throw Error('Archivo demasiado grande.');
+ const geo=JSON.parse(await f.text());if(geo.type!=='FeatureCollection'||!Array.isArray(geo.features)||geo.features.length>200000)throw Error('GeoJSON no compatible.');
+ const points=geo.features.filter(f=>f.geometry?.type==='Point');const cells=geo.features.filter(f=>f.geometry?.type==='Polygon');
+ const vertices=cells.flatMap(f=>f.geometry.coordinates[0]||[]);const finite=p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(p[0])&&Number.isFinite(p[1])&&Math.abs(p[0])<=180&&Math.abs(p[1])<=90;
+ if(vertices.some(p=>!finite(p))||points.some(f=>!finite(f.geometry.coordinates)))throw Error('Coordenadas inválidas.');
+ let west=-180,east=180,south=-90,north=90;if(vertices.length){west=180;east=-180;south=90;north=-90;for(const p of vertices){west=Math.min(west,p[0]);east=Math.max(east,p[0]);south=Math.min(south,p[1]);north=Math.max(north,p[1]);}}
+ const spanX=Math.max(1,east-west),spanY=Math.max(1,north-south),x=v=>20+(v-west)/spanX*(canvas.width-40),y=v=>canvas.height-20-(v-south)/spanY*(canvas.height-40);
+ ctx.clearRect(0,0,canvas.width,canvas.height);ctx.strokeStyle='#304457';ctx.fillStyle='#a8bbcc';ctx.font='12px system-ui';
+ for(let n=0;n<=6;n++){let lat=south+spanY*n/6,lon=west+spanX*n/6;ctx.beginPath();ctx.moveTo(x(lon),20);ctx.lineTo(x(lon),580);ctx.moveTo(20,y(lat));ctx.lineTo(1180,y(lat));ctx.stroke();ctx.fillText(lon.toFixed(2),x(lon),598);ctx.fillText(lat.toFixed(2),0,y(lat));}
+ for(const f of cells){let ring=f.geometry.coordinates[0];if(!ring?.length)continue;ctx.beginPath();ring.forEach((p,i)=>i?ctx.lineTo(x(p[0]),y(p[1])):ctx.moveTo(x(p[0]),y(p[1])));ctx.closePath();let w=Number(f.properties?.affinity)||0;ctx.fillStyle=`rgba(245,162,73,${Math.max(.05,Math.min(.75,.08+w*.65))})`;ctx.fill();}
+ ctx.fillStyle='#e3f3ff';ctx.font='14px system-ui';for(const f of points){const p=f.geometry.coordinates;if(p[0]<west||p[0]>east||p[1]<south||p[1]>north)continue;ctx.beginPath();ctx.arc(x(p[0]),y(p[1]),3,0,Math.PI*2);ctx.fill();ctx.fillText(String(f.properties?.label??'Hipótesis').slice(0,50),x(p[0])+6,y(p[1])-5);}
+ status.textContent=`${f.name}: ${cells.length} celdas, ${points.length} hipótesis. Fase: ${String(geo.phase??'desconocida')}. Afinidad no calibrada.`;
+ }catch(err){status.textContent=String(err.message||err);}
+});
+</script></html>

@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -35,7 +34,8 @@ namespace QuicPunchTests.Tests;
                 byte[] poolId = Encoding.UTF8.GetBytes("TorTestPool123456789");
 
                 Console.WriteLine("\n[Node A] Initializing Node A...");
-                nodeA = new QuicPunch.QuicPunch(ctsA.Token, poolId, null, true, 0, dirA);
+                nodeA = new QuicPunch.QuicPunch(ctsA.Token, poolId, null, 0, dirA) {
+                    PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await nodeA.StartAsync(ctsA.Token);
 
                 Console.WriteLine("[Node A] Starting Tor service...");
@@ -52,7 +52,8 @@ namespace QuicPunchTests.Tests;
                 }
 
                 Console.WriteLine("\n[Node B] Initializing Node B...");
-                nodeB = new QuicPunch.QuicPunch(ctsB.Token, poolId, null, true, 0, dirB);
+                nodeB = new QuicPunch.QuicPunch(ctsB.Token, poolId, null, 0, dirB) {
+                    PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await nodeB.StartAsync(ctsB.Token);
 
                 Console.WriteLine("[Node B] Starting Tor service...");
@@ -144,9 +145,18 @@ namespace QuicPunchTests.Tests;
                 Console.WriteLine($"\n[Node B] Transmitting {testFileData.Length} bytes payload over Tor to Node A via QUIC stream...");
                 await nodeB.InitQuicConnection(senderProtocol.ProtocolId, peerA_on_B, cancellationToken: ctsB.Token);
 
-                Console.WriteLine("[Node A] Waiting for incoming encrypted payload over Tor...");
+                if (!nodeB.TryGetPeerMultiplexer(peerA_on_B.Id, out var muxB) || muxB == null || muxB.IsDisposed || muxB.TransportType != QuicPunch.QuicPunch.TransportType.Tor)
+                    throw new InvalidOperationException("Node B did not retain an active Tor QuicPeerMultiplexer after opening the application session.");
+                if (!nodeA.TryGetPeerMultiplexer(peerB_on_A.Id, out var muxA) || muxA == null || muxA.IsDisposed || muxA.TransportType != QuicPunch.QuicPunch.TransportType.Tor)
+                    throw new InvalidOperationException("Node A did not create the matching Tor QuicPeerMultiplexer for the incoming bootstrap.");
+
+                Console.WriteLine("[VERIFICATION] Both peers retained the shared physical Tor multiplexer.");
+                Console.WriteLine("[Node A] Waiting for incoming encrypted payload and virtual QUIC datagram over Tor...");
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 byte[] receivedData = await receiverProtocol.DataReceived.Task.WaitAsync(timeoutCts.Token);
+                byte[] receivedDatagram = await receiverProtocol.DatagramReceived.Task.WaitAsync(timeoutCts.Token);
+                if (!TorDatagramMarker.SequenceEqual(receivedDatagram))
+                    throw new InvalidOperationException("Tor virtual QUIC datagram payload did not match the expected marker.");
 
                 byte[] receivedHash = SHA256.HashData(receivedData);
                 Console.WriteLine($"[Node A] Successfully received {receivedData.Length} bytes over Tor QUIC stream!");
@@ -177,18 +187,23 @@ namespace QuicPunchTests.Tests;
         }
 
         private static readonly Guid TestTorProtocolId = Guid.Parse("11223344-5566-7788-99aa-bbccddeeff00");
+        private static readonly byte[] TorDatagramMarker = Encoding.UTF8.GetBytes("tor-datagram-ok");
 
         private sealed class TorFileShareReceiverProtocol : QuicPunch.QuicPunch.IProtocolHandler
         {
             public Guid ProtocolId => TestTorProtocolId;
-            public ushort PreferredPort => 0;
             public string ProtocolName => "TorFileShare";
             public ushort StreamPriority => (ushort)QuicStreamPriority.Normal;
-            public ZstandardCompressionOptions? CompressionOptions => null;
 
             public TaskCompletionSource<byte[]> DataReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public TaskCompletionSource<byte[]> DatagramReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             public Task DeniedAsync(PeerInfo peer, CancellationToken ct) => Task.CompletedTask;
+
+            public void OnDatagramReceived(QuicConnection connection, PeerInfo peer, QuicPunch.Datagrams.QuicDatagramMessage datagram)
+            {
+                DatagramReceived.TrySetResult(datagram.Payload.ToArray());
+            }
 
             public async Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct)
             {
@@ -202,10 +217,8 @@ namespace QuicPunchTests.Tests;
         {
             private readonly byte[] _dataToSend;
             public Guid ProtocolId => TestTorProtocolId;
-            public ushort PreferredPort => 0;
             public string ProtocolName => "TorFileShare";
             public ushort StreamPriority => (ushort)QuicStreamPriority.Normal;
-            public ZstandardCompressionOptions? CompressionOptions => null;
 
             public TorFileShareSenderProtocol(byte[] dataToSend) => _dataToSend = dataToSend;
 
@@ -213,6 +226,13 @@ namespace QuicPunchTests.Tests;
 
             public async Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct)
             {
+                if (!connection.IsTor)
+                    throw new InvalidOperationException("Virtual application connection did not preserve the Tor transport type.");
+                if (connection.DatagramChannel == null || !connection.DatagramChannel.IsSendEnabled)
+                    throw new InvalidOperationException("Tor virtual QUIC connection does not expose an emulated datagram channel.");
+                if (!connection.SendDatagram(TorDatagramMarker))
+                    throw new InvalidOperationException("Could not enqueue a virtual QUIC datagram over Tor.");
+
                 await stream.WriteAsync(_dataToSend, ct).ConfigureAwait(false);
                 await stream.FlushAsync(ct).ConfigureAwait(false);
                 stream.Close();

@@ -1,0 +1,4 @@
+jSquash AVIF 2.1.1 (Apache-2.0), derived from Google Squoosh.
+Source: https://github.com/jamsinclair/jSquash
+Package integrity: sha512-LMRxd0fMgfCLtobDh0/sFYJMMiRJTNYSEEWvRDKXlAeZ08t3gI5V+1thIT0XjXJ+SVG7Zug9B0XPyx0Ti5VRNA==
+Includes libavif and libaom WebAssembly encoder.

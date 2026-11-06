@@ -16,6 +16,8 @@ internal sealed class NativeConnectionTransport :
     {
         _connection = connection ??
                       throw new ArgumentNullException(nameof(connection));
+        // Apply connection defaults once, before exposing the transport to callers.
+        Helpers.MsQuicTuner.TryApplyOptimalTuning(_connection);
         if (Helpers.MsQuicDatagramChannel.IsSupported)
         {
             try
@@ -95,115 +97,57 @@ internal sealed class NativeConnectionTransport :
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        var channel = Interlocked.Exchange(ref _datagramChannel, null);
+        if (channel != null)
+        {
+            channel.OnDatagramReceived -= OnRawDatagramReceived;
+            channel.Dispose();
+        }
+        _datagrams.Clear();
         await _connection.DisposeAsync().ConfigureAwait(false);
     }
 
     private Helpers.IQuicDatagramChannel? _datagramChannel;
-    private readonly Datagrams.DatagramFrameReassembler _reassembler = new();
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<byte, Action<PeerInfo, Datagrams.QuicDatagramMessage>> _categoryHandlers = new();
-    private uint _nextSequenceNumber;
-    private int _nextFrameId;
+    private readonly Datagrams.CategorizedDatagramProtocol _datagrams = new();
 
-    public Helpers.IQuicDatagramChannel? DatagramChannel
-    {
-        get
-        {
-            if (_datagramChannel == null && Helpers.MsQuicDatagramChannel.IsSupported)
-            {
-                try
-                {
-                    _datagramChannel = Helpers.MsQuicDatagramChannel.Attach(_connection);
-                    _datagramChannel.OnDatagramReceived += OnRawDatagramReceived;
-                }
-                catch { }
-            }
-            return _datagramChannel;
-        }
-    }
+    public Helpers.IQuicDatagramChannel? DatagramChannel =>
+        Volatile.Read(ref _disposed) == 0 ? _datagramChannel : null;
 
     private void OnRawDatagramReceived(byte[] data)
     {
-        if (Datagrams.QuicDatagramEnvelope.TryParse(data, out var env))
+        // The multiplexer consumes the raw channel. Only decode application envelopes
+        // here when the direct native datagram API actually has a receiver.
+        if (!_datagrams.HasReceivers) return;
+        var peer = new PeerInfo(_connection.RemoteCertificate is X509Certificate2 certificate ? certificate : null, Array.Empty<byte>())
         {
-            var peer = new PeerInfo(_connection.RemoteCertificate is X509Certificate2 c2 ? c2 : null, Array.Empty<byte>())
-            {
-                ActiveEndPoint = _connection.RemoteEndPoint as IPEndPoint
-            };
-
-            if (env.IsFragmented)
-            {
-                if (_reassembler.TryProcessFragment(env, out byte cat, out var fullFrame, out bool isKey))
-                {
-                    OnFrameReceived?.Invoke(peer, cat, fullFrame, isKey);
-                }
-            }
-            else
-            {
-                var msg = new Datagrams.QuicDatagramMessage(
-                    peer,
-                    env.Category,
-                    env.Flags,
-                    env.SequenceNumber,
-                    data.AsMemory(env.IsFramed ? Datagrams.QuicDatagramEnvelope.UnfragmentedHeaderSize : 0),
-                    isFramed: env.IsFramed);
-
-                if (_categoryHandlers.TryGetValue(env.Category, out var handler))
-                {
-                    handler(peer, msg);
-                }
-                OnCategorizedDatagramReceived?.Invoke(peer, msg);
-            }
-        }
+            ActiveEndPoint = _connection.RemoteEndPoint as IPEndPoint
+        };
+        _datagrams.Receive(data, peer);
     }
 
     public bool SendDatagram(ReadOnlySpan<byte> datagram) => DatagramChannel?.Send(datagram) ?? false;
 
-    public bool SendCategorizedDatagram(byte category, ReadOnlySpan<byte> payload, Datagrams.QuicDatagramFlags flags = Datagrams.QuicDatagramFlags.None, uint sequenceNumber = 0)
-    {
-        if (sequenceNumber == 0) sequenceNumber = (uint)Interlocked.Increment(ref _nextSequenceNumber);
-        int required = Datagrams.QuicDatagramEnvelope.UnfragmentedHeaderSize + payload.Length;
-        Span<byte> buf = stackalloc byte[required];
-        Datagrams.QuicDatagramEnvelope.WriteEnvelope(buf, category, flags, sequenceNumber, payload);
-        return SendDatagram(buf);
-    }
+    public bool SendCategorizedDatagram(byte category, ReadOnlySpan<byte> payload,
+        Datagrams.QuicDatagramFlags flags = Datagrams.QuicDatagramFlags.None, uint sequenceNumber = 0) =>
+        _datagrams.SendDatagram(DatagramChannel, category, payload, flags, sequenceNumber);
 
-    public bool SendFrame(byte category, ReadOnlySpan<byte> frameData, bool isKeyFrame = false, int maxFragmentSize = 1200)
-    {
-        if (maxFragmentSize <= 0) maxFragmentSize = 1200;
-        if (frameData.Length <= maxFragmentSize)
-        {
-            var flags = isKeyFrame ? Datagrams.QuicDatagramFlags.IsKeyFrame : Datagrams.QuicDatagramFlags.None;
-            return SendCategorizedDatagram(category, frameData, flags);
-        }
-
-        ushort frameId = (ushort)(Interlocked.Increment(ref _nextFrameId) & 0x7FFF);
-        int totalFrags = (frameData.Length + maxFragmentSize - 1) / maxFragmentSize;
-        if (totalFrags > 1024) throw new ArgumentException("Frame exceeds max 1024 fragments", nameof(frameData));
-
-        bool allSent = true;
-        Span<byte> buf = stackalloc byte[Datagrams.QuicDatagramEnvelope.FragmentedHeaderSize + maxFragmentSize];
-
-        for (int i = 0; i < totalFrags; i++)
-        {
-            int offset = i * maxFragmentSize;
-            int len = Math.Min(maxFragmentSize, frameData.Length - offset);
-            var chunk = frameData.Slice(offset, len);
-            uint seq = (uint)Interlocked.Increment(ref _nextSequenceNumber);
-            var flags = Datagrams.QuicDatagramFlags.IsFragmented;
-            if (isKeyFrame) flags |= Datagrams.QuicDatagramFlags.IsKeyFrame;
-            if (i == totalFrags - 1) flags |= Datagrams.QuicDatagramFlags.IsLastFragment;
-
-            int written = Datagrams.QuicDatagramEnvelope.WriteFragmentEnvelope(buf, category, flags, seq, frameId, (ushort)i, (ushort)totalFrags, chunk);
-            if (!SendDatagram(buf.Slice(0, written))) allSent = false;
-        }
-        return allSent;
-    }
+    public bool SendFrame(byte category, ReadOnlySpan<byte> frameData, bool isKeyFrame = false, int maxFragmentSize = 1200) =>
+        _datagrams.SendFrame(DatagramChannel, category, frameData, isKeyFrame, maxFragmentSize);
 
     public void RegisterDatagramCategory(byte category, Action<PeerInfo, Datagrams.QuicDatagramMessage> handler) =>
-        _categoryHandlers[category] = handler;
+        _datagrams.RegisterCategory(category, handler);
 
-    public event Action<PeerInfo, Datagrams.QuicDatagramMessage>? OnCategorizedDatagramReceived;
-    public event Action<PeerInfo, byte, ReadOnlyMemory<byte>, bool>? OnFrameReceived;
+    public event Action<PeerInfo, Datagrams.QuicDatagramMessage>? OnCategorizedDatagramReceived
+    {
+        add => _datagrams.OnDatagramReceived += value;
+        remove => _datagrams.OnDatagramReceived -= value;
+    }
+
+    public event Action<PeerInfo, byte, ReadOnlyMemory<byte>, bool>? OnFrameReceived
+    {
+        add => _datagrams.OnFrameReceived += value;
+        remove => _datagrams.OnFrameReceived -= value;
+    }
 
     private void ThrowIfDisposed()
     {

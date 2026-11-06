@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Security;
@@ -30,7 +31,8 @@ public static class QuicDatagramTests
         using var rsa = RSA.Create(2048);
         var certReq = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using var tempCert = certReq.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1));
-        using var cert = X509CertificateLoader.LoadPkcs12(tempCert.Export(X509ContentType.Pfx), null);
+        // The application-local OpenSSL MsQuic provider exports the private key.
+        using var cert = X509CertificateLoader.LoadPkcs12(tempCert.Export(X509ContentType.Pfx), null, X509KeyStorageFlags.Exportable);
 
         var alpn = new List<SslApplicationProtocol> { new("qdatagram") };
 
@@ -153,6 +155,39 @@ public static class QuicDatagramTests
 
         Console.WriteLine("PASSED");
         Console.WriteLine($"[RESULT] Server received {serverReceived.Count} datagrams, Client received {clientReceived.Count} datagrams. Zero Loss!");
+
+        // Concurrent, differently-sized payloads exercise native buffer ownership:
+        // each QUIC_BUFFER and payload must survive until its send callback.
+        while (serverChannel.IncomingDatagrams.Reader.TryRead(out _)) { }
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+        {
+            for (int batch = 0; batch < 8; batch++)
+            {
+                var expected = new Dictionary<int, byte[]>();
+                for (int i = 0; i < 16; i++)
+                {
+                    int id = batch * 16 + i;
+                    int length = i == 15 ? clientChannel.MaxSendDatagramLength : 4 + (id * 31 % (clientChannel.MaxSendDatagramLength - 3));
+                    byte[] payload = RandomNumberGenerator.GetBytes(length);
+                    BinaryPrimitives.WriteInt32LittleEndian(payload, id);
+                    expected.Add(id, payload);
+                }
+                Parallel.ForEach(expected.Values, payload =>
+                {
+                    if (!clientChannel.Send(payload)) throw new Exception("Concurrent datagram send failed.");
+                });
+                for (int i = 0; i < 16; i++)
+                {
+                    byte[] received = await serverChannel.IncomingDatagrams.Reader.ReadAsync(deadline.Token);
+                    if (received.Length < 4 || !expected.Remove(BinaryPrimitives.ReadInt32LittleEndian(received), out var payload) ||
+                        !received.AsSpan().SequenceEqual(payload))
+                        throw new Exception("Concurrent native datagram payload was corrupted or duplicated.");
+                }
+            }
+            while (MsQuicDatagramChannel.PendingSendBufferCount != 0)
+                await Task.Delay(10, deadline.Token);
+        }
+        Console.WriteLine("[TEST] 128 concurrent variable-size datagrams verified; native send buffers released: PASSED");
 
         await clientConn.DisposeAsync();
         await serverConn.DisposeAsync();

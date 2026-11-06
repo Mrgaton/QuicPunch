@@ -1,0 +1,46 @@
+NetLocate: local data and map notices
+Snapshot: 2026-10-18.
+
+The RIPE Atlas anchor subset, local ASN index and Natural Earth map are bundled.
+The larger DB-IP city and IPmap binary tables of the repository are NOT bundled
+and are not consulted by this progressive search.
+
+RIPE Atlas public connected anchor metadata, archive 2026-10-17, RIPE NCC.
+1992 IP endpoints (IPv4 and IPv6); SiteId groups addresses of one site.
+Source: https://ftp.ripe.net/ripe/atlas/probes/archive/2026/10/20261017.json.bz2
+Source SHA-256: 37621771f2dc39d101bbc5a1bf6bcb132ffdb4d5b106c1282fea59722d889dd0
+The existing repository supplied the filtered gzip-compressed catalogue.
+Coordinates and nominal 25 km uncertainty are supplied metadata/model assumptions,
+not independent certification of physical position, unicast routing or availability.
+No Atlas measurements are commissioned. LIVE probes originate on this computer.
+Terms: https://www.ripe.net/about-us/legal/ripe-atlas-service-terms-and-conditions/
+The dataset is not asserted to carry the code licence. Atlas terms have separate
+conditions for commercial use; this is the research snapshot supplied by the project.
+
+Natural Earth 1:50m admin-0 countries and populated places, public domain.
+https://www.naturalearthdata.com/about/terms-of-use/
+The reduced gzip-compressed map was supplied by the repository.
+Map features are context, never geolocation evidence; no street-level detail.
+
+The repository's LICENSE.txt is embedded unchanged.
+Run "NetLocate notices" for these notices and the full code licence.
+
+DB-IP ASN Lite, edition October 2026, DB-IP.com. CC BY 4.0.
+https://db-ip.com/  https://creativecommons.org/licenses/by/4.0/
+The indexed ASN table is embedded locally. It is used only for probe diversity, never as a location constraint. No ASN or BGP queries are sent.
+
+Supplemental RIPE Atlas public connected probe metadata, fetched 2026-10-18.
+7013 endpoints, 5453 sites, 133 countries (64 endpoints declared in Spain).
+Source: https://atlas.ripe.net/api/v2/probes/?is_public=true&status=1&page_size=500
+Full page URLs, SHA-256 hashes and filters: Data/regional-manifest.json, embedded.
+Builder: tools/Build-RegionalCatalog.ps1 (development only, not part of LIVE).
+Host-declared coordinates are not physically verified. Nominal 50 km coordinate
+uncertainty is not calibrated coverage. They form a separately labelled conditional
+hypothesis and guide search; they never become primary location constraints.
+Public metadata is privacy-obfuscated; inbound ICMP reachability is not guaranteed.
+Excludes disputed/on-hold metadata, known IPv4 NAT and declared VPN/tunnel/anycast.
+Probe stability concerns outbound connectivity, not authentication of inbound replies.
+No remote Atlas measurements are commissioned, queried or consumed by the estimator.
+API documentation: https://atlas.ripe.net/docs/apis/rest-api-reference/probes/probes_list/
+Privacy: https://atlas.ripe.net/docs/apis/rest-api-manual/authentication/anonymous-access/
+The same RIPE Atlas terms above apply separately from the code licence.

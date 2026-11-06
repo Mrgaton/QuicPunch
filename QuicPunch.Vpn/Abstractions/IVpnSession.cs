@@ -10,6 +10,7 @@ namespace QuicPunch.Vpn;
 /// </summary>
 public interface IVpnSession : IDisposable, IAsyncDisposable
 {
+    bool IsHealthy => true;
     /// <summary>
     /// Waits until one or more IP packets are available to read, or until the timeout expires or cancellation is requested.
     /// </summary>

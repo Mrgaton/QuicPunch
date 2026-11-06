@@ -1,40 +1,12 @@
-# RelayDrive: Ephemeral P2P File Shelf
+# File sharing and media transfer
 
-> [`RelayDriveHandler`](../../QuicPunchTests/Protocols/RelayDriveHandler.cs) provides a decentralized, temporary file shelf. Peers exchange manifests and stream chunks on-demand without central servers.
+The former RelayDrive handler is not part of the current application. Its old protocol GUID, limits and framing are not a supported contract.
 
----
+The current entry points are:
 
-### Protocol Specification
+- [Virtual disk](virtual-disk.md), with host-side folder grants, administrator exploration and a loopback WebDAV mount bridge.
 
-| Property | Value |
-| :--- | :--- |
-| **Protocol GUID** | `00000000-0000-0000-0000-000000000005` |
-| **Max File Size** | `2 GiB` per file |
-| **Max Published Files** | `128` files per node |
-| **Chunk Size** | `64 KiB` streaming chunks |
-| **Integrity** | SHA-256 Incremental Hash Verified at `FileEnd` |
+- [Chat file sharing](../../QuicNet.Shared/WebUi/Modules/ChatApiModule.cs), carried by [ChatHandler](../../QuicNet.Shared/Protocols/ChatHandler.cs).
+- [QuicWatch](../../QuicNet/Watch/README.md), with range-based transfer in [MediaTransferHandler](../../QuicNet.Shared/Watch/Protocols/MediaTransferHandler.cs) and caching in [MediaLibrary](../../QuicNet.Shared/Watch/Services/MediaLibrary.cs).
 
----
-
-## File Transfer Sequence & Framing
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Alice as Node A (Publisher)
-    participant Bob as Node B (Downloader)
-
-    Alice->>Bob: Frame: Manifest (JSON List of Available Files)
-    Note over Bob: User selects file to materialize
-    Bob->>Alice: Frame: Request <FileGuid (16B)>
-    
-    Alice->>Bob: Frame: FileStart { "id": "...", "name": "doc.pdf", "size": 1048576 }
-    loop Chunk Streaming (64KB chunks)
-        Alice->>Bob: Frame: FileChunk <FileGuid (16B)> + <ChunkBytes>
-        Note over Bob: Append to temp part file & update IncrementalHash
-    end
-    Alice->>Bob: Frame: FileEnd <FileGuid (16B)> + <SHA256 Hash (32B)>
-    
-    Note over Bob: Verify SHA-256 == Computed Hash
-    Note over Bob: Move .part file to Cache/doc.pdf
-```
+Both use application sessions over the peer multiplexer. See [application permissions](../core/automatic-peer-permissions.md) for authorization.

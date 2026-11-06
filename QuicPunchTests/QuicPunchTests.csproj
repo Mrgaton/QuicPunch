@@ -13,26 +13,26 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Photino.NET" Version="3.1.13" />
-    <PackageReference Include="System.Drawing.Common" Version="9.0.2" />
+    <PackageReference Include="System.Drawing.Common" Version="11.0.0-rc.2.26504.105" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\QuicPunch\QuicPunch.csproj" />
     <ProjectReference Include="..\QuicPunch.Vpn\QuicPunch.Vpn.csproj" />
+    <ProjectReference Include="..\QuicNet\QuicNet.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <Using Include="QuicPunchTests.Protocols" />
-    <Using Include="QuicPunchTests.Settings" />
-    <Using Include="QuicPunchTests.WebUi" />
+    <Using Include="QuicNet.Protocols" />
+    <Using Include="QuicNet.Settings" />
+    <Using Include="QuicNet.WebUi" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="wintun.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <EmbeddedResource Include="wwwroot\**" />
+    <None Update="Fixtures\bip340-test-vectors.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\profile-avatar.avif" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\GeoIP2-City-Test.mmdb" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\profile-avatar-animated.avif" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

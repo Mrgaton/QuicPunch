@@ -39,6 +39,8 @@ public sealed class DummyQuicConnectionTransport : IQuicConnectionTransport
 
     public EndPoint? RemoteEndPoint => _provider.RemoteEndPoint;
 
+    public Helpers.IQuicDatagramChannel? DatagramChannel => _provider.DatagramChannel;
+
     public async ValueTask<IQuicStreamTransport> OpenOutboundStreamAsync(
         QuicStreamType type,
         CancellationToken cancellationToken = default)

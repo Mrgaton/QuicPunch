@@ -51,16 +51,54 @@ public sealed class NativeAudioService : IDisposable
     public string? CurrentInputDeviceId => _currentInputDeviceId;
     public string? CurrentOutputDeviceId => _currentOutputDeviceId;
     public string BackendName => _backend.Name;
+    public bool IsCaptureRunning { get; private set; }
+    public bool IsPlaybackRunning { get; private set; }
+    private string? _captureError, _playbackError;
+    public string? CaptureError => _backend.CaptureError ?? _captureError;
+    public string? PlaybackError => _backend.PlaybackError ?? _playbackError;
+    public event Action? OnDeviceStateChanged;
+
+    private void StartInput(string? deviceId)
+    {
+        try
+        {
+            IsCaptureRunning = _backend.StartCapture(OnMicrophoneCaptured, deviceId);
+            _captureError = IsCaptureRunning ? null : _backend.CaptureError ?? "No se pudo abrir el micrófono. Comprueba los permisos y el dispositivo.";
+        }
+        catch (Exception ex) { IsCaptureRunning = false; _captureError = ex.Message; }
+    }
+    private void StartOutput(string? deviceId)
+    {
+        try
+        {
+            IsPlaybackRunning = _backend.StartPlayback(deviceId);
+            _playbackError = IsPlaybackRunning ? null : _backend.PlaybackError ?? "No se pudo abrir la salida de audio.";
+        }
+        catch (Exception ex) { IsPlaybackRunning = false; _playbackError = ex.Message; }
+    }
+
+    /// <summary>The bitrate of the encoder that produces microphone packets.</summary>
+    public int Bitrate
+    {
+        get => _opusCodec.Bitrate;
+        set => _opusCodec.Bitrate = value;
+    }
 
     public event Action<byte[]>? OnAudioPacketReady;
     public event Action<Guid, float>? OnPeerAudioLevel;
     public event Action<float>? OnLocalAudioLevel;
 
-    public NativeAudioService()
+    public NativeAudioService(INativeAudioBackend? backend = null)
     {
         _opusCodec = new OpusVoiceCodec();
 
-        if (OperatingSystem.IsLinux())
+        if (backend != null)
+        {
+            _backend = backend;
+            return;
+        }
+
+        if (OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
         {
             _backend = new PulseAudioBackend();
         }
@@ -87,6 +125,11 @@ public sealed class NativeAudioService : IDisposable
         return _peerVolumes.TryGetValue(peerId, out float v) ? v : 1.0f;
     }
 
+    public double GetPeerBufferedAudioMs(Guid peerId) =>
+        _peerAudioContexts.TryGetValue(peerId, out var context)
+            ? context.JitterQueue.Sum(frame => frame.Length) * 1000.0 / OpusVoiceCodec.DefaultSampleRate
+            : 0;
+
     public void SetPeerMuted(Guid peerId, bool muted)
     {
         _peerMutes[peerId] = muted;
@@ -106,12 +149,15 @@ public sealed class NativeAudioService : IDisposable
             _currentInputDeviceId = inputDeviceId;
             _currentOutputDeviceId = outputDeviceId;
 
-            _backend.StartPlayback(outputDeviceId);
-            _backend.StartCapture(OnMicrophoneCaptured, inputDeviceId);
+            StartOutput(outputDeviceId);
+            StartInput(inputDeviceId);
+            OnDeviceStateChanged?.Invoke();
 
             _mixerCts = new CancellationTokenSource();
             CancellationToken ct = _mixerCts.Token;
-            _mixerTask = Task.Run(() => MixerLoop(ct), ct);
+            _mixerTask = OperatingSystem.IsWindows()
+                ? Task.Factory.StartNew(() => MixerLoop(ct), ct, TaskCreationOptions.LongRunning, TaskScheduler.Default)
+                : Task.Run(() => MixerLoop(ct), ct);
 
             QuicPunchLog.Info($"[NATIVE AUDIO] Native audio service started on {_backend.Name} (20ms frames)");
         }
@@ -129,6 +175,7 @@ public sealed class NativeAudioService : IDisposable
 
             _backend.StopCapture();
             _backend.StopPlayback();
+            IsCaptureRunning = IsPlaybackRunning = false;
             foreach (var ctx in _peerAudioContexts.Values) ctx.Dispose();
             _peerAudioContexts.Clear();
         }
@@ -139,7 +186,8 @@ public sealed class NativeAudioService : IDisposable
         lock (_stateLock)
         {
             _currentInputDeviceId = deviceId;
-            _backend.StartCapture(OnMicrophoneCaptured, deviceId);
+            StartInput(deviceId);
+            OnDeviceStateChanged?.Invoke();
         }
     }
 
@@ -148,18 +196,9 @@ public sealed class NativeAudioService : IDisposable
         lock (_stateLock)
         {
             _currentOutputDeviceId = deviceId;
-            _backend.StartPlayback(deviceId);
+            StartOutput(deviceId);
+            OnDeviceStateChanged?.Invoke();
         }
-    }
-
-    public void EnqueueScreenAudio(short[] pcmSamples)
-    {
-        // Screen audio is transmitted independently through dedicated FrameTypeScreenShareAudio frames
-    }
-
-    public void TransmitScreenAudioDirectly(short[] screenSamples)
-    {
-        // Screen audio is transmitted independently through dedicated FrameTypeScreenShareAudio frames
     }
 
     private void OnMicrophoneCaptured(short[] pcmSamples)
@@ -223,8 +262,9 @@ public sealed class NativeAudioService : IDisposable
 
                 ctx.JitterQueue.Enqueue(pcmSamples);
 
-                // Limit jitter buffer to max ~120ms (6 frames @ 20ms) to prevent latency accumulation
-                while (ctx.JitterQueue.Count > 6) ctx.JitterQueue.TryDequeue(out _);
+                // Keep up to 60ms for short bursts; a stalled mixer should catch
+                // up to live audio instead of retaining an extra 120ms of speech.
+                while (ctx.JitterQueue.Count > 3) ctx.JitterQueue.TryDequeue(out _);
             });
         }
         catch (Exception ex)
@@ -249,13 +289,16 @@ public sealed class NativeAudioService : IDisposable
         int[] accumulator = new int[frameSize];
         short[] mixedOutput = new short[frameSize];
 
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(OpusVoiceCodec.DefaultFrameDurationMs));
+        using var windowsClock = WindowsAudioClock.TryCreate(ct);
+        using var timer = windowsClock == null ? new PeriodicTimer(TimeSpan.FromMilliseconds(OpusVoiceCodec.DefaultFrameDurationMs)) : null;
+        QuicPunchLog.Info(windowsClock != null ? "[NATIVE AUDIO] Windows high-resolution mixer clock; 20ms frames, no extra prebuffer."
+            : "[NATIVE AUDIO] Standard mixer clock.");
 
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                if (!timer.WaitForNextTickAsync(ct).AsTask().GetAwaiter().GetResult())
+                if (!(windowsClock?.WaitForNextTick() ?? timer!.WaitForNextTickAsync(ct).AsTask().GetAwaiter().GetResult()))
                     break;
             }
             catch (OperationCanceledException)
@@ -270,7 +313,7 @@ public sealed class NativeAudioService : IDisposable
             {
                 float master = _masterVolume;
 
-                foreach (var pair in _peerAudioContexts.ToArray())
+                foreach (var pair in _peerAudioContexts)
                 {
                     Guid peerId = pair.Key;
                     var ctx = pair.Value;
@@ -330,10 +373,12 @@ internal sealed class PeerAudioContext : IDisposable
     private readonly Concentus.IOpusDecoder _decoder;
     private readonly object _lock = new();
     private ushort? _lastSeq;
+    private long _lastPacketAt;
     private int _disposed;
 
     public ConcurrentQueue<short[]> JitterQueue { get; } = new();
     public int DroppedFramesCount { get; private set; }
+    internal int IgnoredPacketsCount { get; private set; }
 
     public PeerAudioContext(int sampleRate = OpusVoiceCodec.DefaultSampleRate, int channels = OpusVoiceCodec.DefaultChannels)
     {
@@ -382,10 +427,21 @@ internal sealed class PeerAudioContext : IDisposable
 
             lock (_lock)
             {
+                long now = Environment.TickCount64;
+                // After a long interruption the sequence may have restarted or
+                // crossed half the 16-bit range. Resume immediately, without PLC backlog.
+                if (_lastSeq.HasValue && now - _lastPacketAt > 2000)
+                {
+                    _lastSeq = null;
+                    _decoder.ResetState();
+                }
                 if (_lastSeq.HasValue)
                 {
-                    ushort expected = unchecked((ushort)(_lastSeq.Value + 1));
-                    int gap = unchecked((ushort)(seq - expected));
+                    int distance = unchecked((ushort)(seq - _lastSeq.Value));
+                    // Datagram duplication/reordering must not rewind the decoder's
+                    // predictive state or create false losses on the next packet.
+                    if (distance == 0 || distance >= 0x8000) { IgnoredPacketsCount++; return; }
+                    int gap = distance - 1;
 
                     // If gap is reasonable (1 to 5 lost frames), run PLC (Packet Loss Concealment)
                     if (gap > 0 && gap <= 5)
@@ -398,11 +454,12 @@ internal sealed class PeerAudioContext : IDisposable
                         }
                     }
                 }
-                _lastSeq = seq;
+                // Sequence checks and decoder state changes form one operation,
+                // even if datagram callbacks arrive on different threads.
+                short[] decoded = DecodePacket(payload, frameSize);
+                _lastSeq = seq; _lastPacketAt = now;
+                onDecoded(decoded);
             }
-
-            short[] decoded = DecodePacket(payload, frameSize);
-            onDecoded(decoded);
         }
         else if (OpusVoiceCodec.IsOpusPacket(audioData))
         {
@@ -440,6 +497,8 @@ public interface INativeAudioBackend : IDisposable
 {
     string Name { get; }
     bool IsSupported { get; }
+    string? CaptureError => null;
+    string? PlaybackError => null;
 
     IReadOnlyList<AudioDeviceInfo> GetInputDevices();
     IReadOnlyList<AudioDeviceInfo> GetOutputDevices();

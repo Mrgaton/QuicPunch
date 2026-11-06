@@ -4,7 +4,7 @@ using System.ComponentModel;
 using System.Net;
 using System.Numerics;
 using QuicPunch.Vpn;
-using QuicPunchTests.Protocols;
+using QuicNet.Protocols;
 
 namespace QuicPunchTests.Tests;
 
@@ -102,7 +102,14 @@ public static class VpnAdapterTests
         Console.Write("[TEST 3] VirtualLanHandler graceful privilege degradation... ");
 
         using var lanHandler = new VirtualLanHandler();
-        lanHandler.SetupTun("10.99.99.2", "255.255.255.0", 1420);
+        try
+        {
+            lanHandler.SetupTun("10.99.99.2", "255.255.255.0", 1420);
+        }
+        catch (Exception)
+        {
+            // Expected when running without elevated admin / root privileges
+        }
 
         // Depending on whether this process is running with elevated privileges (root or admin):
         if (lanHandler.IsActive)

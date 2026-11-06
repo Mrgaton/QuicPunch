@@ -1,0 +1,85 @@
+/* Scoped to the speed test so other workspaces keep their existing density. */
+.speed-workspace { max-width: 1500px; font-size: 15px; }
+.speed-workspace .page-head p { font-size: 15px; max-width: 76ch; }
+.speed-layout { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: 24px; align-items: start; }
+.speed-workspace .section-head { align-items: flex-start; padding: 24px; }
+.speed-workspace .section-head h2 { font-size: 20px; }
+.speed-workspace .section-head p, .speed-workspace .field label { font-size: 14px; }
+.speed-workspace .section-body { padding: 0 24px 24px; }
+.speed-workspace .select { min-height: 44px; font-size: 15px; }
+.speed-workspace .btn { min-height: 44px; font-size: 14px; }
+.speed-setup .toolbar .btn { width: 100%; }
+.speed-result-actions:empty { display: none; }
+.speed-result-actions .toolbar { margin: 0 0 20px; }
+.speed-help { font-size: 14px; line-height: 1.6; margin-top: 10px; max-width: 75ch; }
+.speed-state { flex-shrink: 0; white-space: normal; font-size: 13px; line-height: 1.5; padding: 5px 10px; }
+.speed-results[data-state=completed] .speed-state { color: var(--ok); background: var(--ok-soft); border-color: var(--ok-border); }
+.speed-results[data-state=interrupted] .speed-state,
+.speed-results[data-state=error] .speed-state { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border); }
+.speed-results[data-state=cancelled] .speed-state { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-border); }
+.speed-status { font-size: 15px; color: var(--text-strong); margin-bottom: 18px; }
+.speed-error { border: 1px solid var(--danger-border); border-left: 4px solid var(--danger); border-radius: 8px; background: var(--danger-soft); padding: 16px; margin: 0 0 20px; }
+.speed-error strong { color: var(--danger); }
+.speed-error p { color: var(--text); margin-top: 8px; }
+.speed-workspace summary { min-height: 44px; padding: 11px 0; cursor: pointer; color: var(--text-strong); font-size: 14px; font-weight: 600; }
+.speed-workspace pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 13px/1.6 Consolas, monospace; color: var(--text); margin: 8px 0; max-width: 100%; }
+.speed-progress { margin-bottom: 22px; }
+.speed-progress p { font-size: 14px; margin-bottom: 8px; }
+.speed-workspace .speed-bar-track { max-width: none; height: 8px; }
+.speed-rates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.speed-rate { padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); min-width: 0; }
+.speed-rate h3 { font-size: 17px; }
+.speed-rate-value { font-size: clamp(22px, 2.4vw, 36px); font-weight: 650; color: var(--text-strong); font-variant-numeric: tabular-nums; line-height: 1.3; margin: 12px 0 8px; overflow-wrap: anywhere; }
+.speed-rate p { font-size: 13px; line-height: 1.5; }
+.speed-quality-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin: 24px 0; }
+.speed-quality-grid > div { min-width: 0; }
+.speed-quality-grid span, .speed-quality-grid small { display: block; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.speed-quality-grid strong { display: block; font-size: 20px; margin: 7px 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.speed-phases { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.speed-phase { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.speed-phase strong { font-size: 13px; text-align: right; }
+.speed-phase.completed strong { color: var(--ok); }
+.speed-phase.running strong { color: var(--accent); }
+.speed-phase.interrupted strong, .speed-phase.error strong { color: var(--danger); }
+.speed-phase.cancelled strong { color: var(--warn); }
+.speed-phase.pending { color: var(--muted); }
+.speed-phase.pending strong { color: inherit; font-weight: 400; }
+.speed-details { margin-top: 14px; }
+.speed-baseline, .speed-method-help { font-size: 14px; line-height: 1.7; max-width: 76ch; color: var(--muted); overflow-wrap: anywhere; }
+.speed-method-help p + p { margin-top: 12px; }
+.speed-stage-detail { padding: 20px 0; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.speed-stage-detail h3 { font-size: 16px; }
+.speed-detail-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; margin: 16px 0 0; }
+.speed-detail-metrics > div { min-width: 0; }
+.speed-detail-metrics dt { color: var(--muted); font-size: 13px; }
+.speed-detail-metrics dd { color: var(--text-strong); margin: 3px 0 0; font-size: 14px; overflow-wrap: anywhere; }
+.speed-history .data-table { font-size: 14px; }
+.speed-history .data-table th { font-size: 13px; }
+.speed-history .data-table td { vertical-align: top; max-width: none; }
+.speed-history .data-table th:last-child { width: 42%; }
+.speed-history-details > summary { padding-top: 0; }
+.speed-history-details > p { margin-top: 6px; overflow-wrap: anywhere; }
+@media (max-width: 1100px) {
+  .speed-layout { grid-template-columns: 1fr; gap: 0; }
+  .speed-layout:not([data-state=idle]) .speed-results { order: -1; }
+  .speed-setup .section-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; }
+  .speed-setup .section-body > .space-top { margin-top: 0; }
+  .speed-setup .section-body > .field:first-child,
+  .speed-setup .section-body > p,
+  .speed-setup .toolbar { grid-column: 1 / -1; }
+  .speed-setup .toolbar .btn { width: auto; min-width: 180px; }
+}
+@media (max-width: 680px) {
+  .speed-workspace .section-head { padding: 20px 18px; }
+  .speed-workspace .section-body { padding: 0 18px 20px; }
+  .speed-workspace .select { font-size: 16px; }
+  .speed-setup .section-body, .speed-rates, .speed-quality-grid { grid-template-columns: 1fr; }
+  .speed-setup .toolbar .btn { width: 100%; }
+  .speed-rate { padding: 16px; }
+  .speed-rate-value { font-size: 28px; }
+  .speed-quality-grid { gap: 14px; }
+  .speed-phase { gap: 12px; }
+  .speed-history .data-table td { display: block; }
+  .speed-history .data-table td::before { display: block; font-size: 13px; margin-bottom: 4px; }
+}
+@media (prefers-reduced-motion: reduce) { .speed-workspace .speed-bar-fill { transition: none; } }

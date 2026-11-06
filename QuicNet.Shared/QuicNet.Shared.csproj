@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../Release.props" />
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>QuicNet</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\QuicPunch\QuicPunch.csproj" />
+    <ProjectReference Include="..\QuicNet.Geolocation\QuicNet.Geolocation.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../QuicNet.Geolocation/Data/NOTICE.txt" Link="GEOLOCATION-NOTICE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="../QuicNet.Geolocation/Map/NOTICE.txt" Link="MAP-NOTICE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="wwwroot\**" />
+    <EmbeddedResource Include="../QuicNet.Geolocation/Map/map.js" LogicalName="QuicNet.wwwroot.geolocation.map.js" />
+    <EmbeddedResource Include="../QuicNet.Geolocation/Map/map.json.gz" LogicalName="QuicNet.Geolocation.WorldMap.gz" />
+    <EmbeddedResource Include="Watch\wwwroot\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="QuicNet" />
+    <InternalsVisibleTo Include="QuicPunchTests" />
+    <InternalsVisibleTo Include="QuicPunch.AndroidProbe" />
+  </ItemGroup>
+<ItemGroup><EmbeddedResource Include="Updates/release-public.pem" LogicalName="QuicNet.Updates.release-public.pem" /></ItemGroup>
+<ItemGroup>
+  <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+</ItemGroup></Project>

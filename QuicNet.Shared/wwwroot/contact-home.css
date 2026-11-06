@@ -1,0 +1,38 @@
+/* Contacts are the daily workspace; invitations and network controls have their own places. */
+.home-workspace .page-head h1{font-size:30px}
+.home-network-summary{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:-10px 0 22px;font-size:14px;color:var(--muted)}
+.home-network-summary a{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
+.contacts-toolbar{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:16px 24px;padding:0 24px 16px}
+.contact-order{display:flex;align-items:center;gap:12px;font-size:14px;color:var(--muted)}
+.contact-order .select{width:auto;min-width:180px;font-size:14px;min-height:40px}
+.home-workspace .filter-chip{font-size:14px;min-height:40px}
+.home-workspace .filter-count{font-size:12px;min-width:22px;height:22px}
+.home-workspace .search-field{max-width:320px}
+.home-workspace .search-field input{font-size:15px}
+.home-workspace .contact-grid{grid-template-columns:repeat(auto-fill,minmax(min(310px,100%),1fr));min-height:0;align-items:stretch}
+.home-workspace .contact-card{display:flex;flex-direction:column;padding:20px;gap:14px}
+.home-workspace .contact-card-name strong{font-size:16px;line-height:1.4}
+.home-workspace .contact-card-name span{font-size:13px}
+.home-workspace .contact-card-signals{display:flex;flex-direction:column;gap:5px;margin:0;font-size:14px}
+.home-workspace .contact-card-meta{margin:0;font-size:13px}
+.home-workspace .contact-card-actions{margin-top:auto;padding-top:6px;gap:10px}
+.home-workspace .contact-card-connection{width:100%;justify-content:space-between;gap:10px}
+.home-workspace .contact-card-connection .badge{white-space:normal;font-size:13px;background:transparent;border:0;padding:0;flex:1}
+.home-workspace .contact-card .btn{font-size:14px;min-height:40px}
+.home-workspace .contact-error{font-size:14px;overflow-wrap:anywhere;margin:0;color:var(--danger)}
+.home-workspace .contact-last-connected{font-size:13px}
+.add-contact-dialog{width:min(920px,calc(100vw - 32px));max-width:920px;padding:24px}
+.add-contact-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}
+.add-contact-heading h2{margin:0}
+.add-contact-dialog .home-connect-grid{align-items:start;gap:20px}
+.add-contact-dialog .section{margin:0;min-width:0}
+.add-contact-dialog .section-body{padding:20px}
+.add-contact-dialog .connect-card p,.add-contact-dialog .inline-help,.add-contact-dialog .input,.add-contact-dialog .btn{font-size:14px}
+.add-contact-dialog .eyebrow{font-size:12px}
+.invitation-label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}
+.add-contact-dialog .manual-connect{display:flex;gap:8px}
+.add-contact-dialog .manual-connect input{min-width:0;flex:1}
+.add-contact-dialog .connect-footer{flex-wrap:wrap}
+.add-contact-dialog .connect-footer .inline-help{flex-basis:100%;margin:0}
+.add-contact-dialog .input,.contact-order .select,.home-workspace .search-field{border-color:var(--line-strong)}
+@media(max-width:680px){.home-network-summary{align-items:flex-start;flex-direction:column;gap:6px}.contacts-toolbar{padding:0 16px 12px;justify-content:flex-start}.contact-order{flex-wrap:wrap}.add-contact-dialog{padding:16px}.add-contact-dialog .home-connect-grid{grid-template-columns:1fr}.home-workspace .contact-grid{padding:16px;grid-template-columns:1fr}.add-contact-dialog .section-body{padding:16px}}

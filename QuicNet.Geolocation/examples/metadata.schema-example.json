@@ -1,0 +1,17 @@
+{
+  "prefixes": [],
+  "_documentation": {
+    "usage": "Añade únicamente prefijos propios o procedentes de una fuente cuya redistribución y exactitud hayas evaluado.",
+    "recordShape": {
+      "prefix": "CIDR público literal",
+      "asn": 12345,
+      "location": {
+        "position": {"latitude": 0, "longitude": 0},
+        "country": "código ISO", "region": "región publicada", "city": "localidad publicada", "source": "procedencia documentada"
+      },
+      "source": "procedencia documentada",
+      "hosting": false
+    },
+    "warning": "Los campos de ejemplo no son datos geográficos ni prefijos reales. La lista utilizable está vacía deliberadamente."
+  }
+}

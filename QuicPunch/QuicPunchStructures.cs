@@ -15,7 +15,7 @@ namespace QuicPunch
             Ack = (byte)('K'),
             Handshake = (byte)('S'),
             FinalHandshake = (byte)('F'),
-            Data = (byte)('D'),
+            // 'D' is reserved for the retired UDP application-data format. Do not reuse it.
             Disconnect = (byte)('X'),
             QuicReady = (byte)('Q')
         }
@@ -89,6 +89,9 @@ namespace QuicPunch
         // Constantes de máscaras de bits
         private const byte MaskMultipleIps = 0b0000_0001; // Bit 0
         private const byte MaskPortMode = 0b0000_0110; // Bits 1 y 2
+        private const byte MaskStructuredPorts = 0b0000_1000; // Bit 3
+        private const byte MaskHostPort = 0b0001_0000; // Bit 4: separate host/LAN control port
+        private const byte MaskExternalPortMayDiffer = 0b0010_0000; // Bit 5
         private const byte MaskNat = 0b0100_0000; // Bit 6
         private const byte MaskTor = 0b1000_0000; // Bit 7
 
@@ -164,6 +167,23 @@ namespace QuicPunch
             }
         }
 
+        /// <summary>Discovery/token carries an exact host port after its WAN port advertisement.</summary>
+        public bool HasHostPort
+        {
+            get => (_data & MaskHostPort) != 0;
+            set => _data = value ? (byte)(_data | MaskHostPort) : (byte)(_data & ~MaskHostPort);
+        }
+
+        /// <summary>
+        /// Bit 5: external ports differ from the bound host port, or a list/range
+        /// is advertised. Informational only; false does not guarantee port stability.
+        /// </summary>
+        public bool ExternalPortMayDiffer
+        {
+            get => (_data & MaskExternalPortMayDiffer) != 0;
+            set => _data = value ? (byte)(_data | MaskExternalPortMayDiffer) : (byte)(_data & ~MaskExternalPortMayDiffer);
+        }
+
         public bool IsSingleIp
         {
             get => !MultipleIps;
@@ -186,6 +206,23 @@ namespace QuicPunch
         public bool IsMultiplePorts => PortMode == PortMode.Multiple;
         public bool IsPortRange => PortMode == PortMode.Range;
 
+        /// <summary>
+        /// Bit 3: the wire payload uses the mode-aware port encoding. Discovery
+        /// readers accept the legacy minimum/maximum pair when this bit is false;
+        /// range endpoint tokens use it to carry an exact preferred port.
+        /// </summary>
+        public bool UsesStructuredPorts
+        {
+            get => (_data & MaskStructuredPorts) != 0;
+            set
+            {
+                if (value)
+                    _data |= MaskStructuredPorts;
+                else
+                    _data &= (byte)(MaskStructuredPorts ^ 0xFF);
+            }
+        }
+
         // Conversiones implícitas para trabajar directamente con bytes
         public static implicit operator byte(ConnectionFlags flags) => flags?._data ?? 0;
         public static implicit operator ConnectionFlags(byte rawByte) => new ConnectionFlags(rawByte);
@@ -195,7 +232,7 @@ namespace QuicPunch
             if (IsTor)
                 return $"ConnectionFlags [TOR, NAT: {(IsNat ? "Yes" : "No")}] (0x{_data:X2})";
 
-            return $"ConnectionFlags [NAT: {(IsNat ? "Yes" : "No")}, IP: {(MultipleIps ? "Multiple" : "Single")}, Port: {PortMode}] (0x{_data:X2})";
+            return $"ConnectionFlags [NAT: {(IsNat ? "Yes" : "No")}, IP: {(MultipleIps ? "Multiple" : "Single")}, Port: {PortMode}, ExternalPortMayDiffer: {ExternalPortMayDiffer}] (0x{_data:X2})";
         }
     }
 
@@ -209,12 +246,36 @@ namespace QuicPunch
         public string[] Addresses { get; set; } = Array.Empty<string>();
         public string OnionAddress { get; set; } = "";
         public ushort[] PortArray { get; set; } = Array.Empty<ushort>();
+        public ushort PreferredPort { get; set; }
         public QuicPunch.NetworkType NetworkType { get; set; } = QuicPunch.NetworkType.Static;
         public ConnectionFlags ConnectionFlags { get; set; } = new();
         public string? NostrPubKey { get; set; }
         public string Source { get; set; } = "Nostr";
         public DateTime DiscoveredAt { get; set; } = DateTime.UtcNow;
         public DateTime LastSeen { get; set; } = DateTime.UtcNow;
+        private long _lastNostrAnnouncementTicks;
+        public DateTime? LastNostrAnnouncementUtc
+        {
+            get
+            {
+                long ticks = Interlocked.Read(ref _lastNostrAnnouncementTicks);
+                return ticks > 0 ? new DateTime(ticks, DateTimeKind.Utc) : null;
+            }
+            set => Interlocked.Exchange(ref _lastNostrAnnouncementTicks, value?.ToUniversalTime().Ticks ?? 0);
+        }
+        internal void ObserveNostrAnnouncement(DateTime announcedAtUtc)
+        {
+            long ticks = announcedAtUtc.ToUniversalTime().Ticks;
+            long previous = Interlocked.Read(ref _lastNostrAnnouncementTicks);
+            while (ticks > previous)
+            {
+                long observed = Interlocked.CompareExchange(ref _lastNostrAnnouncementTicks, ticks, previous);
+                if (observed == previous) return;
+                previous = observed;
+            }
+        }
+        public DateTime? DiscoveryAvailableUntilUtc => IsCertVerified && LastNostrAnnouncementUtc is { } announced
+            ? announced + NostrDiscovery.AnnouncementMaxAge : null;
         public bool IsTor => NetworkType == QuicPunch.NetworkType.Tor || !string.IsNullOrEmpty(OnionAddress);
         public bool IsCertVerified { get; set; }
         public byte[]? CertPublicKey { get; set; }

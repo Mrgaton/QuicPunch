@@ -1,0 +1,1223 @@
+{
+  "revision": 3,
+  "level": "Conflicting",
+  "phase": "complete",
+  "isFinal": true,
+  "region": {
+    "status": "inconsistent",
+    "areaKm2": 0,
+    "cells": [],
+    "constraints": [
+      {
+        "landmarkId": "atlas-6789-v4",
+        "siteId": "atlas-6789",
+        "center": {
+          "latitude": 50.0315,
+          "longitude": 10.5215
+        },
+        "radiusKm": 6320.641618000001,
+        "rttMs": 41,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "router-82.77.228.44",
+        "siteId": "router-cell-39,5:-0,4",
+        "center": {
+          "latitude": 39.47391128540039,
+          "longitude": -0.3796600103378296
+        },
+        "radiusKm": 1069.3693053145003,
+        "rttMs": 5.8005,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-80.255.14.5",
+        "siteId": "router-cell-50,1:8,7",
+        "center": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "radiusKm": 4925.749588797501,
+        "rttMs": 31.5275,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.176.121",
+        "siteId": "router-cell-50,1:8,7",
+        "center": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "radiusKm": 6711.5533026119,
+        "rttMs": 43.4411,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-93.88.224.51",
+        "siteId": "router-cell-50,1:8,7",
+        "center": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "radiusKm": 6305.0796984326,
+        "rttMs": 40.7294,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "atlas-7523-v4",
+        "siteId": "atlas-7523",
+        "center": {
+          "latitude": 39.7585,
+          "longitude": -104.4315
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 150,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-6982-v4",
+        "siteId": "atlas-6982",
+        "center": {
+          "latitude": 22.3685,
+          "longitude": 114.1215
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 190,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7586-v4",
+        "siteId": "atlas-7586",
+        "center": {
+          "latitude": -17.3895,
+          "longitude": -66.1585
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 219,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7050-v4",
+        "siteId": "atlas-7050",
+        "center": {
+          "latitude": 4.0475,
+          "longitude": 9.7695
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 159,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7767-v4",
+        "siteId": "atlas-7767",
+        "center": {
+          "latitude": -37.8095,
+          "longitude": 144.9705
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 317,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7207-v4",
+        "siteId": "atlas-7207",
+        "center": {
+          "latitude": -20.2495,
+          "longitude": 57.4875
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 235,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7448-v4",
+        "siteId": "atlas-7448",
+        "center": {
+          "latitude": 6.8515,
+          "longitude": 158.2095
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 292,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-6944-v4",
+        "siteId": "atlas-6944",
+        "center": {
+          "latitude": 25.1295,
+          "longitude": 56.3395
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 141,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7234-v4",
+        "siteId": "atlas-7234",
+        "center": {
+          "latitude": 56.4895,
+          "longitude": 84.9485
+        },
+        "radiusKm": 17862.651251,
+        "rttMs": 118,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.199.49",
+        "siteId": "router-cell-40,4:-3,7",
+        "center": {
+          "latitude": 40.416500091552734,
+          "longitude": -3.7025599479675293
+        },
+        "radiusKm": 1756.3587124444,
+        "rttMs": 10.3836,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.123.12",
+        "siteId": "router-cell-37,8:-122,4",
+        "center": {
+          "latitude": 37.77492904663086,
+          "longitude": -122.41941833496094
+        },
+        "radiusKm": 8262.7844076642,
+        "rttMs": 53.7898,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.143.28",
+        "siteId": "router-cell-55,7:12,6",
+        "center": {
+          "latitude": 55.675941467285156,
+          "longitude": 12.565529823303223
+        },
+        "radiusKm": 11314.2669102859,
+        "rttMs": 74.1471,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.11.11",
+        "siteId": "router-cell-55,8:37,6",
+        "center": {
+          "latitude": 55.752220153808594,
+          "longitude": 37.61555862426758
+        },
+        "radiusKm": 12059.2211891701,
+        "rttMs": 79.1169,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-31.131.196.10",
+        "siteId": "router-cell-56,5:85",
+        "center": {
+          "latitude": 56.497711181640625,
+          "longitude": 84.97437286376953
+        },
+        "radiusKm": 18212.0866490476,
+        "rttMs": 120.1644,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-31.131.196.11",
+        "siteId": "router-cell-56,5:85",
+        "center": {
+          "latitude": 56.497711181640625,
+          "longitude": 84.97437286376953
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 153.1994,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "atlas-7467-v4",
+        "siteId": "atlas-7467",
+        "center": {
+          "latitude": -33.9195,
+          "longitude": 18.4105
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 167,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7390-v4",
+        "siteId": "atlas-7390",
+        "center": {
+          "latitude": 19.3375,
+          "longitude": -70.6085
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 168,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7617-v4",
+        "siteId": "atlas-7617",
+        "center": {
+          "latitude": -50.3395,
+          "longitude": -72.2625
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 273,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7290-v4",
+        "siteId": "atlas-7290",
+        "center": {
+          "latitude": -8.6625,
+          "longitude": 115.1715
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 345,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7242-v4",
+        "siteId": "atlas-7242",
+        "center": {
+          "latitude": -3.7415,
+          "longitude": -38.4605
+        },
+        "radiusKm": 17113.170106,
+        "rttMs": 113,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "router-82.77.228.116",
+        "siteId": "router-cell-40,4:-3,7",
+        "center": {
+          "latitude": 40.416500091552734,
+          "longitude": -3.7025599479675293
+        },
+        "radiusKm": 1071.3629251602001,
+        "rttMs": 5.8138,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.182.97",
+        "siteId": "router-cell-41,4:2,2",
+        "center": {
+          "latitude": 41.388790130615234,
+          "longitude": 2.158989906311035
+        },
+        "radiusKm": 1078.28813094,
+        "rttMs": 5.86,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.134.190",
+        "siteId": "router-cell-40,7:-74",
+        "center": {
+          "latitude": 40.714271545410156,
+          "longitude": -74.00596618652344
+        },
+        "radiusKm": 7485.377595201499,
+        "rttMs": 48.6035,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.135.24",
+        "siteId": "router-cell-40,7:-74",
+        "center": {
+          "latitude": 40.714271545410156,
+          "longitude": -74.00596618652344
+        },
+        "radiusKm": 8364.758812252901,
+        "rttMs": 54.4701,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-62.115.127.101",
+        "siteId": "router-cell-51,5:-0,1",
+        "center": {
+          "latitude": 51.50852966308594,
+          "longitude": -0.12574000656604767
+        },
+        "radiusKm": 5098.8947229154,
+        "rttMs": 32.6826,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-213.248.100.21",
+        "siteId": "router-cell-51,5:-0,1",
+        "center": {
+          "latitude": 51.50852966308594,
+          "longitude": -0.12574000656604767
+        },
+        "radiusKm": 7627.9139193576,
+        "rttMs": 49.5544,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "atlas-7605-v4",
+        "siteId": "atlas-7605",
+        "center": {
+          "latitude": 6.8995,
+          "longitude": 79.9575
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 174,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7634-v4",
+        "siteId": "atlas-7634",
+        "center": {
+          "latitude": -0.3205,
+          "longitude": 37.6485
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 215,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7433-v4",
+        "siteId": "atlas-7433",
+        "center": {
+          "latitude": 36.0685,
+          "longitude": 140.1985
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 257,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7588-v4",
+        "siteId": "atlas-7588",
+        "center": {
+          "latitude": -8.5185,
+          "longitude": 179.2015
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 366,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7672-v4",
+        "siteId": "atlas-7672",
+        "center": {
+          "latitude": 43.3785,
+          "longitude": -72.1795
+        },
+        "radiusKm": 16663.481419,
+        "rttMs": 110,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "router-82.77.228.114",
+        "siteId": "router-cell-40,4:-3,7",
+        "center": {
+          "latitude": 40.416500091552734,
+          "longitude": -3.7025599479675293
+        },
+        "radiusKm": 4968.1852112274,
+        "rttMs": 31.8106,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-154.54.74.201",
+        "siteId": "router-cell-46,2:6,1",
+        "center": {
+          "latitude": 46.20222091674805,
+          "longitude": 6.145689964294434
+        },
+        "radiusKm": 2797.3580436036,
+        "rttMs": 17.3284,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-154.54.75.138",
+        "siteId": "router-cell-48,9:2,3",
+        "center": {
+          "latitude": 48.85340881347656,
+          "longitude": 2.34879994392395
+        },
+        "radiusKm": 5192.9246273671,
+        "rttMs": 33.3099,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-154.54.94.45",
+        "siteId": "router-cell-52,4:4,9",
+        "center": {
+          "latitude": 52.37403106689453,
+          "longitude": 4.889689922332764
+        },
+        "radiusKm": 14757.323331924299,
+        "rttMs": 97.1167,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-64.222.213.18",
+        "siteId": "router-cell-42,4:-71,1",
+        "center": {
+          "latitude": 42.358428955078125,
+          "longitude": -71.05976867675781
+        },
+        "radiusKm": 15901.556195995801,
+        "rttMs": 104.7502,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-64.222.213.19",
+        "siteId": "router-cell-42,4:-71,1",
+        "center": {
+          "latitude": 42.358428955078125,
+          "longitude": -71.05976867675781
+        },
+        "radiusKm": 15707.395610572099,
+        "rttMs": 103.4549,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-64.222.201.254",
+        "siteId": "router-cell-40,7:-74",
+        "center": {
+          "latitude": 40.714271545410156,
+          "longitude": -74.00596618652344
+        },
+        "radiusKm": 17430.9773997286,
+        "rttMs": 114.9534,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "atlas-7098-v4",
+        "siteId": "atlas-7098",
+        "center": {
+          "latitude": -36.8485,
+          "longitude": 174.7715
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 289,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7455-v4",
+        "siteId": "atlas-7455",
+        "center": {
+          "latitude": 7.3995,
+          "longitude": 134.5695
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 279,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "atlas-7551-v4",
+        "siteId": "atlas-7551",
+        "center": {
+          "latitude": 8.4775,
+          "longitude": -13.2705
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 134,
+        "evidence": "icmp-min-rtt"
+      },
+      {
+        "landmarkId": "router-80.81.194.97",
+        "siteId": "router-cell-50,1:8,7",
+        "center": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "radiusKm": 5414.6211500581,
+        "rttMs": 34.7889,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-94.103.180.6",
+        "siteId": "router-cell-50,1:8,7",
+        "center": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "radiusKm": 7726.260835204501,
+        "rttMs": 50.2105,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-94.103.180.93",
+        "siteId": "router-cell-45,5:9,2",
+        "center": {
+          "latitude": 45.464271545410156,
+          "longitude": 9.189510345458984
+        },
+        "radiusKm": 7734.8348995033,
+        "rttMs": 50.2677,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-94.103.180.41",
+        "siteId": "router-cell-45,5:9,2",
+        "center": {
+          "latitude": 45.464271545410156,
+          "longitude": 9.189510345458984
+        },
+        "radiusKm": 7774.182659615801,
+        "rttMs": 50.5302,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-94.103.180.78",
+        "siteId": "router-cell-45,5:9,2",
+        "center": {
+          "latitude": 45.464271545410156,
+          "longitude": 9.189510345458984
+        },
+        "radiusKm": 7219.1618924975,
+        "rttMs": 46.8275,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-185.10.164.231",
+        "siteId": "router-cell-41,4:2,2",
+        "center": {
+          "latitude": 41.388790130615234,
+          "longitude": 2.158989906311035
+        },
+        "radiusKm": 8168.229866411,
+        "rttMs": 53.159,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "router-185.10.164.136",
+        "siteId": "router-cell-40,4:-3,7",
+        "center": {
+          "latitude": 40.416500091552734,
+          "longitude": -3.7025599479675293
+        },
+        "radiusKm": 8274.4913031491,
+        "rttMs": 53.8679,
+        "evidence": "known-router-ttl-rtt"
+      },
+      {
+        "landmarkId": "atlas-7432-v4",
+        "siteId": "atlas-7432",
+        "center": {
+          "latitude": -31.9615,
+          "longitude": 115.8785
+        },
+        "radiusKm": 20015.114442035923,
+        "rttMs": 351,
+        "evidence": "icmp-min-rtt"
+      }
+    ]
+  },
+  "candidates": [
+    {
+      "position": {
+        "latitude": 39.47391128540039,
+        "longitude": -0.3796600103378296
+      },
+      "label": "Valencia",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.30766398986913573,
+      "minimumRttMs": 5.8005
+    },
+    {
+      "position": {
+        "latitude": 40.416500091552734,
+        "longitude": -3.7025599479675293
+      },
+      "label": "Madrid",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.3062579385460967,
+      "minimumRttMs": 5.8138
+    },
+    {
+      "position": {
+        "latitude": 41.388790130615234,
+        "longitude": 2.158989906311035
+      },
+      "label": "Barcelona",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.3014479244736388,
+      "minimumRttMs": 5.86
+    },
+    {
+      "position": {
+        "latitude": 46.20222091674805,
+        "longitude": 6.145689964294434
+      },
+      "label": "Genève",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.03447391457967807,
+      "minimumRttMs": 17.3284
+    },
+    {
+      "position": {
+        "latitude": 50.11552047729492,
+        "longitude": 8.68416976928711
+      },
+      "label": "Frankfurt am Main",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.01041426108756444,
+      "minimumRttMs": 31.5275
+    },
+    {
+      "position": {
+        "latitude": 51.50852966308594,
+        "longitude": -0.12574000656604767
+      },
+      "label": "London",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.009691128065597321,
+      "minimumRttMs": 32.6826
+    },
+    {
+      "position": {
+        "latitude": 48.85340881347656,
+        "longitude": 2.34879994392395
+      },
+      "label": "Paris",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.009329553774386818,
+      "minimumRttMs": 33.3099
+    },
+    {
+      "position": {
+        "latitude": 50.0315,
+        "longitude": 10.5215
+      },
+      "label": "",
+      "source": "RIPE Atlas 2026-10-17",
+      "relativeScore": 0.006158001872251616,
+      "minimumRttMs": 41
+    },
+    {
+      "position": {
+        "latitude": 45.464271545410156,
+        "longitude": 9.189510345458984
+      },
+      "label": "Milan",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.004720691119826993,
+      "minimumRttMs": 46.8275
+    },
+    {
+      "position": {
+        "latitude": 40.714271545410156,
+        "longitude": -74.00596618652344
+      },
+      "label": "New York City",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.0043820006845766086,
+      "minimumRttMs": 48.6035
+    },
+    {
+      "position": {
+        "latitude": 37.77492904663086,
+        "longitude": -122.41941833496094
+      },
+      "label": "San Francisco",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.003577730893104588,
+      "minimumRttMs": 53.7898
+    },
+    {
+      "position": {
+        "latitude": 55.675941467285156,
+        "longitude": 12.565529823303223
+      },
+      "label": "Copenhagen",
+      "source": "RIPE IPmap 2026-10-18",
+      "relativeScore": 0.0018828650341424537,
+      "minimumRttMs": 74.1471
+    }
+  ],
+  "routers": [
+    {
+      "address": "82.77.228.44",
+      "published": {
+        "position": {
+          "latitude": 39.47391128540039,
+          "longitude": -0.3796600103378296
+        },
+        "country": "ES",
+        "region": "",
+        "city": "Valencia",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 5.8005,
+      "ttl": 6,
+      "paths": 1
+    },
+    {
+      "address": "82.77.228.116",
+      "published": {
+        "position": {
+          "latitude": 40.416500091552734,
+          "longitude": -3.7025599479675293
+        },
+        "country": "ES",
+        "region": "",
+        "city": "Madrid",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 5.8138,
+      "ttl": 6,
+      "paths": 1
+    },
+    {
+      "address": "62.115.182.97",
+      "published": {
+        "position": {
+          "latitude": 41.388790130615234,
+          "longitude": 2.158989906311035
+        },
+        "country": "ES",
+        "region": "",
+        "city": "Barcelona",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 5.86,
+      "ttl": 7,
+      "paths": 1
+    },
+    {
+      "address": "62.115.199.49",
+      "published": {
+        "position": {
+          "latitude": 40.416500091552734,
+          "longitude": -3.7025599479675293
+        },
+        "country": "ES",
+        "region": "",
+        "city": "Madrid",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 10.3836,
+      "ttl": 7,
+      "paths": 1
+    },
+    {
+      "address": "154.54.74.201",
+      "published": {
+        "position": {
+          "latitude": 46.20222091674805,
+          "longitude": 6.145689964294434
+        },
+        "country": "CH",
+        "region": "",
+        "city": "Genève",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 17.3284,
+      "ttl": 8,
+      "paths": 1
+    },
+    {
+      "address": "80.255.14.5",
+      "published": {
+        "position": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "country": "DE",
+        "region": "",
+        "city": "Frankfurt am Main",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 31.5275,
+      "ttl": 8,
+      "paths": 1
+    },
+    {
+      "address": "82.77.228.114",
+      "published": {
+        "position": {
+          "latitude": 40.416500091552734,
+          "longitude": -3.7025599479675293
+        },
+        "country": "ES",
+        "region": "",
+        "city": "Madrid",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 31.8106,
+      "ttl": 6,
+      "paths": 1
+    },
+    {
+      "address": "62.115.127.101",
+      "published": {
+        "position": {
+          "latitude": 51.50852966308594,
+          "longitude": -0.12574000656604767
+        },
+        "country": "GB",
+        "region": "",
+        "city": "London",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 32.6826,
+      "ttl": 10,
+      "paths": 1
+    },
+    {
+      "address": "154.54.75.138",
+      "published": {
+        "position": {
+          "latitude": 48.85340881347656,
+          "longitude": 2.34879994392395
+        },
+        "country": "FR",
+        "region": "",
+        "city": "Paris",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 33.3099,
+      "ttl": 10,
+      "paths": 1
+    },
+    {
+      "address": "80.81.194.97",
+      "published": {
+        "position": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "country": "DE",
+        "region": "",
+        "city": "Frankfurt am Main",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 34.7889,
+      "ttl": 8,
+      "paths": 1
+    },
+    {
+      "address": "93.88.224.51",
+      "published": {
+        "position": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "country": "DE",
+        "region": "",
+        "city": "Frankfurt am Main",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 40.7294,
+      "ttl": 10,
+      "paths": 1
+    },
+    {
+      "address": "62.115.176.121",
+      "published": {
+        "position": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "country": "DE",
+        "region": "",
+        "city": "Frankfurt am Main",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 43.4411,
+      "ttl": 9,
+      "paths": 1
+    },
+    {
+      "address": "94.103.180.78",
+      "published": {
+        "position": {
+          "latitude": 45.464271545410156,
+          "longitude": 9.189510345458984
+        },
+        "country": "IT",
+        "region": "",
+        "city": "Milan",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 46.8275,
+      "ttl": 12,
+      "paths": 1
+    },
+    {
+      "address": "62.115.134.190",
+      "published": {
+        "position": {
+          "latitude": 40.714271545410156,
+          "longitude": -74.00596618652344
+        },
+        "country": "US",
+        "region": "",
+        "city": "New York City",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 48.6035,
+      "ttl": 8,
+      "paths": 1
+    },
+    {
+      "address": "213.248.100.21",
+      "published": {
+        "position": {
+          "latitude": 51.50852966308594,
+          "longitude": -0.12574000656604767
+        },
+        "country": "GB",
+        "region": "",
+        "city": "London",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 49.5544,
+      "ttl": 11,
+      "paths": 1
+    },
+    {
+      "address": "94.103.180.6",
+      "published": {
+        "position": {
+          "latitude": 50.11552047729492,
+          "longitude": 8.68416976928711
+        },
+        "country": "DE",
+        "region": "",
+        "city": "Frankfurt am Main",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 50.2105,
+      "ttl": 9,
+      "paths": 1
+    },
+    {
+      "address": "94.103.180.93",
+      "published": {
+        "position": {
+          "latitude": 45.464271545410156,
+          "longitude": 9.189510345458984
+        },
+        "country": "IT",
+        "region": "",
+        "city": "Milan",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 50.2677,
+      "ttl": 10,
+      "paths": 1
+    },
+    {
+      "address": "94.103.180.41",
+      "published": {
+        "position": {
+          "latitude": 45.464271545410156,
+          "longitude": 9.189510345458984
+        },
+        "country": "IT",
+        "region": "",
+        "city": "Milan",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 50.5302,
+      "ttl": 11,
+      "paths": 1
+    },
+    {
+      "address": "185.10.164.231",
+      "published": {
+        "position": {
+          "latitude": 41.388790130615234,
+          "longitude": 2.158989906311035
+        },
+        "country": "ES",
+        "region": "",
+        "city": "Barcelona",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 53.159,
+      "ttl": 15,
+      "paths": 1
+    },
+    {
+      "address": "62.115.123.12",
+      "published": {
+        "position": {
+          "latitude": 37.77492904663086,
+          "longitude": -122.41941833496094
+        },
+        "country": "US",
+        "region": "",
+        "city": "San Francisco",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 53.7898,
+      "ttl": 9,
+      "paths": 1
+    },
+    {
+      "address": "185.10.164.136",
+      "published": {
+        "position": {
+          "latitude": 40.416500091552734,
+          "longitude": -3.7025599479675293
+        },
+        "country": "ES",
+        "region": "",
+        "city": "Madrid",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 53.8679,
+      "ttl": 16,
+      "paths": 1
+    },
+    {
+      "address": "62.115.135.24",
+      "published": {
+        "position": {
+          "latitude": 40.714271545410156,
+          "longitude": -74.00596618652344
+        },
+        "country": "US",
+        "region": "",
+        "city": "New York City",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 54.4701,
+      "ttl": 9,
+      "paths": 1
+    },
+    {
+      "address": "62.115.143.28",
+      "published": {
+        "position": {
+          "latitude": 55.675941467285156,
+          "longitude": 12.565529823303223
+        },
+        "country": "DK",
+        "region": "",
+        "city": "Copenhagen",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 74.1471,
+      "ttl": 10,
+      "paths": 1
+    },
+    {
+      "address": "62.115.11.11",
+      "published": {
+        "position": {
+          "latitude": 55.752220153808594,
+          "longitude": 37.61555862426758
+        },
+        "country": "RU",
+        "region": "",
+        "city": "Moscow",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 79.1169,
+      "ttl": 12,
+      "paths": 1
+    },
+    {
+      "address": "154.54.94.45",
+      "published": {
+        "position": {
+          "latitude": 52.37403106689453,
+          "longitude": 4.889689922332764
+        },
+        "country": "NL",
+        "region": "",
+        "city": "Amsterdam",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 97.1167,
+      "ttl": 11,
+      "paths": 1
+    },
+    {
+      "address": "64.222.213.19",
+      "published": {
+        "position": {
+          "latitude": 42.358428955078125,
+          "longitude": -71.05976867675781
+        },
+        "country": "US",
+        "region": "",
+        "city": "Boston",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 103.4549,
+      "ttl": 13,
+      "paths": 1
+    },
+    {
+      "address": "64.222.213.18",
+      "published": {
+        "position": {
+          "latitude": 42.358428955078125,
+          "longitude": -71.05976867675781
+        },
+        "country": "US",
+        "region": "",
+        "city": "Boston",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 104.7502,
+      "ttl": 12,
+      "paths": 1
+    },
+    {
+      "address": "64.222.201.254",
+      "published": {
+        "position": {
+          "latitude": 40.714271545410156,
+          "longitude": -74.00596618652344
+        },
+        "country": "US",
+        "region": "",
+        "city": "New York City",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 114.9534,
+      "ttl": 15,
+      "paths": 1
+    },
+    {
+      "address": "31.131.196.10",
+      "published": {
+        "position": {
+          "latitude": 56.497711181640625,
+          "longitude": 84.97437286376953
+        },
+        "country": "RU",
+        "region": "",
+        "city": "Tomsk",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 120.1644,
+      "ttl": 13,
+      "paths": 1
+    },
+    {
+      "address": "31.131.196.11",
+      "published": {
+        "position": {
+          "latitude": 56.497711181640625,
+          "longitude": 84.97437286376953
+        },
+        "country": "RU",
+        "region": "",
+        "city": "Tomsk",
+        "source": "RIPE IPmap 2026-10-18"
+      },
+      "rttMs": 153.1994,
+      "ttl": 14,
+      "paths": 1
+    }
+  ],
+  "measuredLandmarks": 24,
+  "sentPackets": 204,
+  "change": "Evidencias incompatibles; se retira la localización.",
+  "notes": [
+    "Zona compatible con el modelo; no es un intervalo de confianza estadístico ni identifica dónde vive una persona.",
+    "Restricciones incompatibles: revisar IP, ubicación de referencias, reloj, rutas y muestras.",
+    "Topología: 30 IP de router coinciden exactamente con el IPmap empaquetado; ubicaciones condicionadas a ese catálogo.",
+    "Las coordenadas de referencias y routers son declaraciones de terceros, no posiciones certificadas.",
+    "La ciudad de un router o de un candidato describe infraestructura; no identifica el municipio del dispositivo.",
+    "La cota usa c·(RTT+1 ms)/2 más incertidumbre declarada. No se resta latencia de acceso ni se interpreta RTT alto como lejanía.",
+    "Las rutas parten de este equipo: compartir prefijo no mide la distancia entre otro peer y una referencia."
+  ]
+}

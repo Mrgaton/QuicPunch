@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../Release.props" />
+  <PropertyGroup>
+    <TargetFramework>net11.0-android37.0</TargetFramework>
+    <SupportedOSPlatformVersion>29</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifier>android-arm64</RuntimeIdentifier>
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidExtractNativeLibs>true</AndroidExtractNativeLibs>
+    <ApplicationId>org.quicpunch.androidprobe</ApplicationId>
+    <ApplicationVersion>$(ReleaseNumber)</ApplicationVersion>
+    <ApplicationDisplayVersion>$(ReleaseVersion)</ApplicationDisplayVersion>
+    <ApplicationDisplayVersion Condition="'$(ReleaseChannel)' == 'beta'">$(ReleaseVersion)-beta</ApplicationDisplayVersion>
+    <!--
+      Enables trim analyzers and full trimming during Release mode.
+      To learn more, see: https://learn.microsoft.com/dotnet/core/deploying/trimming/trimming-options#trimming-granularity
+    -->
+    <TrimMode>copyused</TrimMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../QuicPunch.AndroidProbe.Shared/QuicProbe.cs" Link="QuicProbe.cs" />
+    <ProjectReference Include="..\QuicNet.Shared\QuicNet.Shared.csproj" />
+    <AndroidAsset Include="../QuicNet.Geolocation/Data/NOTICE.txt" Link="Assets/GEOLOCATION-NOTICE.txt" />
+    <AndroidAsset Include="../QuicNet.Geolocation/Map/NOTICE.txt" Link="Assets/MAP-NOTICE.txt" />
+    <AndroidNativeLibrary Include="../QuicPunch/runtimes/android-arm64/native/libmsquic.so"
+                          Link="lib/arm64-v8a/libmsquic.so" />
+  </ItemGroup>
+  <Target Name="RequireAndroidMsQuic" BeforeTargets="Build">
+    <Error Condition="!Exists('native/arm64-v8a/libtor.so')"
+           Text="Run QuicPunch.AndroidProbe/prepare-tor-android.ps1 before packaging the Android Tor runtime." />
+    <Error Condition="!Exists('../QuicPunch/runtimes/android-arm64/native/libmsquic.so')"
+           Text="Build the Android ARM64 MsQuic/OpenSSL PQC library before packaging this probe." />
+    <Error Condition="!Exists('native/arm64-v8a/libqp_transport.so')"
+           Text="Build the Android ARM64 QUIC transport bridge before packaging this probe." />
+  </Target>
+  <!-- Keep the easy-to-find Debug/Release APK in sync with the self-contained ARM64 build.
+       A stale non-RID APK at this path omits the assembly store and crashes at startup. -->
+  <Target Name="CopyInstallableAndroidApk" AfterTargets="Build"
+          Condition="'$(RuntimeIdentifier)' == 'android-arm64' and '$(Configuration)' == 'Debug'">
+    <PropertyGroup>
+      <_InstallableApk>$(OutputPath)$(ApplicationId)-Signed.apk</_InstallableApk>
+      <_TopLevelApk>$(MSBuildProjectDirectory)/bin/$(Configuration)/$(TargetFramework)/$(ApplicationId)-Signed.apk</_TopLevelApk>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_InstallableApk)')"
+           Text="The self-contained ARM64 APK was not produced at $(_InstallableApk)." />
+    <Copy SourceFiles="$(_InstallableApk)" DestinationFiles="$(_TopLevelApk)" />
+    <Message Importance="high" Text="Installable Android APK: $(_TopLevelApk)" />
+  </Target>
+</Project>

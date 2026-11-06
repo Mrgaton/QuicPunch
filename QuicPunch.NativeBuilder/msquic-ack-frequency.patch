@@ -1,0 +1,17 @@
+diff --git a/src/core/send.c b/src/core/send.c
+--- a/src/core/send.c
++++ b/src/core/send.c
+@@ -922,6 +922,13 @@ QuicSendWriteFrames(
+             Frame.SequenceNumber = Connection->SendAckFreqSeqNum;
+             Frame.AckElicitingThreshold = Connection->PeerPacketTolerance;
+             Frame.RequestedMaxAckDelay = MS_TO_US(QuicConnGetAckDelay(Connection));
++            // ACK_FREQUENCY must respect the receiver's advertised timer floor.
++            // Local timer resolution can be much finer (Android vs Windows).
++            if ((Connection->PeerTransportParams.Flags & QUIC_TP_FLAG_MIN_ACK_DELAY) &&
++                Frame.RequestedMaxAckDelay < Connection->PeerTransportParams.MinAckDelay) {
++                Frame.RequestedMaxAckDelay = Connection->PeerTransportParams.MinAckDelay;
++            }
++
+             Frame.ReorderingThreshold = Connection->PeerReorderingThreshold;
+ 
+             if (QuicAckFrequencyFrameEncode(

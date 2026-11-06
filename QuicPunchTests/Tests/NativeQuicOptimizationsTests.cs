@@ -1,5 +1,8 @@
 using System;
 using System.Buffers;
+using System.Buffers.Binary;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.IO;
 using System.Net;
 using System.Net.Quic;
@@ -15,12 +18,74 @@ namespace QuicPunchTests.Tests;
 
 public static class NativeQuicOptimizationsTests
 {
+    private sealed class FifoConnectionFactory : IQuicConnectionFactory
+    {
+        public bool IsSupported => NativeQuicConnectionFactory.Instance.IsSupported;
+
+        public async ValueTask<IQuicConnectionTransport> ConnectAsync(QuicClientConnectionOptions options,
+            System.Threading.CancellationToken cancellationToken = default)
+        {
+            var transport = await NativeQuicConnectionFactory.Instance.ConnectAsync(options, cancellationToken);
+            if (transport is NativeConnectionTransport native &&
+                MsQuicTuner.TrySetStreamSchedulingScheme(native.InnerConnection, QuicStreamSchedulingScheme.Fifo))
+                return transport;
+
+            await transport.DisposeAsync();
+            throw new InvalidOperationException("Could not configure FIFO on the native transport.");
+        }
+    }
+
     private static X509Certificate2 GenerateSelfSignedCertificate()
     {
         using var rsa = RSA.Create(2048);
         var req = new CertificateRequest("CN=NativeQuicOptTest", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddHours(2));
-        return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), null);
+        // The application-local OpenSSL MsQuic provider exports the private key.
+        return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), null, X509KeyStorageFlags.Exportable);
+    }
+
+    private static unsafe void RequestImmediateAcks(System.Net.Quic.QuicConnection connection)
+    {
+        // Force an asymmetric timer request. Without the native sender clamp,
+        // ACK_FREQUENCY would request 0us below the peer's advertised minimum.
+        var setDelegate = (Delegate)typeof(MsQuicTuner).GetField("SetParam", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var set = (delegate* unmanaged<IntPtr, uint, uint, IntPtr, int>)Marshal.GetFunctionPointerForDelegate(setDelegate);
+        var handle = (SafeHandle)typeof(System.Net.Quic.QuicConnection).GetField("_handle", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(connection)!;
+        using var lease = new NativeHandleLease(handle);
+        byte[] settings = new byte[MsQuicTuner.QuicSettingsSize];
+        BinaryPrimitives.WriteUInt64LittleEndian(settings, 1UL << 14); // MaxAckDelayMs, value 0
+        fixed (byte* bytes = settings)
+            if (set(lease.Handle, MsQuicTuner.QuicParamConnSettings, (uint)settings.Length, (IntPtr)bytes) != 0)
+                throw new InvalidOperationException("Could not configure the asymmetric ACK delay regression.");
+    }
+
+    private static unsafe void VerifyGlobalXdpPolicy()
+    {
+        var getDelegate = (Delegate)typeof(MsQuicTuner).GetField("GetParam", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var get = (delegate* unmanaged<IntPtr, uint, uint*, IntPtr, int>)Marshal.GetFunctionPointerForDelegate(getDelegate);
+        byte[] settings = new byte[MsQuicTuner.QuicSettingsSize];
+        uint length = (uint)settings.Length;
+        fixed (byte* bytes = settings)
+            if (get(IntPtr.Zero, MsQuicTuner.QuicParamGlobalSettings, &length, (IntPtr)bytes) != 0 || length < 128)
+                throw new InvalidOperationException("Cannot read global XDP policy before listener binding.");
+        bool expected = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("QUICNET_XDP") != "0";
+        bool actual = (BinaryPrimitives.ReadUInt64LittleEndian(settings.AsSpan(120)) & (1UL << 6)) != 0;
+        if (actual != expected || MsQuicTuner.IsXdpRequested != expected)
+            throw new InvalidOperationException($"Global XDP policy mismatch: expected={expected}, native={actual}.");
+        Console.WriteLine($"[TEST] XDP requested={actual} before listener binding: PASSED (socket fallback allowed)");
+    }
+
+    private static void VerifyConnectionXdpPolicy(System.Net.Quic.QuicConnection connection)
+    {
+        if (!MsQuicTuner.TryGetXdpEnabled(connection, out var enabled) || enabled != MsQuicTuner.IsXdpRequested)
+            throw new InvalidOperationException("The first connection did not inherit the global XDP policy.");
+        if (!MsQuicTuner.TryGetTelemetry(connection, out var telemetry) || telemetry.XdpRequested != enabled)
+            throw new InvalidOperationException("XDP request telemetry does not match native connection settings.");
+        var mapped = QuicNet.WebUi.Modules.StatusApiModule.MapTelemetry(telemetry);
+        string json = System.Text.Json.JsonSerializer.Serialize(mapped, QuicNet.WebUi.WebUiContext.JsonOptions);
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        if (document.RootElement.GetProperty("xdpRequested").GetBoolean() != enabled)
+            throw new InvalidOperationException("The status API did not serialize the native XDP request setting.");
     }
 
     public static async Task RunAsync()
@@ -36,8 +101,7 @@ public static class NativeQuicOptimizationsTests
         if (!MsQuicTuner.IsSupported)
         {
             Console.WriteLine("[FAIL] MsQuic is not supported or not initialized on this platform.");
-            Environment.Exit(1);
-            return;
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         // --- TEST 1: Optimal Configuration Cache Injection ---
@@ -51,7 +115,18 @@ public static class NativeQuicOptimizationsTests
             enableZeroRtt: true);
         Console.WriteLine(configInjected ? "PASSED (Active in cache)" : "WARNED (Will patch after configuration instantiation)");
 
+        foreach (var counters in new[] { (Lost: 1UL, Spurious: 2UL, Total: 10UL, Expected: 0.0),
+                     (Lost: 3UL, Spurious: 1UL, Total: 10UL, Expected: 0.2),
+                     (Lost: 3UL, Spurious: 0UL, Total: 0UL, Expected: 0.0) })
+        {
+            var stats = new QuicConnectionTelemetry { SendSuspectedLostPackets = counters.Lost,
+                SendSpuriousLostPackets = counters.Spurious, SendTotalPackets = counters.Total };
+            if (Math.Abs(stats.PacketLossRatio - counters.Expected) > 0.000001)
+                throw new InvalidOperationException("Loss counters underflowed or produced an invalid ratio.");
+        }
+
         using var cert = GenerateSelfSignedCertificate();
+        VerifyGlobalXdpPolicy();
         byte[] certHash = SHA3_256.HashData(cert.GetPublicKey());
         var endpoint = new IPEndPoint(IPAddress.Loopback, 0);
 
@@ -72,7 +147,12 @@ public static class NativeQuicOptimizationsTests
         {
             ListenEndPoint = endpoint,
             ApplicationProtocols = new() { new SslApplicationProtocol("quic-opt") },
-            ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(serverOptions)
+            ConnectionOptionsCallback = (_, _, _) =>
+            {
+                if (!MsQuicDatagramChannel.EnsureServerConfigurationPatched(serverOptions))
+                    throw new InvalidOperationException("Server configuration was not prepared before the handshake.");
+                return ValueTask.FromResult(serverOptions);
+            }
         });
 
         int serverPort = listener.LocalEndPoint.Port;
@@ -93,11 +173,35 @@ public static class NativeQuicOptimizationsTests
             }
         };
 
-        // Connect client and server using high-level QuicPunch wrapper
+        // Use a separate connection for explicit overrides so the automatic-default
+        // assertions below observe connections whose settings have not been changed.
+        {
+            var configuredServerAcceptTask = listener.AcceptConnectionAsync();
+            await using var configuredClient = await QuicPunch.QuicConnection.ConnectAsync(clientOptions, new FifoConnectionFactory());
+            await using var configuredServer = await configuredServerAcceptTask;
+            VerifyConnectionXdpPolicy(configuredClient.NativeConnection!);
+            VerifyConnectionXdpPolicy(configuredServer);
+            // Check the first connections before wrapping the server: post-handshake
+            // settings cannot activate BBR, even if GetParam returns the changed value.
+            if (!configuredClient.TryGetCongestionControl(out var firstClientCc) || firstClientCc != QuicCongestionAlgorithm.Bbr ||
+                !MsQuicTuner.TryGetCongestionControl(configuredServer, out var firstServerCc) || firstServerCc != QuicCongestionAlgorithm.Bbr)
+                throw new InvalidOperationException("First client and server must start with BBR, without a warm-up connection.");
+            if (!MsQuicTuner.TryApplyOptimalTuning(configuredServer))
+                throw new InvalidOperationException("Runtime tuning failed: immutable ECN must not be set after the handshake.");
+            VerifyConnectionXdpPolicy(configuredServer);
+            if (MsQuicTuner.TrySetCongestionControl(configuredServer, QuicCongestionAlgorithm.Cubic) ||
+                !MsQuicTuner.TryGetCongestionControl(configuredServer, out var unchangedCc) || unchangedCc != QuicCongestionAlgorithm.Bbr)
+                throw new InvalidOperationException("A live congestion request changed the reported setting without changing the native engine.");
+            Console.WriteLine("[TEST] First handshake BBR, runtime tuning, and rejected live controller changes: PASSED");
+            if (!configuredClient.TryGetStreamSchedulingScheme(out var configuredScheme) || configuredScheme != QuicStreamSchedulingScheme.Fifo)
+                throw new InvalidOperationException("Connection initialization overwrote the factory's explicit FIFO setting.");
+            Console.WriteLine("[TEST] Explicit transport settings survive connection wrapping: PASSED");
+        }
+
+        // Connect client and server using high-level QuicPunch wrapper.
         var serverAcceptTask = listener.AcceptConnectionAsync();
         var clientNativeConn = await System.Net.Quic.QuicConnection.ConnectAsync(clientOptions);
         var serverNativeConn = await serverAcceptTask;
-
         var clientConn = QuicPunch.QuicConnection.Wrap(clientNativeConn);
         var serverConn = QuicPunch.QuicConnection.Wrap(serverNativeConn);
 
@@ -108,7 +212,7 @@ public static class NativeQuicOptimizationsTests
         if (!clientBbrOk)
         {
             Console.WriteLine("[ERROR] BBR was not automatically configured on client connection.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         Console.Write("[TEST 1c] Verifying Automatic BBR Configuration on Server Connection... ");
@@ -117,7 +221,7 @@ public static class NativeQuicOptimizationsTests
         if (!serverBbrOk)
         {
             Console.WriteLine("[ERROR] BBR was not automatically configured on server connection.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         // Re-run EnsureOptimalConfiguration to verify configuration cache is healthy
@@ -126,7 +230,7 @@ public static class NativeQuicOptimizationsTests
         if (!rePatch)
         {
             Console.WriteLine("[ERROR] Configuration cache was not successfully updated.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         // --- TEST 1e: Verify Automatic Round-Robin Stream Scheduling Scheme ---
@@ -136,7 +240,7 @@ public static class NativeQuicOptimizationsTests
         if (!clientRrOk)
         {
             Console.WriteLine("[ERROR] Round-Robin was not automatically configured on client connection.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         Console.Write("[TEST 1f] Verifying Automatic Round-Robin Stream Scheduling on Server Connection... ");
@@ -145,7 +249,7 @@ public static class NativeQuicOptimizationsTests
         if (!serverRrOk)
         {
             Console.WriteLine("[ERROR] Round-Robin was not automatically configured on server connection.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         // --- TEST 1g: Dynamic switching between FIFO and Round-Robin ---
@@ -158,7 +262,7 @@ public static class NativeQuicOptimizationsTests
         if (!setFifoOk || !setRrBackOk)
         {
             Console.WriteLine("[ERROR] Dynamic stream scheduling switching failed.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         // --- TEST 2: Dynamic Flow Control Windows Tuning on Active Connection ---
@@ -168,7 +272,7 @@ public static class NativeQuicOptimizationsTests
         if (!clientFlowOk)
         {
             Console.WriteLine("[ERROR] Failed to set flow control windows on active client handle.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         Console.Write("[TEST 2b] Dynamically expanding Flow Control on Server... ");
@@ -177,7 +281,7 @@ public static class NativeQuicOptimizationsTests
         if (!serverFlowOk)
         {
             Console.WriteLine("[ERROR] Failed to set flow control windows on active server handle.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         // --- TEST 3: KeepAlive Interval & Native Transport PING ---
@@ -187,7 +291,7 @@ public static class NativeQuicOptimizationsTests
         if (!keepAliveOk)
         {
             Console.WriteLine("[ERROR] Failed to adjust keepalive interval.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         Console.Write("[TEST 3b] Emitting immediate Transport Keepalive PING signal... ");
@@ -196,7 +300,7 @@ public static class NativeQuicOptimizationsTests
         if (!pingOk)
         {
             Console.WriteLine("[ERROR] Failed to send transport ping.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         // --- TEST 4: PMTUD & Path MTU Verification ---
@@ -206,7 +310,7 @@ public static class NativeQuicOptimizationsTests
         if (pmtu < 1200)
         {
             Console.WriteLine($"[ERROR] Unexpectedly small Path MTU: {pmtu}");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         Console.Write("[TEST 4b] Testing explicit Path MTU Discovery bounds & timing configuration... ");
@@ -215,15 +319,16 @@ public static class NativeQuicOptimizationsTests
         if (!pmtudSetOk)
         {
             Console.WriteLine("[ERROR] Failed to set PMTUD timing on connection.");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         // --- TEST 5: High-Throughput Stream Transfer Over Tuned Connection ---
-        Console.Write("[TEST 5] Testing 2 MB data stream transfer over tuned flow control buffers... ");
+        Console.Write("[TEST 5] Testing 8 MB transfer with asymmetric ACK delay (local 0ms)... ");
+        RequestImmediateAcks(clientConn.NativeConnection!);
         var clientStream = await clientConn.OpenOutboundStreamAsync(QuicPunch.QuicStreamType.Bidirectional);
         var serverStreamTask = serverConn.AcceptInboundStreamAsync().AsTask();
 
-        byte[] payload = new byte[2 * 1024 * 1024]; // 2 MB
+        byte[] payload = new byte[8 * 1024 * 1024]; // 8 MB, enough to exercise adaptive ACK frequency
         Random.Shared.NextBytes(payload);
         byte[] expectedHash = SHA256.HashData(payload);
 
@@ -249,14 +354,14 @@ public static class NativeQuicOptimizationsTests
         if (totalRead != payload.Length)
         {
             Console.WriteLine($"FAILED (Incomplete read: {totalRead} / {payload.Length})");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         byte[] actualHash = SHA256.HashData(received);
         if (!actualHash.AsSpan().SequenceEqual(expectedHash))
         {
             Console.WriteLine("FAILED (Data hash mismatch)");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
         Console.WriteLine($"PASSED ({totalRead / 1024} KB verified SHA256 checksum)");
 
@@ -270,7 +375,7 @@ public static class NativeQuicOptimizationsTests
         if (!getTicketOk || !retrievedTicket.AsSpan().SequenceEqual(mockTicket))
         {
             Console.WriteLine("FAILED (QuicConnection.ResumptionTicket getter mismatch)");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         string tempDbPath = Path.Combine(Path.GetTempPath(), $"peer_opt_test_{Guid.NewGuid():N}.json");
@@ -293,14 +398,14 @@ public static class NativeQuicOptimizationsTests
                 if (!added)
                 {
                     Console.WriteLine("FAILED (Failed to add peer to PeerStore)");
-                    Environment.Exit(1);
+                    throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
                 }
 
                 bool ticketFound = store.TryGetResumptionTicket(certHash, out var diskTicket);
                 if (!ticketFound || diskTicket == null || !diskTicket.AsSpan().SequenceEqual(mockTicket))
                 {
                     Console.WriteLine("FAILED (PeerStore could not retrieve stored ResumptionTicket)");
-                    Environment.Exit(1);
+                    throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
                 }
             }
 
@@ -311,7 +416,7 @@ public static class NativeQuicOptimizationsTests
                 if (!reloadedTicketFound || reloadedTicket == null || !reloadedTicket.AsSpan().SequenceEqual(mockTicket))
                 {
                     Console.WriteLine("FAILED (PeerStore did not persist ResumptionTicket to disk)");
-                    Environment.Exit(1);
+                    throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
                 }
             }
             Console.WriteLine("PASSED (Stored, serialized, and reloaded accurately)");
@@ -378,13 +483,13 @@ public static class NativeQuicOptimizationsTests
             h3ServerConn.NegotiatedApplicationProtocol.ToString() != "h3")
         {
             Console.WriteLine($"FAILED (ALPN was {h3ClientConn.NegotiatedApplicationProtocol}, expected 'h3')");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         if (telemOk && h3Telem.TargetHostName != null && h3Telem.TargetHostName != QuicPunchConnection.DefaultDisguiseHost)
         {
             Console.WriteLine($"FAILED (TargetHost was {h3Telem.TargetHostName}, expected '{QuicPunchConnection.DefaultDisguiseHost}')");
-            Environment.Exit(1);
+            throw new InvalidOperationException("Native QUIC check failed; see the preceding result.");
         }
 
         Console.WriteLine($"PASSED (ALPN: {h3ClientConn.NegotiatedApplicationProtocol}, SNI: {QuicPunchConnection.DefaultDisguiseHost})");

@@ -18,6 +18,9 @@ namespace QuicPunch.Multiplexer
         private readonly bool _openedLocally;
         private int _headerWritten;
         private int _disposed;
+        internal Action? Closed { get; set; }
+        internal Action<Exception>? Faulted { get; set; }
+        internal Func<CancellationToken, Task>? EndOfStream { get; set; }
 
         public const int StreamHeaderSize = 6;
 
@@ -62,14 +65,14 @@ namespace QuicPunch.Multiplexer
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
-            _inner.Dispose();
+            try { _inner.Dispose(); } finally { Closed?.Invoke(); }
         }
 
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
-            await _inner.DisposeAsync().ConfigureAwait(false);
+            try { await _inner.DisposeAsync().ConfigureAwait(false); } finally { Closed?.Invoke(); }
         }
 
         internal async ValueTask EnsureHeaderWrittenAsync(CancellationToken ct)
@@ -111,40 +114,69 @@ namespace QuicPunch.Multiplexer
             public override void Flush() => _underlying.Flush();
             public override Task FlushAsync(CancellationToken cancellationToken) => _underlying.FlushAsync(cancellationToken);
 
-            public override int Read(byte[] buffer, int offset, int count) =>
-                _underlying.Read(buffer, offset, count);
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                try
+                {
+                    int read = _underlying.Read(buffer, offset, count);
+                    if (read == 0 && count > 0) _owner.EndOfStream?.Invoke(CancellationToken.None).GetAwaiter().GetResult();
+                    return read;
+                }
+                catch (Exception ex) { _owner.Faulted?.Invoke(ex); throw; }
+            }
 
-            public override int Read(Span<byte> buffer) =>
-                _underlying.Read(buffer);
+            public override int Read(Span<byte> buffer)
+            {
+                try
+                {
+                    int read = _underlying.Read(buffer);
+                    if (read == 0 && buffer.Length > 0) _owner.EndOfStream?.Invoke(CancellationToken.None).GetAwaiter().GetResult();
+                    return read;
+                }
+                catch (Exception ex) { _owner.Faulted?.Invoke(ex); throw; }
+            }
 
-            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
-                _underlying.ReadAsync(buffer, cancellationToken);
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                try
+                {
+                    int read = await _underlying.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                    if (read == 0 && buffer.Length > 0 && _owner.EndOfStream != null)
+                        await _owner.EndOfStream(cancellationToken).ConfigureAwait(false);
+                    return read;
+                }
+                catch (Exception ex) { _owner.Faulted?.Invoke(ex); throw; }
+            }
 
             public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
-                _underlying.ReadAsync(buffer, offset, count, cancellationToken);
+                ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
             public override void Write(byte[] buffer, int offset, int count)
             {
                 _owner.EnsureHeaderWrittenAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
-                _underlying.Write(buffer, offset, count);
+                try { _underlying.Write(buffer, offset, count); }
+                catch (Exception ex) { _owner.Faulted?.Invoke(ex); throw; }
             }
 
             public override void Write(ReadOnlySpan<byte> buffer)
             {
                 _owner.EnsureHeaderWrittenAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
-                _underlying.Write(buffer);
+                try { _underlying.Write(buffer); }
+                catch (Exception ex) { _owner.Faulted?.Invoke(ex); throw; }
             }
 
             public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
             {
                 await _owner.EnsureHeaderWrittenAsync(cancellationToken).ConfigureAwait(false);
-                await _underlying.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+                try { await _underlying.WriteAsync(buffer, cancellationToken).ConfigureAwait(false); }
+                catch (Exception ex) { _owner.Faulted?.Invoke(ex); throw; }
             }
 
             public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
                 await _owner.EnsureHeaderWrittenAsync(cancellationToken).ConfigureAwait(false);
-                await _underlying.WriteAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+                try { await _underlying.WriteAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false); }
+                catch (Exception ex) { _owner.Faulted?.Invoke(ex); throw; }
             }
 
             public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();

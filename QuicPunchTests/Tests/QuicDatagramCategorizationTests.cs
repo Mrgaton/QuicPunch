@@ -26,11 +26,91 @@ namespace QuicPunchTests.Tests
             Test_CategorizedDatagramDispatchAndPeerIdentification();
             Test_VideoFrameFragmentationAndReassembly();
             Test_FrameDropToleranceAndStaleCleanup();
+            Test_SharedFramingMtuAndSessionIsolation();
             await Test_EndToEndMultiplexedProtocolWithVideoAndAudioDatagramsAsync();
 
             Console.WriteLine("==================================================");
             Console.WriteLine("  ALL DATAGRAM CATEGORIZATION TESTS PASSED!       ");
             Console.WriteLine("==================================================");
+        }
+
+        private static void Test_SharedFramingMtuAndSessionIsolation()
+        {
+            Console.Write("[TEST] Shared framing respects MTU, reordering, duplicates and session isolation... ");
+            using var certificate = GenerateTestCert();
+            var peer = new PeerInfo(certificate, Array.Empty<byte>());
+            using var channel = new CapturingDatagramChannel { MaxSendDatagramLength = 64 };
+            var sender = new CategorizedDatagramProtocol();
+            var receiver = new CategorizedDatagramProtocol();
+            var otherSession = new CategorizedDatagramProtocol();
+            int receivedFrames = 0;
+            int otherFrames = 0;
+            byte[] frame = new byte[240];
+            RandomNumberGenerator.Fill(frame);
+            receiver.OnFrameReceived += (receivedPeer, category, payload, keyFrame) =>
+            {
+                if (!ReferenceEquals(peer, receivedPeer) || category != QuicDatagramCategory.VideoKeyFrame ||
+                    !keyFrame || !payload.Span.SequenceEqual(frame))
+                    throw new Exception("Reassembled frame metadata or payload changed.");
+                receivedFrames++;
+            };
+            otherSession.OnFrameReceived += (_, _, _, _) => otherFrames++;
+
+            if (sender.SendDatagram(channel, QuicDatagramCategory.Audio, new byte[58]))
+                throw new Exception("An oversized categorized packet was accepted.");
+            if (!sender.SendDatagram(channel, QuicDatagramCategory.Audio, new byte[57], sequenceNumber: 42))
+                throw new Exception("A packet exactly at the channel MTU was rejected.");
+            if (!QuicDatagramEnvelope.TryParse(channel.Packets[0], out var audio) || audio.SequenceNumber != 42)
+                throw new Exception("Explicit sequence number was not preserved.");
+            channel.Packets.Clear();
+
+            if (!sender.SendFrame(channel, QuicDatagramCategory.VideoKeyFrame, frame, isKeyFrame: true))
+                throw new Exception("Frame send failed.");
+            foreach (var packet in channel.Packets)
+                if (packet.Length > channel.MaxSendDatagramLength)
+                    throw new Exception("A fragment exceeded its channel MTU.");
+
+            // Split one frame across contexts; neither context can borrow fragments from the other.
+            receiver.Receive(channel.Packets[0], peer);
+            for (int i = 1; i < channel.Packets.Count; i++) otherSession.Receive(channel.Packets[i], peer);
+            if (receivedFrames != 0 || otherFrames != 0)
+                throw new Exception("Fragments leaked between sessions.");
+
+            receiver.Receive(channel.Packets[0], peer); // Duplicate an incomplete fragment.
+            for (int i = channel.Packets.Count - 1; i >= 1; i--) receiver.Receive(channel.Packets[i], peer);
+            if (receivedFrames != 1 || otherFrames != 0)
+                throw new Exception("Out-of-order fragments did not produce exactly one frame.");
+
+            otherSession.Clear();
+            otherSession.Receive(channel.Packets[0], peer);
+            if (otherFrames != 0) throw new Exception("Cleared fragments survived session cleanup.");
+
+            channel.AcceptSends = false;
+            if (sender.SendFrame(channel, QuicDatagramCategory.VideoKeyFrame, frame))
+                throw new Exception("A failed fragment send was reported as success.");
+            channel.MaxSendDatagramLength = 0;
+            if (sender.SendDatagram(channel, 0, ReadOnlySpan<byte>.Empty) || sender.SendFrame(channel, 0, frame))
+                throw new Exception("Sending without an available MTU must fail.");
+            Console.WriteLine("PASSED");
+        }
+
+        private sealed class CapturingDatagramChannel : IQuicDatagramChannel
+        {
+            public readonly System.Collections.Generic.List<byte[]> Packets = new();
+            public bool AcceptSends { get; set; } = true;
+            public bool IsSendEnabled => AcceptSends;
+            public bool IsReceiveEnabled => true;
+            public ushort MaxSendDatagramLength { get; set; }
+            public Channel<byte[]> IncomingDatagrams { get; } = Channel.CreateUnbounded<byte[]>();
+            public event Action<byte[]>? OnDatagramReceived { add { } remove { } }
+            public event Action<IPEndPoint>? OnPeerAddressChanged { add { } remove { } }
+            public bool Send(ReadOnlySpan<byte> datagram)
+            {
+                if (!AcceptSends) return false;
+                Packets.Add(datagram.ToArray());
+                return true;
+            }
+            public void Dispose() => IncomingDatagrams.Writer.TryComplete();
         }
 
         private static void Test_ZeroAllocEnvelopeSerializationAndParsing()
@@ -325,8 +405,8 @@ namespace QuicPunchTests.Tests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 43311, autoAcceptConnections: true);
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 43312, autoAcceptConnections: true);
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 43311) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 43312) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 qpB.RegisterProtocol(handlerStreamingB);
                 qpA.RegisterProtocol(new StreamingProtocolHandler(protoStream, (c, s, p, ct) => Task.CompletedTask));
@@ -351,6 +431,8 @@ namespace QuicPunchTests.Tests
                 };
                 qpB.AvailablePeers[peerA_on_B.Id] = peerA_on_B;
                 qpB.TrustPeer(peerA_on_B.CertHash);
+                qpB.Manager.HandshakeRequested += (request, _) => Task.FromResult(new QuicPunch.Helpers.HandshakeDecision(
+                    request.PeerId == peerA_on_B.Id && request.ProtocolId == protoStream, 0, CancellationToken.None));
 
                 // Open session and transmit streaming data from Node A
                 byte[] testVideoFrame = new byte[32 * 1024]; // 32 KB compressed video frame
@@ -388,15 +470,15 @@ namespace QuicPunchTests.Tests
                 });
 
                 // Verify that Node B received and automatically categorized all datagrams
-                string receivedAudio = await audioReceivedChannel.Reader.ReadAsync();
+                string receivedAudio = await audioReceivedChannel.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15));
                 if (receivedAudio != "OpusAudioLiveStream")
                     throw new Exception($"Audio payload mismatch: {receivedAudio}");
 
-                var (curX, curY) = await cursorReceivedChannel.Reader.ReadAsync();
+                var (curX, curY) = await cursorReceivedChannel.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
                 if (curX != 2560 || curY != 1440)
                     throw new Exception($"Cursor position mismatch: ({curX}, {curY})");
 
-                byte[] receivedVideo = await videoFrameReceivedChannel.Reader.ReadAsync();
+                byte[] receivedVideo = await videoFrameReceivedChannel.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
                 if (!receivedVideo.AsSpan().SequenceEqual(testVideoFrame))
                     throw new Exception($"Reassembled video frame mismatch over multiplexer! Length: {receivedVideo.Length} vs {testVideoFrame.Length}");
 
@@ -440,7 +522,6 @@ namespace QuicPunchTests.Tests
 
             public Guid ProtocolId { get; }
             public string ProtocolName => "StreamingProtocol";
-            public System.IO.Compression.ZstandardCompressionOptions? CompressionOptions => null;
 
             public Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct) =>
                 _onStream(connection, stream, peer, ct);

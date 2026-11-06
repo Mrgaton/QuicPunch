@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>QuicNet · Sketch de identidad</title>
+  <link rel="stylesheet" href="identity-capsule.css">
+  <link rel="stylesheet" href="sketch.css">
+  <style>body{margin:0;padding:24px;background:light-dark(#e9eeeb,#10181c);color-scheme:light dark}main{max-width:736px;margin:auto}@media(max-width:520px){body{padding:10px}}</style>
+</head>
+<body>
+<main>
+<!-- sketch:start -->
+<div id="identity-library" aria-label="Biblioteca de cápsulas de identidad">
+  <div class="sk-sheet">
+    <header class="sk-head">
+      <div><div class="sk-eyebrow">QuicNet · Estudio CSS / 02</div><h2>Identidad de certificado</h2></div>
+      <button class="sk-theme cursor-interaction" type="button" data-theme-toggle aria-label="Cambiar a tema claro">Tema claro</button>
+    </header>
+    <nav class="sk-tabs" aria-label="Vistas del sketch">
+      <button class="sk-tab cursor-interaction" type="button" data-view="library" aria-pressed="true" aria-controls="ci-library-panel">Biblioteca</button>
+      <button class="sk-tab cursor-interaction" type="button" data-view="context" aria-pressed="false" aria-controls="ci-context-panel">Mensajes y llamadas</button>
+    </nav>
+    <section id="ci-library-panel" class="sk-panel" aria-label="Familias y tamaños">
+      <h3 class="sk-label">Familias · selecciona una identidad</h3>
+      <div class="sk-grid">
+        <button class="sk-sample cursor-interaction" type="button" data-person="seda" aria-pressed="true">
+          <span class="ci" data-family="seda" data-edge="round"><span class="ci-body"><span class="ci-avatar" aria-hidden="true">TG</span><span class="ci-name">Telefonia de gatita</span></span></span>
+          <span class="sk-caption">Seda · diagonal / redondeado</span>
+        </button>
+        <button class="sk-sample cursor-interaction" type="button" data-person="orbita" aria-pressed="false">
+          <span class="ci" data-family="orbita" data-edge="soft"><span class="ci-body"><span class="ci-avatar" aria-hidden="true">KE</span><span class="ci-name">KERNELOS-PC</span></span></span>
+          <span class="sk-caption">Órbita · arcos / asimétrico</span>
+        </button>
+        <button class="sk-sample cursor-interaction" type="button" data-person="trama" aria-pressed="false">
+          <span class="ci" data-family="trama" data-edge="cut"><span class="ci-body"><span class="ci-avatar" aria-hidden="true">GU</span><span class="ci-name">GUARRIDONGO</span></span></span>
+          <span class="sk-caption">Trama · rombos / biselado</span>
+        </button>
+        <button class="sk-sample cursor-interaction" type="button" data-person="pulso" aria-pressed="false">
+          <span class="ci" data-family="pulso" data-edge="round"><span class="ci-body"><span class="ci-avatar" aria-hidden="true">EC</span><span class="ci-name">echo_scout12</span></span></span>
+          <span class="sk-caption">Pulso · puntos / redondeado</span>
+        </button>
+        <button class="sk-sample cursor-interaction" type="button" data-person="estrato" aria-pressed="false">
+          <span class="ci" data-family="estrato" data-edge="cut"><span class="ci-body"><span class="ci-avatar" aria-hidden="true">DI</span><span class="ci-name">dios</span></span></span>
+          <span class="sk-caption">Estrato · líneas / biselado</span>
+        </button>
+        <button class="sk-sample cursor-interaction" type="button" data-person="mosaico" aria-pressed="false">
+          <span class="ci" data-family="mosaico" data-edge="soft"><span class="ci-body"><span class="ci-avatar" aria-hidden="true">MP</span><span class="ci-name">Mata pajas YumiKikachi</span></span></span>
+          <span class="sk-caption">Mosaico · retícula / asimétrico</span>
+        </button>
+      </div>
+      <div class="sk-rule"></div>
+      <h3 class="sk-label">Una identidad · tres escalas</h3>
+      <div class="sk-scale">
+        <div class="sk-size-row"><div class="sk-size-label">Mensaje<small>30 px</small></div><div data-selected-slot="compact"></div></div>
+        <div class="sk-size-row"><div class="sk-size-label">Contacto<small>44 px</small></div><div data-selected-slot="normal"></div></div>
+        <div class="sk-size-row"><div class="sk-size-label">Llamada<small>54 px</small></div><div data-selected-slot="large"></div></div>
+      </div>
+    </section>
+    <section id="ci-context-panel" class="sk-panel" aria-label="Ejemplos en contexto" hidden>
+      <div class="sk-contexts">
+        <div>
+          <div class="sk-context-head"><h3 class="sk-label">Conversación</h3><span class="sk-context-family" data-family-label></span></div>
+          <div class="sk-conversation">
+            <div class="sk-message"><div class="sk-byline"><div data-selected-slot="compact"></div><span class="sk-time">14:35</span></div><p class="sk-message-text">¿Te viene bien que hablemos ahora?</p></div>
+            <div class="sk-message"><div class="sk-byline"><span class="ci" data-family="orbita" data-edge="soft" data-size="compact"><span class="ci-body"><span class="ci-avatar" aria-hidden="true">KE</span><span class="ci-name">KERNELOS-PC</span></span></span><span class="sk-time">14:36</span></div><p class="sk-message-text">Sí, estoy terminando de conectarme.</p></div>
+          </div>
+        </div>
+        <div>
+          <h3 class="sk-label">Invitación</h3>
+          <div class="sk-call"><div><div class="sk-call-caption">Llamada de voz entrante</div><div data-selected-slot="normal"></div></div><div class="sk-actions"><button class="sk-action cursor-interaction" type="button" data-call-action="Rechazada">Rechazar</button><button class="sk-action sk-action-primary cursor-interaction" type="button" data-call-action="Aceptada">Aceptar</button></div></div>
+          <div class="sk-demo-result" role="status" hidden></div>
+        </div>
+        <div>
+          <h3 class="sk-label">Nombre largo</h3>
+          <span class="ci sk-long-name" data-family="pulso" data-edge="round"><span class="ci-body"><span class="ci-avatar" aria-hidden="true">EC</span><span class="ci-name">echo_scout12@DESKTOP-YUJRIVM</span></span></span>
+        </div>
+      </div>
+    </section>
+    <footer class="sk-footer"><span>Contorno de 1 px · textura estática · relleno suave</span><span>Certificados de ejemplo</span></footer>
+  </div>
+</div>
+<!-- sketch:end -->
+</main>
+<script src="sketch.js"></script>
+</body>
+</html>

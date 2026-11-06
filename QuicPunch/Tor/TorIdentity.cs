@@ -170,7 +170,7 @@ public sealed class TorIdentity
         publicKey.CopyTo(checksumInput.AsSpan(prefix.Length, 32));
         checksumInput[^1] = OnionVersion;
 
-        byte[] checksum = SHA3_256.HashData(checksumInput);
+        byte[] checksum = global::QuicPunch.Helpers.Sha3Crypto.Hash256(checksumInput);
         byte[] address = new byte[35];
         publicKey.CopyTo(address.AsSpan(0, 32));
         address[32] = checksum[0];

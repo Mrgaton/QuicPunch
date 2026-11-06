@@ -8,14 +8,14 @@
 
 | Component | Cryptographic Primitive | Implementation Details |
 | :--- | :--- | :--- |
-| **Node Identity** | ECDSA over NIST P-256 (`ECDsa.Create(ECCurve.NamedCurves.nistP256)`) | Self-signed X.509 v3 Certificate with 30-year validity |
-| **Identity Fingerprint** | SHA3-256 (`SHA3_256.HashData`) | 32-byte hash of the Subject Public Key Info (SPKI) |
-| **Access Control** | Zero-Trust Admission & Ephemeral Sets (`IPeerAccessController`) | Dynamic `ExpectedPeerCertSet`, persistent `PeerStore`, per-peer auto-accept policies |
+| **Node Identity** | ECDSA over NIST P-256 (`ECDsa.Create(ECCurve.NamedCurves.nistP256)`) | Self-signed X.509 v3 Certificate with 20-year validity |
+| **Identity Fingerprint** | SHA3-256 (`Sha3Crypto.Hash256`) | 32-byte hash of `certificate.GetPublicKey()` |
+| **Access Control** | Zero-Trust Admission & Ephemeral Sets (`IPeerAccessController`) | Dynamic `ExpectedPeerCertSet`, persistent `PeerStore`, application trust and per-protocol permissions |
 | **Key Exchange (P2P Control Plane)** | Ephemeral ECDH over NIST P-256 (`ECDiffieHellman`) | Fresh ephemeral keypair generated per session entropy rotation |
 | **Key Derivation** | 2-Party HKDF-SHA256 (`HKDF.DeriveKey`) | Combines static ECDH, ephemeral ECDH, local & remote 32-byte nonces |
-| **Symmetric Encryption** | AES-GCM-256 (`AesGcm`, 16-byte tag) | Directional ciphers (`TxCipher` & `RxCipher`) with unique salts |
-| **Replay Protection** | RFC 6479 128-Packet Sliding Window | Bitmap-based `UInt128` window + monotonic sequence counter |
-| **Decentralized Signaling** | BIP-340 64-byte Schnorr Signatures | secp256k1 curve math (Jacobian projective point arithmetic) |
+| **Handshake Session State** | AES-GCM-256 (`AesGcm`, 16-byte tag) | Directional ciphers and salts remain part of `PeerInfo.IsSessionReady`; the former UDP application-data channel has been retired |
+| **Application Transport Security** | Native QUIC TLS 1.3 or Tor transport | Data is carried by authenticated virtual sessions after application trust and permission checks |
+| **Decentralized Signaling** | BIP-340 64-byte Schnorr Signatures | NBitcoin.Secp256k1 4.0.1; secret-key operations use the maintained implementation |
 | **Onion Addressing** | Tor v3 Ed25519 (`ED25519-V3`) | Extended Edwards curve point multiplication to 56-char base32 `.onion` |
 | **Password Authentication** | HMAC-SHA3-256 Challenge-Response | 24-byte cryptographically secure random nonces |
 
@@ -74,12 +74,12 @@ byte[] keyMaterial = HKDF.DeriveKey(HashAlgorithmName.SHA256, rawSecret, 64, sal
 
 ## RFC 6479 Sliding Window Anti-Replay Engine
 
-To prevent packet replay attacks over unauthenticated or authenticated UDP channels, QuicPunch implements an RFC 6479 / RFC 4303 128-packet sliding window filter in [`AntiReplayWindow`](../../QuicPunch/Helpers/AntiReplayWindow.cs).
+[`AntiReplayWindow`](../../QuicPunch/Helpers/AntiReplayWindow.cs) is a retained, independently tested 128-packet sliding-window utility. It previously protected the UDP application-data channel, which has been retired. Current WAN application traffic uses QUIC's transport protection; signed discovery/control packets keep their existing challenge, timestamp and session validation. The window below does not describe the current application receive pipeline.
 
 ### Data Structure & Bitfield Mechanics
 - **Sequence Number Counter**: `ulong _lastSequence` tracks the highest validated sequence number received.
 - **128-Bit Sliding Bitmap**: `UInt128 _window` represents the previous 128 sequence numbers.
-- **Lock-Free Concurrency**: Uses fast bitwise arithmetic protected by lock synchronization for multithreaded socket reception.
+- **Concurrency**: Uses bitwise arithmetic protected by a lock for multithreaded access.
 
 ```
        <-- Older packets (Dropped) | [128-bit Sliding Window] | Newer packets -->
@@ -107,18 +107,15 @@ To prevent packet replay attacks over unauthenticated or authenticated UDP chann
 QuicPunch implements strict zero-trust access control via [`IPeerAccessController`](../../QuicPunch/Security/PeerAccessController.cs) and [`ExpectedPeerCertSet`](../../QuicPunch/Security/PeerAccessController.cs).
 
 ### Core Responsibilities
-1. **Separation of Signaling & Admission**: Any node can announce itself on Nostr or ping via UDP, but no application session (Chat, Virtual LAN, Voice, RelayDrive) will activate unless authorized.
+1. **Separation of Signaling & Admission**: Any node can announce itself on Nostr or ping via UDP, but no application session (Chat, Virtual LAN, Voice, QuicWatch) will activate unless authorized.
 2. **In-Memory Expected Certificates**: `ExpectedPeerCertSet` stores SHA3-256 certificate hashes of explicitly invited peers (e.g. via pairing tokens or invite links).
 3. **Persistent Peer Store Integration**: `IsTrusted(certHash)` validates against both active `ExpectedPeerCerts` and persistent disk entries in [`PeerStore`](../../QuicPunch/Helpers/PeerStore.cs).
-4. **Per-Peer Auto-Accept Policies**:
-   - `AutoAcceptConnections`: Global policy whether trusted peers are accepted immediately without UI prompt.
-   - `AutoAcceptUntrustedConnections`: Highly restricted flag (default `false`) for public hubs.
-   - `SetPeerAutoAccept(Guid, bool)`: Granular per-peer auto-accept toggles.
+4. **Automatic Authenticated Transport**: `PeerTransportOptions` prepares QUIC for discovered peers without granting trust. Certificate pinning and authenticated control routing remain mandatory. It bounds concurrent attempts and peer count, retries with backoff, and parks idle transports with a control notification to both endpoints.
 5. **Application Boundary Guard**:
    ```csharp
    peerAccessController.EnsureAllowedForApplication(peer);
    ```
-   Throws `UnauthorizedAccessException` if an untrusted peer attempts to open application protocol streams without user consent.
+   Throws `InvalidOperationException` if an untrusted peer attempts to open application protocol streams. Trusted chat is automatic; other applications require their own permission or local approval. See [peer transport](../core/peer-transport.md).
 
 ---
 

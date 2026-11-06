@@ -1,0 +1,80 @@
+[data-user-presence] { --user-presence-color:var(--muted-2); --user-presence-symbol:none; }
+[data-user-presence=available] { --user-presence-color:#56caa0; }
+[data-user-presence=afk] { --user-presence-color:#e5af4a; --user-presence-symbol:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%23e5af4a'/%3E%3Cpath d='M8 3.5V8l3 1.8' fill='none' stroke='%231b272e' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+[data-user-presence=dnd] { --user-presence-color:#ed8293; --user-presence-symbol:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%23db596f'/%3E%3Cpath d='M4.5 8h7' stroke='white' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E"); }
+[data-user-presence=afk-dnd] { --user-presence-color:#e5af4a; --user-presence-symbol:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='7' cy='7' r='7' fill='%23e5af4a'/%3E%3Cpath d='M7 3v4l2 1.2' fill='none' stroke='%231b272e' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='11.5' cy='11.5' r='4.5' fill='%23db596f' stroke='%231b272e' stroke-width='1'/%3E%3Cpath d='M9.5 11.5h4' stroke='white' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E"); }
+.avatar[data-user-presence] { position:relative; overflow:visible; }
+.avatar[data-user-presence]::after { content:''; position:absolute; bottom:-2px; right:-2px; width:11px; height:11px; border:2px solid var(--surface); border-radius:50%; background:var(--user-presence-color) var(--user-presence-symbol) center / 100% 100% no-repeat; }
+.user-presence-dot { display:inline-block; width:12px; height:12px; border-radius:50%; background:var(--user-presence-color) var(--user-presence-symbol) center / 100% 100% no-repeat; flex:0 0 12px; }
+/* Shapes distinguish unavailable/unknown/DND even without color. */
+.avatar[data-user-presence=offline]::after, .user-presence-dot[data-user-presence=offline] { background:var(--surface); box-shadow:inset 0 0 0 2px var(--muted-2); }
+.avatar[data-user-presence=unknown]::after, .user-presence-dot[data-user-presence=unknown] { background:var(--surface-3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M5.5 5.3c0-3 5-3 5 0 0 1.9-2.5 1.9-2.5 4M8 12v.1' fill='none' stroke='%23d0dae1' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") center / 100% 100% no-repeat; }
+.presence-icon-sprite { position:absolute; width:0; height:0; overflow:hidden; pointer-events:none; }
+.presence-icon { display:block; width:24px; height:24px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.presence-icon[data-user-presence],.presence-choice-icon { color:var(--user-presence-color); }
+.presence-combined-dnd { stroke:#ed8293; }
+#selfPresenceButton { display:flex; align-items:center; gap:12px; width:100%; min-height:48px; padding:8px 4px; border:0; border-radius:10px; color:var(--text); background:transparent; font:inherit; text-align:left; cursor:pointer; }
+#selfPresenceButton:hover { background:var(--surface-2); }
+.self-presence-avatar { position:relative; flex-shrink:0; }
+#sidebarPresenceDot { position:absolute; right:-3px; bottom:-3px; border:2px solid var(--surface); width:14px; height:14px; }
+#sidebarAvatar::after { display:none; }
+.self-presence-copy { flex:1; min-width:0; }
+#sidebarPresenceText { font-size:10px; white-space:normal; line-height:1.5; }
+.user-presence-dialog { box-sizing:border-box; width:min(440px,calc(100vw - 24px)); max-width:none; max-height:calc(100dvh - 32px); padding:24px; border-radius:20px; background:var(--surface); }
+.user-presence-dialog > header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.user-presence-dialog h2 { margin:0; font-size:22px; font-weight:650; letter-spacing:-.6px; line-height:1.3; }
+.user-presence-dialog p { margin:0; font-size:12px; line-height:1.6; }
+.user-presence-dialog #presenceIntro { margin-top:6px; color:var(--muted); font-size:13px; }
+.presence-close { display:grid; place-items:center; flex-shrink:0; width:36px; height:36px; padding:0; border:1px solid transparent; border-radius:10px; background:transparent; color:var(--muted); cursor:pointer; }
+.presence-close:hover { color:var(--text-strong); background:var(--surface-3); }
+.presence-close .presence-icon { width:20px; height:20px; }
+.presence-current { display:flex; align-items:center; gap:8px; margin:16px 0; padding:9px 12px; border-radius:9px; background:var(--surface-2); color:var(--user-presence-color); }
+.presence-current .presence-icon { width:18px; height:18px; }
+.presence-current p { font-size:11px; color:var(--text); }
+.presence-choices { display:grid; gap:10px; }
+.user-presence-dialog .presence-choice { --choice-color:#56caa0; display:flex; align-items:center; gap:12px; width:100%; padding:12px 14px; min-height:72px; margin:0; border:1px solid var(--line-strong); border-radius:12px; background:transparent; color:var(--text); text-align:left; font:inherit; cursor:pointer; transition:border-color .15s,background .15s; }
+.user-presence-dialog #presenceDnd { --choice-color:#ed8293; }
+.user-presence-dialog .presence-choice:hover:not(:disabled) { background:var(--surface-2); border-color:color-mix(in srgb,var(--choice-color) 45%,var(--line)); }
+.user-presence-dialog .presence-choice[aria-pressed=true] { background:color-mix(in srgb,var(--choice-color) 8%,var(--surface)); border-color:color-mix(in srgb,var(--choice-color) 60%,var(--line)); }
+.presence-choice-icon { display:grid; place-items:center; flex:0 0 36px; width:36px; height:36px; border-radius:10px; background:color-mix(in srgb,var(--choice-color) 10%,transparent); }
+.presence-choice-copy { min-width:0; flex:1; }
+.presence-choice strong,.presence-choice small { display:block; }
+.presence-choice strong { font-size:13px; font-weight:600; color:var(--text-strong); line-height:1.4; }
+.presence-choice small { margin-top:4px; font-size:11px; line-height:1.5; color:var(--muted); }
+.presence-selection { display:grid; place-items:center; flex:0 0 18px; width:18px; height:18px; border:1px solid var(--line-strong); border-radius:50%; color:var(--choice-color); }
+.presence-selection .presence-icon { width:14px; height:14px; opacity:0; stroke-width:2; }
+.presence-choice[aria-pressed=true] .presence-selection { border-color:var(--choice-color); background:color-mix(in srgb,var(--choice-color) 12%,transparent); }
+.presence-choice[aria-pressed=true] .presence-selection .presence-icon { opacity:1; }
+.presence-choice:disabled { cursor:wait; opacity:.65; }
+.presence-idle { margin-top:20px; padding-top:18px; border-top:1px solid var(--line); }
+.presence-idle-heading { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+.presence-idle-title { display:flex; align-items:center; gap:10px; flex:1 1 180px; }
+.presence-idle-title > .presence-icon { width:20px; height:20px; }
+.presence-idle-title label { display:block; color:var(--text-strong); font-size:12px; font-weight:600; }
+.presence-idle-title span { display:block; margin-top:4px; color:var(--muted); font-size:11px; }
+.presence-select-wrap { position:relative; flex:1 1 126px; max-width:140px; }
+.presence-select-wrap select { width:100%; min-height:42px; padding:9px 32px 9px 12px; border-radius:9px; appearance:none; font-size:12px; }
+.presence-select-wrap > .presence-icon { position:absolute; right:9px; top:11px; width:20px; height:20px; color:var(--muted); pointer-events:none; }
+.user-presence-dialog #presenceActivityHelp { margin-top:12px; font-size:11px; color:var(--muted); }
+.presence-state-guide { margin-top:14px; }
+.presence-state-guide > summary { display:flex; align-items:center; justify-content:space-between; min-height:36px; color:var(--muted); font-size:11px; cursor:pointer; list-style:none; border-radius:6px; }
+.presence-state-guide > summary::-webkit-details-marker { display:none; }
+.presence-state-guide > summary:hover { color:var(--text-strong); }
+.presence-state-guide > summary .presence-icon { width:18px; height:18px; }
+.presence-state-guide[open] > summary .presence-icon { transform:rotate(180deg); }
+.user-presence-legend { display:grid; grid-template-columns:1fr 1fr; gap:16px 12px; padding:14px 12px; margin-top:6px; background:var(--surface-2); border:1px solid var(--line); border-radius:10px; }
+.user-presence-legend > div { display:flex; align-items:flex-start; gap:8px; min-width:0; }
+.user-presence-legend .presence-icon { width:18px; height:18px; }
+.user-presence-legend strong,.user-presence-legend small { display:block; font-weight:400; font-size:10px; line-height:1.5; }
+.user-presence-legend small { margin-top:3px; color:var(--muted); }
+.user-presence-dialog > footer { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+.user-presence-dialog #presenceSaveStatus { min-height:18px; font-size:10px; color:var(--muted); }
+.user-presence-dialog #presenceSaveStatus[data-state=saved] { color:#56caa0; }
+.user-presence-dialog #presenceSaveStatus[data-state=error] { color:#ed8293; font-size:12px; }
+.user-presence-dialog :is(button,select,summary):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.user-presence-dialog .presence-choice:focus-visible { outline-color:var(--choice-color); }
+@media(max-width:440px) { .user-presence-dialog { padding:20px; border-radius:16px; } .presence-close { width:44px; height:44px; margin-top:-6px; margin-right:-6px; } .presence-select-wrap select { min-height:44px; font-size:16px; } .presence-select-wrap { max-width:none; } .presence-idle-title { flex-basis:165px; } .presence-state-guide > summary { min-height:44px; } }
+@media(max-width:350px) { .user-presence-dialog { padding:18px; } .presence-choice-icon { flex-basis:30px; width:30px; height:30px; } .user-presence-dialog .presence-choice { gap:10px; padding:12px; } .user-presence-legend { grid-template-columns:1fr; } }
+@media(prefers-reduced-motion:reduce) { .presence-choice { transition:none!important; } }
+@media(min-width:681px) { #selfPresenceArea { display:block; } body.nav-collapsed #selfPresenceButton { justify-content:center; padding-inline:2px; } body.nav-collapsed .self-presence-copy,body.nav-collapsed #selfPresenceArea > p { display:none; } }
+@media(min-width:681px) and (max-width:920px) { #selfPresenceArea .self-presence-copy,#selfPresenceArea > p { display:none; } #selfPresenceButton { justify-content:center; padding-inline:2px; } }

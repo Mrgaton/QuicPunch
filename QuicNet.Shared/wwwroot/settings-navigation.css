@@ -1,0 +1,23 @@
+/* A persistent category menu on desktop and a compact picker on touch screens. */
+.settings-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); align-items: start; gap: 28px; }
+.settings-sidebar { position: sticky; top: 20px; min-width: 0; }
+.settings-tabs { display: flex; flex-direction: column; gap: 4px; padding-right: 18px; border-right: 1px solid var(--line); }
+.settings-nav-group { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; margin: 20px 10px 5px; }
+.settings-nav-group:first-child { margin-top: 4px; }
+.settings-tabs button { width: 100%; text-align: left; border: 0; border-radius: 7px; padding: 11px 12px; min-height: 44px; background: transparent; color: var(--muted); font-size: 13px; }
+.settings-tabs button:hover { background: var(--surface-2); color: var(--text-strong); }
+.settings-tabs button[aria-selected=true] { color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.settings-content, [data-settings-panel] { min-width: 0; }
+.settings-mobile-nav { display: none; }
+#view-settings .app-behavior-settings { margin: 0; }
+#view-settings .behavior-layout { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+#view-settings .behavior-rules-layout { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); }
+#settings-startup .behavior-card { max-width: 900px; }
+@media (max-width: 1000px) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .settings-sidebar { position: static; }
+  .settings-tabs { display: none; }
+  .settings-mobile-nav { display: grid; gap: 7px; }
+  .settings-mobile-nav label { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .settings-mobile-nav select { min-height: 46px; font-size: 16px; }
+}

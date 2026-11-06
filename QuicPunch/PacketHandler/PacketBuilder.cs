@@ -27,7 +27,7 @@ namespace QuicPunch.PacketHandler
                 w.Write(PreciseTime.GetCorrectTime().Ticks);
 
                 payload = ms.ToArray();
-                var signature = certMgr.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
+                var signature = Sha3Crypto.SignData(certMgr.Curve, payload);
                 Array.Resize(ref payload, payload.Length + signature.Length);
                 Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
@@ -55,6 +55,7 @@ namespace QuicPunch.PacketHandler
                         .Where(p => transport == TransportType.Tor
                             ? (p.ConnectionFlags.IsTor || p.ActiveTransport == TransportType.Tor || !string.IsNullOrEmpty(p.OnionAddress))
                             : (!p.ConnectionFlags.IsTor && p.ActiveTransport != TransportType.Tor && p.Addresses != null && p.Addresses.Length > 0))
+                        .Where(p => p.PortArray.Any(static port => port > 0) || p.ActiveEndPoint?.Port is >= 1 and <= 65535)
                         .Take(32)
                         .ToArray()
                     : Array.Empty<PeerInfo>();
@@ -65,7 +66,22 @@ namespace QuicPunch.PacketHandler
                 {
                     foreach (var peer in sharedPeers)
                     {
-                        w.Write(peer.ConnectionFlags.RawValue);
+                        ushort[] peerPorts = PortAdvertisementCodec.Normalize(
+                            peer.PortArray.Length > 0
+                                ? peer.PortArray
+                                : [(ushort)peer.ActiveEndPoint!.Port]);
+                        PortMode portMode = PortAdvertisementCodec.ResolveMode(peerPorts, peer.ConnectionFlags.PortMode);
+                        peerPorts = PortAdvertisementCodec.NormalizeForMode(peerPorts, portMode);
+
+                        var sharedFlags = new ConnectionFlags(peer.ConnectionFlags.RawValue)
+                        {
+                            ExternalPortMayDiffer = transport == TransportType.Wan && (peer.ConnectionFlags.ExternalPortMayDiffer ||
+                                portMode != PortMode.Single || (peer.PreferredPort > 0 && peerPorts.Any(port => port != peer.PreferredPort))),
+                            PortMode = portMode,
+                            UsesStructuredPorts = true,
+                            HasHostPort = transport == TransportType.Wan && peer.PreferredPort > 0
+                        };
+                        w.Write(sharedFlags.RawValue);
 
                         if (transport == TransportType.Tor)
                         {
@@ -86,10 +102,8 @@ namespace QuicPunch.PacketHandler
                             }
                         }
 
-                        ushort pMin = (ushort)(peer.PortArray.Length > 0 ? peer.PortArray.Min() : (peer.ActiveEndPoint?.Port ?? 0));
-                        ushort pMax = (ushort)(peer.PortArray.Length > 0 ? peer.PortArray.Max() : (peer.ActiveEndPoint?.Port ?? 0));
-                        w.Write(pMin);
-                        w.Write(pMax);
+                        PortAdvertisementCodec.WriteDiscovery(w, portMode, peerPorts);
+                        if (sharedFlags.HasHostPort) w.Write(peer.PreferredPort);
                         w.Write(peer.CertHash);
                     }
                 }
@@ -98,7 +112,7 @@ namespace QuicPunch.PacketHandler
 
                 payload = ms.ToArray();
 
-                var signature = certMgr.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
+                var signature = Sha3Crypto.SignData(certMgr.Curve, payload);
                 Array.Resize(ref payload, payload.Length + signature.Length);
                 Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
@@ -106,7 +120,7 @@ namespace QuicPunch.PacketHandler
             return payload;
         }
 
-        public static byte[] GenerateHelloPayload(QuicPunch qp, MessageType type, bool passwordProof, byte[]? challengeNonce = null, TransportType transport = TransportType.Wan, PeerInfo? targetPeer = null)
+        public static byte[] GenerateHelloPayload(QuicPunch qp, MessageType type, bool passwordProof, byte[]? challengeNonce = null, TransportType transport = TransportType.Wan, PeerInfo? targetPeer = null, bool lanBeacon = false)
         {
             byte[] payload;
             var currentPeer = qp.GetCurrentPeer(transport);
@@ -148,7 +162,28 @@ namespace QuicPunch.PacketHandler
                 w.Write((byte)type);
                 w.Write(currentPeer.CertHash);
 
-                w.Write(currentPeer.ConnectionFlags.RawValue);
+                ushort fallbackPort = (ushort)Math.Clamp(qp.LocalBoundPort, 0, ushort.MaxValue);
+                ushort[] advertisedPorts = lanBeacon
+                    ? (fallbackPort > 0 ? [fallbackPort] : [])
+                    : PortAdvertisementCodec.Normalize(currentPeer.PortArray.Length > 0
+                        ? currentPeer.PortArray
+                        : (fallbackPort > 0 ? [fallbackPort] : []));
+                if (advertisedPorts.Length == 0)
+                    throw new InvalidOperationException("Cannot generate a Hello packet without a valid advertised port.");
+
+                PortMode helloPortMode = PortAdvertisementCodec.ResolveMode(
+                    advertisedPorts,
+                    lanBeacon ? PortMode.Single : currentPeer.ConnectionFlags.PortMode);
+                advertisedPorts = PortAdvertisementCodec.NormalizeForMode(advertisedPorts, helloPortMode);
+                var helloFlags = new ConnectionFlags(currentPeer.ConnectionFlags.RawValue)
+                {
+                    ExternalPortMayDiffer = transport == TransportType.Wan && (currentPeer.ConnectionFlags.ExternalPortMayDiffer ||
+                        helloPortMode != PortMode.Single || (fallbackPort > 0 && advertisedPorts.Any(port => port != fallbackPort))),
+                    PortMode = helloPortMode,
+                    UsesStructuredPorts = true,
+                    HasHostPort = transport == TransportType.Wan && fallbackPort > 0
+                };
+                w.Write(helloFlags.RawValue);
 
                 var addresses = (currentPeer.Addresses ?? Array.Empty<IPAddress>())
                     .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && Utilities.IsValidPeerAddress(a))
@@ -161,12 +196,8 @@ namespace QuicPunch.PacketHandler
                     w.Write(address.GetAddressBytes());
                 }
 
-                ushort controlPort = (ushort)(currentPeer.PortArray.Length > 0 ? currentPeer.PortArray[0] : qp.LocalBoundPort);
-                ushort minPort = (ushort)(currentPeer.PortArray.Length > 0 ? currentPeer.PortArray.Min() : controlPort);
-                ushort maxPort = (ushort)(currentPeer.PortArray.Length > 0 ? currentPeer.PortArray.Max() : controlPort);
-
-                w.Write(minPort);
-                w.Write(maxPort);
+                PortAdvertisementCodec.WriteDiscovery(w, helloPortMode, advertisedPorts);
+                if (helloFlags.HasHostPort) w.Write(fallbackPort);
 
                 var nameBytes = Encoding.UTF8.GetBytes(currentPeer.Name ?? "");
                 if (nameBytes.Length > byte.MaxValue)
@@ -191,7 +222,7 @@ namespace QuicPunch.PacketHandler
                     var nonce = RandomNumberGenerator.GetBytes(24);
                     w.Write(nonce);
 
-                    var pop = HMACSHA3_256.HashData(Utilities.Combine(effectiveChallengeNonce, nonce, currentPeer.CertHash), qp.PasswordHash);
+                    var pop = Sha3Crypto.Hmac256(qp.PasswordHash, Utilities.Combine(effectiveChallengeNonce, nonce, currentPeer.CertHash));
 
                     w.Write(pop);
                 }
@@ -205,7 +236,7 @@ namespace QuicPunch.PacketHandler
 
                 payload = ms.ToArray();
 
-                var signature = certMgr.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
+                var signature = Sha3Crypto.SignData(certMgr.Curve, payload);
                 Array.Resize(ref payload, payload.Length + signature.Length);
                 Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
@@ -245,6 +276,8 @@ namespace QuicPunch.PacketHandler
                 w.Write(protocolId.ToByteArray());
                 w.Write(connectionGuid.ToByteArray());
 
+                w.Write(PreciseTime.GetCorrectTime().Ticks);
+
                 var cList = (candidates ?? Array.Empty<CandidateEndpoint>())
                     .Where(c => c.EndPoint.Address.AddressFamily == AddressFamily.InterNetwork && c.EndPoint.Port > 0)
                     .Take(32)
@@ -259,7 +292,7 @@ namespace QuicPunch.PacketHandler
                 }
 
                 payload = ms.ToArray();
-                var signature = certMgr.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
+                var signature = Sha3Crypto.SignData(certMgr.Curve, payload);
                 Array.Resize(ref payload, payload.Length + signature.Length);
                 Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }
@@ -284,7 +317,7 @@ namespace QuicPunch.PacketHandler
                 w.Write(PreciseTime.GetCorrectTime().Ticks);
 
                 payload = ms.ToArray();
-                var signature = certMgr.Curve.SignData(payload, HashAlgorithmName.SHA3_256);
+                var signature = Sha3Crypto.SignData(certMgr.Curve, payload);
                 Array.Resize(ref payload, payload.Length + signature.Length);
                 Buffer.BlockCopy(signature, 0, payload, payload.Length - signature.Length, signature.Length);
             }

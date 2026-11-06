@@ -10,6 +10,7 @@ public static class PreciseTime
 {
     private static TimeSpan _offset;
     private static bool _syncTriggered;
+    private static long _nextSyncAttempt;
     private static readonly object _syncLock = new();
 
     private static readonly string[] HttpsTimeServers = new[]
@@ -29,14 +30,14 @@ public static class PreciseTime
 
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             socket.ReceiveTimeout = 3000;
-            await socket.ConnectAsync("pool.ntp.org", 123).ConfigureAwait(false);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            await socket.ConnectAsync("pool.ntp.org", 123, cts.Token).ConfigureAwait(false);
 
             var sw = Stopwatch.StartNew();
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-
             await socket.SendAsync(ntpData, SocketFlags.None, cts.Token).ConfigureAwait(false);
-            await socket.ReceiveAsync(ntpData, SocketFlags.None, cts.Token).ConfigureAwait(false);
+            int received = await socket.ReceiveAsync(ntpData, SocketFlags.None, cts.Token).ConfigureAwait(false);
+            if (received < 48 || (ntpData[0] & 7) != 4 || (ntpData[0] >> 6) == 3 || ntpData[1] is 0 or > 15) return false;
             sw.Stop();
 
             ulong intPart = (ulong)ntpData[40] << 24 | (ulong)ntpData[41] << 16 | (ulong)ntpData[42] << 8 | (ulong)ntpData[43];
@@ -87,28 +88,37 @@ public static class PreciseTime
 
     public static async Task SyncTimeAsync()
     {
-        bool ok = await SyncWithNtpAsync().ConfigureAwait(false);
-        if (!ok)
+        bool ok = false;
+        try
         {
-            await SyncWithHttpsAsync().ConfigureAwait(false);
+            ok = await SyncWithNtpAsync().ConfigureAwait(false);
+            if (!ok) ok = await SyncWithHttpsAsync().ConfigureAwait(false);
         }
-    }
-
-    public static DateTime GetCorrectTime()
-    {
-        if (!_syncTriggered)
+        finally
         {
             lock (_syncLock)
             {
-                if (!_syncTriggered)
-                {
-                    _syncTriggered = true;
-                    _ = Task.Run(SyncTimeAsync);
-                }
+                _nextSyncAttempt = Environment.TickCount64 + (ok ? 3600000 : 60000);
+                _syncTriggered = false;
             }
         }
+    }
 
-        return DateTime.UtcNow.Add(_offset);
+    public static bool IsTimestampFresh(long timestamp, long nowTicks) =>
+        timestamp >= DateTime.MinValue.Ticks && timestamp <= DateTime.MaxValue.Ticks &&
+        timestamp >= nowTicks - TimeSpan.TicksPerMinute && timestamp <= nowTicks + TimeSpan.TicksPerMinute;
+
+    public static DateTime GetCorrectTime()
+    {
+        lock (_syncLock)
+        {
+            if (!_syncTriggered && Environment.TickCount64 >= _nextSyncAttempt)
+            {
+                _syncTriggered = true;
+                _ = Task.Run(SyncTimeAsync);
+            }
+            return DateTime.UtcNow.Add(_offset);
+        }
     }
 
     public static async Task WaitNextTrigger(int multipleInMilliseconds, CancellationToken cancellationToken = default)

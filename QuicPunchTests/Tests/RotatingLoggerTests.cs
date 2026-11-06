@@ -27,6 +27,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
+                await VerifyFlushBarrier(Path.Combine(baseTestDir, "barriers"));
+                await VerifyFailedWrite(Path.Combine(baseTestDir, "failed-write"));
                 // Test 1: Write logs to date-formatted file in "logs" folder
                 Console.Write("[TEST 1] Logging writes to date-formatted file in logs directory... ");
                 var logger = new RotatingFileLogger(testLogsDir, queueCapacity: 1000);
@@ -136,5 +138,76 @@ namespace QuicPunchTests.Tests;
                 }
                 catch { }
             }
+        }
+
+        private sealed class DelayedStream : MemoryStream
+        {
+            internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public override async ValueTask WriteAsync(ReadOnlyMemory<byte> bytes, CancellationToken ct = default)
+            {
+                Entered.TrySetResult();
+                await Release.Task.WaitAsync(ct);
+                await base.WriteAsync(bytes, ct);
+            }
+        }
+
+        private static async Task VerifyFailedWrite(string directory)
+        {
+            using var sink = new DelayedStream();
+            await using var logger = new RotatingFileLogger(directory, 100, _ => sink);
+            try
+            {
+                logger.Write(new string('F', 131072));
+                await sink.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Task first = logger.FlushAsync(), second = logger.FlushAsync();
+                Task closing = logger.DisposeAsync().AsTask();
+                sink.Release.TrySetException(new IOException("Injected disk write failure"));
+                foreach (Task barrier in new[] { first, second })
+                {
+                    try { await barrier.WaitAsync(TimeSpan.FromSeconds(5)); throw new Exception("A failed write completed its barrier successfully."); }
+                    catch (IOException ex) when (ex.Message == "Injected disk write failure") { }
+                }
+                await closing.WaitAsync(TimeSpan.FromSeconds(5));
+                Console.WriteLine("PASS: disk failure faults all accepted Flush barriers and concurrent disposal completes.");
+            }
+            finally { sink.Release.TrySetResult(); }
+        }
+
+        private static async Task VerifyFlushBarrier(string directory)
+        {
+            var streams = new System.Collections.Concurrent.ConcurrentBag<MemoryStream>();
+            using var delayed = new DelayedStream();
+            int opens = 0;
+            await using var logger = new RotatingFileLogger(directory, 100, _ =>
+            {
+                MemoryStream stream = Interlocked.Increment(ref opens) == 1 ? delayed : new MemoryStream();
+                streams.Add(stream); return stream;
+            });
+            try
+            {
+                string line = new('A', 131072);
+                logger.Write(line);
+                await delayed.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Task firstFlush = logger.FlushAsync();
+                Task secondFlush = logger.FlushAsync();
+                if (firstFlush.IsCompleted || secondFlush.IsCompleted)
+                    throw new Exception("Flush returned before the dequeued disk write completed.");
+                // Saturation must not discard either of the queued flush barriers.
+                for (int i = 0; i < 1000; i++) logger.Write("queued " + i);
+                Task rotation = logger.RotateAndCompressAsync();
+                Task move = Task.Run(() => logger.LogDirectory = Path.Combine(directory, "next"));
+                delayed.Release.TrySetResult();
+                await Task.WhenAll(firstFlush, secondFlush, rotation, move).WaitAsync(TimeSpan.FromSeconds(5));
+                logger.Write("after-directory-change");
+                await logger.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                logger.Write("drained-on-dispose");
+                await logger.DisposeAsync();
+                string content = string.Concat(streams.Select(s => Encoding.UTF8.GetString(s.ToArray())));
+                if (!content.Contains(line) || !content.Contains("after-directory-change") || !content.Contains("drained-on-dispose"))
+                    throw new Exception("The writer lost admitted data across flush/rotation/directory change.");
+                Console.WriteLine("PASS: pending IO, concurrent Flush barriers, queue overload, rotation, directory change and graceful drain.");
+            }
+            finally { delayed.Release.TrySetResult(); }
         }
     }

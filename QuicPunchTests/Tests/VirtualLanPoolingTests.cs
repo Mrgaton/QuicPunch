@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Net;
-using QuicPunchTests.Protocols;
+using QuicNet.Protocols;
 
 namespace QuicPunchTests.Tests;
 

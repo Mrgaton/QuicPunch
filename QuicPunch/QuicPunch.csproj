@@ -19,8 +19,50 @@
 
   <ItemGroup>
     <PackageReference Include="Concentus" Version="2.2.2" />
-    <PackageReference Include="System.IO.Hashing" Version="10.0.10" />
+    <PackageReference Include="NBitcoin.Secp256k1" Version="4.0.4" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="System.IO.Hashing" Version="11.0.0-rc.2.26504.105" />
+    <ProjectReference Include="..\QuicPunch.NativeBuilder\QuicPunch.NativeBuilder.csproj" ReferenceOutputAssembly="false" GlobalPropertiesToRemove="PublishAot;PublishTrimmed;RuntimeIdentifier;SelfContained;BaseOutputPath" PrivateAssets="all" />
     <InternalsVisibleTo Include="QuicPunchTests" />
+    <InternalsVisibleTo Include="QuicNet" />
+    <InternalsVisibleTo Include="QuicNet.Shared" />
+    <InternalsVisibleTo Include="QuicPunch.AndroidProbe" />
   </ItemGroup>
 
-</Project>
+  <ItemGroup>
+    <None Include="runtimes\win-x64\native\msquic.dll" Condition="'$(NETCoreSdkRuntimeIdentifier)' == 'win-x64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <TargetPath>msquic.dll</TargetPath>
+      <Pack>true</Pack>
+      <PackagePath>runtimes/win-x64/native/</PackagePath>
+    </None>
+    <None Include="runtimes\linux-x64\native\libmsquic.so" Condition="'$(NETCoreSdkRuntimeIdentifier)' == 'linux-x64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <TargetPath>libmsquic.so</TargetPath>
+      <Pack>true</Pack>
+      <PackagePath>runtimes/linux-x64/native/</PackagePath>
+    </None>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <_NativeMsQuicRid Condition="'$(NETCoreSdkRuntimeIdentifier)' == 'win-x64'">win-x64</_NativeMsQuicRid>
+    <_NativeMsQuicRid Condition="'$(NETCoreSdkRuntimeIdentifier)' == 'linux-x64'">linux-x64</_NativeMsQuicRid>
+    <_NativeMsQuicFileName Condition="'$(_NativeMsQuicRid)' == 'win-x64'">msquic.dll</_NativeMsQuicFileName>
+    <_NativeMsQuicFileName Condition="'$(_NativeMsQuicRid)' == 'linux-x64'">libmsquic.so</_NativeMsQuicFileName>
+    <_NativeMsQuicOutput>$(MSBuildProjectDirectory)\runtimes\$(_NativeMsQuicRid)\native\$(_NativeMsQuicFileName)</_NativeMsQuicOutput>
+    <_NativeBuilderAssembly>$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\bin\$(Configuration)\net11.0\QuicPunch.NativeBuilder.dll</_NativeBuilderAssembly>
+  </PropertyGroup>
+
+  <Target Name="ValidateNativeMsQuicHost" BeforeTargets="CoreCompile" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(_NativeMsQuicRid)' == ''" Text="QuicPunch's mandatory post-quantum MsQuic build currently requires a win-x64 or linux-x64 .NET SDK host." />
+  </Target>
+
+  <Target Name="BuildNativeMsQuic" BeforeTargets="CoreCompile" DependsOnTargets="ResolveProjectReferences;ValidateNativeMsQuicHost" Condition="'$(DesignTimeBuild)' != 'true' and '$(_NativeMsQuicRid)' != ''" Inputs="$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\Program.cs;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\QuicPunch.NativeBuilder.csproj;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\native-build.lock.json;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-openssl-pqc.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-callback-query.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-msvc-fastfail.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-ack-frequency.patch" Outputs="$(_NativeMsQuicOutput)">
+    <Message Importance="high" Text="Building mandatory application-local MsQuic/OpenSSL PQC library for $(_NativeMsQuicRid)..." />
+    <Exec Command="dotnet &quot;$(_NativeBuilderAssembly)&quot; --rid $(_NativeMsQuicRid)" />
+    <Error Condition="!Exists('$(_NativeMsQuicOutput)')" Text="The native builder completed without producing '$(_NativeMsQuicOutput)'." />
+  </Target>
+
+<ItemGroup Condition="'$(NativeBundleDirectory)' != ''"><EmbeddedResource Include="$(NativeBundleDirectory)/*.dll;$(NativeBundleDirectory)/*.so" LogicalName="QuicNet.Native.%(Filename)%(Extension)" /></ItemGroup></Project>

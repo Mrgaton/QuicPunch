@@ -1,0 +1,59 @@
+[
+  {
+    "id": "rediris-speedtest-speedtest.rediris.es",
+    "address": "130.206.1.135",
+    "position": {
+      "latitude": 40.4168,
+      "longitude": -3.7038
+    },
+    "source": "https://speedtest.rediris.es/ · operator-published LibreSpeed node speedtest.rediris.es",
+    "siteId": "geo-site:40.42:-3.70",
+    "name": "Madrid · RedIRIS LibreSpeed",
+    "countryCode": "ES",
+    "regionName": "Comunidad de Madrid",
+    "kind": "anchor",
+    "locationVerified": false,
+    "coordinateEvidence": "operator-declared",
+    "uncertaintyKm": 50,
+    "tcpProbeAllowed": true,
+    "tcpPort": 443
+  },
+  {
+    "id": "rediris-speedtest-speedtest-rediris.cesga.es",
+    "address": "193.144.34.122",
+    "position": {
+      "latitude": 42.8805,
+      "longitude": -8.5457
+    },
+    "source": "https://speedtest.rediris.es/ · operator-published LibreSpeed node speedtest-rediris.cesga.es",
+    "siteId": "geo-site:42.88:-8.55",
+    "name": "Santiago de Compostela · RedIRIS LibreSpeed",
+    "countryCode": "ES",
+    "regionName": "Galicia",
+    "kind": "anchor",
+    "locationVerified": false,
+    "coordinateEvidence": "operator-declared",
+    "uncertaintyKm": 50,
+    "tcpProbeAllowed": true,
+    "tcpPort": 443
+  },
+  {
+    "id": "rediris-speedtest-speedtest-rediris.scayle.es",
+    "address": "185.179.105.98",
+    "position": {
+      "latitude": 42.5987,
+      "longitude": -5.5671
+    },
+    "source": "https://speedtest.rediris.es/ · operator-published LibreSpeed node speedtest-rediris.scayle.es",
+    "siteId": "geo-site:42.60:-5.57",
+    "name": "León · RedIRIS LibreSpeed",
+    "countryCode": "ES",
+    "regionName": "Castilla y León",
+    "kind": "anchor",
+    "locationVerified": false,
+    "coordinateEvidence": "operator-declared",
+    "uncertaintyKm": 50,
+    "tcpProbeAllowed": true,
+    "tcpPort": 443
+  }
+]

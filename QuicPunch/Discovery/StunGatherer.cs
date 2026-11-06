@@ -34,6 +34,8 @@ namespace QuicPunch
         };
 
         private static int _backgroundFetchActive = 0;
+        private static readonly TimeSpan InitialCatalogRetryDelay = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan MaximumCatalogRetryDelay = TimeSpan.FromMinutes(5);
 
         /// <summary>
         /// Fast initial resolution for instant node startup (&lt; 50ms).
@@ -82,7 +84,21 @@ namespace QuicPunch
 
                 try
                 {
-                    await ResolveRemoteCatalogsAsync(ct, onBatchDiscovered).ConfigureAwait(false);
+                    TimeSpan retryDelay = InitialCatalogRetryDelay;
+                    while (!ct.IsCancellationRequested)
+                    {
+                        var resolution = await ResolveRemoteCatalogsCoreAsync(ct, onBatchDiscovered).ConfigureAwait(false);
+                        if (resolution.RemoteCatalogLoaded)
+                            return;
+
+                        QuicPunchLog.Info(
+                            $"[STUN] GitHub catalogs did not yield usable remote endpoints. " +
+                            $"Retrying catalog loading in {retryDelay.TotalSeconds:0} seconds.");
+                        await Task.Delay(retryDelay, ct).ConfigureAwait(false);
+                        retryDelay = TimeSpan.FromTicks(Math.Min(
+                            retryDelay.Ticks * 2,
+                            MaximumCatalogRetryDelay.Ticks));
+                    }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
                 catch (Exception ex)
@@ -163,6 +179,14 @@ namespace QuicPunch
             CancellationToken ct = default,
             Action<IReadOnlyList<IPEndPoint>>? onBatchDiscovered = null)
         {
+            var resolution = await ResolveRemoteCatalogsCoreAsync(ct, onBatchDiscovered).ConfigureAwait(false);
+            return resolution.Endpoints;
+        }
+
+        private static async Task<RemoteCatalogResolution> ResolveRemoteCatalogsCoreAsync(
+            CancellationToken ct,
+            Action<IReadOnlyList<IPEndPoint>>? onBatchDiscovered)
+        {
             var parsed = new ConcurrentBag<string>();
             try
             {
@@ -194,7 +218,7 @@ namespace QuicPunch
                 {
                     onBatchDiscovered(fallbackBuiltIns.ToList());
                 }
-                return fallbackBuiltIns;
+                return new RemoteCatalogResolution(fallbackBuiltIns, RemoteCatalogLoaded: false);
             }
 
             var ipEndpoints = new List<IPEndPoint>();
@@ -290,6 +314,8 @@ namespace QuicPunch
                 }
             }
 
+            bool remoteCatalogLoaded = !result.IsEmpty;
+
             // 3. Include built-ins to guarantee reliable seeds are always retained
             var builtIns = ResolveBuiltIns(ct);
             foreach (var b in builtIns)
@@ -302,7 +328,7 @@ namespace QuicPunch
                 QuicPunchLog.Info($"[STUN] Background catalog discovery complete: {finalCatalog.Count} distinct STUN endpoints saved to cache.");
             }
 
-            return finalCatalog;
+            return new RemoteCatalogResolution(finalCatalog, remoteCatalogLoaded);
         }
 
         public static bool TryParseStunEndpoint(string line, out string host, out int port)
@@ -371,5 +397,9 @@ namespace QuicPunch
 
         private static ConcurrentBag<IPEndPoint> Deduplicate(IEnumerable<IPEndPoint> endpoints) =>
             new(endpoints.Distinct().ToArray());
+
+        private readonly record struct RemoteCatalogResolution(
+            ConcurrentBag<IPEndPoint> Endpoints,
+            bool RemoteCatalogLoaded);
     }
 }

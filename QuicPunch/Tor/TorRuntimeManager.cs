@@ -117,6 +117,18 @@ public sealed class TorRuntimeManager : IAsyncDisposable
     {
         ThrowIfDisposed();
 
+        // Android executes the APK's extracted native binary. App-private writable
+        // directories cannot host executables on modern Android.
+        if (!string.IsNullOrWhiteSpace(_options.ExecutablePath))
+        {
+            string executable = Path.GetFullPath(_options.ExecutablePath);
+            if (!File.Exists(executable))
+                throw new FileNotFoundException("The configured Tor executable was not found.", executable);
+            _torExecutable = executable;
+            AddLog($"[TOR] Using packaged Tor executable at {executable}");
+            return executable;
+        }
+
         TorBundleDescriptor bundle = GetBundleForCurrentPlatform();
         string installDirectory = InstallDirectory;
         string markerPath = Path.Combine(installDirectory, ".quicpunch-tor-runtime.json");
@@ -425,7 +437,9 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             await WaitForControlSocketAndCookieAsync(process, cancellationToken).ConfigureAwait(false);
 
             _control = new TorControlClient(ControlPort, CookieFile);
-            await _control.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            using var controlTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            controlTimeout.CancelAfter(_options.StartupTimeout);
+            await _control.ConnectAsync(controlTimeout.Token).ConfigureAwait(false);
             await WaitForBootstrapAsync(process, bootstrapTimeout, cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -537,8 +551,10 @@ public sealed class TorRuntimeManager : IAsyncDisposable
             string? phase = null;
             try
             {
+                using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                requestTimeout.CancelAfter(deadline - DateTime.UtcNow > TimeSpan.Zero ? deadline - DateTime.UtcNow : TimeSpan.FromMilliseconds(1));
                 phase = await ControlClient
-                    .GetInfoAsync("status/bootstrap-phase", cancellationToken)
+                    .GetInfoAsync("status/bootstrap-phase", requestTimeout.Token)
                     .ConfigureAwait(false);
             }
             catch (Exception) when (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
@@ -1308,6 +1324,8 @@ public sealed class TorSocksException : IOException
 
 public sealed class TorRuntimeOptions
 {
+    public string? ExecutablePath { get; init; }
+
     public string? InstallDirectory { get; init; }
 
     public string? DataDirectory { get; init; }

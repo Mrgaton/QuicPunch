@@ -18,6 +18,7 @@ public static class UpnpTests
 
         await TestXmlDeviceDescriptionParsingAsync();
         await TestMockIgdServerSoapOperationsAsync();
+        await TestRejectedMappingAsync();
         await TestLiveSsdpDiscoveryAsync();
 
         Console.WriteLine("==================================================");
@@ -205,6 +206,36 @@ public static class UpnpTests
         cts.Cancel();
         listener.Stop();
         Console.WriteLine("PASSED");
+    }
+
+    private static async Task TestRejectedMappingAsync()
+    {
+        using var mapper = new UpnpPortMapper();
+        using var server = new HttpListener();
+        string prefix = $"http://127.0.0.1:{GetRandomPort()}/";
+        server.Prefixes.Add(prefix);
+        server.Start();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var serving = Task.Run(async () =>
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                var request = await server.GetContextAsync().WaitAsync(deadline.Token);
+                string xml = i == 0
+                    ? "<root xmlns=\"urn:schemas-upnp-org:device-1-0\"><device><serviceList><service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType><controlURL>/control</controlURL></service></serviceList></device></root>"
+                    : "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><s:Fault><detail><UPnPError><errorCode>718</errorCode><errorDescription>ConflictInMappingEntry</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>";
+                request.Response.StatusCode = i == 0 ? 200 : 500;
+                byte[] body = Encoding.UTF8.GetBytes(xml);
+                await request.Response.OutputStream.WriteAsync(body, deadline.Token);
+                request.Response.Close();
+            }
+        });
+        await mapper.TryParseDeviceDescriptionAsync(prefix + "root.xml", IPAddress.Loopback, deadline.Token);
+        var result = await mapper.TryMapPortAsync(45678, 45678, ct: deadline.Token);
+        await serving;
+        if (result.Success || !result.ErrorMessage!.Contains("718 ConflictInMappingEntry") || !result.ErrorMessage.Contains("HTTP 500"))
+            throw new Exception("The router's SOAP rejection was lost from the mapping diagnostic.");
+        Console.WriteLine("PASSED: UPnP preserves HTTP status and the router's SOAP error code/reason.");
     }
 
     private static async Task TestLiveSsdpDiscoveryAsync()

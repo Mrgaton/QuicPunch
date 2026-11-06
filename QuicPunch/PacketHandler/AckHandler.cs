@@ -43,7 +43,7 @@ namespace QuicPunch.PacketHandler
 
                         ConnectionFlags flags = new ConnectionFlags(r.ReadByte());
                         pi.ConnectionFlags = flags;
-                        pi.NetworkType = flags.IsTor ? QuicPunch.NetworkType.Tor : QuicPunch.NetworkType.Static;
+                        pi.NetworkType = Utilities.GetNetworkType(flags);
 
                         byte addressCount = r.ReadByte();
                         if (addressCount > 32)
@@ -62,20 +62,8 @@ namespace QuicPunch.PacketHandler
 
                         pi.Addresses = addresses.ToArray();
 
-                        ushort sharedMinPort = r.ReadUInt16();
-                        ushort sharedMaxPort = r.ReadUInt16();
-                        if (sharedMinPort > 0 && sharedMaxPort >= sharedMinPort)
-                        {
-                            pi.PortArray = sharedMinPort == sharedMaxPort
-                                ? [sharedMinPort]
-                                : Enumerable.Range(sharedMinPort, sharedMaxPort - sharedMinPort + 1).Select(p => (ushort)p).ToArray();
-                            pi.ConnectionFlags.PortMode = sharedMinPort == sharedMaxPort ? PortMode.Single : PortMode.Range;
-                        }
-                        else if (sharedMinPort > 0)
-                        {
-                            pi.PortArray = [sharedMinPort];
-                            pi.ConnectionFlags.PortMode = PortMode.Single;
-                        }
+                        pi.PortArray = PortAdvertisementCodec.ReadDiscovery(r, flags, "ACK shared peer");
+                        pi.PreferredPort = PortAdvertisementCodec.ReadHostPort(r, flags);
 
                         byte[] sharedCertHash = r.ReadBytes(32);
                         if (sharedCertHash.Length != 32)
@@ -89,7 +77,7 @@ namespace QuicPunch.PacketHandler
 
                     long diffTicks = nowTicks - receivedTicks;
 
-                    if (Math.Abs(diffTicks) > 30_000_000)
+                    if (!PreciseTime.IsTimestampFresh(receivedTicks, nowTicks))
                     {
                         QuicPunchLog.Info($"ACK: Packet from {remoteEndPoint} rejected. Timestamp drifted by {diffTicks / 10_000.0}ms.");
                         return;
@@ -104,7 +92,7 @@ namespace QuicPunch.PacketHandler
                     byte[] signature = new byte[CertManager.SignatureLength];
                     r.ReadExactly(signature);
 
-                    if (!ackPeer.Curve.VerifyData(buffer.AsSpan(0, (int)r.BaseStream.Position - signature.Length), signature, HashAlgorithmName.SHA3_256))
+                    if (!ackPeer.VerifySignature(buffer.AsSpan(0, (int)r.BaseStream.Position - signature.Length), signature))
                     {
                         QuicPunchLog.Info("ACK: Received invalid signature from " + remoteEndPoint);
                         return;

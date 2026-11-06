@@ -9,4 +9,17 @@
     <RootNamespace>QuicPunch.Vpn</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="QuicPunchTests" />
+    <InternalsVisibleTo Include="QuicPunch.Vpn.Tests" />
+    <InternalsVisibleTo Include="QuicNet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="wintun.dll" Condition="Exists('wintun.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

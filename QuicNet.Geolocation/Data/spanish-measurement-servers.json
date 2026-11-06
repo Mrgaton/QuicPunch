@@ -1,0 +1,1496 @@
+[
+  {
+    "url": "http://test1.telitel.org:8080/speedtest/upload.php",
+    "lat": "37.3500",
+    "lon": "-5.2167",
+    "distance": 214,
+    "name": "Lantejuela",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "FuenLan",
+    "id": "5616",
+    "preferred": 0,
+    "isp_id": "113890",
+    "https_functional": 1,
+    "host": "test1.telitel.org.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "45.128.238.193"
+    ]
+  },
+  {
+    "url": "http://speedtest2.sistelfibra.es:8080/speedtest/upload.php",
+    "lat": "37.3881",
+    "lon": "-2.1418",
+    "distance": 215,
+    "name": "Albox",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Sistel Fibra Óptica SL",
+    "id": "70120",
+    "preferred": 0,
+    "isp_id": "165099",
+    "https_functional": 1,
+    "host": "speedtest2.sistelfibra.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "93.95.209.1"
+    ]
+  },
+  {
+    "url": "http://sprk1.radiokable.net:8080/speedtest/upload.php",
+    "lat": "37.1773",
+    "lon": "-3.5986",
+    "distance": 211,
+    "name": "Granada",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "RADIOKABLE",
+    "id": "11991",
+    "preferred": 0,
+    "isp_id": "74325",
+    "https_functional": 1,
+    "host": "sprk1.radiokable.net.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "37.130.151.30"
+    ]
+  },
+  {
+    "url": "http://speedtest.beconet.es:8080/speedtest/upload.php",
+    "lat": "37.9671",
+    "lon": "-4.4555",
+    "distance": 161,
+    "name": "Pedro Abad",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "BECONET FIBRA, S.L.",
+    "id": "45317",
+    "preferred": 0,
+    "isp_id": "147857",
+    "https_functional": 1,
+    "host": "speedtest.beconet.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "45.15.117.127"
+    ]
+  },
+  {
+    "url": "http://speedtest-sev.masmovil.com:8080/speedtest/upload.php",
+    "lat": "37.3891",
+    "lon": "-5.9845",
+    "distance": 230,
+    "name": "Sevilla",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Grupo MásMóvil",
+    "id": "30481",
+    "preferred": 0,
+    "isp_id": "19461",
+    "https_functional": 1,
+    "host": "speedtest-sev.masmovil.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "212.230.175.204"
+    ]
+  },
+  {
+    "url": "http://speedtest.mowitel.net:8080/speedtest/upload.php",
+    "lat": "37.1248",
+    "lon": "-4.6576",
+    "distance": 220,
+    "name": "Mollina",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Mowitel",
+    "id": "32788",
+    "preferred": 0,
+    "isp_id": "105078",
+    "https_functional": 1,
+    "host": "speedtest.mowitel.net.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "185.79.4.27"
+    ]
+  },
+  {
+    "url": "http://speedtestloj.fibergy.es:8080/speedtest/upload.php",
+    "lat": "37.1662",
+    "lon": "-4.1491",
+    "distance": 213,
+    "name": "Loja",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Fibergy Networks",
+    "id": "61807",
+    "preferred": 0,
+    "isp_id": "178633",
+    "https_functional": 1,
+    "host": "speedtestloj.fibergy.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "188.215.61.238"
+    ]
+  },
+  {
+    "url": "http://testsantaellatv.ddns.net:8080/speedtest/upload.php",
+    "lat": "37.5622",
+    "lon": "-4.8430",
+    "distance": 194,
+    "name": "Santaella",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Santaella Telecomunicaciones",
+    "id": "57489",
+    "preferred": 0,
+    "isp_id": "139542",
+    "https_functional": 1,
+    "host": "testsantaellatv.ddns.net.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "185.72.213.232"
+    ]
+  },
+  {
+    "url": "http://speedminas.wifiguay.es:8080/speedtest/upload.php",
+    "lat": "37.6555",
+    "lon": "-5.7122",
+    "distance": 207,
+    "name": "Villanueva del Río y Minas",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Wifiguay - Jeyca",
+    "id": "49021",
+    "preferred": 0,
+    "isp_id": "97287",
+    "https_functional": 1,
+    "host": "speedminas.wifiguay.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "185.49.192.7"
+    ]
+  },
+  {
+    "url": "http://speedtest.giganetesmejor.com:8080/speedtest/upload.php",
+    "lat": "37.3500",
+    "lon": "-4.9833",
+    "distance": 210,
+    "name": "El Rubio",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Giganet",
+    "id": "6461",
+    "preferred": 0,
+    "isp_id": "0",
+    "https_functional": 1,
+    "host": "speedtest.giganetesmejor.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "AN",
+    "regionName": "Andalucía",
+    "resolvedAddresses": [
+      "37.230.93.3"
+    ]
+  },
+  {
+    "url": "http://speedtest.fibraverde.es:8080/speedtest/upload.php",
+    "lat": "43.3623",
+    "lon": "-5.8485",
+    "distance": 242,
+    "name": "Oviedo",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Fibraverde, Servicios de Telecomunicaciones SL",
+    "id": "58641",
+    "preferred": 0,
+    "isp_id": "232706",
+    "https_functional": 1,
+    "host": "speedtest.fibraverde.es:8080",
+    "regionId": "AS",
+    "regionName": "Asturias",
+    "resolvedAddresses": [
+      "154.58.4.6"
+    ]
+  },
+  {
+    "url": "http://speedtest6.digimobil.es:8080/speedtest/upload.php",
+    "lat": "43.3623",
+    "lon": "-5.8485",
+    "distance": 242,
+    "name": "Oviedo",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Digimobil",
+    "id": "68838",
+    "preferred": 0,
+    "isp_id": "160073",
+    "https_functional": 1,
+    "host": "speedtest6.digimobil.es:8080",
+    "regionId": "AS",
+    "regionName": "Asturias",
+    "resolvedAddresses": [
+      "185.105.37.132"
+    ]
+  },
+  {
+    "url": "http://testvelocidadbar.orange.es:8080/speedtest/upload.php",
+    "lat": "41.3851",
+    "lon": "-2.1734",
+    "distance": 115,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Orange",
+    "id": "15111",
+    "preferred": 0,
+    "isp_id": "86124",
+    "https_functional": 1,
+    "host": "testvelocidadbar.orange.es:8080",
+    "regionId": "CL",
+    "regionName": "Castilla y León",
+    "resolvedAddresses": [
+      "90.160.201.237"
+    ]
+  },
+  {
+    "url": "http://testdevelocidadvld.jazztel.com:8080/speedtest/upload.php",
+    "lat": "41.6523",
+    "lon": "-4.7245",
+    "distance": 110,
+    "name": "Valladolid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Jazztel",
+    "id": "63275",
+    "preferred": 0,
+    "isp_id": "68",
+    "https_functional": 1,
+    "host": "testdevelocidadvld.jazztel.com:8080",
+    "regionId": "CL",
+    "regionName": "Castilla y León",
+    "resolvedAddresses": [
+      "95.214.36.243"
+    ]
+  },
+  {
+    "url": "http://testvelocidadvld.orange.es:8080/speedtest/upload.php",
+    "lat": "41.6523",
+    "lon": "-4.7245",
+    "distance": 110,
+    "name": "Valladolid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Orange",
+    "id": "46450",
+    "preferred": 0,
+    "isp_id": "86124",
+    "https_functional": 1,
+    "host": "testvelocidadvld.orange.es:8080",
+    "regionId": "CL",
+    "regionName": "Castilla y León",
+    "resolvedAddresses": [
+      "90.160.201.255"
+    ]
+  },
+  {
+    "url": "http://speedtest.almatelecom.es:8080/speedtest/upload.php",
+    "lat": "38.8500",
+    "lon": "-1.0833",
+    "distance": 172,
+    "name": "Almansa",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "AlmaTelecom S.L.",
+    "id": "6495",
+    "preferred": 0,
+    "isp_id": "246792",
+    "https_functional": 1,
+    "host": "speedtest.almatelecom.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "CM",
+    "regionName": "Castilla-La Mancha",
+    "resolvedAddresses": [
+      "89.29.128.162"
+    ]
+  },
+  {
+    "url": "http://testvelocidad.ibersontel.com:8080/speedtest/upload.php",
+    "lat": "38.9848",
+    "lon": "-3.9274",
+    "distance": 87,
+    "name": "Ciudad Real",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "IBERSONTEL",
+    "id": "13707",
+    "preferred": 0,
+    "isp_id": "103252",
+    "https_functional": 1,
+    "host": "testvelocidad.ibersontel.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "CM",
+    "regionName": "Castilla-La Mancha",
+    "resolvedAddresses": [
+      "185.133.99.162"
+    ]
+  },
+  {
+    "url": "http://speedtest1.fibratown.com:8080/speedtest/upload.php",
+    "lat": "39.2867",
+    "lon": "-1.4713",
+    "distance": 138,
+    "name": "Casas-Ibáñez",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Fibratown, S.L.",
+    "id": "15939",
+    "preferred": 0,
+    "isp_id": "155920",
+    "https_functional": 1,
+    "host": "speedtest1.fibratown.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "CM",
+    "regionName": "Castilla-La Mancha",
+    "resolvedAddresses": [
+      "185.213.84.15"
+    ]
+  },
+  {
+    "url": "http://st2.wificanarias.com:8080/speedtest/upload.php",
+    "lat": "28.3914",
+    "lon": "-16.5239",
+    "distance": 1094,
+    "name": "La Orotava",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "WiFi Canarias",
+    "id": "11990",
+    "preferred": 0,
+    "isp_id": "98858",
+    "host": "st2.wificanarias.com:8080",
+    "regionId": "CN",
+    "regionName": "Canarias",
+    "resolvedAddresses": [
+      "31.14.60.3"
+    ]
+  },
+  {
+    "url": "http://speedtest14.digimobil.es:8080/speedtest/upload.php",
+    "lat": "28.1235",
+    "lon": "-15.4363",
+    "distance": 1069,
+    "name": "Las Palmas",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Digimobil",
+    "id": "74251",
+    "preferred": 0,
+    "isp_id": "160073",
+    "https_functional": 1,
+    "host": "speedtest14.digimobil.es:8080",
+    "regionId": "CN",
+    "regionName": "Canarias",
+    "resolvedAddresses": [
+      "185.105.36.68"
+    ]
+  },
+  {
+    "url": "http://speedtest26.csisp.info:8080/speedtest/upload.php",
+    "lat": "28.1009",
+    "lon": "-15.4654",
+    "distance": 1072,
+    "name": "Las Palmas",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Computer Service ISP",
+    "id": "48936",
+    "preferred": 0,
+    "isp_id": "104447",
+    "host": "speedtest26.csisp.info:8080",
+    "regionId": "CN",
+    "regionName": "Canarias",
+    "resolvedAddresses": [
+      "185.47.212.26"
+    ]
+  },
+  {
+    "url": "http://st3.wificanarias.com:8080/speedtest/upload.php",
+    "lat": "28.4998",
+    "lon": "-13.8628",
+    "distance": 994,
+    "name": "Puerto del Rosario",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "WiFi Canarias",
+    "id": "70805",
+    "preferred": 0,
+    "isp_id": "98858",
+    "https_functional": 1,
+    "host": "st3.wificanarias.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "CN",
+    "regionName": "Canarias",
+    "resolvedAddresses": [
+      "31.14.60.6"
+    ]
+  },
+  {
+    "url": "http://speedtestbcn.adamo.es:8080/speedtest/upload.php",
+    "lat": "41.3857",
+    "lon": "2.1699",
+    "distance": 321,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Adamo",
+    "id": "1695",
+    "preferred": 0,
+    "isp_id": "61534",
+    "https_functional": 1,
+    "host": "speedtestbcn.adamo.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "91.126.225.34"
+    ]
+  },
+  {
+    "url": "http://bcn-speedtest.ghofi.net:8080/speedtest/upload.php",
+    "lat": "41.3851",
+    "lon": "2.1734",
+    "distance": 321,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "GhoFi",
+    "id": "23765",
+    "preferred": 0,
+    "isp_id": "91651",
+    "https_functional": 1,
+    "host": "bcn-speedtest.ghofi.net:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "185.10.83.24"
+    ]
+  },
+  {
+    "url": "http://speedtest.guifi.net:8080/speedtest/upload.php",
+    "lat": "41.3874",
+    "lon": "2.1686",
+    "distance": 320,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Fundació Guifi.net",
+    "id": "6409",
+    "preferred": 0,
+    "isp_id": "53035",
+    "https_functional": 1,
+    "host": "speedtest.guifi.net.prod.hosts.ooklaserver.net:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "5.10.200.15"
+    ]
+  },
+  {
+    "url": "http://speedtest.catnix.cat:8080/speedtest/upload.php",
+    "lat": "41.3857",
+    "lon": "2.1699",
+    "distance": 321,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "CSUC",
+    "id": "2254",
+    "preferred": 0,
+    "isp_id": "97053",
+    "host": "speedtest.catnix.cat:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "91.213.30.22"
+    ]
+  },
+  {
+    "url": "http://speedtest.meswifi.com:8080/speedtest/upload.php",
+    "lat": "41.3857",
+    "lon": "2.1699",
+    "distance": 321,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Meswifi",
+    "id": "15199",
+    "preferred": 0,
+    "isp_id": "152901",
+    "https_functional": 1,
+    "host": "speedtest.meswifi.com:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "185.210.244.3"
+    ]
+  },
+  {
+    "url": "http://speedtest.csr-online.net:8080/speedtest/upload.php",
+    "lat": "41.3874",
+    "lon": "2.1686",
+    "distance": 320,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Admitelsa | csr-online SPAIN",
+    "id": "19911",
+    "preferred": 0,
+    "isp_id": "70254",
+    "https_functional": 1,
+    "host": "speedtest.csr-online.net.prod.hosts.ooklaserver.net:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "93.90.30.66"
+    ]
+  },
+  {
+    "url": "http://msibitnap.apfutura.net:8080/speedtest/upload.php",
+    "lat": "41.3857",
+    "lon": "2.1699",
+    "distance": 321,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "apfutura",
+    "id": "20672",
+    "preferred": 0,
+    "isp_id": "215327",
+    "https_functional": 1,
+    "host": "msibitnap.apfutura.net:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "185.86.11.34"
+    ]
+  },
+  {
+    "url": "http://speedtest-bcn.masmovil.com:8080/speedtest/upload.php",
+    "lat": "41.3857",
+    "lon": "2.1699",
+    "distance": 321,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Grupo MásMóvil",
+    "id": "21516",
+    "preferred": 0,
+    "isp_id": "19461",
+    "https_functional": 1,
+    "host": "speedtest-bcn.masmovil.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "212.230.175.203"
+    ]
+  },
+  {
+    "url": "http://testdevelocidadbar.jazztel.com:8080/speedtest/upload.php",
+    "lat": "41.3857",
+    "lon": "2.1699",
+    "distance": 321,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Jazztel",
+    "id": "63419",
+    "preferred": 0,
+    "isp_id": "68",
+    "https_functional": 1,
+    "host": "testdevelocidadbar.jazztel.com:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "95.214.36.229"
+    ]
+  },
+  {
+    "url": "http://testvelocidadbar.simyo.es:8080/speedtest/upload.php",
+    "lat": "41.3857",
+    "lon": "2.1699",
+    "distance": 321,
+    "name": "Barcelona",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Simyo",
+    "id": "65249",
+    "preferred": 0,
+    "isp_id": "86124",
+    "https_functional": 1,
+    "host": "testvelocidadbar.simyo.es:8080",
+    "regionId": "CT",
+    "regionName": "Cataluña",
+    "resolvedAddresses": [
+      "95.214.36.247"
+    ]
+  },
+  {
+    "url": "http://speedtest.antisatelecom.es:8080/speedtest/upload.php",
+    "lat": "38.7833",
+    "lon": "-6.2333",
+    "distance": 166,
+    "name": "Alange",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Antisa Telecom",
+    "id": "8149",
+    "preferred": 0,
+    "isp_id": "132402",
+    "https_functional": 1,
+    "host": "speedtest.antisatelecom.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "EX",
+    "regionName": "Extremadura",
+    "resolvedAddresses": [
+      "185.130.28.2"
+    ]
+  },
+  {
+    "url": "http://speedfuentes.jeyca.net:8080/speedtest/upload.php",
+    "lat": "38.0676",
+    "lon": "-6.5396",
+    "distance": 211,
+    "name": "Fuentes de León",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Wifiguay - Jeyca",
+    "id": "67964",
+    "preferred": 0,
+    "isp_id": "97287",
+    "host": "speedfuentes.jeyca.net:8080",
+    "regionId": "EX",
+    "regionName": "Extremadura",
+    "resolvedAddresses": [
+      "185.211.212.0"
+    ]
+  },
+  {
+    "url": "http://h1-speedtest-ba.htelecom.es:8080/speedtest/upload.php",
+    "lat": "38.8800",
+    "lon": "-6.9700",
+    "distance": 195,
+    "name": "Badajoz",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "HTELECOM",
+    "id": "68594",
+    "preferred": 0,
+    "isp_id": "238819",
+    "https_functional": 1,
+    "host": "h1-speedtest-ba.htelecom.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "EX",
+    "regionName": "Extremadura",
+    "resolvedAddresses": [
+      "176.10.65.6"
+    ]
+  },
+  {
+    "url": "http://speedtest.wifinavas.es:8080/speedtest/upload.php",
+    "lat": "38.2985",
+    "lon": "-6.2097",
+    "distance": 187,
+    "name": "Bienvenida",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "WIFI NAVAS",
+    "id": "65001",
+    "preferred": 0,
+    "isp_id": "98330",
+    "https_functional": 1,
+    "host": "speedtest.wifinavas.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "EX",
+    "regionName": "Extremadura",
+    "resolvedAddresses": [
+      "78.136.72.254"
+    ]
+  },
+  {
+    "url": "http://h1speedtest.htelecom.es:8080/speedtest/upload.php",
+    "lat": "38.9394",
+    "lon": "-6.3652",
+    "distance": 165,
+    "name": "Mérida",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "HTELECOM",
+    "id": "29090",
+    "preferred": 0,
+    "isp_id": "238819",
+    "https_functional": 1,
+    "host": "h1speedtest.htelecom.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "EX",
+    "regionName": "Extremadura",
+    "resolvedAddresses": [
+      "185.191.40.35"
+    ]
+  },
+  {
+    "url": "http://speedtest.conectabalear.com:8080/speedtest/upload.php",
+    "lat": "39.5667",
+    "lon": "2.6500",
+    "distance": 343,
+    "name": "Palma",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "ConectaBalear",
+    "id": "4988",
+    "preferred": 0,
+    "isp_id": "75898",
+    "https_functional": 1,
+    "host": "speedtest.conectabalear.com:8080",
+    "regionId": "IB",
+    "regionName": "Illes Balears",
+    "resolvedAddresses": [
+      "31.214.178.123"
+    ]
+  },
+  {
+    "url": "http://speedtest.ibred.es:8080/speedtest/upload.php",
+    "lat": "39.5572",
+    "lon": "2.7581",
+    "distance": 349,
+    "name": "Palma",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "IB-RED",
+    "id": "9512",
+    "preferred": 0,
+    "isp_id": "67520",
+    "https_functional": 1,
+    "host": "speedtest.ibred.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "IB",
+    "regionName": "Illes Balears",
+    "resolvedAddresses": [
+      "141.105.111.233"
+    ]
+  },
+  {
+    "url": "http://speedtest-ib.masmovil.com:8080/speedtest/upload.php",
+    "lat": "39.5696",
+    "lon": "2.6502",
+    "distance": 343,
+    "name": "Palma de Mallorca",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Grupo MásMóvil",
+    "id": "30350",
+    "preferred": 0,
+    "isp_id": "19461",
+    "https_functional": 1,
+    "host": "speedtest-ib.masmovil.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "IB",
+    "regionName": "Illes Balears",
+    "resolvedAddresses": [
+      "212.230.175.207"
+    ]
+  },
+  {
+    "url": "http://speedtest13.digimobil.es:8080/speedtest/upload.php",
+    "lat": "39.5696",
+    "lon": "2.6502",
+    "distance": 343,
+    "name": "Palma de Mallorca",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Digimobil",
+    "id": "74099",
+    "preferred": 0,
+    "isp_id": "160073",
+    "https_functional": 1,
+    "host": "speedtest13.digimobil.es:8080",
+    "regionId": "IB",
+    "regionName": "Illes Balears",
+    "resolvedAddresses": [
+      "185.105.37.188"
+    ]
+  },
+  {
+    "url": "http://speedtest.telecaravaca.com:8080/speedtest/upload.php",
+    "lat": "38.1000",
+    "lon": "-1.8667",
+    "distance": 179,
+    "name": "Caravaca",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Telecaravaca.com",
+    "id": "6510",
+    "preferred": 0,
+    "isp_id": "98330",
+    "https_functional": 1,
+    "host": "speedtest.telecaravaca.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "185.45.165.14"
+    ]
+  },
+  {
+    "url": "http://speedtest.yecla.interfibra.es:8080/speedtest/upload.php",
+    "lat": "38.6122",
+    "lon": "-1.1101",
+    "distance": 180,
+    "name": "Yecla",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "cableworld",
+    "id": "31544",
+    "preferred": 0,
+    "isp_id": "17914",
+    "host": "speedtest.yecla.interfibra.es:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "185.159.252.14"
+    ]
+  },
+  {
+    "url": "http://speedtest.electronicamartinez.es:8080/speedtest/upload.php",
+    "lat": "37.9861",
+    "lon": "-1.1303",
+    "distance": 210,
+    "name": "Murcia",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Electrónica Martinez",
+    "id": "8138",
+    "preferred": 0,
+    "isp_id": "300669",
+    "https_functional": 1,
+    "host": "speedtest.electronicamartinez.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "185.44.24.25"
+    ]
+  },
+  {
+    "url": "http://sp2.telered.es:8080/speedtest/upload.php",
+    "lat": "38.2421",
+    "lon": "-1.4217",
+    "distance": 186,
+    "name": "Cieza",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "teleRED",
+    "id": "64120",
+    "preferred": 0,
+    "isp_id": "173833",
+    "host": "sp2.telered.es:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "194.4.100.12"
+    ]
+  },
+  {
+    "url": "http://st-ookla.zas.virtualiza.me:8080/speedtest/upload.php",
+    "lat": "38.1168",
+    "lon": "-1.3011",
+    "distance": 197,
+    "name": "Archena",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "ZAS Fibra",
+    "id": "76573",
+    "preferred": 0,
+    "isp_id": "0",
+    "https_functional": 1,
+    "host": "st-ookla.zas.virtualiza.me.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "185.36.208.130"
+    ]
+  },
+  {
+    "url": "http://st1alguazas.borecom.com:8080/speedtest/upload.php",
+    "lat": "38.0526",
+    "lon": "-1.2494",
+    "distance": 202,
+    "name": "Alguazas",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Borecom",
+    "id": "21394",
+    "preferred": 0,
+    "isp_id": "94811",
+    "https_functional": 1,
+    "host": "st1alguazas.borecom.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "188.214.241.247"
+    ]
+  },
+  {
+    "url": "http://testvelocidad.tvcehegin.com:8080/speedtest/upload.php",
+    "lat": "38.0922",
+    "lon": "-1.7964",
+    "distance": 182,
+    "name": "Cehegín",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "TV Cehegín Fibra",
+    "id": "72644",
+    "preferred": 0,
+    "isp_id": "98330",
+    "https_functional": 1,
+    "host": "testvelocidad.tvcehegin.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "84.232.12.42"
+    ]
+  },
+  {
+    "url": "http://speedmurcia.fibranet.tv:8080/speedtest/upload.php",
+    "lat": "37.9922",
+    "lon": "-1.1307",
+    "distance": 209,
+    "name": "Murcia",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Fibranet Murcia",
+    "id": "45282",
+    "preferred": 0,
+    "isp_id": "252121",
+    "https_functional": 1,
+    "host": "speedmurcia.fibranet.tv.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "62.122.228.135"
+    ]
+  },
+  {
+    "url": "http://speedtest1.nixus.es:8080/speedtest/upload.php",
+    "lat": "37.9861",
+    "lon": "-1.1303",
+    "distance": 210,
+    "name": "Murcia",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Nixus Networks SL",
+    "id": "18928",
+    "preferred": 0,
+    "isp_id": "83488",
+    "https_functional": 1,
+    "host": "speedtest1.nixus.es:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "94.143.27.52"
+    ]
+  },
+  {
+    "url": "http://speedtest-mur.cableworld.es:8080/speedtest/upload.php",
+    "lat": "37.9861",
+    "lon": "-1.1303",
+    "distance": 210,
+    "name": "Murcia",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Cableworld",
+    "id": "23769",
+    "preferred": 0,
+    "isp_id": "17914",
+    "https_functional": 1,
+    "host": "speedtest-mur.cableworld.es:8080",
+    "regionId": "MC",
+    "regionName": "Región de Murcia",
+    "resolvedAddresses": [
+      "89.29.229.4"
+    ]
+  },
+  {
+    "url": "http://speedtestmad.adamo.es:8080/speedtest/upload.php",
+    "lat": "40.4000",
+    "lon": "-3.6833",
+    "distance": 12,
+    "name": "Madrid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Adamo",
+    "id": "1680",
+    "preferred": 0,
+    "isp_id": "61534",
+    "https_functional": 1,
+    "host": "speedtestmad.adamo.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "91.126.143.50"
+    ]
+  },
+  {
+    "url": "http://ookla.onivia.net:8080/speedtest/upload.php",
+    "lat": "40.5469",
+    "lon": "-3.6308",
+    "distance": 23,
+    "name": "Alcobendas",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Onivia",
+    "id": "76331",
+    "preferred": 0,
+    "isp_id": "0",
+    "https_functional": 1,
+    "host": "ookla.onivia.net.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "109.167.75.41"
+    ]
+  },
+  {
+    "url": "http://speed.netassist.es:8080/speedtest/upload.php",
+    "lat": "40.4774",
+    "lon": "-3.6641",
+    "distance": 18,
+    "name": "Madrid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "NETassist S.L.",
+    "id": "68894",
+    "preferred": 0,
+    "isp_id": "116865",
+    "https_functional": 1,
+    "host": "speed.netassist.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "94.131.1.10"
+    ]
+  },
+  {
+    "url": "http://speedtest2.avatel.es:8080/speedtest/upload.php",
+    "lat": "40.4394",
+    "lon": "-3.6210",
+    "distance": 16,
+    "name": "Madrid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Avatel Telecom",
+    "id": "37211",
+    "preferred": 0,
+    "isp_id": "132402",
+    "https_functional": 1,
+    "host": "speedtest2.avatel.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "185.178.171.97"
+    ]
+  },
+  {
+    "url": "http://testvelocidadmad.orange.es:8080/speedtest/upload.php",
+    "lat": "40.4168",
+    "lon": "-3.7038",
+    "distance": 13,
+    "name": "Madrid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Orange",
+    "id": "14979",
+    "preferred": 0,
+    "isp_id": "86124",
+    "https_functional": 1,
+    "host": "testvelocidadmad.orange.es:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "90.160.201.239"
+    ]
+  },
+  {
+    "url": "http://speedtest1.digimobil.es:8080/speedtest/upload.php",
+    "lat": "40.5371",
+    "lon": "-3.6371",
+    "distance": 22,
+    "name": "Alcobendas",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Digimobil",
+    "id": "51461",
+    "preferred": 0,
+    "isp_id": "160073",
+    "https_functional": 1,
+    "host": "speedtest1.digimobil.es:8080",
+    "force_ping_select": 1,
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "188.26.221.2"
+    ]
+  },
+  {
+    "url": "http://speedtest.vpsfree.es:8080/speedtest/upload.php",
+    "lat": "40.4167",
+    "lon": "-3.7033",
+    "distance": 13,
+    "name": "Madrid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "VPSFree",
+    "id": "72738",
+    "preferred": 0,
+    "isp_id": "209303",
+    "https_functional": 1,
+    "host": "speedtest.vpsfree.es:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "143.20.129.9"
+    ]
+  },
+  {
+    "url": "http://speedtestmadrid2.vodafone.es:8080/speedtest/upload.php",
+    "lat": "40.5373",
+    "lon": "-3.6372",
+    "distance": 22,
+    "name": "Alcobendas",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Vodafone ES",
+    "id": "14539",
+    "preferred": 0,
+    "isp_id": "256483",
+    "https_functional": 1,
+    "host": "speedtestmadrid2.vodafone.es:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "62.87.67.34"
+    ]
+  },
+  {
+    "url": "http://speedtest1.co-fi.es:8080/speedtest/upload.php",
+    "lat": "40.4000",
+    "lon": "-3.6833",
+    "distance": 12,
+    "name": "Madrid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "CO-FI.ES",
+    "id": "5984",
+    "preferred": 0,
+    "isp_id": "0",
+    "https_functional": 1,
+    "host": "speedtest1.co-fi.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "185.203.167.2"
+    ]
+  },
+  {
+    "url": "http://test1.velocable.com:8080/speedtest/upload.php",
+    "lat": "40.4000",
+    "lon": "-3.6833",
+    "distance": 12,
+    "name": "Madrid",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "PTV Telecom",
+    "id": "6903",
+    "preferred": 0,
+    "isp_id": "3768",
+    "https_functional": 1,
+    "host": "test1.velocable.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "MD",
+    "regionName": "Comunidad de Madrid",
+    "resolvedAddresses": [
+      "93.114.159.254"
+    ]
+  },
+  {
+    "url": "http://velocidad.cablemel.es:8080/speedtest/upload.php",
+    "lat": "35.2923",
+    "lon": "-2.9381",
+    "distance": 345,
+    "name": "Melilla",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "CABLEMEL S.L.",
+    "id": "45140",
+    "preferred": 0,
+    "isp_id": "53084",
+    "https_functional": 1,
+    "host": "velocidad.cablemel.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "ML",
+    "regionName": "Melilla",
+    "resolvedAddresses": [
+      "46.35.111.208"
+    ]
+  },
+  {
+    "url": "http://testvelocidadbil.orange.es:8080/speedtest/upload.php",
+    "lat": "43.2630",
+    "lon": "-2.9350",
+    "distance": 214,
+    "name": "Bilbao",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Orange",
+    "id": "46934",
+    "preferred": 0,
+    "isp_id": "86124",
+    "https_functional": 1,
+    "host": "testvelocidadbil.orange.es:8080",
+    "regionId": "PV",
+    "regionName": "País Vasco",
+    "resolvedAddresses": [
+      "90.160.201.253"
+    ]
+  },
+  {
+    "url": "http://speedtest4.digimobil.es:8080/speedtest/upload.php",
+    "lat": "43.2630",
+    "lon": "-2.9350",
+    "distance": 214,
+    "name": "Bilbao",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Digimobil",
+    "id": "51435",
+    "preferred": 0,
+    "isp_id": "160073",
+    "https_functional": 1,
+    "host": "speedtest4.digimobil.es:8080",
+    "regionId": "PV",
+    "regionName": "País Vasco",
+    "resolvedAddresses": [
+      "185.105.37.140"
+    ]
+  },
+  {
+    "url": "http://testdevelocidadbil.jazztel.com:8080/speedtest/upload.php",
+    "lat": "43.2630",
+    "lon": "-2.9350",
+    "distance": 214,
+    "name": "Bilbao",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Jazztel",
+    "id": "63274",
+    "preferred": 0,
+    "isp_id": "68",
+    "https_functional": 1,
+    "host": "testdevelocidadbil.jazztel.com:8080",
+    "regionId": "PV",
+    "regionName": "País Vasco",
+    "resolvedAddresses": [
+      "95.214.36.241"
+    ]
+  },
+  {
+    "url": "http://speedtest.uv.es:8080/speedtest/upload.php",
+    "lat": "39.4767",
+    "lon": "-0.3744",
+    "distance": 187,
+    "name": "Valencia",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Universitat de Valencia",
+    "id": "5481",
+    "preferred": 0,
+    "isp_id": "69173",
+    "host": "speedtest.uv.es:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "147.156.200.174"
+    ]
+  },
+  {
+    "url": "http://sp1.tvt-datos.es:8080/speedtest/upload.php",
+    "lat": "37.9778",
+    "lon": "-0.6833",
+    "distance": 227,
+    "name": "Torrevieja",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "TVT - Television Torrevieja",
+    "id": "6632",
+    "preferred": 0,
+    "isp_id": "132402",
+    "https_functional": 1,
+    "host": "sp1.tvt-datos.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "185.29.68.21"
+    ]
+  },
+  {
+    "url": "http://speedtest.novateldigital.com:8080/speedtest/upload.php",
+    "lat": "40.4126",
+    "lon": "0.4243",
+    "distance": 221,
+    "name": "Benicarló",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Novatel Digital",
+    "id": "48845",
+    "preferred": 0,
+    "isp_id": "175606",
+    "https_functional": 1,
+    "host": "speedtest.novateldigital.com.prod.hosts.ooklaserver.net:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "2.56.64.3"
+    ]
+  },
+  {
+    "url": "http://speedtest.dragonet.es:8080/speedtest/upload.php",
+    "lat": "38.5786",
+    "lon": "-0.0997",
+    "distance": 227,
+    "name": "L'Alfas del Pi",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Dragonet Comunicaciones",
+    "id": "38016",
+    "preferred": 0,
+    "isp_id": "13969",
+    "https_functional": 1,
+    "host": "speedtest.dragonet.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "217.70.240.142"
+    ]
+  },
+  {
+    "url": "http://speedtest.ibertic.es:8080/speedtest/upload.php",
+    "lat": "39.9864",
+    "lon": "-0.0513",
+    "distance": 197,
+    "name": "Castellon",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "IBERTIC",
+    "id": "24365",
+    "preferred": 0,
+    "isp_id": "138005",
+    "https_functional": 1,
+    "host": "speedtest.ibertic.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "185.160.160.113"
+    ]
+  },
+  {
+    "url": "http://speedtest1.movitel.tv:8080/speedtest/upload.php",
+    "lat": "38.5934",
+    "lon": "-0.6721",
+    "distance": 200,
+    "name": "Castalla",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "Movitel",
+    "id": "42137",
+    "preferred": 0,
+    "isp_id": "267581",
+    "https_functional": 1,
+    "host": "speedtest1.movitel.tv.prod.hosts.ooklaserver.net:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "185.239.228.14"
+    ]
+  },
+  {
+    "url": "http://speedtest.wirered.es:8080/speedtest/upload.php",
+    "lat": "38.9900",
+    "lon": "-0.5235",
+    "distance": 193,
+    "name": "Xativa",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "wirered.es",
+    "id": "16860",
+    "preferred": 0,
+    "isp_id": "177925",
+    "https_functional": 1,
+    "host": "speedtest.wirered.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "185.90.211.158"
+    ]
+  },
+  {
+    "url": "http://speedtest1.conecta-3.es:8080/speedtest/upload.php",
+    "lat": "38.4033",
+    "lon": "-1.0422",
+    "distance": 193,
+    "name": "Pinoso",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "CONECTA-3 TELECOM S.L.",
+    "id": "7958",
+    "preferred": 0,
+    "isp_id": "104198",
+    "https_functional": 1,
+    "host": "speedtest1.conecta-3.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "185.77.176.19"
+    ]
+  },
+  {
+    "url": "http://speedtest.saforwifi.es:8080/speedtest/upload.php",
+    "lat": "38.9680",
+    "lon": "-0.1845",
+    "distance": 210,
+    "name": "Gandia",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "SaforWifi",
+    "id": "61591",
+    "preferred": 0,
+    "isp_id": "156476",
+    "https_functional": 1,
+    "host": "speedtest.saforwifi.es.prod.hosts.ooklaserver.net:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "185.228.54.0"
+    ]
+  },
+  {
+    "url": "http://speed3.cloudwifi.es:8080/speedtest/upload.php",
+    "lat": "38.3453",
+    "lon": "-0.4831",
+    "distance": 219,
+    "name": "Alicante",
+    "country": "Spain",
+    "cc": "ES",
+    "sponsor": "CLOUDWIFI S.L.",
+    "id": "10815",
+    "preferred": 0,
+    "isp_id": "137456",
+    "https_functional": 1,
+    "host": "speed3.cloudwifi.es:8080",
+    "regionId": "VC",
+    "regionName": "Comunitat Valenciana",
+    "resolvedAddresses": [
+      "185.130.144.14"
+    ]
+  }
+]

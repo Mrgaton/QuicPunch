@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 using QuicPunch;
 using QuicPunch.Discovery;
+using QuicPunch.Helpers;
+using static QuicPunch.QuicPunchStructures;
 
 namespace QuicPunchTests.Tests;
     public static class NatPinCoordinatorTests
@@ -15,7 +18,7 @@ namespace QuicPunchTests.Tests;
             Console.WriteLine("   NAT PIN COORDINATOR & 3-BURST STUN TESTS       ");
             Console.WriteLine("==================================================");
 
-            // Test 1: Bombardeo de 16 servidores por ráfaga y rotación justa
+            // Test 1: Bombardeo de 16 servidores por rÃ¡faga y rotaciÃ³n justa
             Console.Write("[TEST 1] 16-server burst bombing and fair randomized rotation... ");
             var dummyServers = new List<IPEndPoint>();
             for (int i = 1; i <= 48; i++)
@@ -57,7 +60,132 @@ namespace QuicPunchTests.Tests;
 
             Console.WriteLine("PASSED");
 
-            // Test 2: Búfer de 3 chequeos anteriores (FIFO sliding capacity)
+            Console.Write("[TEST 1B] Weighted STUN classification and exact 1/2-8/9+ port policy... ");
+            var weightedTwoPorts = new Dictionary<IPEndPoint, int>
+            {
+                [new IPEndPoint(IPAddress.Parse("93.184.216.34"), 41000)] = 15,
+                [new IPEndPoint(IPAddress.Parse("93.184.216.34"), 51000)] = 14
+            };
+            var twoPortFlags = Utilities.GetConnectionFlags(weightedTwoPorts, 40000);
+            if (twoPortFlags.PortMode != PortMode.Multiple)
+                throw new Exception($"Expected two recurrent ports to use Multiple, got {twoPortFlags.PortMode}.");
+
+            var fourPorts = Enumerable.Range(0, 4).ToDictionary(
+                i => new IPEndPoint(IPAddress.Parse("93.184.216.34"), 42000 + (i * 1000)),
+                _ => 10);
+            var fourPortFlags = Utilities.GetConnectionFlags(fourPorts, 40000);
+            if (fourPortFlags.PortMode != PortMode.Multiple)
+                throw new Exception($"Expected four ports to use Multiple, got {fourPortFlags.PortMode}.");
+
+            var dominantPort = new Dictionary<IPEndPoint, int>
+            {
+                [new IPEndPoint(IPAddress.Parse("93.184.216.34"), 43000)] = 100,
+                [new IPEndPoint(IPAddress.Parse("93.184.216.34"), 53000)] = 1
+            };
+            if (Utilities.GetConnectionFlags(dominantPort, 40000).PortMode != PortMode.Multiple)
+                throw new Exception("A rarely observed exact port was dropped from the list.");
+            Console.WriteLine("PASSED");
+
+            Console.Write("[TEST 1C] Sparse port codec, endpoint token and bounded probing round-trips... ");
+            ushort[] sparsePorts = [1000, 7042, 20000, 33000, 40000, 50000, 60000, 65310];
+            var eightPorts = sparsePorts.ToDictionary(p => new IPEndPoint(IPAddress.Parse("93.184.216.34"), p), p => p == 1000 ? 100 : 1);
+            if (Utilities.GetConnectionFlags(eightPorts, 40000).PortMode != PortMode.Multiple)
+                throw new Exception("Eight observed ports must remain explicit, regardless of hit distribution.");
+            eightPorts.Add(new IPEndPoint(IPAddress.Parse("93.184.216.34"), 65400), 1);
+            if (Utilities.GetConnectionFlags(eightPorts, 40000).PortMode != PortMode.Range)
+                throw new Exception("Nine distinct ports must switch to Range.");
+            var structuredFlags = new ConnectionFlags
+            {
+                PortMode = PortMode.Multiple,
+                UsesStructuredPorts = true
+            };
+            using (var stream = new MemoryStream())
+            {
+                using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+                    PortAdvertisementCodec.WriteDiscovery(writer, PortMode.Multiple, sparsePorts);
+                stream.Position = 0;
+                using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+                ushort[] decodedPorts = PortAdvertisementCodec.ReadDiscovery(reader, structuredFlags, "test");
+                if (!decodedPorts.SequenceEqual(sparsePorts))
+                    throw new Exception($"Sparse discovery ports changed to {string.Join(", ", decodedPorts)}.");
+            }
+
+            using (var legacyStream = new MemoryStream())
+            {
+                using (var writer = new BinaryWriter(legacyStream, System.Text.Encoding.UTF8, leaveOpen: true))
+                {
+                    writer.Write((ushort)40000);
+                    writer.Write((ushort)40002);
+                }
+                legacyStream.Position = 0;
+                var legacyFlags = new ConnectionFlags { PortMode = PortMode.Multiple };
+                using var reader = new BinaryReader(legacyStream, System.Text.Encoding.UTF8, leaveOpen: true);
+                ushort[] legacyPorts = PortAdvertisementCodec.ReadDiscovery(reader, legacyFlags, "legacy test");
+                if (legacyFlags.PortMode != PortMode.Range || !legacyPorts.SequenceEqual(new ushort[] { 40000, 40002 }))
+                    throw new Exception("Legacy min/max packet compatibility was not retained.");
+            }
+
+            using (var tokenPeer = new PeerInfo
+            {
+                Addresses = [IPAddress.Parse("1.2.3.4")],
+                PortArray = sparsePorts,
+                ConnectionFlags = new ConnectionFlags { PortMode = PortMode.Multiple }
+            })
+            {
+                tokenPeer.SetCertificateHash(RandomNumberGenerator.GetBytes(32));
+                string token = Utilities.EncodeEndpointToken(tokenPeer);
+                using PeerInfo decodedTokenPeer = Utilities.DecodeEndpointToken(token);
+                if (decodedTokenPeer.ConnectionFlags.PortMode != PortMode.Multiple || !decodedTokenPeer.PortArray.SequenceEqual(sparsePorts))
+                    throw new Exception("Sparse endpoint token did not retain Multiple mode and its exact ports.");
+            }
+
+            using (var rangePeer = new PeerInfo
+            {
+                Addresses = [IPAddress.Parse("1.2.3.4"), IPAddress.Parse("192.168.5.47")],
+                PortArray = Enumerable.Range(1000, 60000).Select(static port => (ushort)port).ToArray(),
+                ConnectionFlags = new ConnectionFlags { PortMode = PortMode.Range },
+                PreferredPort = 45000
+            })
+            {
+                var probeTargets = QuicPunchConnection.BuildProbeTargets(rangePeer, null, 0);
+                if (probeTargets.Count > PortAdvertisementCodec.MaxProbeEndpoints)
+                    throw new Exception($"Probe target cap was exceeded: {probeTargets.Count}.");
+                if (!probeTargets.Any(endpoint => endpoint.Port == 1000) || !probeTargets.Any(endpoint => endpoint.Port == 60999))
+                    throw new Exception("Bounded range probing omitted its boundary ports.");
+                if (!probeTargets.Any(endpoint => endpoint.Address.Equals(IPAddress.Parse("192.168.5.47")) && endpoint.Port == 45000))
+                    throw new Exception("Bounded range probing omitted its exact preferred port.");
+
+                rangePeer.SetCertificateHash(RandomNumberGenerator.GetBytes(32));
+                string rangeToken = Utilities.EncodeEndpointToken(rangePeer);
+                using PeerInfo decodedRangePeer = Utilities.DecodeEndpointToken(rangeToken);
+                if (decodedRangePeer.ConnectionFlags.PortMode != PortMode.Range ||
+                    decodedRangePeer.PreferredPort != 45000 ||
+                    !decodedRangePeer.PortArray.SequenceEqual(new ushort[] { 1000, 60999 }))
+                {
+                    throw new Exception("Range token did not retain compact bounds and its preferred exact port.");
+                }
+            }
+
+            if (Utilities.HasExactAdvertisedPort(
+                    new ConnectionFlags { PortMode = PortMode.Range },
+                    Enumerable.Range(40000, 10001).Select(static port => (ushort)port),
+                    45000))
+            {
+                throw new Exception("An inferred range member was incorrectly treated as an exact advertised port.");
+            }
+
+            if (!Utilities.HasExactAdvertisedPort(
+                    new ConnectionFlags { PortMode = PortMode.Multiple },
+                    sparsePorts,
+                    50000))
+            {
+                throw new Exception("An explicitly advertised port was not recognized as exact.");
+            }
+            Console.WriteLine("PASSED");
+
+            await LanPortAdvertisementTests.RunAsync();
+
+            // Test 2: BÃºfer de 3 chequeos anteriores (FIFO sliding capacity)
             Console.Write("[TEST 2] 3-burst history sliding buffer capacity (FIFO retention)... ");
             var testCoord = new NatPinCoordinator();
 
@@ -97,7 +225,7 @@ namespace QuicPunchTests.Tests;
 
             Console.WriteLine("PASSED");
 
-            // Test 3: Fusión histórica de consenso NAT (Cone vs Symmetric)
+            // Test 3: FusiÃ³n histÃ³rica de consenso NAT (Cone vs Symmetric)
             Console.Write("[TEST 3] 3-burst aggregated NAT consensus (Cone vs Symmetric NAT)... ");
             var coneCoord = new NatPinCoordinator();
             var stableEp = new IPEndPoint(IPAddress.Parse("93.184.216.34"), 55000);

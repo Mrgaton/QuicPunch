@@ -461,11 +461,6 @@ namespace QuicPunch
             }
             catch { }
 
-            if (candidates.Count == 0)
-            {
-                candidates.Add(new CandidateEndpoint(new IPEndPoint(IPAddress.Loopback, localPort), CandidateType.Host, 0));
-            }
-
             return candidates;
         }
 

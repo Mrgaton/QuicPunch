@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#151c21"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Publicar actualizaciones · QuicNet</title><link rel="stylesheet" href="/app.css"></head>
+<body><main class="workspace" style="max-width:960px;margin:auto;padding:24px">
+<a class="btn" href="/settings.html">Volver a ajustes</a><h1>Publicar una actualización</h1>
+<p>Las versiones se distribuyen desde <a href="https://cdn.gato.ovh/QuicNet/">cdn.gato.ovh/QuicNet</a>. El EXE AOT y la APK comparten una versión y un número de compilación creciente.</p>
+<section class="section"><div class="section-body"><h2>Para ti o para un agente</h2>
+<ol><li>Abre el repositorio y lee <code>doc/deployment/auto-updates.md</code>. Conserva las claves de firma existentes.</li>
+<li>Elige una versión y un Build mayor que los publicados en Estable y Beta. Ejecuta las pruebas.</li>
+<li>Prepara una prueba en el canal Beta con PowerShell 7:<pre><code>./scripts/publish-updates.ps1 -Version 1.1.11 -Build 13 -Channel beta -LocalOnly</code></pre></li>
+<li>Revisa la compilación y publica los mismos archivos:<pre><code>./scripts/publish-updates.ps1 -Version 1.1.11 -Build 13 -Channel beta -SkipBuild -CdnRoot 'Z:\CDN\QuicNet'</code></pre></li>
+<li>Verifica por HTTPS el manifiesto y prueba una actualización en PC y Android.</li></ol>
+<p>El script incorpora las bibliotecas al EXE AOT, firma la APK, calcula los hashes, firma el manifiesto y sube primero los archivos. Solo al terminar activa la nueva versión.</p>
+<p>No copies claves privadas al servidor. No sobrescribas archivos de una versión publicada: incrementa Build.</p>
+<p>Beta publica <code>latest-beta.json</code> y conserva intacto <code>latest.json</code>, el canal Estable. Para publicar una versión definitiva, recompila con un Build superior y <code>-Channel stable</code>.</p>
+</div></section>
+<section class="section"><div class="section-body"><h2>Qué hace cada dispositivo</h2>
+<p>Comprueba al abrir y cada 15 minutos; si el CDN falla, reintenta cada minuto. Puedes desactivar la instalación automática en Ajustes.</p>
+<p>En Ajustes → Actualizaciones puedes elegir Estable o Beta. Las instalaciones nuevas de pruebas seleccionan Beta por defecto. La elección se conserva al actualizar; volver a Estable espera una compilación superior y conserva tus datos.</p>
+<p>Estable recibe solo releases. Beta recibe tanto pruebas como releases y elige la compilación más reciente. Instalar una estable no te saca de Beta: seguirás recibiendo las próximas pruebas. La descarga e instalación automáticas respetan la opción de cada dispositivo.</p>
+<p>En PC sustituye el EXE y reinicia; conserva una copia anterior y la recupera si la nueva versión no arranca. El EXE debe estar en una carpeta donde puedas escribir.</p>
+<p>En Android descarga la APK y abre el instalador del sistema. Debes permitir esa fuente y confirmar. Debe mantenerse el certificado de firma de la APK instalada para conservar tus datos.</p>
+<p>Una instalación anterior a este sistema requiere instalar manualmente la primera versión que lo incorpora.</p>
+</div></section></main></body></html>

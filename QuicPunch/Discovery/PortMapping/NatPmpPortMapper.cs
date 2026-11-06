@@ -20,6 +20,7 @@ public sealed class NatPmpPortMapper : IPortMapper
 
     private readonly IPAddress? _gatewayAddress;
     private int _disposed;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int Port, ProtocolType Protocol), int> _internalPorts = new();
 
     public NatPmpPortMapper(IPAddress? gatewayAddress = null)
     {
@@ -83,6 +84,9 @@ public sealed class NatPmpPortMapper : IPortMapper
             ushort mappedExternalPort = BinaryPrimitives.ReadUInt16BigEndian(response.AsSpan(10, 2));
             uint assignedLifetimeSec = BinaryPrimitives.ReadUInt32BigEndian(response.AsSpan(12, 4));
 
+            if (mappedInternalPort != internalPort || mappedExternalPort == 0 || assignedLifetimeSec == 0)
+                return PortMappingResult.Failed(ProtocolName, "NAT-PMP response does not describe the requested live mapping.");
+            _internalPorts[(mappedExternalPort, protocol)] = internalPort;
             var externalIp = await GetExternalIpAddressAsync(ct).ConfigureAwait(false);
 
             return PortMappingResult.Succeeded(
@@ -92,6 +96,7 @@ public sealed class NatPmpPortMapper : IPortMapper
                 mappedInternalPort,
                 TimeSpan.FromSeconds(assignedLifetimeSec));
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             return PortMappingResult.Failed(ProtocolName, $"NAT-PMP mapping error: {ex.Message}");
@@ -108,12 +113,14 @@ public sealed class NatPmpPortMapper : IPortMapper
 
         byte opcode = protocol == ProtocolType.Tcp ? (byte)2 : (byte)1;
 
-        // Lifetime 0 deletes the mapping
+        if (!_internalPorts.TryGetValue((externalPort, protocol), out int internalPort)) return false;
+        // RFC 6886 deletion repeats the original internal port with lifetime 0,
+        // but the Suggested External Port MUST be zero.
         byte[] request = new byte[12];
         request[0] = 0;
         request[1] = opcode;
-        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(4, 2), (ushort)externalPort);
-        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(6, 2), (ushort)externalPort);
+        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(4, 2), (ushort)internalPort);
+        // request[6..8] intentionally remain zero.
         BinaryPrimitives.WriteUInt32BigEndian(request.AsSpan(8, 4), 0);
 
         try
@@ -122,7 +129,16 @@ public sealed class NatPmpPortMapper : IPortMapper
             if (response == null || response.Length < 16) return false;
 
             ushort resultCode = BinaryPrimitives.ReadUInt16BigEndian(response.AsSpan(2, 2));
-            return resultCode == 0;
+            bool success = resultCode == 0 && response[0] == 0 && response[1] == opcode + 128
+                && BinaryPrimitives.ReadUInt16BigEndian(response.AsSpan(8, 2)) == internalPort
+                && BinaryPrimitives.ReadUInt16BigEndian(response.AsSpan(10, 2)) == 0
+                && BinaryPrimitives.ReadUInt32BigEndian(response.AsSpan(12, 4)) == 0;
+            if (success) _internalPorts.TryRemove((externalPort, protocol), out _);
+            return success;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -168,7 +184,8 @@ public sealed class NatPmpPortMapper : IPortMapper
         client.Client.SendTimeout = 600;
 
         var targetEp = new IPEndPoint(gateway, NatPmpPort);
-        await client.SendAsync(request, targetEp, ct).ConfigureAwait(false);
+        client.Connect(targetEp);
+        await client.SendAsync(request, ct).ConfigureAwait(false);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromMilliseconds(750));
@@ -181,7 +198,7 @@ public sealed class NatPmpPortMapper : IPortMapper
                 return recvResult.Buffer;
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
         catch (SocketException) { }
 
         return null;

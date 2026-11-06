@@ -1,0 +1,13 @@
+World basemap and city labels: Natural Earth, 1:50m admin-0 countries and populated places, public domain.
+https://www.naturalearthdata.com/about/terms-of-use/
+Sources:
+https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson
+https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_populated_places.geojson
+Retrieved 2026-10-18. Reduced to polygon geometry, city names/coordinates/minimum zoom and gzip-compressed.
+These labels provide map context only; they are never used as geolocation evidence.
+The embedded map has regional detail, not street-level cartography.
+Spanish community boundaries: Natural Earth 1:10m admin-1, public domain. The 52 provincial shapes are dissolved into 17 autonomous communities plus Ceuta and Melilla and simplified for interactive rendering.
+Source: https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson
+Prepared 2026-10-19 with scripts/build-geolocation-map.py. Source SHA-256 is recorded inside map.json.gz (communitySource).
+Boundaries are map context, not survey-grade official legal boundaries or geolocation evidence.
+Optional detailed layer: OpenStreetMap tiles, fetched only after user activation; © OpenStreetMap contributors, https://www.openstreetmap.org/copyright .

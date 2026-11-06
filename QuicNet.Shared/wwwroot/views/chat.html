@@ -1,0 +1,165 @@
+  <!-- 2. DIRECT CHAT VIEW -->
+  <div id="view-chat" class="spa-view hidden">
+    <main class="workspace chat-workspace">
+      <div class="direct-chat" id="chatContainer">
+        <aside class="dm-pane">
+          <div class="dm-head">
+            <div>
+              <span class="chat-eyebrow">TU ESPACIO PRIVADO</span>
+              <strong>Conversaciones</strong>
+              <span>Mensajes privados entre dispositivos</span>
+            </div>
+          </div>
+          <button class="btn primary dm-new-chat" id="chatNewBtn" type="button">Nueva conversación</button>
+          <div class="dm-search">
+            <input class="input" aria-label="Buscar conversaciones" id="chatPeerSearch" placeholder="Buscar un contacto…">
+          </div>
+          <div id="chatPeers" class="dm-list" aria-label="Conversaciones"></div>
+        </aside>
+        <div class="chat-list-resizer" id="chatListResizer" role="separator" tabindex="0" aria-label="Anchura de la lista de conversaciones" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="420" aria-valuenow="320" aria-controls="chatPeers"></div>
+        
+        <section class="conversation-pane">
+          <header class="conversation-head">
+            <div class="conversation-identity">
+              <button class="btn icon-btn mobile-chat-back" id="chatMobileBackBtn" aria-label="Volver a la lista de conversaciones" title="Volver a la lista de conversaciones" type="button">←</button>
+              <div>
+                <div id="chatIdentity"><strong id="chatPeerName">Tus mensajes</strong></div>
+                <span id="chatPeerMeta" role="status">Elige con quién quieres hablar</span>
+              </div>
+            </div>
+            <div class="chat-header-actions">
+              <button class="btn icon-btn" id="chatSearchToggleBtn" aria-label="Buscar en la conversación" title="Buscar en la conversación" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></button>
+              <details class="conversation-menu" id="chatOptionsMenu">
+                <summary class="btn icon-btn" aria-label="Opciones de la conversación" title="Opciones de la conversación"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></summary>
+                <div class="conversation-menu-panel">
+                  <button class="btn" id="chatCloseBtn" type="button" title="Oculta esta conversación y conserva el historial. Puedes recuperarla en Nueva conversación." disabled>Cerrar conversación</button>
+                  <button class="btn" id="chatAliasBtn" type="button" disabled>Nombre en este dispositivo…</button>
+                  <button class="btn danger" id="chatClearBtn" type="button" disabled>Borrar historial de este dispositivo…</button>
+                </div>
+              </details>
+              <button class="btn ghost sm hidden" id="chatConnectBtn" disabled>Reintentar</button>
+            </div>
+          </header>
+
+          <details class="chat-history-settings" id="chatHistoryHelp">
+            <summary aria-controls="chatHistoryOptions"><span id="chatHistoryLabel">Historial:</span> <span id="chatExpiryHint" role="status">Sin borrado automático local</span><span aria-hidden="true">⌄</span></summary>
+            <div class="chat-history-settings-panel">
+              <div id="chatHistoryOptions" role="listbox" aria-label="Conservación de mensajes nuevos en este dispositivo" aria-describedby="chatHistoryScope">
+                <button class="chat-expiry-option" role="option" type="button" data-duration="0">Sin borrado automático local<span class="chat-expiry-check" aria-hidden="true">✓</span></button>
+                <button class="chat-expiry-option" role="option" type="button" data-duration="60">Borrar tras 1 minuto<span class="chat-expiry-check" aria-hidden="true">✓</span></button>
+                <button class="chat-expiry-option" role="option" type="button" data-duration="3600">Borrar tras 1 hora<span class="chat-expiry-check" aria-hidden="true">✓</span></button>
+                <button class="chat-expiry-option" role="option" type="button" data-duration="86400">Borrar tras 1 día<span class="chat-expiry-check" aria-hidden="true">✓</span></button>
+                <button class="chat-expiry-option" role="option" type="button" data-duration="604800">Borrar tras 1 semana<span class="chat-expiry-check" aria-hidden="true">✓</span></button>
+                <button class="chat-expiry-option" role="option" type="button" data-duration="2592000">Borrar tras 30 días<span class="chat-expiry-check" aria-hidden="true">✓</span></button>
+              </div>
+              <p id="chatHistoryScope">Se aplica a mensajes nuevos. No cambia el historial anterior. Se respeta la caducidad enviada por tu contacto y no se garantiza eliminar otras copias.</p>
+            </div>
+            <input id="chatExpirySelect" type="hidden" value="0">
+          </details>
+
+          <!-- In-chat search bar -->
+          <div id="chatSearchBar" class="chat-search-bar hidden">
+            <input class="input sm" id="chatSearchInput" placeholder="Filtrar mensajes en este chat..." aria-label="Buscar en los mensajes">
+            <span id="chatSearchCount" class="chat-search-badge"></span>
+            <button class="btn sm" id="chatSearchCloseBtn" aria-label="Cerrar búsqueda">✕</button>
+          </div>
+
+          <div id="chatPinnedBar" class="chat-pinned-bar hidden"><button class="btn ghost sm" id="chatPinnedButton" type="button">📌 <span id="chatPinnedCount">Mensajes fijados</span></button></div>
+          <div class="chat-timeline">
+          <div id="messages" class="messages direct-messages" aria-label="Historial de mensajes">
+            <div class="empty">Tus conversaciones empiezan aquí. Elige un contacto o añádelo desde Inicio.</div>
+          </div>
+          <span id="chatScrollDate" class="chat-scroll-date hidden" aria-hidden="true"></span>
+          <button id="chatJumpToLatest" class="btn primary chat-jump-latest hidden" type="button">Ir al último mensaje ↓</button>
+          <span id="chatNewMessageAnnouncement" class="sr-only" role="status" aria-live="polite"></span>
+          </div>
+
+          <!-- Typing indicator -->
+          <div id="chatTypingIndicator" class="chat-typing-bar hidden" role="status" aria-live="polite">
+            <span class="typing-indicator-dots"><span></span><span></span><span></span></span>
+            <span id="chatTypingText">El contacto está escribiendo...</span>
+          </div>
+
+          <!-- Drag and drop zone overlay -->
+          <div id="chatDropZone" class="chat-drop-overlay hidden">
+            <div class="drop-overlay-box">
+              <div class="drop-overlay-icon">📁</div>
+              <strong>Suelta archivos aquí para enviar</strong>
+              <span>Transferencia directa P2P de alta velocidad bajo demanda</span>
+            </div>
+          </div>
+
+          <!-- Voice recording in-progress bar -->
+          <div id="voiceRecordingBar" class="voice-recording-bar hidden">
+            <div class="voice-recording-pulse"></div>
+            <span id="voiceRecordingTimer" class="voice-timer">00:00</span>
+            <span class="voice-recording-label">Grabando mensaje de voz...</span>
+            <div class="voice-recording-actions">
+              <button class="btn sm danger" id="voiceCancelBtn" title="Descartar">🗑️ Cancelar</button>
+              <button class="btn sm primary" id="voiceSendBtn" title="Enviar nota">➤ Enviar</button>
+            </div>
+          </div>
+
+          <!-- Composer -->
+          <div id="chatReplyBar" class="chat-reply-bar hidden"><div><strong id="chatReplyAuthor"></strong><span id="chatReplyExcerpt"></span></div><button id="chatReplyCancel" class="btn ghost sm" type="button" aria-label="Cancelar respuesta">×</button></div>
+          <div id="chatMentionSuggestions" class="chat-mention-suggestions hidden" role="listbox" aria-label="Mencionar a una persona"></div>
+          <div class="composer direct-composer">
+            <button class="btn composer-btn" id="attachBtn" aria-label="Adjuntar archivo o imagen" title="Adjuntar archivo o imagen" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m21 11-9 9a6 6 0 0 1-8-8L14 2a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3L16 6"/></svg></button>
+            <button class="btn composer-btn" id="emojiBtn" type="button" aria-label="Insertar emoji" aria-controls="emojiPopover" aria-expanded="false" aria-haspopup="dialog" title="Insertar emoji" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 14a4 4 0 0 0 8 0M8 9h1m6 0h1"/></svg></button>
+            <textarea rows="1" aria-label="Escribe un mensaje" aria-describedby="chatComposerHint" aria-autocomplete="list" aria-controls="chatMentionSuggestions" aria-expanded="false" id="messageInput" class="textarea" placeholder="Escribe un mensaje…" disabled></textarea>
+            <button class="btn composer-btn" id="voiceRecordBtn" aria-label="Grabar mensaje de voz" title="Grabar mensaje de voz" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg></button>
+            <button class="btn primary" id="sendBtn" disabled>Enviar</button>
+            <input id="fileInput" type="file" hidden multiple>
+          </div>
+          <p id="chatComposerHint" class="chat-composer-hint" role="status">Elige una conversación para escribir.</p>
+
+          <!-- Emoji Popover -->
+          <div id="emojiPopover" class="emoji-popover hidden" role="dialog" aria-label="Elegir emoji">
+            <label class="sr-only" for="emojiSearch">Buscar emojis por nombre</label>
+            <input id="emojiSearch" class="input emoji-search" type="search" placeholder="Buscar emojis…" autocomplete="off" aria-controls="emojiGrid">
+            <div class="emoji-grid" id="emojiGrid" role="group" aria-label="Emojis"></div>
+            <p id="emojiEmpty" class="emoji-empty hidden" role="status">No se encontraron emojis.</p>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <dialog id="chatNewDialog" class="chat-dialog" aria-labelledby="chatNewTitle">
+      <div class="chat-dialog-heading"><h2 id="chatNewTitle">Nueva conversación</h2><button class="btn icon-btn" id="chatNewCloseBtn" aria-label="Cerrar nueva conversación" type="button">×</button></div>
+      <p class="muted">Elige un contacto para abrir o recuperar su conversación. El historial se conserva al cerrarla.</p>
+      <label class="sr-only" for="chatNewSearch">Buscar entre tus contactos</label>
+      <input class="input" id="chatNewSearch" placeholder="Buscar entre tus contactos…" autocomplete="off">
+      <div id="chatNewPeers" class="chat-new-peers"></div>
+      <button class="btn" id="chatAddContactBtn" type="button">Añadir contacto con invitación</button>
+    </dialog>
+    <dialog id="chatClearDialog" class="chat-dialog" aria-labelledby="chatClearTitle" aria-describedby="chatClearDescription">
+      <h2 id="chatClearTitle">Borrar historial de este dispositivo</h2>
+      <p id="chatClearDescription"></p>
+      <p id="chatClearError" class="hidden" role="alert"></p>
+      <div class="toolbar"><button class="btn" id="chatClearCancelBtn" type="button" autofocus>Cancelar</button><button class="btn danger" id="chatClearConfirmBtn" type="button">Borrar historial local</button></div>
+    </dialog>
+    <dialog id="chatAliasDialog" class="chat-dialog" aria-labelledby="chatAliasTitle" aria-describedby="chatAliasHint">
+      <form id="chatAliasForm">
+        <h2 id="chatAliasTitle">Nombre en este dispositivo</h2>
+        <p id="chatAliasHint">Este nombre solo se muestra en tus conversaciones. No cambia el nombre que comparte el contacto.</p>
+        <label class="field" for="chatAliasInput">Nombre local<input id="chatAliasInput" class="input" maxlength="80" autocomplete="off"></label>
+        <p id="chatAliasError" role="alert" class="hidden"></p>
+        <div class="toolbar"><button id="chatAliasReset" class="btn ghost" type="button">Usar nombre original</button><button id="chatAliasCancel" class="btn" type="button">Cancelar</button><button class="btn primary" type="submit">Guardar nombre</button></div>
+      </form>
+    </dialog>
+
+    <!-- Image Lightbox Modal -->
+    <dialog id="chatLightbox" class="chat-lightbox hidden" aria-label="Vista ampliada de la imagen">
+      <div class="lightbox-overlay" id="lightboxOverlay"></div>
+      <div class="lightbox-dialog">
+        <img id="lightboxImg" src="" alt="Vista previa">
+        <div class="lightbox-toolbar">
+          <span id="lightboxCaption" class="lightbox-caption"></span>
+          <div class="lightbox-buttons">
+            <a id="lightboxDownloadBtn" class="btn sm primary" download target="_blank">⬇️ Descargar</a>
+            <button class="btn sm" id="lightboxCloseBtn">Cerrar</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+  </div>

@@ -1,0 +1,70 @@
+@implements IAsyncDisposable
+@inject Microsoft.JSInterop.IJSRuntime JS
+@using Microsoft.JSInterop
+@using QuicNet.Geolocation.App.Serialization
+
+<section class="location-map" @ref="host">
+    <div class="map-toolbar">
+        <button type="button" data-map="focus">Centrar señales</button><button type="button" data-map="spain">España</button><button type="button" data-map="region">Zona completa</button>
+        <button type="button" data-map="in" aria-label="Ampliar mapa">＋</button><button type="button" data-map="out" aria-label="Alejar mapa">−</button>
+        <label>Comunidad <select data-community aria-label="Ver comunidad autónoma"><option value="">Todas las comunidades</option></select></label>
+    </div>
+    <div class="map-layers">
+        <label><input type="checkbox" data-layer="heat" checked />Mapa de calor</label>
+        <label><input type="checkbox" data-layer="references" checked />Referencias medidas</label>
+        <label><input type="checkbox" data-layer="communities" checked />Comunidades</label>
+        <label><input type="checkbox" data-layer="streets" />Mapa detallado en línea</label>
+        <label><input type="checkbox" data-layer="model" />Punto del modelo</label>
+        <label><input type="checkbox" data-layer="routers" />Routers</label>
+        <label>Capa <select data-heat-source aria-label="Origen del mapa de calor"><option value="auto">Automática</option><option value="primary">Cotas verificadas</option><option value="conditional">Coordenadas declaradas</option></select></label>
+    </div>
+    <div class="map-container">
+        <canvas class="map" tabindex="0" role="img" aria-label="Mapa de afinidad de red. Arrastra para mover; rueda, botones o teclado para ampliar."></canvas>
+        <div class="map-tooltip" hidden></div>
+        <span class="map-scale"></span><span class="map-status">Cargando mapa local…</span>
+    </div>
+    <div class="legend"><span>Menor afinidad</span><span class="color-ramp" aria-hidden="true"></span><span>Mayor afinidad</span><span class="legend-note" data-heat-caption>Sin mapa de calor todavía</span></div>
+    <p class="community-status" data-community-status role="status">Elige una comunidad para explorar sus límites y su afinidad de red.</p>
+    <p class="model-warning" data-model-warning hidden>El punto del ajuste cae fuera de la tierra del mapa base. No se presenta como tu ubicación ni se mueve artificialmente a una ciudad.</p>
+    <details class="community-comparison"><summary>Comparar comunidades <span>Índice visual de afinidad, no porcentaje de acierto</span></summary><div data-community-comparison class="community-grid"></div></details>
+    <div class="map-attribution">Natural Earth · límites y etiquetas locales · <span>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors (capa opcional)</span></div>
+</section>
+
+@code {
+    [Parameter] public LocationUpdate? Update { get; set; }
+    [Parameter] public string? SessionKey { get; set; }
+    ElementReference host;
+    IJSObjectReference? module,map;
+    LocationUpdate? previous;
+    string? previousSession;
+    bool dirty=true;
+    public async Task Focus(GeoPoint point, double radius)
+    {
+        try { if(map is not null) await map.InvokeVoidAsync("locate",point,radius); }
+        catch(JSDisconnectedException){}
+    }
+    protected override void OnParametersSet()=>dirty|=!ReferenceEquals(previous,Update)||previousSession!=SessionKey;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            if(firstRender)
+            {
+                module=await JS.InvokeAsync<IJSObjectReference>("import","./map.js");
+                map=await module.InvokeAsync<IJSObjectReference>("create",host,new { streetTiles = true });
+            }
+            if(!dirty||map is null)return;
+            dirty=false;
+            bool reset=previousSession!=SessionKey;
+            previousSession=SessionKey;previous=Update;
+            // Pass JSON directly so JS interop does not reflect over application models.
+            await map.InvokeVoidAsync("update",JsonSerializer.SerializeToElement(MapUpdate.Create(Update,reset),AppJsonContext.Default.MapUpdate));
+        }
+        catch(JSDisconnectedException){}
+    }
+    public async ValueTask DisposeAsync()
+    {
+        try{if(map is not null){await map.InvokeVoidAsync("dispose");await map.DisposeAsync();}if(module is not null)await module.DisposeAsync();}
+        catch(JSDisconnectedException){}
+    }
+}

@@ -1,18 +1,24 @@
 using System;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace QuicPunch.Vpn.Linux;
 
 public static partial class LinuxTunApi
 {
     public const int O_RDWR = 2;
+    public const int O_NONBLOCK = 0x800;
+    public const int O_CLOEXEC = 0x80000;
+    public const int F_DUPFD_CLOEXEC = 1030;
     public const ulong TUNSETIFF = 0x400454CA;
     public const short IFF_TUN = 0x0001;
     public const short IFF_NO_PI = 0x1000;
+    public const short IFF_TUN_EXCL = unchecked((short)0x8000);
 
     public const short POLLIN = 0x0001;
     public const short POLLERR = 0x0008;
     public const short POLLHUP = 0x0010;
+    public const short POLLNVAL = 0x0020;
 
     [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int Open(string path, int flags);
@@ -22,6 +28,9 @@ public static partial class LinuxTunApi
 
     [LibraryImport("libc", EntryPoint = "dup", SetLastError = true)]
     public static partial int Dup(int fd);
+
+    [LibraryImport("libc", EntryPoint = "fcntl", SetLastError = true)]
+    internal static partial int Duplicate(SafeFileHandle fd, int command, int minimum);
 
     [LibraryImport("libc", EntryPoint = "ioctl", SetLastError = true)]
     public static unsafe partial int Ioctl(int fd, ulong request, void* arg);
@@ -34,6 +43,12 @@ public static partial class LinuxTunApi
 
     [LibraryImport("libc", EntryPoint = "write", SetLastError = true)]
     public static unsafe partial nint Write(int fd, byte* buf, nuint count);
+
+    [LibraryImport("libc", EntryPoint = "read", SetLastError = true)]
+    internal static unsafe partial nint Read(SafeFileHandle fd, byte* buf, nuint count);
+
+    [LibraryImport("libc", EntryPoint = "write", SetLastError = true)]
+    internal static unsafe partial nint Write(SafeFileHandle fd, byte* buf, nuint count);
 }
 
 [StructLayout(LayoutKind.Explicit, Size = 40)]

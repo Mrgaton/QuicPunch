@@ -1,0 +1,6 @@
+{
+  "msQuicRepository": "https://github.com/microsoft/msquic.git",
+  "msQuicCommit": "80a065112426bce68c1da42d026478d3e40fd45e",
+  "minimumOpenSslVersion": "3.5",
+  "tlsGroups": "X25519MLKEM768:X25519"
+}

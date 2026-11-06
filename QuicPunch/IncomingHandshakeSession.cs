@@ -2,6 +2,7 @@ namespace QuicPunch;
 
 internal sealed class IncomingHandshakeSession
 {
+    public QuicPunch.TransportType Transport { get; init; }
     public Guid ConnectionGuid { get; }
     public Guid PeerId { get; }
     public Guid ProtocolId { get; }

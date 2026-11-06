@@ -1,0 +1,27 @@
+name: Linux VPN distributions
+on:
+  workflow_dispatch:
+  push:
+    paths: ["QuicPunch.Vpn/**", "QuicPunch.Vpn.Tests/**", "scripts/*vpn*", ".github/workflows/vpn-linux.yml", "global.json"]
+  pull_request:
+    paths: ["QuicPunch.Vpn/**", "QuicPunch.Vpn.Tests/**", "scripts/*vpn*", ".github/workflows/vpn-linux.yml", "global.json"]
+permissions:
+  contents: read
+jobs:
+  vpn:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "archlinux:base", "fedora:44"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+      - name: Load the TUN driver
+        run: sudo modprobe tun
+      - name: Verify distro userspace, installer and real TUN packets
+        run: bash scripts/test-vpn-distros.sh '${{ matrix.image }}'

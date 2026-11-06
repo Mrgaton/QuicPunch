@@ -18,9 +18,16 @@ namespace QuicPunch
         private string? _torPeerName;
         private ushort _discoveryPort;
         private byte[]? _connectionPassword;
-        private bool _autoAcceptConnections = true;
         private bool _enableUpnp = true;
-        private CancellationTokenSource? _cts;
+        private bool _enableIpReputation = true;
+        private int _ipReputationLevel = 2;
+
+        public QuicPunchBuilder WithIpReputation(bool enable = true, int level = 2)
+        {
+            _enableIpReputation = enable;
+            _ipReputationLevel = level;
+            return this;
+        }
 
         public QuicPunchBuilder WithUpnp(bool enable = true)
         {
@@ -120,17 +127,13 @@ namespace QuicPunch
             return this;
         }
 
-        public QuicPunchBuilder WithAutoAccept(bool autoAccept)
-        {
-            _autoAcceptConnections = autoAccept;
-            return this;
-        }
+        private PeerTransportOptions _peerTransport = new();
 
-        private bool _autoConnectOnDiscovery;
-
-        public QuicPunchBuilder WithAutoConnectOnDiscovery(bool autoConnect = true)
+        public QuicPunchBuilder WithPeerTransport(PeerTransportOptions options)
         {
-            _autoConnectOnDiscovery = autoConnect;
+            ArgumentNullException.ThrowIfNull(options);
+            options.Validate();
+            _peerTransport = options;
             return this;
         }
 
@@ -144,7 +147,6 @@ namespace QuicPunch
 
         public QuicPunchBuilder WithCancellationTokenSource(CancellationTokenSource cts)
         {
-            _cts = cts;
             _cancellationToken = cts?.Token ?? default;
             return this;
         }
@@ -161,7 +163,7 @@ namespace QuicPunch
             bool wanEnabled = _wanAutoDiscovery ?? _autoDiscovery;
             bool torEnabled = _torAutoDiscovery ?? _autoDiscovery;
             var discoveryId = (wanEnabled || torEnabled) ? _poolId : null;
-            var quicPunch = new QuicPunch(cancellationToken.CanBeCanceled ? cancellationToken : _cancellationToken, discoveryId, _connectionPassword, _autoAcceptConnections, _discoveryPort, appDataPath: _appDataPath);
+            var quicPunch = new QuicPunch(cancellationToken.CanBeCanceled ? cancellationToken : _cancellationToken, discoveryId, _connectionPassword, _discoveryPort, appDataPath: _appDataPath);
             quicPunch.Discovery.WanNostrDiscoveryEnabled = wanEnabled;
             quicPunch.Discovery.TorNostrDiscoveryEnabled = torEnabled;
 
@@ -191,7 +193,17 @@ namespace QuicPunch
             }
 
             quicPunch.EnableUpnp = _enableUpnp;
-            quicPunch.AutoConnectOnDiscovery = _autoConnectOnDiscovery;
+            quicPunch.PeerTransport = _peerTransport;
+
+            if (!_enableIpReputation)
+            {
+                quicPunch.ReputationFilter?.Dispose();
+                quicPunch.ReputationFilter = null;
+            }
+            else if (quicPunch.ReputationFilter != null && quicPunch.ReputationFilter.Level != _ipReputationLevel)
+            {
+                quicPunch.ReputationFilter.Level = _ipReputationLevel;
+            }
 
             return quicPunch;
         }

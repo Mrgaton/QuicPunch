@@ -12,12 +12,12 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
     private const int CALLBACK_FUNCTION = 0x00030000;
     private const int WIM_DATA = 0x3C0;
     private const int WOM_DONE = 0x3BD;
-    private const int WHDR_DONE = 0x00000001;
+    private const int WHDR_INQUEUE = 0x00000010;
 
     private const int SampleRate = OpusVoiceCodec.DefaultSampleRate; // 48000
     private const int Channels = OpusVoiceCodec.DefaultChannels;     // 1 (mono)
-    private const int FrameSize = OpusVoiceCodec.DefaultFrameSize;   // 2880 samples (60 ms)
-    private const int FrameBytes = FrameSize * sizeof(short);        // 5760 bytes
+    private const int FrameSize = OpusVoiceCodec.DefaultFrameSize;   // 960 samples (20 ms)
+    private const int FrameBytes = FrameSize * sizeof(short);
     private const int BufferCount = 4;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -126,6 +126,11 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
     [DllImport(Winmm, EntryPoint = "waveOutClose")]
     private static extern int WaveOutClose(IntPtr hwo);
 
+    public string? PlaybackError { get; private set; }
+    private long _submittedPlaybackFrames, _completedPlaybackFrames;
+    internal long SubmittedPlaybackFrames => Interlocked.Read(ref _submittedPlaybackFrames);
+    internal long CompletedPlaybackFrames => Interlocked.Read(ref _completedPlaybackFrames);
+
     public string Name => "Windows Multimedia (waveIn/waveOut)";
     public bool IsSupported => OperatingSystem.IsWindows();
 
@@ -140,7 +145,7 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
 
     private IntPtr _waveOutHandle = IntPtr.Zero;
     private WaveOutProc? _waveOutProc;
-    private const int PlaybackBufferCount = 8;
+    private const int PlaybackBufferCount = 3;
     private const int MaxPlaybackFrameBytes = 5760 * 2; // Headroom for up to 60ms stereo / 120ms mono frames
     private readonly IntPtr[] _outHeaders = new IntPtr[PlaybackBufferCount];
     private readonly IntPtr[] _outBuffers = new IntPtr[PlaybackBufferCount];
@@ -242,7 +247,7 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
         }
 
         _captureCts = new CancellationTokenSource();
-        _captureChannel = System.Threading.Channels.Channel.CreateBounded<short[]>(new System.Threading.Channels.BoundedChannelOptions(16)
+        _captureChannel = System.Threading.Channels.Channel.CreateBounded<short[]>(new System.Threading.Channels.BoundedChannelOptions(3)
         {
             FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
             SingleReader = true,
@@ -352,11 +357,15 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
                 cbSize = 0
             };
 
+            PlaybackError = null;
+            Interlocked.Exchange(ref _submittedPlaybackFrames, 0);
+            Interlocked.Exchange(ref _completedPlaybackFrames, 0);
             _waveOutProc = OnWaveOutMessage;
             int res = WaveOutOpen(out _waveOutHandle, devIndex, ref wfx, _waveOutProc, IntPtr.Zero, CALLBACK_FUNCTION);
             if (res != MMSYSERR_NOERROR)
             {
-                QuicPunchLog.Info($"[AUDIO-WIN] WaveOutOpen failed (error {res})");
+                PlaybackError = $"No se pudo abrir la salida de audio (Windows: {res}).";
+                QuicPunchLog.Info($"[AUDIO-WIN] {PlaybackError}");
                 return false;
             }
 
@@ -368,11 +377,18 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
                 {
                     lpData = _outBuffers[i],
                     dwBufferLength = (uint)MaxPlaybackFrameBytes,
-                    dwFlags = WHDR_DONE // Initially marked as done/ready to be written
+                    dwFlags = 0 // The driver owns PREPARED / INQUEUE / DONE flags.
                 };
                 _outHeaders[i] = Marshal.AllocHGlobal(Marshal.SizeOf<WaveHdr>());
                 Marshal.StructureToPtr(hdr, _outHeaders[i], false);
-                WaveOutPrepareHeader(_waveOutHandle, _outHeaders[i], (uint)Marshal.SizeOf<WaveHdr>());
+                res = WaveOutPrepareHeader(_waveOutHandle, _outHeaders[i], (uint)Marshal.SizeOf<WaveHdr>());
+                if (res != MMSYSERR_NOERROR)
+                {
+                    PlaybackError = $"No se pudo preparar la salida de audio (Windows: {res}).";
+                    QuicPunchLog.Info($"[AUDIO-WIN] {PlaybackError}");
+                    StopPlayback();
+                    return false;
+                }
             }
             _nextOutIndex = 0;
 
@@ -383,8 +399,9 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
 
     private void OnWaveOutMessage(IntPtr hwo, uint uMsg, IntPtr dwInstance, IntPtr dwParam1, IntPtr dwParam2)
     {
-        // winmm callback: dwParam1 is pointer to WaveHdr that finished playing.
-        // Operating system sets WHDR_DONE flag in dwFlags.
+        // Do not call waveOut APIs from its callback. The driver clears INQUEUE.
+        if (uMsg == WOM_DONE && hwo == _waveOutHandle)
+            Interlocked.Increment(ref _completedPlaybackFrames);
     }
 
     public void PlaySamples(short[] pcmSamples)
@@ -400,7 +417,7 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
             int byteCount = pcmSamples.Length * sizeof(short);
             if (byteCount > MaxPlaybackFrameBytes) return;
 
-            // Find next available buffer in ring that has completed playback (WHDR_DONE)
+            // A prepared buffer is writable until queued, including before its first write.
             int chosenIndex = -1;
             for (int i = 0; i < PlaybackBufferCount; i++)
             {
@@ -408,7 +425,7 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
                 if (_outHeaders[idx] != IntPtr.Zero)
                 {
                     var currentHdr = Marshal.PtrToStructure<WaveHdr>(_outHeaders[idx]);
-                    if ((currentHdr.dwFlags & WHDR_DONE) != 0)
+                    if ((currentHdr.dwFlags & WHDR_INQUEUE) == 0)
                     {
                         chosenIndex = idx;
                         break;
@@ -416,10 +433,11 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
                 }
             }
 
-            // If hardware has a momentary backlog, use next slot to prevent drift
+            // An in-flight WinMM buffer must never be overwritten. Bound backlog
+            // to three frames and discard the new frame if the driver is behind.
             if (chosenIndex == -1)
             {
-                chosenIndex = _nextOutIndex;
+                return;
             }
             _nextOutIndex = (chosenIndex + 1) % PlaybackBufferCount;
 
@@ -429,21 +447,21 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
 
             try
             {
-                WaveOutUnprepareHeader(_waveOutHandle, pHdr, (uint)Marshal.SizeOf<WaveHdr>());
                 Marshal.Copy(pcmSamples, 0, pData, pcmSamples.Length);
-
-                var hdr = new WaveHdr
+                // Keep the header prepared at its maximum capacity. Changing its
+                // length is allowed; replacing flags/reserved driver state is not.
+                Marshal.WriteInt32(pHdr, (int)Marshal.OffsetOf<WaveHdr>(nameof(WaveHdr.dwBufferLength)), byteCount);
+                int res = WaveOutWrite(_waveOutHandle, pHdr, (uint)Marshal.SizeOf<WaveHdr>());
+                if (res != MMSYSERR_NOERROR)
                 {
-                    lpData = pData,
-                    dwBufferLength = (uint)byteCount,
-                    dwFlags = 0
-                };
-                Marshal.StructureToPtr(hdr, pHdr, false);
-
-                WaveOutPrepareHeader(_waveOutHandle, pHdr, (uint)Marshal.SizeOf<WaveHdr>());
-                WaveOutWrite(_waveOutHandle, pHdr, (uint)Marshal.SizeOf<WaveHdr>());
+                    PlaybackError = $"No se pudo enviar audio a la salida (Windows: {res}).";
+                    QuicPunchLog.Info($"[AUDIO-WIN] {PlaybackError}");
+                    return;
+                }
+                PlaybackError = null;
+                Interlocked.Increment(ref _submittedPlaybackFrames);
             }
-            catch { }
+            catch (Exception ex) { PlaybackError = ex.Message; QuicPunchLog.Info($"[AUDIO-WIN] Playback failed: {ex.Message}"); }
         }
     }
 

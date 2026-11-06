@@ -44,7 +44,10 @@ namespace QuicPunch.Vpn.Windows
             }
 
             if (handle == IntPtr.Zero)
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Failed to create Wintun adapter.");
+            {
+                int error = Marshal.GetLastWin32Error();
+                throw new Win32Exception(error, $"Failed to create Wintun adapter (Win32 {error}: {new Win32Exception(error).Message}).");
+            }
 
             return new WintunAdapter(handle);
         }

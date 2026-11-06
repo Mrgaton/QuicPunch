@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Localización · QuicNet</title><link rel="stylesheet" href="/geolocation/workbench.css"><script type="module" src="/geolocation/workbench.js"></script></head>
+<body><main>
+<section class="intro"><h1>Explora tu conexión.</h1><p>Analiza las señales de red y compara las zonas compatibles en el mapa.</p></section>
+<form id="controls" class="controls">
+<label>Perfil<select id="profile"><option value="quick">Rápido</option><option value="balanced">Equilibrado</option><option value="detailed">Detallado</option><option value="offline">Sin red</option><option value="custom">Personalizado</option></select></label>
+<button type="submit" class="primary" id="start" disabled>Iniciar</button><button type="button" id="stop" disabled>Parar</button>
+<span class="muted" id="counters" role="status">Preparando laboratorio…</span></form>
+<details id="configuration"><summary>Ajustes del análisis</summary><div id="fields"><div class="fields">
+<label>IP de esta conexión<select name="ip" id="publicIp"><option value="">Sin especificar</option></select></label>
+<label>Familia<select name="family"><option value="ipv4">IPv4</option><option value="ipv6">IPv6</option></select></label>
+<label>Presupuesto · segundos<input name="seconds" type="number" min="1" max="1800" required></label>
+<label>Límite de sondeos<input name="maximumProbes" type="number" min="1" max="100000" required></label>
+</div>
+<fieldset id="networkOptions"><legend>Diagnóstico de red</legend><div class="checks">
+<label><input name="enableTunnelAssessment" type="checkbox">Inspeccionar rutas y túneles locales</label>
+<label><input name="enableTopology" type="checkbox">Comparar rutas ICMP</label>
+<label><input name="enablePathMtu" type="checkbox">Medir Path MTU</label>
+<label><input name="enableTcp" type="checkbox">Medir TCP en destinos autorizados</label>
+</div></fieldset>
+<details><summary>Parámetros avanzados</summary><div class="fields">
+<label>Tandas<input name="rounds" type="number" min="1" max="10" required></label>
+<label>Referencias por tanda<input name="batchSize" type="number" min="6" max="64" required></label>
+<label>Muestras por referencia<input name="samples" type="number" min="1" max="20" required></label>
+<label>Paquetes por segundo<input name="packetsPerSecond" type="number" min="1" max="20" required></label>
+<label>Simultáneos<input name="parallelism" type="number" min="1" max="32" required></label>
+<label>Espera por paquete · ms<input name="timeoutMs" type="number" min="100" max="10000" required></label>
+
+<label>Rutas<input name="traceCount" type="number" min="1" max="8" required></label>
+<label>Máximo total de rutas<input name="maximumTraceRoutes" type="number" min="1" max="64" required></label>
+<label>Repeticiones por ruta<input name="traceRepetitions" type="number" min="1" max="3" required></label>
+<label>Saltos por ruta<input name="maxHops" type="number" min="1" max="64" required></label>
+<label>Malla · km<input name="resolutionKm" type="number" min="1" max="5000" required></label>
+<label>Margen RTT · ms<input name="timingSlackMs" type="number" min="0" max="100" step="0.1" required></label>
+<label>Máximo de celdas<input name="maxCells" type="number" min="72" max="200000" required></label>
+<label>Propagación · km/ms<input name="propagationKmPerMs" type="number" min="1" max="299.792458" step="0.000001" required></label>
+<label class="check"><input name="offline" type="checkbox">Sin sondeos de red</label>
+</div></details></div><p class="muted">Se mide la conexión de este equipo. La malla controla el cálculo; ampliar el mapa no aumenta la precisión de la estimación.</p><p class="muted" id="coverage"></p></details>
+<p id="error" role="alert" hidden></p>
+<section class="result" aria-live="polite"><div class="result-meta"><span id="analysisStatus">Listo para empezar</span><span id="measurementCount">0 sondeos · 0 referencias</span></div><h2 id="resultTitle">Listo para probar</h2><p id="resultDescription">Pulsa Iniciar para analizar esta conexión.</p><p id="conditional" class="conditional" hidden>Refinamiento condicionado a las coordenadas declaradas por los operadores; municipio sin confirmar.</p></section>
+<section class="location-map" id="mapHost">
+<div class="map-toolbar"><button type="button" data-map="focus">Centrar señales</button><button type="button" data-map="spain">España</button><button type="button" data-map="region">Zona completa</button><button type="button" data-map="in" aria-label="Ampliar mapa">+</button><button type="button" data-map="out" aria-label="Alejar mapa">−</button>
+<label>Comunidad <select data-community aria-label="Ver comunidad autónoma"><option value="">Todas las comunidades</option></select></label></div>
+<div class="map-layers"><label><input type="checkbox" data-layer="heat" checked>Mapa de calor</label><label><input type="checkbox" data-layer="references" checked>Referencias medidas</label><label><input type="checkbox" data-layer="communities" checked>Comunidades</label><label><input type="checkbox" data-layer="streets">Mapa detallado en línea</label><label><input type="checkbox" data-layer="model">Punto del modelo</label><label><input type="checkbox" data-layer="routers">Routers</label><label>Capa <select data-heat-source aria-label="Origen del mapa de calor"><option value="auto">Automática</option><option value="primary">Cotas verificadas</option><option value="conditional">Coordenadas declaradas</option></select></label></div>
+<div class="map-container"><canvas class="map" tabindex="0" role="img" aria-label="Mapa de localización. Arrastra para mover; rueda, botones o teclado para ampliar hasta calles."></canvas><div class="map-tooltip" hidden></div><span class="map-scale"></span><span class="map-status">Cargando mapa local…</span></div>
+<div class="map-attribution"><span>Natural Earth · IPTrust · <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP ASN</a> · RIPE · <a href="https://www.geonames.org/" target="_blank" rel="noopener noreferrer">GeoNames</a></span><span>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors</span></div>
+<div class="legend"><span>Menor afinidad</span><span class="color-ramp"></span><span>Mayor afinidad</span><span data-heat-caption>Sin datos suficientes para colorear</span></div><p class="community-status" data-community-status role="status">Elige una comunidad para explorar sus límites y su afinidad de red.</p><p class="model-warning" data-model-warning hidden>El punto del ajuste cae fuera de la tierra del mapa base. No se presenta como tu ubicación ni se mueve artificialmente a una ciudad.</p><details class="community-comparison"><summary>Comparar comunidades <span>Índice visual de afinidad, no porcentaje de acierto</span></summary><div data-community-comparison class="community-grid"></div></details></section>
+<p class="muted map-help">Las etiquetas geográficas se consultan en el catálogo local. La capa de calles consulta OpenStreetMap solo si la activas. Ampliar el mapa no aumenta la precisión de la medición.</p>
+<section class="reasoning" id="reasoning" aria-label="Explicación del resultado"><h3>Qué dicen las mediciones</h3><p id="reasoningSummary"></p><ul id="reasoningReasons"></ul><details id="measurements" hidden><summary>Ver referencias y latencias</summary><div class="table-scroll"><table><caption>Observaciones reales · mínimo y mediana de respuestas ICMP</caption><thead><tr><th>Referencia</th><th>Mínimo</th><th>Mediana</th><th>Respuestas</th><th>Coordenadas</th><th>Mapa</th></tr></thead><tbody id="measurementRows"></tbody></table></div></details><details id="modelDetail" hidden><summary>Inspeccionar el ajuste matemático</summary><p id="modelDescription"></p></details></section>
+<details id="alternatives" class="evidence" hidden><summary>Alternativas geográficas <span id="hierarchyStage"></span></summary><p class="muted">Hipótesis de búsqueda abiertas. El orden expresa afinidad de red, no certeza geográfica.</p><ul id="hypotheses" class="hypotheses"></ul><section id="routeComparison" hidden><h3>Comparación por rutas y latencias</h3><p id="routeQuality"></p><ul id="routeZones" class="hypotheses"></ul></section></details>
+<details id="network" class="evidence" hidden><summary>Diagnóstico de la conexión <span id="tunnelStatus"></span></summary><p id="networkSummary"></p><p id="mixedRoutes" class="conditional" hidden>Hay rutas directas y de túnel mezcladas. La comparación de perfiles está suspendida.</p><p id="fingerprintStatus" class="muted"></p><p class="muted">Una MTU reducida también puede deberse al operador. La ausencia de indicios no garantiza la ausencia de un túnel.</p><div class="table-scroll"><table><caption>Rutas efectivas de los destinos medidos</caption><thead><tr><th>Destino</th><th>Interfaz</th><th>Origen</th><th>MTU</th></tr></thead><tbody id="routes"></tbody></table></div><div id="supplemental"></div></details>
+<details id="localityDetails" hidden><summary>Localidades y procedencia</summary><section class="locality-assessment" id="localityAssessment" hidden aria-label="Localidades y calidad de la estimación">
+<div class="locality-assessment-head"><strong id="localityEvidence"></strong><span id="localityStatus" class="locality-status"></span></div>
+<div id="localityMetrics" class="locality-metrics"></div>
+<p id="localityContext" class="muted"></p><ol id="localityCandidates" class="locality-candidates" aria-label="Localidades candidatas"></ol>
+<p id="localityPublished" class="muted"></p><details><summary>Precisión y procedencia</summary><ul id="localityLimitations"></ul></details>
+</section>
+</details>
+<details id="logs"><summary>Registros y paquetes <span id="logCount"></span></summary><pre id="logOutput" tabindex="0" aria-label="Registros del análisis"></pre>
+<div class="packet-scroll"><table><caption>Últimos 100 paquetes</caption><thead><tr><th>IP</th><th>TTL</th><th>Estado</th><th>RTT</th></tr></thead><tbody id="packets"></tbody></table></div></details>
+<details><summary>Cómo interpretar el resultado</summary><ul id="notes"></ul><p class="muted">Las ciudades publicadas son referencias de infraestructura. El centro del área compatible no es la posición del dispositivo.</p></details>
+</main></body></html>

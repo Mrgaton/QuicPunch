@@ -10,10 +10,12 @@ namespace QuicPunch.Helpers
 {
     public sealed class RotatingFileLogger : IAsyncDisposable, IDisposable
     {
-        private readonly Channel<string> _channel;
-        private readonly CancellationTokenSource _cts;
+        private sealed record Command(string? Message = null, string? Directory = null, bool Rotate = false,
+            TaskCompletionSource? Completion = null);
+        private readonly Channel<Command> _channel;
         private readonly Task _workerTask;
         private readonly object _lock = new();
+        private readonly Func<string, Stream>? _streamFactory;
 
         private string _logDirectory;
         private string _filePrefix = "quicpunch";
@@ -31,30 +33,10 @@ namespace QuicPunch.Helpers
             get => _logDirectory;
             set
             {
-                lock (_lock)
-                {
-                    if (string.IsNullOrWhiteSpace(value))
-                        throw new ArgumentException("LogDirectory cannot be empty.", nameof(value));
-
-                    string newDir = Path.GetFullPath(value);
-                    if (newDir != _logDirectory)
-                    {
-                        if (_currentWriter != null)
-                        {
-                            try
-                            {
-                                _currentWriter.Flush();
-                                _currentWriter.Dispose();
-                            }
-                            catch { }
-                            _currentWriter = null;
-                            _currentFilePath = null;
-                            _currentDateStr = null;
-                        }
-                        _logDirectory = newDir;
-                        Directory.CreateDirectory(_logDirectory);
-                    }
-                }
+                if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException("LogDirectory cannot be empty.", nameof(value));
+                string newDir = Path.GetFullPath(value);
+                Directory.CreateDirectory(newDir); // Validate before asking the writer to leave its current directory.
+                QueueControlAsync(directory: newDir).GetAwaiter().GetResult();
             }
         }
 
@@ -77,19 +59,49 @@ namespace QuicPunch.Helpers
         }
 
         public RotatingFileLogger(string? logDirectory = null, int queueCapacity = 10_000)
+            : this(logDirectory, queueCapacity, null) { }
+
+        internal RotatingFileLogger(string? logDirectory, int queueCapacity, Func<string, Stream>? streamFactory)
         {
-            string baseDir = logDirectory ?? Path.Combine(AppContext.BaseDirectory, "logs");
+            _streamFactory = streamFactory;
+            string baseDir;
+            if (!string.IsNullOrWhiteSpace(logDirectory))
+            {
+                baseDir = logDirectory;
+            }
+            else if (OperatingSystem.IsAndroid())
+            {
+                string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                baseDir = Path.Combine(string.IsNullOrEmpty(localApp) ? Path.GetTempPath() : localApp, "logs");
+            }
+            else
+            {
+                baseDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            }
+
             _logDirectory = Path.GetFullPath(baseDir);
-            Directory.CreateDirectory(_logDirectory);
+            try
+            {
+                Directory.CreateDirectory(_logDirectory);
+            }
+            catch
+            {
+                try
+                {
+                    _logDirectory = Path.Combine(Path.GetTempPath(), "quicpunch_logs");
+                    Directory.CreateDirectory(_logDirectory);
+                }
+                catch { }
+            }
 
             var channelOptions = new BoundedChannelOptions(Math.Max(100, queueCapacity))
             {
                 SingleReader = true,
                 SingleWriter = false,
-                FullMode = BoundedChannelFullMode.DropOldest
+                // Data writes drop on overload; control barriers must never be evicted.
+                FullMode = BoundedChannelFullMode.Wait
             };
-            _channel = Channel.CreateBounded<string>(channelOptions);
-            _cts = new CancellationTokenSource();
+            _channel = Channel.CreateBounded<Command>(channelOptions);
 
             _workerTask = Task.Run(ProcessLogQueueAsync);
 
@@ -102,7 +114,7 @@ namespace QuicPunch.Helpers
             if (Volatile.Read(ref _isDisposed) != 0)
                 return;
 
-            _channel.Writer.TryWrite(message);
+            _channel.Writer.TryWrite(new(Message: message));
         }
 
         public void Flush()
@@ -110,54 +122,71 @@ namespace QuicPunch.Helpers
             FlushAsync().GetAwaiter().GetResult();
         }
 
-        public async Task FlushAsync()
+        public Task FlushAsync()
         {
-            if (Volatile.Read(ref _isDisposed) != 0)
-                return;
+            return Volatile.Read(ref _isDisposed) != 0 ? _workerTask : QueueControlAsync();
+        }
 
-            int spinCount = 0;
-            while (_channel.Reader.Count > 0 && spinCount++ < 200)
-            {
-                await Task.Delay(5).ConfigureAwait(false);
-            }
-
-            lock (_lock)
-            {
-                _currentWriter?.Flush();
-            }
+        private async Task QueueControlAsync(string? directory = null, bool rotate = false, CancellationToken ct = default)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _isDisposed) != 0, this);
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await _channel.Writer.WriteAsync(new(Directory: directory, Rotate: rotate, Completion: completion), ct).ConfigureAwait(false);
+            await completion.Task.WaitAsync(ct).ConfigureAwait(false);
         }
 
         private async Task ProcessLogQueueAsync()
         {
             var reader = _channel.Reader;
+            Command? current = null;
+            Exception? failure = null;
             try
             {
-                while (await reader.WaitToReadAsync(_cts.Token).ConfigureAwait(false))
+                while (await reader.WaitToReadAsync().ConfigureAwait(false))
                 {
-                    while (reader.TryRead(out var message))
+                    while (reader.TryRead(out current))
                     {
-                        EnsureWriterReady();
-
-                        if (_currentWriter != null)
+                        if (current.Message is { } message)
                         {
-                            await _currentWriter.WriteLineAsync(message.AsMemory(), _cts.Token).ConfigureAwait(false);
+                            EnsureWriterReady();
+                            await _currentWriter!.WriteLineAsync(message.AsMemory()).ConfigureAwait(false);
                             _currentFileLength += Encoding.UTF8.GetByteCount(message) + Environment.NewLine.Length;
                         }
+                        else
+                        {
+                            if (_currentWriter != null) await _currentWriter.FlushAsync().ConfigureAwait(false);
+                            if (current.Directory is { } directory && directory != _logDirectory)
+                            {
+                                if (_currentWriter != null) await _currentWriter.DisposeAsync().ConfigureAwait(false);
+                                lock (_lock)
+                                {
+                                    _currentWriter = null; _currentFilePath = null; _currentDateStr = null;
+                                    _logDirectory = directory;
+                                }
+                            }
+                            if (current.Rotate) RotateWriter(DateTime.Now.ToString("yyyy-MM-dd"));
+                            current.Completion!.TrySetResult();
+                        }
+                        current = null;
                     }
 
                     if (_currentWriter != null)
                     {
-                        await _currentWriter.FlushAsync(_cts.Token).ConfigureAwait(false);
+                        await _currentWriter.FlushAsync().ConfigureAwait(false);
                     }
                 }
             }
-            catch (OperationCanceledException) { }
             catch (Exception ex)
             {
+                failure = ex;
+                current?.Completion?.TrySetException(ex);
                 Console.Error.WriteLine($"[RotatingFileLogger] Worker error: {ex.Message}");
             }
             finally
             {
+                _channel.Writer.TryComplete(failure);
+                while (reader.TryRead(out var abandoned))
+                    abandoned.Completion?.TrySetException(failure ?? new ObjectDisposedException(nameof(RotatingFileLogger)));
                 lock (_lock)
                 {
                     try
@@ -218,12 +247,12 @@ namespace QuicPunch.Helpers
                     }
                 }
 
-                FileStream? stream = null;
+                Stream? stream = null;
                 for (int retry = 0; retry < 5; retry++)
                 {
                     try
                     {
-                        stream = new FileStream(
+                        stream = _streamFactory?.Invoke(fullPath) ?? new FileStream(
                             fullPath,
                             FileMode.Append,
                             FileAccess.Write,
@@ -259,8 +288,7 @@ namespace QuicPunch.Helpers
 
         public async Task RotateAndCompressAsync(CancellationToken ct = default)
         {
-            string today = DateTime.Now.ToString("yyyy-MM-dd");
-            RotateWriter(today);
+            await QueueControlAsync(rotate: true, ct: ct).ConfigureAwait(false);
             await CompressOldLogsSafeAsync(ct).ConfigureAwait(false);
         }
 
@@ -381,24 +409,13 @@ namespace QuicPunch.Helpers
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
-                return;
-
-            _channel.Writer.TryComplete();
-            _cts.Cancel();
-            try { _workerTask.GetAwaiter().GetResult(); } catch { }
-            _cts.Dispose();
+            DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
-                return;
-
-            _channel.Writer.TryComplete();
-            _cts.Cancel();
-            try { await _workerTask.ConfigureAwait(false); } catch { }
-            _cts.Dispose();
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 0) _channel.Writer.TryComplete();
+            await _workerTask.ConfigureAwait(false); // Drain accepted data and barriers before closing the writer.
         }
     }
 }

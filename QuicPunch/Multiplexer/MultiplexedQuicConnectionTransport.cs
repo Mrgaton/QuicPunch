@@ -28,15 +28,15 @@ namespace QuicPunch.Multiplexer
         private readonly Channel<IQuicStreamTransport> _inboundStreams;
         private readonly ConcurrentDictionary<long, IQuicStreamTransport> _activeStreams = new();
         private readonly VirtualDatagramChannel _datagramChannel;
-        private readonly DatagramFrameReassembler _reassembler = new();
-        private readonly ConcurrentDictionary<byte, Action<PeerInfo, QuicDatagramMessage>> _categoryHandlers = new();
+        private readonly CategorizedDatagramProtocol _datagrams = new();
         private PeerInfo? _peer;
         private QuicPunch.IProtocolHandler? _handler;
         private QuicConnection? _connection;
-        private uint _nextSequenceNumber;
-        private int _nextFrameId;
         private int _disposed;
         private int _closed;
+        private int _remoteClosing;
+        private readonly CancellationTokenSource _sessionLifetime = new();
+        internal CancellationToken SessionToken => _sessionLifetime.Token;
 
         public MultiplexedQuicConnectionTransport(
             QuicPeerMultiplexer multiplexer,
@@ -49,28 +49,42 @@ namespace QuicPunch.Multiplexer
             _sessionShortId = sessionShortId;
             _protocolId = protocolId;
 
-            var channelOptions = new UnboundedChannelOptions
+            var channelOptions = new BoundedChannelOptions(128)
             {
                 SingleReader = false,
-                SingleWriter = true
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait
             };
-            _inboundStreams = Channel.CreateUnbounded<IQuicStreamTransport>(channelOptions);
+            _inboundStreams = Channel.CreateBounded<IQuicStreamTransport>(channelOptions);
             _datagramChannel = new VirtualDatagramChannel(this);
         }
 
         public Guid SessionGuid => _sessionGuid;
         public ushort SessionShortId => _sessionShortId;
         public Guid ProtocolId => _protocolId;
+        internal Guid RecoveryOwner { get; } = Guid.NewGuid();
+        internal bool Recoverable { get; set; }
+        public bool IsRecoveredSession { get; internal set; }
+        public bool TransportLost { get; internal set; }
         public QuicPeerMultiplexer Multiplexer => _multiplexer;
 
         public PeerInfo? Peer { get => _peer; set => _peer = value; }
         public QuicPunch.IProtocolHandler? Handler { get => _handler; set => _handler = value; }
         public QuicConnection? Connection { get => _connection; set => _connection = value; }
 
-        public event Action<PeerInfo, QuicDatagramMessage>? OnCategorizedDatagramReceived;
-        public event Action<PeerInfo, byte, ReadOnlyMemory<byte>, bool>? OnFrameReceived;
+        public event Action<PeerInfo, QuicDatagramMessage>? OnCategorizedDatagramReceived
+        {
+            add => _datagrams.OnDatagramReceived += value;
+            remove => _datagrams.OnDatagramReceived -= value;
+        }
 
-        public QuicPunch.TransportType TransportType => QuicPunch.TransportType.Wan;
+        public event Action<PeerInfo, byte, ReadOnlyMemory<byte>, bool>? OnFrameReceived
+        {
+            add => _datagrams.OnFrameReceived += value;
+            remove => _datagrams.OnFrameReceived -= value;
+        }
+
+        public QuicPunch.TransportType TransportType => _multiplexer.TransportType;
 
         public EndPoint? LocalEndPoint => _multiplexer.LocalEndPoint;
         public EndPoint? RemoteEndPoint => _multiplexer.RemoteEndPoint;
@@ -83,119 +97,24 @@ namespace QuicPunch.Multiplexer
         // Virtual datagram channel exposing RFC 9221 for Voice and real-time streaming
         public IQuicDatagramChannel? DatagramChannel => _datagramChannel;
 
-        public bool SendDatagram(ReadOnlySpan<byte> datagram) =>
+        public bool SendDatagram(ReadOnlySpan<byte> datagram) => Volatile.Read(ref _closed) == 0 &&
+            Volatile.Read(ref _remoteClosing) == 0 && Volatile.Read(ref _disposed) == 0 &&
             _multiplexer.SendDatagram(_sessionShortId, datagram);
 
-        public bool SendCategorizedDatagram(
-            byte category,
-            ReadOnlySpan<byte> payload,
-            QuicDatagramFlags flags = QuicDatagramFlags.None,
-            uint sequenceNumber = 0)
-        {
-            if (sequenceNumber == 0)
-            {
-                sequenceNumber = (uint)Interlocked.Increment(ref _nextSequenceNumber);
-            }
+        public bool SendCategorizedDatagram(byte category, ReadOnlySpan<byte> payload,
+            QuicDatagramFlags flags = QuicDatagramFlags.None, uint sequenceNumber = 0) =>
+            _datagrams.SendDatagram(DatagramChannel, category, payload, flags, sequenceNumber);
 
-            int required = QuicDatagramEnvelope.UnfragmentedHeaderSize + payload.Length;
-            Span<byte> buffer = stackalloc byte[required];
-            QuicDatagramEnvelope.WriteEnvelope(buffer, category, flags, sequenceNumber, payload);
-            return SendDatagram(buffer);
-        }
+        public bool SendFrame(byte category, ReadOnlySpan<byte> frameData, bool isKeyFrame = false, int maxFragmentSize = 1200) =>
+            _datagrams.SendFrame(DatagramChannel, category, frameData, isKeyFrame, maxFragmentSize);
 
-        public bool SendFrame(
-            byte category,
-            ReadOnlySpan<byte> frameData,
-            bool isKeyFrame = false,
-            int maxFragmentSize = 1200)
-        {
-            if (maxFragmentSize <= 0) maxFragmentSize = 1200;
-
-            if (frameData.Length <= maxFragmentSize)
-            {
-                var flags = isKeyFrame ? QuicDatagramFlags.IsKeyFrame : QuicDatagramFlags.None;
-                return SendCategorizedDatagram(category, frameData, flags);
-            }
-
-            ushort frameId = (ushort)(Interlocked.Increment(ref _nextFrameId) & 0x7FFF);
-            int totalFrags = (frameData.Length + maxFragmentSize - 1) / maxFragmentSize;
-            if (totalFrags > 1024)
-            {
-                throw new ArgumentException($"Frame too large ({frameData.Length} bytes), exceeds max 1024 fragments", nameof(frameData));
-            }
-
-            bool allSent = true;
-            Span<byte> buf = stackalloc byte[QuicDatagramEnvelope.FragmentedHeaderSize + maxFragmentSize];
-
-            for (int i = 0; i < totalFrags; i++)
-            {
-                int offset = i * maxFragmentSize;
-                int len = Math.Min(maxFragmentSize, frameData.Length - offset);
-                var chunk = frameData.Slice(offset, len);
-
-                uint seq = (uint)Interlocked.Increment(ref _nextSequenceNumber);
-                var flags = QuicDatagramFlags.IsFragmented;
-                if (isKeyFrame) flags |= QuicDatagramFlags.IsKeyFrame;
-                if (i == totalFrags - 1) flags |= QuicDatagramFlags.IsLastFragment;
-
-                int written = QuicDatagramEnvelope.WriteFragmentEnvelope(buf, category, flags, seq, frameId, (ushort)i, (ushort)totalFrags, chunk);
-
-                if (!SendDatagram(buf.Slice(0, written)))
-                {
-                    allSent = false;
-                }
-            }
-
-            return allSent;
-        }
-
-        public void RegisterDatagramCategory(byte category, Action<PeerInfo, QuicDatagramMessage> handler)
-        {
-            _categoryHandlers[category] = handler;
-        }
+        public void RegisterDatagramCategory(byte category, Action<PeerInfo, QuicDatagramMessage> handler) =>
+            _datagrams.RegisterCategory(category, handler);
 
         internal void DispatchIncomingDatagram(byte[] payload)
         {
             _datagramChannel.Dispatch(payload);
-
-            if (QuicDatagramEnvelope.TryParse(payload, out var env))
-            {
-                var peer = _peer ?? _multiplexer.Peer;
-
-                if (env.IsFragmented)
-                {
-                    if (_reassembler.TryProcessFragment(env, out byte cat, out var fullFrame, out bool isKey))
-                    {
-                        OnFrameReceived?.Invoke(peer, cat, fullFrame, isKey);
-                        if (_handler != null && _connection != null)
-                        {
-                            _handler.OnFrameReceived(_connection, peer, cat, fullFrame, isKey);
-                        }
-                    }
-                }
-                else
-                {
-                    var msg = new QuicDatagramMessage(
-                        peer,
-                        env.Category,
-                        env.Flags,
-                        env.SequenceNumber,
-                        payload.AsMemory(env.IsFramed ? QuicDatagramEnvelope.UnfragmentedHeaderSize : 0),
-                        isFramed: env.IsFramed);
-
-                    if (_categoryHandlers.TryGetValue(env.Category, out var catHandler))
-                    {
-                        catHandler(peer, msg);
-                    }
-
-                    OnCategorizedDatagramReceived?.Invoke(peer, msg);
-
-                    if (_handler != null && _connection != null)
-                    {
-                        _handler.OnDatagramReceived(_connection, peer, msg);
-                    }
-                }
-            }
+            _datagrams.Receive(payload, _peer ?? _multiplexer.Peer);
         }
 
         // Hardware QoS & Telemetry delegation to the physical connection
@@ -222,11 +141,42 @@ namespace QuicPunch.Multiplexer
                 .ConfigureAwait(false);
 
             var multiplexedStream = new MultiplexedStreamTransport(rawStream, _sessionShortId, openedLocally: true);
-            // Write the 6-byte preface immediately
-            await multiplexedStream.EnsureHeaderWrittenAsync(cancellationToken).ConfigureAwait(false);
+            if (_handler != null)
+            {
+                try { multiplexedStream.Priority16 = _handler.StreamPriority; } catch { }
+            }
 
-            _activeStreams[multiplexedStream.Id] = multiplexedStream;
+            // Write the 6-byte preface immediately
+            try { await multiplexedStream.EnsureHeaderWrittenAsync(cancellationToken).ConfigureAwait(false); }
+            catch { await multiplexedStream.DisposeAsync().ConfigureAwait(false); throw; }
+
+            TrackStream(multiplexedStream);
             return multiplexedStream;
+        }
+
+        private void TrackStream(IQuicStreamTransport stream)
+        {
+            _activeStreams[stream.Id] = stream;
+            if (stream is MultiplexedStreamTransport multiplexed)
+            {
+                multiplexed.Closed = () => _activeStreams.TryRemove(new System.Collections.Generic.KeyValuePair<long, IQuicStreamTransport>(stream.Id, stream));
+                multiplexed.Faulted = ex =>
+                {
+                    if (_multiplexer.PhysicalConnection.IsTransportClosed ||
+                        (ex is System.Net.Quic.QuicException quic && quic.QuicError != System.Net.Quic.QuicError.StreamAborted &&
+                        quic.QuicError != System.Net.Quic.QuicError.OperationAborted))
+                        _ = _multiplexer.DisposeAsync();
+                };
+                multiplexed.EndOfStream = async ct =>
+                {
+                    // Android and TCP lanes may report EOF before their physical
+                    // connection callback. A verified control reply distinguishes
+                    // normal application EOF from a failed transport.
+                    if (!Recoverable || Volatile.Read(ref _remoteClosing) != 0 || Volatile.Read(ref _closed) != 0) return;
+                    if (_multiplexer.PhysicalConnection.IsTransportClosed || !await _multiplexer.ProbeLivenessAsync(ct).ConfigureAwait(false))
+                        await _multiplexer.DisposeAsync().ConfigureAwait(false);
+                };
+            }
         }
 
         private int _hasInboundStream;
@@ -241,18 +191,28 @@ namespace QuicPunch.Multiplexer
                 .ReadAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            _activeStreams[stream.Id] = stream;
+            if (_handler != null)
+            {
+                try { stream.Priority16 = _handler.StreamPriority; } catch { }
+            }
+
+            TrackStream(stream);
             return stream;
         }
 
         public bool EnqueueInboundStream(IQuicStreamTransport stream)
         {
-            if (Volatile.Read(ref _disposed) != 0)
+            if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _remoteClosing) != 0)
                 return false;
 
             bool wasFirst = Interlocked.Exchange(ref _hasInboundStream, 1) == 0;
             if (Volatile.Read(ref _closed) != 0 && !wasFirst)
                 return false;
+
+            if (_handler != null)
+            {
+                try { stream.Priority16 = _handler.StreamPriority; } catch { }
+            }
 
             return _inboundStreams.Writer.TryWrite(stream);
         }
@@ -264,27 +224,49 @@ namespace QuicPunch.Multiplexer
             if (Interlocked.Exchange(ref _closed, 1) != 0)
                 return;
 
+            try { _sessionLifetime.Cancel(); } catch (AggregateException ex) { QuicPunchLog.Info($"[SESSION] Cancellation observer failed: {ex.Message}"); }
+            _multiplexer.FinishRecovery(this);
+
             _datagramChannel.Dispose();
 
-            // If the initial inbound stream has not yet been accepted, wait briefly for any in-flight header arrival
-            if (Volatile.Read(ref _hasInboundStream) == 0)
-            {
-                for (int i = 0; i < 20 && Volatile.Read(ref _hasInboundStream) == 0; i++)
-                {
-                    try { await Task.Delay(25, cancellationToken).ConfigureAwait(false); } catch { break; }
-                }
-            }
-
             _inboundStreams.Writer.TryComplete();
+            while (_inboundStreams.Reader.TryRead(out var queued))
+            {
+                try { await queued.DisposeAsync().ConfigureAwait(false); } catch { }
+            }
+            _datagrams.Clear();
 
+            using var drainDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             foreach (var stream in _activeStreams.Values)
             {
-                try { stream.Abort(QuicAbortDirection.Both, errorCode); } catch { }
+                if (!TransportLost && errorCode == 0)
+                {
+                    try
+                    {
+                        if (stream.CanWrite) { stream.CompleteWrites(); await stream.WritesClosed.WaitAsync(drainDeadline.Token).ConfigureAwait(false); }
+                    }
+                    catch { }
+                    try { stream.Abort(QuicAbortDirection.Read, errorCode); } catch { }
+                }
+                else try { stream.Abort(QuicAbortDirection.Both, errorCode); } catch { }
                 try { await stream.DisposeAsync().ConfigureAwait(false); } catch { }
             }
             _activeStreams.Clear();
 
             await _multiplexer.NotifySessionClosedAsync(_sessionShortId, errorCode, cancellationToken).ConfigureAwait(false);
+        }
+
+        internal async Task RemoteCloseAsync(long errorCode, CancellationToken ct)
+        {
+            Interlocked.Exchange(ref _remoteClosing, 1);
+            if (errorCode == 0)
+            {
+                // Stream bytes and control frames have independent ordering. Let the
+                // application consume the peer's FIN and any buffered response first.
+                try { await Task.WhenAll(_activeStreams.Values.Select(x => x.ReadsClosed)).WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false); }
+                catch { }
+            }
+            await CloseAsync(errorCode, ct).ConfigureAwait(false);
         }
 
         public async ValueTask DisposeAsync()
@@ -298,6 +280,7 @@ namespace QuicPunch.Multiplexer
         private void ThrowIfDisposed()
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            if (Volatile.Read(ref _remoteClosing) != 0) throw new InvalidOperationException("The remote session has closed.");
         }
 
         /// <summary>
@@ -326,8 +309,16 @@ namespace QuicPunch.Multiplexer
             public bool IsReceiveEnabled =>
                 _owner.Multiplexer.PhysicalConnection.DatagramChannel?.IsReceiveEnabled ?? false;
 
-            public ushort MaxSendDatagramLength =>
-                _owner.Multiplexer.PhysicalConnection.DatagramChannel?.MaxSendDatagramLength ?? 1420;
+            public ushort MaxSendDatagramLength
+            {
+                get
+                {
+                    ushort physicalMax = _owner.Multiplexer.PhysicalConnection.DatagramChannel?.MaxSendDatagramLength ?? 1420;
+                    return physicalMax > sizeof(ushort)
+                        ? (ushort)(physicalMax - sizeof(ushort))
+                        : (ushort)0;
+                }
+            }
 
             public Channel<byte[]> IncomingDatagrams => _incomingDatagrams;
 

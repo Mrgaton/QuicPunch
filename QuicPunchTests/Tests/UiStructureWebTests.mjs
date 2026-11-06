@@ -1,0 +1,20 @@
+import {readFileSync, existsSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const base=new URL('../../QuicNet.Shared/wwwroot/',import.meta.url);
+const read=path=>readFileSync(new URL(path,base),'utf8');
+const index=read('index.html');
+const views=[...index.matchAll(/@include\s+(\S+)\s+-->/g)].map(m=>m[1]);
+const html=[index,...views.map(read)].join('\n');
+const ids=[...html.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);
+assert.equal(new Set(ids).size,ids.length,'SPA element IDs must be unique across every included view');
+const idSet=new Set(ids);
+// These bindings are not optional: their loss breaks live status and existing actions.
+const bindings=[...read('dashboard.js').matchAll(/byId\('([^']+)'\)/g)].map(m=>m[1]);
+for(const id of bindings)assert.ok(idSet.has(id),`Dashboard binding missing after rearranging views: ${id}`);
+for(const m of html.matchAll(/\bfor="([^"]+)"/g))assert.ok(idSet.has(m[1]),`Label points to missing control ${m[1]}`);
+for(const m of html.matchAll(/data-subtab="([^"]+)"/g))assert.ok(idSet.has(m[1]),`Subtab points to missing panel ${m[1]}`);
+assert.ok(!html.includes('user-scalable=no'),'Browser zoom must remain available');
+assert.ok(index.includes('lang="es"'),'Document language must match UI');
+for(const route of ['dashboard','chat','voice','vpn','speedtest','watch','settings'])assert.ok(idSet.has(`view-${route}`),`Missing view ${route}`);
+for(const m of index.matchAll(/<script[^>]*src="\/([^"]+)"/g))assert.ok(existsSync(new URL(m[1],base)),`Script not packaged: ${m[1]}`);
+console.log(`PASS UI structure: ${ids.length} unique IDs, ${new Set(bindings).size} required dashboard bindings, labels, routes, scripts and zoom`);

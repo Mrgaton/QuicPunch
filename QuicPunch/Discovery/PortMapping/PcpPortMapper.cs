@@ -26,6 +26,10 @@ public sealed class PcpPortMapper : IPortMapper
     private readonly IPAddress? _gatewayAddress;
     private readonly IPAddress? _localClientAddress;
     private int _disposed;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int Port, ProtocolType Protocol), byte[]> _nonces = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int Port, ProtocolType Protocol), int> _internalPorts = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int Port, ProtocolType Protocol), IPAddress> _externalIps = new();
+    private IPAddress? _lastExternalIp;
 
     public PcpPortMapper(IPAddress? gatewayAddress = null, IPAddress? localClientAddress = null)
     {
@@ -61,7 +65,7 @@ public sealed class PcpPortMapper : IPortMapper
         uint requestedLifetimeSec = (uint)(lifetime?.TotalSeconds ?? 7200);
 
         // Generate 12-byte cryptographically random mapping nonce
-        byte[] nonce = RandomNumberGenerator.GetBytes(12);
+        byte[] nonce = _nonces.GetOrAdd((internalPort, protocol), _ => RandomNumberGenerator.GetBytes(12));
 
         // 60-byte PCP MAP Request:
         // [0..23]  24-byte Common Header
@@ -80,7 +84,10 @@ public sealed class PcpPortMapper : IPortMapper
         request[36] = protocolByte;
         BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(40, 2), (ushort)internalPort);
         BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(42, 2), (ushort)requestedExternalPort);
-        // [44..59] Suggested External IP (all zeros = wildcard)
+        // PCP uses address-family-specific all-zero addresses. For IPv4 this is
+        // encoded as the IPv4-mapped address ::ffff:0.0.0.0, not 16 zero bytes.
+        ToPcpIpBytes(clientIp.AddressFamily == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any)
+            .CopyTo(request, 44);
 
         try
         {
@@ -107,6 +114,11 @@ public sealed class PcpPortMapper : IPortMapper
             ushort assignedExternalPort = BinaryPrimitives.ReadUInt16BigEndian(response.AsSpan(42, 2));
             IPAddress assignedExternalIp = FromPcpIpBytes(response.AsSpan(44, 16));
 
+            if (assignedInternalPort != internalPort || response[36] != protocolByte || assignedExternalPort == 0 || assignedLifetimeSec == 0)
+                return PortMappingResult.Failed(ProtocolName, "PCP response does not describe the requested live mapping.");
+            _internalPorts[(assignedExternalPort, protocol)] = internalPort;
+            _externalIps[(assignedExternalPort, protocol)] = assignedExternalIp;
+            _lastExternalIp = assignedExternalIp;
             return PortMappingResult.Succeeded(
                 ProtocolName,
                 assignedExternalIp,
@@ -114,6 +126,7 @@ public sealed class PcpPortMapper : IPortMapper
                 assignedInternalPort,
                 TimeSpan.FromSeconds(assignedLifetimeSec));
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             return PortMappingResult.Failed(ProtocolName, $"PCP mapping error: {ex.Message}");
@@ -140,17 +153,40 @@ public sealed class PcpPortMapper : IPortMapper
         BinaryPrimitives.WriteUInt32BigEndian(request.AsSpan(4, 4), 0); // Lifetime 0
         ToPcpIpBytes(clientIp).CopyTo(request, 8);
 
-        // All zero nonce to delete wildcard or delete specific
+        if (!_internalPorts.TryGetValue((externalPort, protocol), out int internalPort) ||
+            !_nonces.TryGetValue((internalPort, protocol), out var nonce) ||
+            !_externalIps.TryGetValue((externalPort, protocol), out var externalIp)) return false;
+        nonce.CopyTo(request, 24);
+        // Delete exactly the lease created by this mapper. RFC 6887 + verified
+        // errata 3621 require lifetime=0, the original nonce/protocol/internal
+        // port, external port 0, and the address-family-specific all-zero address.
         request[36] = protocolByte;
-        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(40, 2), (ushort)externalPort);
-        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(42, 2), (ushort)externalPort);
+        BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(40, 2), (ushort)internalPort);
+        byte[] deletionAddress = ToPcpIpBytes(externalIp.AddressFamily == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any);
+        deletionAddress.CopyTo(request, 44);
 
         try
         {
             byte[]? response = await SendAndReceiveAsync(gateway, request, 60, ct).ConfigureAwait(false);
             if (response == null || response.Length < 60) return false;
 
-            return response[3] == 0; // Result Code 0 = SUCCESS
+            bool success = response[0] == PcpVersion && response[1] == (0x80 | OpcodeMap) && response[3] == 0
+                && response.AsSpan(24, 12).SequenceEqual(nonce) && response[36] == protocolByte
+                && BinaryPrimitives.ReadUInt16BigEndian(response.AsSpan(40, 2)) == internalPort
+                && BinaryPrimitives.ReadUInt16BigEndian(response.AsSpan(42, 2)) == 0
+                && response.AsSpan(44, 16).SequenceEqual(deletionAddress)
+                && BinaryPrimitives.ReadUInt32BigEndian(response.AsSpan(4, 4)) == 0;
+            if (success)
+            {
+                _internalPorts.TryRemove((externalPort, protocol), out _);
+                _externalIps.TryRemove((externalPort, protocol), out _);
+                _nonces.TryRemove((internalPort, protocol), out _);
+            }
+            return success;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -158,11 +194,10 @@ public sealed class PcpPortMapper : IPortMapper
         }
     }
 
-    public async Task<IPAddress?> GetExternalIpAddressAsync(CancellationToken ct = default)
+    public Task<IPAddress?> GetExternalIpAddressAsync(CancellationToken ct = default)
     {
-        // In PCP, a MAP request with internal port 0 / external port 0 returns the external IP
-        var res = await TryMapPortAsync(0, 0, ProtocolType.Udp, TimeSpan.FromSeconds(0), ct).ConfigureAwait(false);
-        return res.Success ? res.ExternalIp : null;
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(_lastExternalIp);
     }
 
     private static async Task<byte[]?> SendAndReceiveAsync(
@@ -171,12 +206,13 @@ public sealed class PcpPortMapper : IPortMapper
         int expectedMinLen,
         CancellationToken ct)
     {
-        using var client = new UdpClient(AddressFamily.InterNetwork);
+        using var client = new UdpClient(gateway.AddressFamily);
         client.Client.ReceiveTimeout = 600;
         client.Client.SendTimeout = 600;
 
         var targetEp = new IPEndPoint(gateway, PcpPort);
-        await client.SendAsync(request, targetEp, ct).ConfigureAwait(false);
+        client.Connect(targetEp);
+        await client.SendAsync(request, ct).ConfigureAwait(false);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromMilliseconds(750));
@@ -189,7 +225,7 @@ public sealed class PcpPortMapper : IPortMapper
                 return recvResult.Buffer;
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
         catch (SocketException) { }
 
         return null;

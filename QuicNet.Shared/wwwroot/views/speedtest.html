@@ -1,0 +1,125 @@
+<div id="view-speedtest" class="spa-view hidden">
+  <main class="workspace speed-workspace">
+    <header class="page-head compact-head">
+      <div>
+        <h1>Prueba de velocidad</h1>
+        <p>Mide la conexión entre este equipo y un contacto. Bajada es recibir datos aquí; subida es enviarlos.</p>
+      </div>
+    </header>
+    <div class="speed-layout" id="speedTestLayout" data-state="idle">
+      <section class="section speed-setup" aria-labelledby="speedTestSetupTitle">
+        <div class="section-head"><div>
+          <h2 id="speedTestSetupTitle">Prepara tu prueba</h2>
+          <p>Conectaremos con el contacto si hace falta.</p>
+        </div></div>
+        <div class="section-body">
+          <div class="field">
+            <label for="speedTestPeerSelect">Contacto</label>
+            <select class="select" id="speedTestPeerSelect" aria-describedby="speedTestPeerHelp">
+              <option value="">Selecciona un contacto…</option>
+            </select>
+            <p id="speedTestPeerHelp" class="speed-help">El tiempo junto al nombre es la última latencia conocida; puede diferir de esta prueba.</p>
+          </div>
+          <div class="field space-top">
+            <label for="speedTestMode">Qué medir</label>
+            <select class="select" id="speedTestMode">
+              <option value="all" selected>Prueba completa · tres fases</option>
+              <option value="both">Subida y bajada a la vez</option>
+              <option value="upload">Solo subida</option>
+              <option value="download">Solo bajada</option>
+            </select>
+          </div>
+          <div class="field space-top">
+            <label for="speedTestDuration">Duración por fase</label>
+            <select class="select" id="speedTestDuration" aria-describedby="speedTestEstimate">
+              <option value="5">5 segundos</option>
+              <option value="10" selected>10 segundos</option>
+              <option value="30">30 segundos</option>
+              <option value="60">60 segundos</option>
+            </select>
+          </div>
+          <p id="speedTestEstimate" class="speed-help space-top">Unos 30 segundos, más la conexión y la medición inicial de latencia.</p>
+          <p class="speed-help">La prueba genera tráfico y puede afectar temporalmente a las llamadas y otras transferencias.</p>
+          <div class="toolbar space-top" id="speedTestActions">
+            <button class="btn primary large-btn" id="startSpeedTestBtn">Iniciar prueba</button>
+            <button class="btn danger hidden" id="cancelSpeedTestBtn">Cancelar prueba</button>
+          </div>
+        </div>
+      </section>
+      <section class="section speed-results" id="speedTestResults" data-state="idle" aria-labelledby="speedTestResultTitle">
+        <div class="section-head">
+          <div>
+            <h2 id="speedTestResultTitle">Resultado de la prueba</h2>
+            <p id="speedTestResultContext">Selecciona un contacto para empezar.</p>
+          </div>
+          <span class="badge speed-state" id="speedTestActiveBadge">Sin iniciar</span>
+        </div>
+        <div class="section-body">
+          <div id="speedTestStatusNotice" class="speed-status" role="status" aria-live="polite" aria-atomic="true">Todavía no hay mediciones.</div>
+          <div id="speedTestError" class="speed-error hidden" role="alert" aria-atomic="true">
+            <strong id="speedTestErrorTitle">La prueba se ha interrumpido</strong>
+            <p id="speedTestErrorMessage"></p>
+            <details id="speedTestErrorDetails">
+              <summary>Ver detalles técnicos</summary>
+              <pre id="speedTestErrorTechnical"></pre>
+            </details>
+          </div>
+          <div id="speedTestResultActions" class="speed-result-actions"></div>
+          <div class="speed-progress hidden" id="speedTestProgress">
+            <p id="speedTestGaugeHelp">Preparando la prueba…</p>
+            <div class="speed-bar-track" id="speedTestProgressBar" role="progressbar" aria-label="Tiempo de la fase" aria-valuemin="0" aria-valuemax="100">
+              <div class="speed-bar-fill" id="speedTestBarFill"></div>
+            </div>
+          </div>
+          <div class="speed-rates">
+            <div class="speed-rate">
+              <h3>↓ Bajada</h3>
+              <div class="speed-rate-value" id="speedTestMetricDownload">Pendiente</div>
+              <p id="speedTestDownloadHelp">Recibir en este equipo</p>
+            </div>
+            <div class="speed-rate">
+              <h3>↑ Subida</h3>
+              <div class="speed-rate-value" id="speedTestMetricUpload">Pendiente</div>
+              <p id="speedTestUploadHelp">Enviar desde este equipo</p>
+            </div>
+          </div>
+          <div class="speed-quality-grid">
+            <div><span>Latencia en reposo</span><strong id="speedTestMetricIdleRtt">Pendiente</strong></div>
+            <div><span>Latencia con tráfico</span><strong id="speedTestMetricRtt">Pendiente</strong><small id="speedTestRttHelp">Tiempo de ida y vuelta</small></div>
+            <div><span>Datos transferidos</span><strong id="speedTestMetricBytes">—</strong><small>Fases completadas y fase actual</small></div>
+          </div>
+          <ol id="speedTestPhaseList" class="speed-phases" aria-label="Estado de las fases"></ol>
+          <details class="speed-details">
+            <summary>Detalles técnicos y resultados por fase</summary>
+            <div id="speedTestBaseline" class="speed-baseline">Pendiente de medir la latencia en reposo.</div>
+            <div id="speedTestPhaseResults"></div>
+            <div class="speed-method-help">
+              <p>RTT es el tiempo de ida y vuelta. Jitter es la variación media entre RTT consecutivos. Con tráfico, el RTT también incluye las esperas por saturación.</p>
+              <p>La pérdida cuenta sondas de ida y vuelta sin respuesta en 1 segundo; no separa subida y bajada. Las sondas por stream fiable comparten cola con los datos: su demora y las sondas sin respuesta no equivalen a pérdida de paquetes. En Tor o sin datagramas nativos, la pérdida figura como «No disponible». Los fallos de envío se cuentan aparte.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+    </div>
+    <section class="section speed-history" aria-labelledby="speedTestHistoryTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="speedTestHistoryTitle">Pruebas de esta sesión</h2>
+          <p>Últimas 50 pruebas, incluidas las interrumpidas. Se conservan al recargar esta página.</p>
+        </div>
+        <button class="btn ghost" id="clearSpeedTestHistoryBtn">Limpiar historial</button>
+      </div>
+      <div class="section-body no-pad">
+        <div class="table-wrap borderless">
+          <table class="data-table">
+            <caption class="sr-only">Resumen por prueba; despliega las fases para consultar sus resultados.</caption>
+            <thead><tr>
+              <th scope="col">Hora</th><th scope="col">Contacto</th><th scope="col">Bajada</th><th scope="col">Subida</th><th scope="col">Estado y fases</th>
+            </tr></thead>
+            <tbody id="speedTestHistoryBody"><tr><td colspan="5" class="empty-cell">Todavía no has realizado ninguna prueba.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>

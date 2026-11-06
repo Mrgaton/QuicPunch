@@ -26,7 +26,7 @@ graph TD
         Chat[" ChatHandler"]
         LAN[" VirtualLanHandler (Wintun)"]
         Voice[" VoiceCallHandler (Opus 48kHz + Datagrams)"]
-        Drive[" RelayDriveHandler"]
+        Drive[" MediaTransferHandler (QuicWatch)"]
     end
 
     subgraph QuicLayer [" Layer 3: Connection & Multiplexing Engine"]
@@ -97,10 +97,12 @@ sequenceDiagram
     Alice->>Bob: Signed Hello / Interrogation Packet
     Bob->>Alice: Signed Ack + Ephemeral Salt Exchange
     Note over Bob: Cryptographic Handshake OK (Identity Proven)
-    Note over Bob: Authorization Gate Checked (PeerAccessController / PeerStore)
-    alt Peer is Trusted
+    Bob->>Alice: Automatic Transport Handshake (No User Trust Required)
+    Alice->>Bob: Native QUIC or Tor Multiplexer Ready
+    Note over Bob: Application Authorization Gate Checked (PeerAccessController / PeerStore)
+    alt Peer is Trusted and Protocol Authorized
         Bob->>Alice: Protocol Handshake Request Accepted
-        Bob->>Alice: Native QUIC or Tor Stream Connected
+        Bob->>Alice: Application Session Opens on Existing Transport
     else Peer is Untrusted
         Bob--xAlice: Application Protocol Blocked (Awaiting UI Approval)
     end

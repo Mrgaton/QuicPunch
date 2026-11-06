@@ -1,0 +1,81 @@
+import {launchBrowser, startPreviewServer, closeBrowserFixture} from '../Fixtures/BrowserFixture.mjs';
+import {fileURLToPath} from 'node:url';
+import {mkdirSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import assert from 'node:assert/strict';
+
+const server = startPreviewServer([]);
+let browser;
+try {
+  const url = await server.ready;
+  browser = await launchBrowser();
+  const page = await browser.newPage({viewport:{width:1280,height:900}});
+  const errors = [], externalRequests = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => {if (new URL(request.url()).host !== new URL(url).host) externalRequests.push(request.url());});
+  let fixtureActive = false, trustRequests = 0;
+  await page.routeWebSocket('**/ws?*', socket => {
+    const backend = socket.connectToServer(); socket.onMessage(message => backend.send(message));
+    backend.onMessage(message => {if (!fixtureActive || typeof message !== 'string' || JSON.parse(message).type !== 'status_updated') socket.send(message);});
+  });
+  await page.route('**/api/peer/trust', route => {trustRequests++; return route.fulfill({json:{success:true}});});
+  await page.goto(url); await page.waitForFunction(() => QP.state.status && QP.isWsConnected);
+  fixtureActive = true;
+  const hashes = Array.from({length:6}, (_, index) => createHash('sha256').update('quicnet synthetic identity fixture ' + index).digest('base64'));
+  await page.evaluate(hashes => {
+    const names = ['Ana', 'Mi ordenador', 'Lucía', 'Miguel', 'Portátil', 'Ana'];
+    const peers = hashes.map((certHash, index) => ({id:'identity-' + index, certHash, name:names[index], isTrusted:index < 5, isSaved:index < 5, isQuicConnected:false, networkType:'Wan', canonicalId:'same-short-id'}));
+    window.identityFixture = {...QP.state.status, peers:[peers[5]], savedPeers:peers.slice(0,5), discoveredPeers:[], activeInterrogations:[], avatars:{}};
+    window.pushIdentity = () => {QP.state.status = identityFixture; QP.emit('status_updated', identityFixture);};
+    pushIdentity();
+  }, hashes);
+  const card = index => page.locator(`[data-contact-key="${hashes[index]}"]`);
+  const waitMarks = () => page.waitForFunction(() => document.querySelectorAll('#homeContacts .identity-mark[data-identity-state=ready]').length === 6);
+  await waitMarks();
+  const capsuleSignature = locator => locator.evaluate(node => JSON.stringify([node.dataset.identityVersion,node.dataset.edge,node.dataset.pattern,node.style.getPropertyValue('--ci-hue'),node.style.getPropertyValue('--ci-saturation')]));
+  const signature = index => capsuleSignature(card(index).locator('.ci'));
+  const original = await signature(0);
+  assert.notEqual(original, await signature(5), 'Copied names and initials must not copy the certificate mark');
+  assert.equal(await card(0).locator('.ci-name').textContent(), 'Ana');
+  assert.equal(await card(0).locator('.ci-avatar').count(), 1, 'Avatar and name share a single capsule');
+  assert.equal(await card(0).locator('.identity-symbol').count(), 0);
+  assert.match(await card(5).textContent(), /Mismo nombre · otra identidad/);
+  assert.equal(await card(0).getByText('Mismo nombre · otra identidad').count(), 0);
+  await page.evaluate(() => {identityFixture.savedPeers[0].name = 'Ana · nuevo nombre'; pushIdentity();});
+  await waitMarks(); assert.equal(await signature(0), original);
+  await page.evaluate(() => {identityFixture.savedPeers[0].name = 'Ana'; pushIdentity();});
+  await waitMarks();
+  mkdirSync(fileURLToPath(new URL('../../.artifacts/identity/', import.meta.url)), {recursive:true});
+  await page.locator('#homeContacts').screenshot({path:'.artifacts/identity/contacts.png'});
+  await card(0).locator('.identity-mark').focus(); await page.keyboard.press('Enter');
+  const dialog = page.locator('dialog.identity-dialog');
+  await dialog.waitFor({state:'visible'});
+  await dialog.locator('.ci[data-identity-state=ready]').waitFor();
+  assert.equal(await capsuleSignature(dialog.locator('.ci')), original);
+  const hex = Buffer.from(hashes[0], 'base64').toString('hex').toUpperCase();
+  assert.equal((await dialog.locator('.identity-fingerprint').textContent()).replaceAll(' ', ''), hex);
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {configurable:true, value:{writeText:async text => {window.copiedIdentity = text;}}}));
+  await dialog.getByRole('button', {name:'Copiar huella', exact:true}).click();
+  assert.equal(await page.evaluate(() => copiedIdentity), hex);
+  await dialog.screenshot({path:'.artifacts/identity/details.png'});
+  await page.keyboard.press('Escape');
+  assert.equal(await card(0).locator('.identity-mark').evaluate(node => node === document.activeElement), true);
+  await card(5).locator('.identity-mark').click();
+  assert.match(await dialog.locator('.identity-name-warning').textContent(), /certificado es distinto/);
+  await page.keyboard.press('Escape');
+  for (const width of [768,390,320]) {
+    await page.setViewportSize({width,height:900});
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Identity row overflows at ' + width);
+    await card(0).locator('.identity-mark').click(); await dialog.locator('.ci[data-identity-state=ready]').waitFor();
+    assert.ok(await dialog.evaluate(node => node.scrollWidth <= node.clientWidth), 'Identity details overflow at ' + width);
+    await page.keyboard.press('Escape');
+  }
+  await page.evaluate(() => {identityFixture.savedPeers[0].name = '<img src=x onerror="window.identityInjected=true">'; pushIdentity();});
+  await waitMarks(); await card(0).locator('.identity-mark').click();
+  assert.equal(await page.evaluate(() => window.identityInjected), undefined);
+  assert.equal(await dialog.locator('img').count(), 0);
+  assert.equal(trustRequests, 0, 'Inspecting identity must not grant trust');
+  assert.deepEqual(externalRequests, [], 'Certificate marks must not contact an external avatar service');
+  assert.deepEqual(errors, []);
+  console.log('PASS certificate capsules: name stability, full fingerprint/copy, duplicate-name notice, keyboard/focus, no implicit trust, no external assets, safe names and mobile layout');
+} finally {await closeBrowserFixture(browser, server);}

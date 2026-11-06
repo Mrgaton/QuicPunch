@@ -1,5 +1,7 @@
 # QuicPunch Documentation Hub
 
+Experimental: [QuicNet.Geolocation](../QuicNet.Geolocation/README.md) is the C# library with embedded datasets; [QuicNet.Geolocation.App](../QuicNet.Geolocation.App/README.md) is its standalone test application.
+
 > **QuicPunch** is an enterprise-grade, zero-configuration P2P networking library built for .NET 11. It establishes authenticated, direct peer-to-peer UDP/QUIC tunnels through NATs/firewalls and transparently falls back to an embedded Tor v3 Hidden Service mesh network.
 
 ---
@@ -12,10 +14,10 @@
 | **Runtime Target** | .NET 11.0 / C# 14 (Native AOT & Trimming Compatible) |
 | **Primary Transports** | WAN/UDP (RFC 5389 STUN + ICE-like Simultaneous Hole Punching + `System.Net.Quic` + RFC 9221 Datagrams), Tor v3 Onion Services |
 | **Native MsQuic Tuning** | Deep reflection tuning for Linux/Windows: dynamic BBR congestion control, DSCP QoS (Voice EF 46 / Video AF41 34), microsecond `QuicStatisticsV2` telemetry |
-| **Security Architecture** | Self-signed X.509 + SHA3-256 Public Key Pinning + Ephemeral ECDH (NIST P-256) + 2-Party HKDF-SHA256 + AES-GCM-256 + RFC 6479 Sliding Anti-Replay + `IPeerAccessController` zero-trust admission |
+| **Security Architecture** | Self-signed X.509 + SHA3-256 Public Key Pinning + Ephemeral ECDH (NIST P-256) + 2-Party HKDF-SHA256 + native QUIC/Tor transport protection + `IPeerAccessController` zero-trust admission |
 | **Signaling Systems** | Nostr Relays (Kind 27227, BIP-340 Schnorr over secp256k1), Direct Base64 Endpoint Tokens, LAN Discovery, Cascaded Gateway Port Mapping (PCP RFC 6887 -> NAT-PMP RFC 6886 -> UPnP IGD) |
 | **Virtual Networking** | Embedded Wintun L2/L3 Driver Wrapper for ZeroTier/Hamachi-style Virtual LANs |
-| **Included Protocols** | Direct Chat, Virtual LAN Bridge, Low-latency Voice Call (Opus 48kHz over RFC 9221 datagrams), RelayDrive Ephemeral File Shelf |
+| **Included Protocols** | Direct Chat, Virtual LAN Bridge, Low-latency Voice Call (Opus 48kHz over RFC 9221 datagrams), QuicWatch synchronized playback, chat file sharing |
 
 ---
 
@@ -35,6 +37,10 @@ doc/
 │   ├── packet-pipeline.md                     # Binary packet serialization, parsing, message handlers
 │   ├── connection-and-holepunch.md            # Hole punching orchestration, candidate racing, QUIC TLS, MsQuicDatagramChannel
 │   ├── quic-telemetry-and-tuning.md           # Native MsQuic telemetry, QUIC_STATISTICS_V2, BBR/CUBIC switching, WebUI polling
+│   ├── post-quantum-msquic.md                  # Reproducible OpenSSL 3.5 MsQuic build and X25519MLKEM768 verification
+│   ├── peer-transport.md                      # Automatic authenticated QUIC, limits, retry and idle parking
+│   ├── automatic-peer-permissions.md          # Per-peer application approvals and remote screen request behavior
+│   ├── vpn-policy-and-orchestration.md         # VPN modes, IP authorization, automatic sessions and privileged adapter broker
 │   └── helpers-and-utilities.md               # MsQuicTuner, MsQuicDatagrams, PeerAccessController, RotatingFileLogger, OpusVoiceCodec, AntiReplayWindow, CertManager
 │
 ├── discovery/
@@ -52,7 +58,8 @@ doc/
 │   ├── chat-protocol.md                       # Structured JSON messaging, delivery receipts, history sync
 │   ├── virtual-lan-protocol.md                # L3 IP tunnel, broadcast relaying, deterministic IP assignment
 │   ├── voice-call-protocol.md                 # QUIC session gating + RFC 9221 datagram plane + Opus 48kHz codec
-│   └── relay-drive-protocol.md                # Ephemeral file shelf, chunked streaming, SHA-256 validation
+│   ├── virtual-disk.md                        # Folder grants, administrator exploration and native WebDAV mounts
+│   └── relay-drive-protocol.md                # Retired RelayDrive entry; links to current file-sharing features
 │
 ├── webui-and-apps/
 │   └── webui-backend-and-gui.md               # Embedded HTTP/WebSocket server, modular REST modules, Photino native GUI, AppPreferencesStore
@@ -79,7 +86,7 @@ flowchart TD
         AccessCtrl[" PeerAccessController & ExpectedCertSet"]
         ECDH[" Ephemeral ECDH (P-256) Key Exchange"]
         HKDF[" 2-Party HKDF-SHA256 Derivation (Tx/Rx AES-GCM)"]
-        Replay[" RFC 6479 128-Packet Sliding Anti-Replay"]
+        Replay[" Authenticated control packets and application sessions"]
     end
 
     subgraph TransportLayer [" 3. Dual-Stack Transport Engine"]
@@ -93,7 +100,7 @@ flowchart TD
         Chat[" ChatHandler (JSON / Sync)"]
         VLAN[" VirtualLanHandler (Wintun L3 IPv4)"]
         Voice[" VoiceCallHandler (Opus 48kHz / RFC 9221 Datagrams)"]
-        Drive[" RelayDriveHandler (Ephemeral Chunked Shelf)"]
+        Drive[" QuicWatch MediaTransferHandler"]
     end
 
     DiscoveryLayer --> SecurityLayer
@@ -115,12 +122,13 @@ flowchart TD
 | **[Packet Pipeline](core/packet-pipeline.md)** | Binary Serialization, Handshake, Disconnect, Hello Handlers | [`PacketBuilder`](../QuicPunch/PacketHandler/PacketBuilder.cs), [`HelloHandler`](../QuicPunch/PacketHandler/HelloHandler.cs) |
 | **[Connection & Hole Punch](core/connection-and-holepunch.md)** | Simultaneous Hole Punching, Socket Reuse, QUIC Handshake, RFC 9221 Datagrams | [`QuicPunchConnection`](../QuicPunch/QuicPunchConnection.cs), [`MsQuicDatagramChannel`](../QuicPunch/Helpers/MsQuicDatagrams.cs) |
 | **[Helpers & Utilities](core/helpers-and-utilities.md)** | Native MsQuic BBR/DSCP Tuner, Datagram Channel, Rotating File Logger, Opus Codec, Peer Store | [`MsQuicTuner`](../QuicPunch/Helpers/MsQuicTuner.cs), [`MsQuicDatagramChannel`](../QuicPunch/Helpers/MsQuicDatagrams.cs), [`RotatingFileLogger`](../QuicPunch/Helpers/RotatingFileLogger.cs), [`OpusVoiceCodec`](../QuicPunch/Helpers/OpusVoiceCodec.cs), [`PeerStore`](../QuicPunch/Helpers/PeerStore.cs) |
-| **[MsQuic Native Telemetry](core/quic-telemetry-and-tuning.md)** | `QUIC_STATISTICS_V2`, Dynamic BBR/CUBIC Congestion Switching, WebUI REST & Polling | [`MsQuicTuner`](../QuicPunch/Helpers/MsQuicTuner.cs), [`QuicConnectionTelemetry`](../QuicPunch/Helpers/MsQuicTuner.cs), [`StatusApiModule`](../QuicPunchTests/WebUi/Modules/StatusApiModule.cs) |
+| **[MsQuic Native Telemetry](core/quic-telemetry-and-tuning.md)** | `QUIC_STATISTICS_V2`, Dynamic BBR/CUBIC Congestion Switching, WebUI REST & Polling | [`MsQuicTuner`](../QuicPunch/Helpers/MsQuicTuner.cs), [`QuicConnectionTelemetry`](../QuicPunch/Helpers/MsQuicTuner.cs), [`StatusApiModule`](../QuicNet.Shared/WebUi/Modules/StatusApiModule.cs) |
+| **[Post-quantum MsQuic](core/post-quantum-msquic.md)** | OpenSSL 3.5 native build, application-local loading, `X25519MLKEM768` handshake verification | [`MsQuicNativeLoader`](../QuicPunch/Helpers/MsQuicNativeLoader.cs), [`MsQuicPqcHandshake`](../QuicPunch/Helpers/MsQuicPqcHandshake.cs), [`PqcHandshakeTests`](../QuicPunchTests/Tests/PqcHandshakeTests.cs) |
 | **[STUN & NAT Discovery](discovery/stun-and-nat.md)** | Binary RFC 5389 Parser, Cascaded Port Mapping (PCP/NAT-PMP/UPnP), NatPin burst learning | [`SimpleStunClient`](../QuicPunch/Discovery/SimpleStunClient.cs), [`PortMappingCoordinator`](../QuicPunch/Discovery/PortMapping/PortMappingCoordinator.cs), [`NatPinCoordinator`](../QuicPunch/Discovery/NatPinCoordinator.cs) |
 | **[Nostr Signaling](discovery/nostr-signaling.md)** | BIP-340 Schnorr on secp256k1, Channel Hashing, Kind 27227 | [`NostrDiscovery`](../QuicPunch/Discovery/NostrDiscovery.cs) |
 | **[Tor Subsystem](tor/tor-subsystem.md)** | Portable Expert Bundle, SOCKS5 Auth, ControlPort, v3 Onion | [`TorRuntimeManager`](../QuicPunch/Tor/TorRuntimeManager.cs), [`TorManager`](../QuicPunch/Tor/TorManager.cs) |
 | **[Tor Peer Transport](tor/tor-peer-transport.md)** | Multi-Lane Multiplexing, Stream Prefaces, Dummy QUIC Lanes | [`TorPeerTransportHub`](../QuicPunch/Tor/TorPeerTransportHub.cs), [`DummyQuicConnectionTransport`](../QuicPunch/Tor/DummyQuicTransport.cs) |
 | **[Wintun Virtual Adapter](wintun/virtual-network-adapter.md)** | P/Invoke API, Memory Ring Buffers, Session Management, MTU | [`WintunApi`](../Wintun/WintunApi.cs), [`WintunSession`](../Wintun/WintunSession.cs) |
-| **[Protocols](protocols/)** | Direct Chat, Virtual LAN, Opus Voice Call, RelayDrive Shelf | [`ChatHandler`](../QuicPunchTests/Protocols/ChatHandler.cs), [`VirtualLanHandler`](../QuicPunchTests/Protocols/VirtualLanHandler.cs), [`VoiceCallHandler`](../QuicPunchTests/Protocols/VoiceCallHandler.cs), [`RelayDriveHandler`](../QuicPunchTests/Protocols/RelayDriveHandler.cs) |
-| **[WebUI & App](webui-and-apps/webui-backend-and-gui.md)** | Photino Native GUI, Modular REST Modules, WebSockets, CSRF, Preferences Store | [`WebUiServer`](../QuicPunchTests/WebUi/WebUiServer.cs), [`WebUiWebSocketHub`](../QuicPunchTests/WebUi/WebUiWebSocketHub.cs), [`AppPreferencesStore`](../QuicPunchTests/Settings/AppPreferencesStore.cs) |
+| **[Protocols](protocols/)** | Direct Chat, Virtual LAN, Opus Voice Call, QuicWatch, chat file sharing | [`ChatHandler`](../QuicNet.Shared/Protocols/ChatHandler.cs), [`VirtualLanHandler`](../QuicNet/Protocols/VirtualLanHandler.cs), [`VoiceCallHandler`](../QuicNet.Shared/Protocols/VoiceCallHandler.cs), [`QuicWatch`](../QuicNet/Watch/README.md) |
+| **[WebUI & App](webui-and-apps/webui-backend-and-gui.md)** | Photino Native GUI, Modular REST Modules, WebSockets, CSRF, Preferences Store | [`WebUiServer`](../QuicNet.Shared/WebUi/WebUiServer.cs), [`WebUiWebSocketHub`](../QuicNet.Shared/WebUi/WebUiWebSocketHub.cs), [`AppPreferencesStore`](../QuicNet.Shared/Settings/AppPreferencesStore.cs) |
 | **[Testing Suite](testing/test-suite.md)** | 16 CLI Test Suites: Anti-Replay, Security, Native MsQuic Tuning, Tor, STUN Burst | [`Program`](../QuicPunchTests/Program.cs), [`QuicAdvancedNativeTests`](../QuicPunchTests/Tests/QuicAdvancedNativeTests.cs), [`AntiReplayTests`](../QuicPunchTests/Tests/AntiReplayTests.cs) |

@@ -17,7 +17,7 @@ namespace QuicPunchTests.Tests;
 
             // Test 1: Trust and Untrust Lifecycle
             Console.Write("[TEST 1] Trust and Untrust lifecycle in memory... ");
-            var controller = new PeerAccessController(autoAcceptConnections: false);
+            var controller = new PeerAccessController();
             byte[] certHash1 = RandomNumberGenerator.GetBytes(32);
             byte[] certHash2 = RandomNumberGenerator.GetBytes(32);
 
@@ -33,48 +33,6 @@ namespace QuicPunchTests.Tests;
             controller.UntrustPeer(certHash1);
             if (controller.IsTrusted(certHash1))
                 throw new Exception("certHash1 remained trusted after UntrustPeer.");
-
-            Console.WriteLine("PASSED");
-
-            // Test 2: Auto-Accept Policies and Individual Flags
-            Console.Write("[TEST 2] Auto-accept policies, trust prerequisites and revocation... ");
-            Guid peerId = Guid.NewGuid();
-            var peer = new PeerInfo();
-            peer.SetCertificateHash(certHash1);
-
-            var controllerWithResolver = new PeerAccessController(
-                peerStoreProvider: () => null,
-                peerByIdResolver: id => id == peerId ? peer : null,
-                peerByCertHashResolver: (byte[] hash, out PeerInfo? p) =>
-                {
-                    if (CryptographicOperations.FixedTimeEquals(hash, certHash1))
-                    {
-                        p = peer;
-                        return true;
-                    }
-                    p = null;
-                    return false;
-                },
-                autoAcceptConnections: false,
-                autoAcceptUntrusted: false);
-
-            // Cannot auto-accept an untrusted peer
-            controllerWithResolver.SetPeerAutoAccept(peerId, true);
-            if (controllerWithResolver.IsAutoAccepted(peerId))
-                throw new Exception("Untrusted peer was accepted for auto-accept.");
-
-            // Trust the peer, then enable auto-accept
-            controllerWithResolver.TrustPeer(certHash1);
-            controllerWithResolver.SetPeerAutoAccept(peerId, true);
-            if (!controllerWithResolver.IsAutoAccepted(peerId))
-                throw new Exception("Trusted peer was not auto-accepted.");
-            if (!controllerWithResolver.IsAutoAccepted(certHash1))
-                throw new Exception("Auto-accept by certHash was not propagated.");
-
-            // Revoke auto-accept
-            controllerWithResolver.SetPeerAutoAccept(peerId, false);
-            if (controllerWithResolver.IsAutoAccepted(peerId))
-                throw new Exception("Auto-accept was not revoked.");
 
             Console.WriteLine("PASSED");
 
@@ -97,8 +55,7 @@ namespace QuicPunchTests.Tests;
 
                 var controllerWithStore = new PeerAccessController(
                     peerStoreProvider: () => store,
-                    peerByIdResolver: _ => null,
-                    autoAcceptConnections: false);
+                    peerByIdResolver: _ => null);
 
                 if (!controllerWithStore.IsTrusted(certHash2))
                     throw new Exception("Peer saved in PeerStore was not recognized as trusted.");
@@ -113,8 +70,8 @@ namespace QuicPunchTests.Tests;
             }
 
             // Test 4: Application Guard (EnsureAllowedForApplication)
-            Console.Write("[TEST 4] Application guard rejects untrusted and allows trusted/bypassed... ");
-            var guardController = new PeerAccessController(autoAcceptUntrusted: false);
+            Console.Write("[TEST 4] Application guard rejects untrusted and allows trusted... ");
+            var guardController = new PeerAccessController();
             var testPeer = new PeerInfo();
             testPeer.SetCertificateHash(certHash1);
 
@@ -133,12 +90,6 @@ namespace QuicPunchTests.Tests;
             // Explicitly trust
             guardController.TrustPeer(certHash1);
             guardController.EnsureAllowedForApplication(testPeer); // Should not throw
-
-            // With legacy bypass
-            var bypassController = new PeerAccessController(autoAcceptUntrusted: true);
-            var untrustedPeer = new PeerInfo();
-            untrustedPeer.SetCertificateHash(certHash2);
-            bypassController.EnsureAllowedForApplication(untrustedPeer); // Should not throw
 
             Console.WriteLine("PASSED");
 

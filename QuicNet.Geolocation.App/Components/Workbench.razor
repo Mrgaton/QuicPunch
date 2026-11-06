@@ -1,0 +1,146 @@
+@page "/"
+@implements IAsyncDisposable
+@inject WorkbenchSession Session
+
+<header><b>QuicNet <span>Geolocation</span></b><span class="status" role="status">@Analysis.Status</span></header>
+<main>
+    <section class="intro"><h1>Explora tu conexión.</h1><p>Analiza las señales de red y compara las zonas compatibles en el mapa.</p></section>
+    <div class="controls">
+        <label>Modo de análisis <select id="profile" value="@ProfileName" @onchange="Preset"><option>Personalizado</option><option>Rápido</option><option>Equilibrado</option><option>Detallado</option><option>Sin red</option></select></label>
+        <button id="start" class="primary" disabled="@busy" @onclick="Start">@(view.Running ? "Reiniciar" : "Iniciar análisis")</button>
+        <button id="stop" disabled="@(!view.Running || busy)" @onclick="Stop">Parar</button>
+        <span class="subtle">@(settings.Offline ? "Solo catálogo local" : $"Hasta {settings.Seconds} s · {settings.MaximumProbes:N0} sondeos")</span>
+    </div>
+    <details class="settings" id="configuration"><summary>Ajustes del análisis</summary>
+        <div class="fields">
+            <label>IP pública (opcional)<input @bind="settings.Ip" placeholder="Sin consulta externa de IP" /></label>
+            <label>Familia<select @bind="settings.Family"><option value="ipv4">IPv4</option><option value="ipv6">IPv6</option></select></label>
+            <label>Tiempo máximo · s<input type="number" min="1" max="1800" @bind="settings.Seconds" /></label>
+            <label>Límite de sondeos<input type="number" min="1" max="100000" @bind="settings.MaximumProbes" /></label>
+        </div>
+        <p class="subtle">Se mide la conexión de este equipo. La IP es opcional y solo añade una referencia del catálogo.</p>
+        <p class="subtle">Catálogo incluido: @WorkbenchCoverage.Current.Destinations destinos · @WorkbenchCoverage.Current.Sites emplazamientos · @WorkbenchCoverage.Current.Places lugares. Las etiquetas de infraestructura no equivalen a un catálogo municipal completo.</p>
+        <fieldset disabled="@settings.Offline"><legend>Diagnóstico de red</legend><div class="checks">
+            <label><input type="checkbox" @bind="settings.EnableTunnelAssessment" />Inspeccionar rutas y túneles locales</label>
+            <label><input type="checkbox" @bind="settings.EnableTopology" />Comparar rutas ICMP</label>
+            <label><input type="checkbox" @bind="settings.EnablePathMtu" />Medir Path MTU</label>
+            <label><input type="checkbox" @bind="settings.EnableTcp" />Medir TCP en destinos autorizados</label>
+        </div></fieldset>
+        <details><summary>Parámetros avanzados</summary><div class="fields">
+            <label>Tandas<input type="number" min="1" max="10" @bind="settings.Rounds" /></label>
+            <label>Referencias / tanda<input type="number" min="6" max="64" @bind="settings.BatchSize" /></label>
+            <label>Pings / referencia<input type="number" min="1" max="20" @bind="settings.Samples" /></label>
+            <label>Sondeos / segundo<input type="number" min="1" max="20" @bind="settings.PacketsPerSecond" /></label>
+            <label>Simultáneos<input type="number" min="1" max="32" @bind="settings.Parallelism" /></label>
+            <label>Espera · ms<input type="number" min="100" max="10000" @bind="settings.TimeoutMs" /></label>
+            <label>Rutas<input type="number" min="1" max="8" @bind="settings.TraceCount" /></label>
+            <label>Máximo total de rutas<input type="number" min="1" max="64" @bind="settings.MaximumTraceRoutes" /></label>
+            <label>Repeticiones por ruta<input type="number" min="1" max="3" @bind="settings.TraceRepetitions" /></label>
+            <label>Saltos por ruta<input type="number" min="1" max="64" @bind="settings.MaxHops" /></label>
+            <label>Malla · km<input type="number" min="1" max="5000" @bind="settings.ResolutionKm" /></label>
+            <label>Margen RTT · ms<input type="number" step="0.1" min="0" max="100" @bind="settings.TimingSlackMs" /></label>
+            <label>Máximo de celdas<input type="number" min="72" max="200000" @bind="settings.MaxCells" /></label>
+            <label>Propagación · km/ms<input type="number" step="0.000001" min="1" max="299.792458" @bind="settings.PropagationKmPerMs" /></label>
+            <label class="check"><input type="checkbox" @bind="settings.Offline" />Sin sondeos</label>
+        </div><p class="subtle">La malla controla la resolución del cálculo; no representa la precisión real.</p></details>
+    </details>
+    @if((error ?? view.Error) is {} failure){<p role="alert" class="error">@failure</p>}
+    <section class="result" aria-live="polite">
+        <div class="result-meta"><span>@Analysis.Status</span><span>@Analysis.Probes sondeos · @Analysis.References referencias</span></div>
+        <h2>@Description.Title</h2><p>@Description.Coordinates</p>
+        @if(Analysis.Conditional){<p class="conditional">Refinamiento condicionado a las coordenadas declaradas por los operadores; municipio sin confirmar.</p>}
+        @if(Current?.Diagnostics?.InferredRouterConflict == true){<p class="conflict">Hay ubicaciones publicadas incompatibles entre las señales de red.</p>}
+    </section>
+    <LocationMap @ref="locationMap" Update="Current" SessionKey="@RunKey" />
+    <p class="map-help subtle">Los colores muestran afinidad relativa de red. No son porcentajes de acierto ni confirman una ciudad.</p>
+    <section class="reasoning" id="reasoning" aria-label="Explicación del resultado">
+        <h3>Qué dicen las mediciones</h3><p>@Explanation.Summary</p>
+        <ul>@foreach(var reason in Explanation.Reasons){<li>@reason</li>}</ul>
+        @if(Explanation.Measurements.Length>0)
+        {
+            <details id="measurements"><summary>Ver referencias y latencias <span>@Explanation.Measurements.Length destinos</span></summary>
+                <div class="table-scroll"><table><caption>Observaciones reales · mínimo y mediana de las respuestas ICMP</caption><thead><tr><th>Referencia</th><th>Mínimo</th><th>Mediana</th><th>Respuestas</th><th>Coordenadas</th><th>Mapa</th></tr></thead><tbody>
+                @foreach(var reference in Explanation.Measurements){<tr><td><strong>@reference.Name</strong><small>@reference.Address · @reference.CountryCode</small></td><td>@(reference.MinimumMs?.ToString("F2") ?? "—") ms</td><td>@(reference.MedianMs?.ToString("F2") ?? "—") ms</td><td>@reference.Successes / @reference.Attempts</td><td>@(reference.CoordinatesVerified ? "Verificadas" : "Declaradas")</td><td><button @onclick="()=>Focus(reference.Position,100)">Ver referencia</button></td></tr>}
+                </tbody></table></div>
+            </details>
+        }
+        @if(Explanation.ModelDetail is {} model){<details><summary>Inspeccionar el ajuste matemático</summary><p>@model</p></details>}
+        @if(Current is not null){<a class="download-report" href="analysis.json" download>Descargar resultado JSON</a>}
+    </section>
+    @if(Analysis.Evidence is {} evidence)
+    {
+        <details class="evidence" id="alternatives"><summary>Alternativas geográficas <span>@Analysis.Stage</span></summary>
+            <p class="subtle">Hipótesis de búsqueda abiertas. El orden expresa afinidad de red, no certeza geográfica.</p>
+            <ul class="hypotheses">@foreach(var hypothesis in evidence.Hierarchy.Hypotheses){<li><div><strong>@WorkbenchAnalysis.HypothesisLabel(hypothesis)</strong><small>@WorkbenchAnalysis.Level(hypothesis.Level) · @hypothesis.IndependentSites emplazamientos</small></div><button @onclick="()=>Focus(hypothesis.Position,hypothesis.SearchRadiusKm)">Ver mapa</button></li>}</ul>
+            @if(evidence.Hierarchy.Hypotheses.Count==0){<p>Faltan mediciones para proponer alternativas.</p>}
+            @if(evidence.RouteLocation is {} routing)
+            {
+                <h3>Comparación por rutas y latencias</h3>
+                <p>@routing.UsableRoutes rutas utilizables · @routing.Contrasts.Count contrastes compartidos. La región compatible del mapa se conserva.</p>
+                <ul class="hypotheses">@foreach(var zone in routing.Zones.Take(12)){<li><div><strong>@zone.Label · @zone.CountryCode</strong>@foreach(var reason in zone.Reasons){<small>@reason</small>}</div><button @onclick="()=>Focus(zone.Position,300)">Ver zona</button></li>}</ul>
+            }
+        </details>
+        <details class="evidence" id="network"><summary>Diagnóstico de la conexión <span>@Analysis.Tunnel</span></summary>
+            <p>@Analysis.Tunnel. Una MTU reducida también puede deberse al operador; no confirma una VPN.</p>
+            @if(evidence.Tunnel.MixedRoutes==true){<p class="conditional">Hay rutas directas y de túnel mezcladas. La comparación de perfiles está suspendida.</p>}
+            <p class="subtle">@(view.Settings.EnableTopology ? $"{evidence.Topology.DistinctRoutes} rutas comparadas · {evidence.Topology.SharedRouters.Count} routers compartidos" : "Comparación de rutas desactivada") · @Analysis.Fingerprints.</p>
+            <p class="subtle">La ausencia de indicios no garantiza la ausencia de un túnel.</p>
+            <p class="subtle">@evidence.Topology.Explanation</p>
+            @if(evidence.Topology.Traces.Count>0){<div class="table-scroll"><table><caption>Calidad de los traceroutes</caption><thead><tr><th>Referencia</th><th>Routers estables</th><th>TTL variables</th><th>TTL sin respuesta</th><th>Destino alcanzado</th></tr></thead><tbody>@foreach(var trace in evidence.Topology.Traces){<tr><td>@trace.LandmarkId</td><td>@trace.StablePublicHops</td><td>@trace.UnstableHops</td><td>@trace.MissingHops</td><td>@(trace.Reached ? $"Sí · TTL {trace.DestinationTtl}" : "Sin confirmar")</td></tr>}</tbody></table></div>}
+            <div class="table-scroll"><table><caption>Rutas efectivas de los destinos medidos</caption><thead><tr><th>Destino</th><th>Interfaz</th><th>Origen</th><th>MTU</th></tr></thead><tbody>@foreach(var route in evidence.Tunnel.Routes){<tr><td>@route.Destination</td><td>@(route.InterfaceName ?? "Sin determinar") @(route.Error is null ? "" : "· consulta incompleta")</td><td>@(route.SourceAddress ?? "—")</td><td>@(route.Mtu?.ToString() ?? "—")</td></tr>}</tbody></table></div>
+            @if(evidence.Tunnel.PathMtu.Count>0){<h3>Path MTU</h3><ul>@foreach(var mtu in evidence.Tunnel.PathMtu){<li>@mtu.Destination · @WorkbenchAnalysis.PathMtuStatus(mtu.Status) · inferior: @(mtu.LowerBoundBytes?.ToString() ?? "sin determinar") · superior: @(mtu.UpperBoundBytes?.ToString() ?? "sin determinar") bytes</li>}</ul>}
+            @if(evidence.Supplemental.Count>0){<h3>Mediciones TCP</h3><ul>@foreach(var tcp in evidence.Supplemental){<li>@tcp.LandmarkId · @tcp.Statistics.Successes / @tcp.Statistics.Attempts respuestas · mínimo: @(tcp.Statistics.MinimumMs?.ToString("F2") ?? "—") ms</li>}</ul>}
+        </details>
+    }
+    @if(Current?.Localities is {} localities)
+    {
+        <details class="evidence" id="localities"><summary>Localidades y procedencia <span>@localities.Candidates.Count alternativas</span></summary>
+            <p>@(Analysis.Conditional ? "Hipótesis basada en coordenadas declaradas por operadores" : localities.Evidence)</p><p class="subtle">La proximidad al ajuste no confirma el municipio del dispositivo.</p>
+            @if(localities.Candidates.Count>0){<ul class="hypotheses">@foreach(var candidate in localities.Candidates){<li><div><strong>@candidate.Place.DisplayName</strong><small>@candidate.Place.Region · @candidate.Place.CountryCode · @candidate.DistanceKm.ToString("N0") km de la referencia</small></div><button @onclick="()=>Focus(candidate.Place.Position,Math.Max(5,Math.Min(50,localities.ModelSpreadKm??10)))">Ver mapa</button></li>}</ul>}
+            else{<p>El catálogo no aporta localidades próximas al ajuste. Las comunidades del mapa son contexto geográfico independiente de ese catálogo.</p>}
+            <ul class="subtle">@foreach(var note in localities.Limitations){<li>@note</li>}</ul>
+        </details>
+    }
+    <footer>QuicNet.Geolocation · mapa y catálogos locales · Natural Earth · IPTrust · DB-IP ASN Lite · RIPE · GeoNames</footer>
+</main>
+
+@code {
+    WorkbenchSettings settings = WorkbenchSettings.Preset("Rápido");
+    WorkbenchPreview view = new(false,null,new(),null,0,null);
+    LocationUpdate? Current => view.Update;
+    string? RunKey => view.StartedUtc?.ToString("O");
+    LocationDescription Description => LocationDescription.Describe(Current,view.Running);
+    WorkbenchAnalysis Analysis => WorkbenchAnalysis.Create(Current,view.Settings,view.Running);
+    WorkbenchExplanation Explanation => WorkbenchExplanation.Create(Current);
+    string ProfileName => settings.Offline ? "Sin red" : new[]{"Rápido","Equilibrado","Detallado"}.FirstOrDefault(name=>(settings with{Ip="",Family="ipv4"})==WorkbenchSettings.Preset(name)) ?? "Personalizado";
+    LocationMap? locationMap;
+    Task Focus(GeoPoint point,double radius)=>locationMap?.Focus(point,radius)??Task.CompletedTask;
+    long version=-1;
+    string? error;
+    bool busy;
+    readonly CancellationTokenSource stop=new();
+    Task? timer;
+    protected override void OnInitialized()
+    {
+        Refresh();
+        if(Current is not null) settings=view.Settings with{};
+        timer=Poll();
+    }
+    void Refresh(){version=Session.Version;view=Session.Preview();}
+    async Task Poll()
+    {
+        using var clock=new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+        try { while(await clock.WaitForNextTickAsync(stop.Token)) if(version!=Session.Version) await InvokeAsync(()=>{Refresh();StateHasChanged();}); }
+        catch(OperationCanceledException){}
+    }
+    async Task Act(Func<Task> action)
+    {
+        busy=true;error=null;
+        try{await action();}catch(Exception ex){error=ex.Message;}finally{busy=false;Refresh();}
+    }
+    Task Start()=>Act(()=>Session.StartAsync(settings));
+    Task Stop()=>Act(Session.StopAsync);
+    void Preset(ChangeEventArgs e){if(e.Value?.ToString() is {} name && name!="Personalizado") settings=WorkbenchSettings.Preset(name) with{Ip=settings.Ip,Family=settings.Family};}
+    public async ValueTask DisposeAsync(){stop.Cancel();if(timer is not null) await timer;stop.Dispose();}
+}
+

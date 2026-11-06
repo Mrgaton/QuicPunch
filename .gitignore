@@ -3,6 +3,15 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+
+#Custom
+
+.old
+*.backup/
+wwwroot.backup/
+
+
+
 # User-specific files
 *.rsuser
 *.suo
@@ -17,6 +26,13 @@
 mono_crash.*
 
 # Build results
+.codex-build/
+.codex-*/
+# Never commit recovered release signing keys placed temporarily in the root.
+/private
+/private.pem
+/private.pem.txt
+/release-private*.pem
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
@@ -365,6 +381,19 @@ FodyWeavers.xsd
 # JetBrains Rider / IntelliJ IDEA
 .idea/
 *.sln.iml
+
+# Locally built OpenSSL-backed MsQuic artifacts. Reproduce them with QuicPunch.NativeBuilder.
+/QuicPunch.AndroidProbe/native/arm64-v8a/libtor.so
+/QuicPunch/runtimes/win-x64/native/msquic.dll
+/QuicPunch/runtimes/linux-x64/native/libmsquic.so
+# NativeBuilder source, submodule, compiler, and CMake caches.
+/.artifacts/
+/NativeBuild/
+
+# Local patch/CMake state that may be left by interrupted native builds.
+*.orig
+*.rej
+CMakeUserPresets.json
 
 # Repository hygiene: local identities, synchronization state, and source backups.
 *.pem

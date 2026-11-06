@@ -1,0 +1,1253 @@
+{
+  "schemaVersion": 1,
+  "provenance": "Small public RIPE Atlas seed transcribed 2026-10-19 from cached API pages. Not a fresh/live-verified snapshot. City-label points are infrastructure, not municipality centers.",
+  "sourceUrls": [
+    "https://atlas.ripe.net/api/v2/anchors/",
+    "https://atlas.ripe.net/api/v2/anchors/?page=2",
+    "https://atlas.ripe.net/api/v2/anchors/?page=3",
+    "https://atlas.ripe.net/api/v2/anchors/?page=4",
+    "https://atlas.ripe.net/api/v2/anchors/?page=5",
+    "https://atlas.ripe.net/api/v2/anchors/?page=6",
+    "https://atlas.ripe.net/api/v2/anchors/?page=18"
+  ],
+  "landmarks": [
+    {
+      "id": "ripe-3890-v4",
+      "address": "91.132.103.240",
+      "position": {
+        "latitude": 40.5350509,
+        "longitude": -3.6478347
+      },
+      "source": "RIPE Atlas anchor 3890; cached API operator declaration",
+      "siteId": "geo-site:40.54:-3.65",
+      "asn": 56958,
+      "name": "Alcobendas",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-3890-v6",
+      "address": "2a12:d282:102:f0::1",
+      "position": {
+        "latitude": 40.5350509,
+        "longitude": -3.6478347
+      },
+      "source": "RIPE Atlas anchor 3890; cached API operator declaration",
+      "siteId": "geo-site:40.54:-3.65",
+      "asn": 56958,
+      "name": "Alcobendas",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-3054-v4",
+      "address": "37.46.78.66",
+      "position": {
+        "latitude": 40.5146179,
+        "longitude": -3.3386556
+      },
+      "source": "RIPE Atlas anchor 3054; cached API operator declaration",
+      "siteId": "geo-site:40.51:-3.34",
+      "asn": 15699,
+      "name": "Alcalá de Henares",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-3054-v6",
+      "address": "2a00:6640:e:101::a",
+      "position": {
+        "latitude": 40.5146179,
+        "longitude": -3.3386556
+      },
+      "source": "RIPE Atlas anchor 3054; cached API operator declaration",
+      "siteId": "geo-site:40.51:-3.34",
+      "asn": 15699,
+      "name": "Alcalá de Henares",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1227-v4",
+      "address": "84.88.18.254",
+      "position": {
+        "latitude": 41.38718715,
+        "longitude": 2.11108515
+      },
+      "source": "RIPE Atlas anchor 1227; cached API operator declaration",
+      "siteId": "geo-site:41.39:2.11",
+      "asn": 13041,
+      "name": "Barcelona",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1227-v6",
+      "address": "2001:40b0:2::2",
+      "position": {
+        "latitude": 41.38718715,
+        "longitude": 2.11108515
+      },
+      "source": "RIPE Atlas anchor 1227; cached API operator declaration",
+      "siteId": "geo-site:41.39:2.11",
+      "asn": 13041,
+      "name": "Barcelona",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-4264-v4",
+      "address": "185.66.43.99",
+      "position": {
+        "latitude": 41.3873974,
+        "longitude": 2.168568
+      },
+      "source": "RIPE Atlas anchor 4264; cached API operator declaration",
+      "siteId": "geo-site:41.39:2.17",
+      "asn": 197712,
+      "name": "Barcelona",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-3056-v4",
+      "address": "94.24.115.154",
+      "position": {
+        "latitude": 41.4896391,
+        "longitude": 2.1233146
+      },
+      "source": "RIPE Atlas anchor 3056; cached API operator declaration",
+      "siteId": "geo-site:41.49:2.12",
+      "asn": 15699,
+      "name": "Cerdanyola del Vallès",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-3056-v6",
+      "address": "2a01:1c8:e:101::a",
+      "position": {
+        "latitude": 41.4896391,
+        "longitude": 2.1233146
+      },
+      "source": "RIPE Atlas anchor 3056; cached API operator declaration",
+      "siteId": "geo-site:41.49:2.12",
+      "asn": 15699,
+      "name": "Cerdanyola del Vallès",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2784-v4",
+      "address": "5.1.32.104",
+      "position": {
+        "latitude": 42.1185351,
+        "longitude": 3.129294
+      },
+      "source": "RIPE Atlas anchor 2784; cached API operator declaration",
+      "siteId": "geo-site:42.12:3.13",
+      "asn": 198731,
+      "name": "L'Escala",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2784-v6",
+      "address": "2a00:bc40::513:2104",
+      "position": {
+        "latitude": 42.1185351,
+        "longitude": 3.129294
+      },
+      "source": "RIPE Atlas anchor 2784; cached API operator declaration",
+      "siteId": "geo-site:42.12:3.13",
+      "asn": 198731,
+      "name": "L'Escala",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2484-v4",
+      "address": "156.154.79.254",
+      "position": {
+        "latitude": 40.4479561,
+        "longitude": -3.5740775
+      },
+      "source": "RIPE Atlas anchor 2484; cached API operator declaration",
+      "siteId": "geo-site:40.45:-3.57",
+      "asn": 12008,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2484-v6",
+      "address": "2610:a1:3034:252::254",
+      "position": {
+        "latitude": 40.4479561,
+        "longitude": -3.5740775
+      },
+      "source": "RIPE Atlas anchor 2484; cached API operator declaration",
+      "siteId": "geo-site:40.45:-3.57",
+      "asn": 12008,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1866-v4",
+      "address": "31.47.76.181",
+      "position": {
+        "latitude": 40.4904686,
+        "longitude": -3.6910489
+      },
+      "source": "RIPE Atlas anchor 1866; cached API operator declaration",
+      "siteId": "geo-site:40.49:-3.69",
+      "asn": 15954,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1866-v6",
+      "address": "2a01:a940:445:d::1",
+      "position": {
+        "latitude": 40.4904686,
+        "longitude": -3.6910489
+      },
+      "source": "RIPE Atlas anchor 1866; cached API operator declaration",
+      "siteId": "geo-site:40.49:-3.69",
+      "asn": 15954,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1983-v4",
+      "address": "92.38.171.55",
+      "position": {
+        "latitude": 40.5813059,
+        "longitude": -3.5793711
+      },
+      "source": "RIPE Atlas anchor 1983; cached API operator declaration",
+      "siteId": "geo-site:40.58:-3.58",
+      "asn": 199524,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1983-v6",
+      "address": "2a03:90c0:246::2e",
+      "position": {
+        "latitude": 40.5813059,
+        "longitude": -3.5793711
+      },
+      "source": "RIPE Atlas anchor 1983; cached API operator declaration",
+      "siteId": "geo-site:40.58:-3.58",
+      "asn": 199524,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2833-v4",
+      "address": "82.98.154.62",
+      "position": {
+        "latitude": 40.4393233,
+        "longitude": -3.6212106
+      },
+      "source": "RIPE Atlas anchor 2833; cached API operator declaration",
+      "siteId": "geo-site:40.44:-3.62",
+      "asn": 42612,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2833-v6",
+      "address": "2a02:be8:3:200:216:3eff:fe7b:2391",
+      "position": {
+        "latitude": 40.4393233,
+        "longitude": -3.6212106
+      },
+      "source": "RIPE Atlas anchor 2833; cached API operator declaration",
+      "siteId": "geo-site:40.44:-3.62",
+      "asn": 42612,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2539-v4",
+      "address": "194.156.155.241",
+      "position": {
+        "latitude": 40.439395,
+        "longitude": -3.6210084
+      },
+      "source": "RIPE Atlas anchor 2539; cached API operator declaration",
+      "siteId": "geo-site:40.44:-3.62",
+      "asn": 48386,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2539-v6",
+      "address": "2a0d:5642:113:201:5054:ff:fe7c:cc09",
+      "position": {
+        "latitude": 40.439395,
+        "longitude": -3.6210084
+      },
+      "source": "RIPE Atlas anchor 2539; cached API operator declaration",
+      "siteId": "geo-site:40.44:-3.62",
+      "asn": 48386,
+      "name": "Madrid",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1827-v4",
+      "address": "147.84.200.125",
+      "position": {
+        "latitude": 37.9922399,
+        "longitude": -1.1306544
+      },
+      "source": "RIPE Atlas anchor 1827; cached API operator declaration",
+      "siteId": "geo-site:37.99:-1.13",
+      "asn": 39069,
+      "name": "Murcia",
+      "countryCode": "ES",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2825-v4",
+      "address": "80.77.4.60",
+      "position": {
+        "latitude": 25.0264601,
+        "longitude": 55.1868599
+      },
+      "source": "RIPE Atlas anchor 2825; cached API operator declaration",
+      "siteId": "geo-site:25.03:55.19",
+      "asn": 15412,
+      "name": "Dubai",
+      "countryCode": "AE",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2825-v6",
+      "address": "2001:1a00:acca:130d::4",
+      "position": {
+        "latitude": 25.0264601,
+        "longitude": 55.1868599
+      },
+      "source": "RIPE Atlas anchor 2825; cached API operator declaration",
+      "siteId": "geo-site:25.03:55.19",
+      "asn": 15412,
+      "name": "Dubai",
+      "countryCode": "AE",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2084-v4",
+      "address": "139.99.219.16",
+      "position": {
+        "latitude": -33.9213915,
+        "longitude": 151.1881473
+      },
+      "source": "RIPE Atlas anchor 2084; cached API operator declaration",
+      "siteId": "geo-site:-33.92:151.19",
+      "asn": 16276,
+      "name": "Sydney",
+      "countryCode": "AU",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2084-v6",
+      "address": "2402:1f00:8102:100::68b",
+      "position": {
+        "latitude": -33.9213915,
+        "longitude": 151.1881473
+      },
+      "source": "RIPE Atlas anchor 2084; cached API operator declaration",
+      "siteId": "geo-site:-33.92:151.19",
+      "asn": 16276,
+      "name": "Sydney",
+      "countryCode": "AU",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-4325-v4",
+      "address": "157.20.113.125",
+      "position": {
+        "latitude": -33.9207829,
+        "longitude": 151.1885477
+      },
+      "source": "RIPE Atlas anchor 4325; cached API operator declaration",
+      "siteId": "geo-site:-33.92:151.19",
+      "asn": 152590,
+      "name": "Sydney",
+      "countryCode": "AU",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-4325-v6",
+      "address": "2001:df3:80c0:998::7c",
+      "position": {
+        "latitude": -33.9207829,
+        "longitude": 151.1885477
+      },
+      "source": "RIPE Atlas anchor 4325; cached API operator declaration",
+      "siteId": "geo-site:-33.92:151.19",
+      "asn": 152590,
+      "name": "Sydney",
+      "countryCode": "AU",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2434-v4",
+      "address": "103.144.177.30",
+      "position": {
+        "latitude": 43.7696101,
+        "longitude": -79.3309046
+      },
+      "source": "RIPE Atlas anchor 2434; cached API operator declaration",
+      "siteId": "geo-site:43.77:-79.33",
+      "asn": 53356,
+      "name": "Toronto",
+      "countryCode": "CA",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2434-v6",
+      "address": "2602:fed2:fa0:f::1",
+      "position": {
+        "latitude": 43.7696101,
+        "longitude": -79.3309046
+      },
+      "source": "RIPE Atlas anchor 2434; cached API operator declaration",
+      "siteId": "geo-site:43.77:-79.33",
+      "asn": 53356,
+      "name": "Toronto",
+      "countryCode": "CA",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1440-v4",
+      "address": "192.30.89.87",
+      "position": {
+        "latitude": 49.2847575,
+        "longitude": -123.1121464
+      },
+      "source": "RIPE Atlas anchor 1440; cached API operator declaration",
+      "siteId": "geo-site:49.28:-123.11",
+      "asn": 394256,
+      "name": "Vancouver",
+      "countryCode": "CA",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1440-v6",
+      "address": "2606:9580:89::87",
+      "position": {
+        "latitude": 49.2847575,
+        "longitude": -123.1121464
+      },
+      "source": "RIPE Atlas anchor 1440; cached API operator declaration",
+      "siteId": "geo-site:49.28:-123.11",
+      "asn": 394256,
+      "name": "Vancouver",
+      "countryCode": "CA",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1454-v4",
+      "address": "200.160.6.19",
+      "position": {
+        "latitude": -23.6451486,
+        "longitude": -46.730636
+      },
+      "source": "RIPE Atlas anchor 1454; cached API operator declaration",
+      "siteId": "geo-site:-23.65:-46.73",
+      "asn": 22548,
+      "name": "São Paulo",
+      "countryCode": "BR",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1454-v6",
+      "address": "2001:12ff:0:6000::19",
+      "position": {
+        "latitude": -23.6451486,
+        "longitude": -46.730636
+      },
+      "source": "RIPE Atlas anchor 1454; cached API operator declaration",
+      "siteId": "geo-site:-23.65:-46.73",
+      "asn": 22548,
+      "name": "São Paulo",
+      "countryCode": "BR",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2507-v4",
+      "address": "156.154.135.254",
+      "position": {
+        "latitude": -26.138037,
+        "longitude": 28.1975446
+      },
+      "source": "RIPE Atlas anchor 2507; cached API operator declaration",
+      "siteId": "geo-site:-26.14:28.20",
+      "asn": 12008,
+      "name": "Johannesburg",
+      "countryCode": "ZA",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2507-v6",
+      "address": "2610:a1:3050:252::254",
+      "position": {
+        "latitude": -26.138037,
+        "longitude": 28.1975446
+      },
+      "source": "RIPE Atlas anchor 2507; cached API operator declaration",
+      "siteId": "geo-site:-26.14:28.20",
+      "asn": 12008,
+      "name": "Johannesburg",
+      "countryCode": "ZA",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1806-v4",
+      "address": "85.162.162.14",
+      "position": {
+        "latitude": 50.0494871,
+        "longitude": 14.3307671
+      },
+      "source": "RIPE Atlas anchor 1806; cached API operator declaration",
+      "siteId": "geo-site:50.05:14.33",
+      "asn": 28725,
+      "name": "Prague",
+      "countryCode": "CZ",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1806-v6",
+      "address": "2a07:1f40:1f40:3332::9",
+      "position": {
+        "latitude": 50.0494871,
+        "longitude": 14.3307671
+      },
+      "source": "RIPE Atlas anchor 1806; cached API operator declaration",
+      "siteId": "geo-site:50.05:14.33",
+      "asn": 28725,
+      "name": "Prague",
+      "countryCode": "CZ",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-4402-v4",
+      "address": "193.242.223.11",
+      "position": {
+        "latitude": 50.1281919,
+        "longitude": 8.6014355
+      },
+      "source": "RIPE Atlas anchor 4402; cached API operator declaration",
+      "siteId": "geo-site:50.13:8.60",
+      "asn": 214895,
+      "name": "Frankfurt",
+      "countryCode": "DE",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-4402-v6",
+      "address": "2a0a:14c0:100::1100",
+      "position": {
+        "latitude": 50.1281919,
+        "longitude": 8.6014355
+      },
+      "source": "RIPE Atlas anchor 4402; cached API operator declaration",
+      "siteId": "geo-site:50.13:8.60",
+      "asn": 214895,
+      "name": "Frankfurt",
+      "countryCode": "DE",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1963-v4",
+      "address": "217.243.20.18",
+      "position": {
+        "latitude": 50.1109221,
+        "longitude": 8.6821267
+      },
+      "source": "RIPE Atlas anchor 1963; cached API operator declaration",
+      "siteId": "geo-site:50.11:8.68",
+      "asn": 3320,
+      "name": "Frankfurt",
+      "countryCode": "DE",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1963-v6",
+      "address": "2003:96:e002:d::2",
+      "position": {
+        "latitude": 50.1109221,
+        "longitude": 8.6821267
+      },
+      "source": "RIPE Atlas anchor 1963; cached API operator declaration",
+      "siteId": "geo-site:50.11:8.68",
+      "asn": 3320,
+      "name": "Frankfurt",
+      "countryCode": "DE",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2142-v4",
+      "address": "212.7.3.236",
+      "position": {
+        "latitude": 59.4570977,
+        "longitude": 24.6930161
+      },
+      "source": "RIPE Atlas anchor 2142; cached API operator declaration",
+      "siteId": "geo-site:59.46:24.69",
+      "asn": 8728,
+      "name": "Tallinn",
+      "countryCode": "EE",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-2142-v6",
+      "address": "2001:1b28:8:203::236",
+      "position": {
+        "latitude": 59.4570977,
+        "longitude": 24.6930161
+      },
+      "source": "RIPE Atlas anchor 2142; cached API operator declaration",
+      "siteId": "geo-site:59.46:24.69",
+      "asn": 8728,
+      "name": "Tallinn",
+      "countryCode": "EE",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    },
+    {
+      "id": "ripe-1211-v4",
+      "address": "185.139.168.19",
+      "position": {
+        "latitude": 60.20640511,
+        "longitude": 24.8950162
+      },
+      "source": "RIPE Atlas anchor 1211; cached API operator declaration",
+      "siteId": "geo-site:60.21:24.90",
+      "asn": 203296,
+      "name": "Helsinki",
+      "countryCode": "FI",
+      "kind": "anchor",
+      "locationVerified": false,
+      "coordinateEvidence": "operator-declared",
+      "anycast": false,
+      "uncertaintyKm": 50,
+      "tcpProbeAllowed": true,
+      "tcpPort": 443
+    }
+  ],
+  "places": [
+    {
+      "id": -3890,
+      "name": "Alcobendas",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 40.5350509,
+        "longitude": -3.6478347
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -3054,
+      "name": "Alcalá de Henares",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 40.5146179,
+        "longitude": -3.3386556
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1227,
+      "name": "Barcelona",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 41.38718715,
+        "longitude": 2.11108515
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -4264,
+      "name": "Barcelona",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 41.3873974,
+        "longitude": 2.168568
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -3056,
+      "name": "Cerdanyola del Vallès",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 41.4896391,
+        "longitude": 2.1233146
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2784,
+      "name": "L'Escala",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 42.1185351,
+        "longitude": 3.129294
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2484,
+      "name": "Madrid",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 40.4479561,
+        "longitude": -3.5740775
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1866,
+      "name": "Madrid",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 40.4904686,
+        "longitude": -3.6910489
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1983,
+      "name": "Madrid",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 40.5813059,
+        "longitude": -3.5793711
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2833,
+      "name": "Madrid",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 40.4393233,
+        "longitude": -3.6212106
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2539,
+      "name": "Madrid",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 40.439395,
+        "longitude": -3.6210084
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1827,
+      "name": "Murcia",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ES",
+      "position": {
+        "latitude": 37.9922399,
+        "longitude": -1.1306544
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2825,
+      "name": "Dubai",
+      "municipality": "",
+      "region": "",
+      "countryCode": "AE",
+      "position": {
+        "latitude": 25.0264601,
+        "longitude": 55.1868599
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2084,
+      "name": "Sydney",
+      "municipality": "",
+      "region": "",
+      "countryCode": "AU",
+      "position": {
+        "latitude": -33.9213915,
+        "longitude": 151.1881473
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -4325,
+      "name": "Sydney",
+      "municipality": "",
+      "region": "",
+      "countryCode": "AU",
+      "position": {
+        "latitude": -33.9207829,
+        "longitude": 151.1885477
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2434,
+      "name": "Toronto",
+      "municipality": "",
+      "region": "",
+      "countryCode": "CA",
+      "position": {
+        "latitude": 43.7696101,
+        "longitude": -79.3309046
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1440,
+      "name": "Vancouver",
+      "municipality": "",
+      "region": "",
+      "countryCode": "CA",
+      "position": {
+        "latitude": 49.2847575,
+        "longitude": -123.1121464
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1454,
+      "name": "São Paulo",
+      "municipality": "",
+      "region": "",
+      "countryCode": "BR",
+      "position": {
+        "latitude": -23.6451486,
+        "longitude": -46.730636
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2507,
+      "name": "Johannesburg",
+      "municipality": "",
+      "region": "",
+      "countryCode": "ZA",
+      "position": {
+        "latitude": -26.138037,
+        "longitude": 28.1975446
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1806,
+      "name": "Prague",
+      "municipality": "",
+      "region": "",
+      "countryCode": "CZ",
+      "position": {
+        "latitude": 50.0494871,
+        "longitude": 14.3307671
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -4402,
+      "name": "Frankfurt",
+      "municipality": "",
+      "region": "",
+      "countryCode": "DE",
+      "position": {
+        "latitude": 50.1281919,
+        "longitude": 8.6014355
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1963,
+      "name": "Frankfurt",
+      "municipality": "",
+      "region": "",
+      "countryCode": "DE",
+      "position": {
+        "latitude": 50.1109221,
+        "longitude": 8.6821267
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -2142,
+      "name": "Tallinn",
+      "municipality": "",
+      "region": "",
+      "countryCode": "EE",
+      "position": {
+        "latitude": 59.4570977,
+        "longitude": 24.6930161
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    },
+    {
+      "id": -1211,
+      "name": "Helsinki",
+      "municipality": "",
+      "region": "",
+      "countryCode": "FI",
+      "position": {
+        "latitude": 60.20640511,
+        "longitude": 24.8950162
+      },
+      "population": 0,
+      "featureCode": "ANCHOR_CITY_LABEL",
+      "aliases": ""
+    }
+  ]
+}

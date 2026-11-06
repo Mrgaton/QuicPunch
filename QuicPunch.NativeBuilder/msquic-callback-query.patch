@@ -1,0 +1,26 @@
+--- a/src/core/connection.c
++++ b/src/core/connection.c
+@@ -7230,6 +7230,23 @@
+ 
+     switch (Param) {
+ 
++    // QuicNet private in-process interop: capture the callback already installed
++    // by System.Net.Quic. Native AOT cannot reflect an unmanaged-only entry point.
++    case 0x0500FF51: // QUICNET_PARAM_CONN_CALLBACK_HANDLER
++        if (*BufferLength < sizeof(Connection->ClientCallbackHandler)) {
++            *BufferLength = sizeof(Connection->ClientCallbackHandler);
++            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
++            break;
++        }
++        if (Buffer == NULL) {
++            Status = QUIC_STATUS_INVALID_PARAMETER;
++            break;
++        }
++        *BufferLength = sizeof(Connection->ClientCallbackHandler);
++        *(QUIC_CONNECTION_CALLBACK_HANDLER*)Buffer = Connection->ClientCallbackHandler;
++        Status = QUIC_STATUS_SUCCESS;
++        break;
++
+     case QUIC_PARAM_CONN_QUIC_VERSION:
+ 
+         if (*BufferLength < sizeof(Connection->Stats.QuicVersion)) {

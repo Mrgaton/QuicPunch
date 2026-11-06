@@ -1,0 +1,12 @@
+bin/
+obj/
+**/bin/
+**/obj/
+.catalog-cache/
+.vs/
+*.user
+*.tmp
+__pycache__/
+*.pyc
+result*.json
+perfiles*.json

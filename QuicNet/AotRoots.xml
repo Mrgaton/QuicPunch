@@ -1,0 +1,9 @@
+<linker>
+  <!-- Existing native QUIC hooks intentionally inspect private runtime handles.
+       Keep these and app DTOs visible to reflection in the desktop AOT distribution. -->
+  <assembly fullname="QuicNet" preserve="all" />
+  <assembly fullname="QuicNet.Shared" preserve="all" />
+  <assembly fullname="QuicPunch" preserve="all" />
+  <assembly fullname="QuicPunch.Vpn" preserve="all" />
+  <assembly fullname="System.Net.Quic" preserve="all" />
+</linker>

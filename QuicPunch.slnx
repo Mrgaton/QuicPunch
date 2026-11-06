@@ -1,5 +1,13 @@
 <Solution>
   <Project Path="QuicPunchTests/QuicPunchTests.csproj" Id="21fbd60d-464c-444d-b3f0-0cf48a6dd8b7" />
   <Project Path="QuicPunch/QuicPunch.csproj" />
+  <Project Path="QuicNet.Shared/QuicNet.Shared.csproj" />
+  <Project Path="QuicNet.Geolocation/QuicNet.Geolocation.csproj" />
+  <Project Path="QuicNet.Geolocation.App/QuicNet.Geolocation.App.csproj" />
+  <Project Path="QuicNet/QuicNet.csproj" />
+  <Project Path="QuicPunch.AndroidProbe.Desktop/QuicPunch.AndroidProbe.Desktop.csproj" />
+  <Project Path="QuicPunch.AndroidProbe/QuicPunch.AndroidProbe.csproj" />
+  <Project Path="QuicPunch.NativeBuilder/QuicPunch.NativeBuilder.csproj" />
   <Project Path="QuicPunch.Vpn/QuicPunch.Vpn.csproj" />
+  <Project Path="QuicPunch.Vpn.Tests/QuicPunch.Vpn.Tests.csproj" />
 </Solution>

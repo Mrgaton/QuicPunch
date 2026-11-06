@@ -31,34 +31,17 @@ namespace QuicPunch.PacketHandler
                 }
 
                 long nowTicks = PreciseTime.GetCorrectTime().Ticks;
-                long diffTicks = nowTicks - timestamp;
 
                 if (isResponse)
                 {
-                    // Discard responses with future timestamps or taking longer than 5 seconds (50,000,000 ticks)
-                    if (diffTicks < 0 || diffTicks > 50_000_000)
-                    {
-                        return;
-                    }
-
-                    if (timestamp <= peer.LastSeenPingTimestamp)
-                    {
-                        return;
-                    }
-                    peer.LastSeenPingTimestamp = timestamp;
-
-                    double elapsedMs = diffTicks / 10_000.0;
-
-                    if (elapsedMs >= 0 && elapsedMs <= 5000)
-                    {
-                        peer.Ping = TimeSpan.FromMilliseconds(Math.Max(0.1, Math.Round(elapsedMs, 1)));
-                        peer.LastPingResponseUtc = DateTime.UtcNow;
-                    }
+                    // Legacy UDP pongs carry neither authentication nor a challenge.
+                    // Only authenticated connection traffic may update RTT/liveness.
+                    return;
                 }
                 else
                 {
                     // Discard incoming ping requests whose timestamp drifts more than 5 seconds from current time
-                    if (Math.Abs(diffTicks) > 50_000_000)
+                    if (!PreciseTime.IsTimestampFresh(timestamp, nowTicks))
                     {
                         return;
                     }

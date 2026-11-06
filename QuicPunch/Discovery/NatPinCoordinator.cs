@@ -204,6 +204,15 @@ namespace QuicPunch.Discovery
             }
         }
 
+        public async Task StopAsync()
+        {
+            Task? worker;
+            lock (_lock) { worker = _burstLoopTask; Stop(); }
+            if (worker != null) { try { await worker.ConfigureAwait(false); } catch (OperationCanceledException) { } }
+            await _burstGate.WaitAsync().ConfigureAwait(false);
+            _burstGate.Release();
+        }
+
         private async Task BurstLoopAsync(CancellationToken token)
         {
             while (!token.IsCancellationRequested)
@@ -288,6 +297,7 @@ namespace QuicPunch.Discovery
 
                 lock (_historyLock)
                 {
+                    if (token.IsCancellationRequested || !ReferenceEquals(stunClient, _stunClient)) return CurrentMapping;
                     if (_burstHistory.Count >= HistoryCapacity)
                     {
                         _burstHistory.RemoveFirst();
@@ -315,6 +325,7 @@ namespace QuicPunch.Discovery
                 }
 
                 // 6. Aggregate 3-burst history and compute consolidated mapping
+                if (token.IsCancellationRequested || !ReferenceEquals(stunClient, _stunClient)) return CurrentMapping;
                 var newMapping = ComputeAggregatedMapping();
                 bool changed = HasMappingChanged(CurrentMapping, newMapping);
                 CurrentMapping = newMapping;
@@ -358,10 +369,10 @@ namespace QuicPunch.Discovery
             }
 
             int localPort = _udp?.Client.LocalEndPoint is IPEndPoint localEndpoint ? localEndpoint.Port : 0;
-            var connectionFlags = Utilities.GetConnectionFlags(aggregatedHits.Keys, localPort);
+            var connectionFlags = Utilities.GetConnectionFlags(aggregatedHits, localPort);
             int mostUsedPort = Utilities.GetMostUsedPort(aggregatedHits);
 
-            var ports = aggregatedHits.Keys.Select(k => k.Port).ToList();
+            var ports = aggregatedHits.Keys.Select(static endpoint => endpoint.Port).ToList();
             int minObservedPort = ports.Count > 0 ? ports.Min() : mostUsedPort;
             int maxObservedPort = ports.Count > 0 ? ports.Max() : mostUsedPort;
 
@@ -373,18 +384,26 @@ namespace QuicPunch.Discovery
                 ? mostUsedPort
                 : Math.Clamp(maxObservedPort, 1, 65535);
 
-            var discoveredAddresses = aggregatedHits.Keys
-                .Where(ep => ep.Port is >= 1 and <= 65535 && !SimpleStunClient.IsBogonOrLocalhost(ep.Address))
-                .Select(ep => ep.Address)
-                .Distinct()
+            var addressHits = aggregatedHits
+                .Where(static pair => pair.Key.Port is >= 1 and <= 65535)
+                .Where(static pair => !SimpleStunClient.IsBogonOrLocalhost(pair.Key.Address))
+                .GroupBy(static pair => pair.Key.Address)
+                .Select(static group => new { Address = group.Key, Hits = group.Sum(pair => pair.Value) })
+                .OrderByDescending(static entry => entry.Hits)
+                .ThenBy(static entry => Utilities.IpToUint(entry.Address))
+                .ToArray();
+
+            var discoveredAddresses = (connectionFlags.MultipleIps
+                    ? addressHits.Select(static entry => entry.Address)
+                    : addressHits.Take(1).Select(static entry => entry.Address))
                 .OrderBy(Utilities.IpToUint)
                 .ToArray();
 
             ushort[] portArray = connectionFlags.PortMode switch
             {
                 PortMode.Single => [(ushort)mostUsedPort],
-                PortMode.Multiple => ports.Distinct().Select(p => (ushort)p).OrderBy(p => p).ToArray(),
-                PortMode.Range => Enumerable.Range(minPort, maxPort - minPort + 1).Select(p => (ushort)p).ToArray(),
+                PortMode.Multiple => ports.Distinct().Select(static port => (ushort)port).OrderBy(static port => port).ToArray(),
+                PortMode.Range => [(ushort)minPort, (ushort)maxPort],
                 _ => [(ushort)mostUsedPort]
             };
 
@@ -423,6 +442,19 @@ namespace QuicPunch.Discovery
             {
                 MappingChanged?.Invoke(this, CurrentMapping);
             }
+        }
+
+        public async Task RefreshForNetworkChangeAsync(CancellationToken token = default)
+        {
+            await _burstGate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                ResetMapping();
+                _consecutiveFailures = 0;
+                lock (_lock) { if (_udp != null && _allServers.Length > 0) RebuildStunClient(_udp); }
+            }
+            finally { _burstGate.Release(); }
+            await ExecuteBurstAsync(token).ConfigureAwait(false);
         }
 
         public Dictionary<IPEndPoint, int> GetStunHitsSnapshot()
@@ -486,7 +518,7 @@ namespace QuicPunch.Discovery
                 _stunClient.MappedAddressResolved -= OnStunMappedAddressResolved;
                 _stunClient = null;
             }
-            _burstGate.Dispose();
+            // An in-flight caller may still release this managed gate; GC reclaims it safely.
         }
     }
 
@@ -496,11 +528,7 @@ namespace QuicPunch.Discovery
         public ushort[] PortArray { get; init; } = [];
         public int MostUsedPort { get; init; }
         public ConnectionFlags ConnectionFlags { get; init; } = new();
-        public QuicPunch.NetworkType NetworkType => ConnectionFlags.IsTor
-            ? QuicPunch.NetworkType.Tor
-            : (ConnectionFlags.MultipleIps
-                ? (ConnectionFlags.IsPortRange ? QuicPunch.NetworkType.DynamicPortAndAddress : QuicPunch.NetworkType.DynamicAddress)
-                : (ConnectionFlags.IsPortRange ? QuicPunch.NetworkType.DynamicPort : QuicPunch.NetworkType.Static));
+        public QuicPunch.NetworkType NetworkType => Utilities.GetNetworkType(ConnectionFlags);
         public IReadOnlyDictionary<IPEndPoint, int> AggregatedHits { get; init; } = new Dictionary<IPEndPoint, int>();
         public int HistorySamplesCount { get; init; }
         public bool HasMapping => DiscoveredAddresses.Length > 0 && MostUsedPort > 0;

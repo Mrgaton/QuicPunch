@@ -1,0 +1,29 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Platforms>AnyCPU;x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="AnsiHelper.cs" />
+    <Compile Remove="Base64Url.cs" />
+    <Compile Remove="Crc32CAlgorithm.cs" />
+    <Compile Remove="ECDsaHelper.cs" />
+    <Compile Remove="GithubReleases.cs" />
+    <Compile Remove="IniReader.cs" />
+    <Compile Remove="MessageBox.cs" />
+    <Compile Remove="NetworkTimeProvider.cs" />
+    <Compile Remove="SSLPinning.cs" />
+    <Compile Remove="StreamExtensions.cs" />
+    <Compile Remove="WebViewConfigurer.cs" />
+    <Compile Remove="Xor.cs" />
+  </ItemGroup>
+
+</Project>

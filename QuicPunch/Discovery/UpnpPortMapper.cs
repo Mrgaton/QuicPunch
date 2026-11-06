@@ -37,6 +37,7 @@ public sealed class UpnpPortMapper : IPortMapper
     public string? ServiceType { get; private set; }
     public IPAddress? LocalAddress { get; private set; }
     public IPAddress? GatewayAddress { get; private set; }
+    public string? LastError { get; private set; }
     public bool IsAvailable => ControlUrl != null && !string.IsNullOrEmpty(ServiceType);
     public string ProtocolName => "UPnP IGD";
 
@@ -54,7 +55,7 @@ public sealed class UpnpPortMapper : IPortMapper
             bool mapped = await AddPortMappingAsync(
                 requestedExternalPort, internalPort, null, protoStr, "QuicPunch", leaseDurationSeconds, ct).ConfigureAwait(false);
             if (!mapped)
-                return PortMappingResult.Failed(ProtocolName, "UPnP port mapping failed or was rejected by IGD.");
+                return PortMappingResult.Failed(ProtocolName, LastError ?? "UPnP port mapping failed or was rejected by IGD.");
 
             var extIp = await GetExternalIpAddressAsync(ct).ConfigureAwait(false);
             return PortMappingResult.Succeeded(ProtocolName, extIp, requestedExternalPort, internalPort, lifetime ?? TimeSpan.Zero);
@@ -82,6 +83,7 @@ public sealed class UpnpPortMapper : IPortMapper
         if (IsAvailable)
             return true;
 
+        LastError = null;
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         linkedCts.CancelAfter(TimeSpan.FromSeconds(2.5));
         CancellationToken timeoutToken = linkedCts.Token;
@@ -133,6 +135,7 @@ public sealed class UpnpPortMapper : IPortMapper
             QuicPunchLog.Info($"[UPnP] Discovery notice: {ex.Message}");
         }
 
+        LastError ??= "No UPnP IGD responded to SSDP discovery on the active network.";
         return false;
     }
 
@@ -310,19 +313,41 @@ public sealed class UpnpPortMapper : IPortMapper
 
         try
         {
-            var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
+                LastError = null;
                 return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             }
+            string fault = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            string detail = ReadSoapFault(fault);
+            LastError = $"{action}: HTTP {(int)response.StatusCode}" + (detail.Length > 0 ? $"; {detail}" : ".");
+            QuicPunchLog.Info($"[UPnP] {LastError}");
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { LastError = $"{action}: request timed out or was cancelled."; }
         catch (Exception ex)
         {
+            LastError = $"{action}: {ex.Message}";
             QuicPunchLog.Info($"[UPnP] SOAP {action} request failed: {ex.Message}");
         }
 
         return null;
+    }
+
+    private static string ReadSoapFault(string xml)
+    {
+        try
+        {
+            using var reader = XmlReader.Create(new StringReader(xml), new XmlReaderSettings
+                { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 65536 });
+            var doc = new XmlDocument { XmlResolver = null };
+            doc.Load(reader);
+            string code = doc.SelectSingleNode("//*[local-name()='errorCode']")?.InnerText ?? "";
+            string reason = doc.SelectSingleNode("//*[local-name()='errorDescription']")?.InnerText ?? "";
+            string detail = $"{code} {reason}".Trim();
+            return detail[..Math.Min(detail.Length, 200)].Replace('\r', ' ').Replace('\n', ' ');
+        }
+        catch (XmlException) { return ""; }
     }
 
     private static string? ParseHeader(string response, string headerName)

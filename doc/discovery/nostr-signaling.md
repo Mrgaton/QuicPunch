@@ -1,6 +1,6 @@
 # Nostr Decentralized Signaling & BIP-340 Schnorr
 
-> QuicPunch uses the Nostr protocol (NIP-01) as a serverless, censorship-resistant signaling plane. It includes a complete, high-performance cryptographic implementation of BIP-340 Schnorr signatures on the secp256k1 elliptic curve.
+> QuicPunch uses Nostr (NIP-01) for decentralized signaling. Its BIP-340 signatures and x-only ECDH are backed by NBitcoin.Secp256k1.
 
 ---
 
@@ -17,21 +17,19 @@
 
 ---
 
-## Pure C# BIP-340 secp256k1 Implementation
+## BIP-340 secp256k1 implementation
 
-[`NostrDiscovery.cs`](../../QuicPunch/Discovery/NostrDiscovery.cs) includes a self-contained elliptic curve engine avoiding external C native libraries:
+[`NostrSchnorr.cs`](../../QuicPunch/Discovery/NostrSchnorr.cs) is an adapter for NBitcoin.Secp256k1 4.0.1. It retains the existing 32-byte public keys, 64-byte signatures, x-only ECDH format, and deterministic identity derivation. The derivation maps HKDF output into `(d mod (n-1)) + 1` using fixed-width arithmetic, so existing contacts keep their identities.
 
-### Mathematical Structures & Optimizations
-1. **Jacobian Projective Coordinates**: Points are represented as $(X : Y : Z)$ where $x = X/Z^2$ and $y = Y/Z^3$, eliminating expensive modular inversions during scalar multiplication.
-2. **Field Prime**: $p = 2^{256} - 2^{32} - 977$.
-3. **Curve Order**: $n = 	ext{0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BB5BF58097632615B}$.
-4. **BIP-340 Tagged Hashes**:
-   - `tagged_hash(tag, msg) = SHA256(SHA256(tag) || SHA256(tag) || msg)`
-   - Computes tags for `BIP0340/challenge`, `BIP0340/nonce`, and `BIP0340/aux`.
+Secret-key point multiplication and signing no longer use the application's variable-time BigInteger curve engine. BIP-340 signatures include fresh auxiliary randomness; private key objects and temporary shared-point bytes are cleared when finished. The reliability suite checks the official fixed-message BIP-340 vectors, including invalid keys and signatures.
 
 ---
 
 ## Nostr Signaling Event Flow
+
+Discovery announcements are published every 45 seconds, with jitter. Their signed `created_at` timestamp is valid for three minutes. The receiver retains that original UTC timestamp after validating the event and the endpoint token's certificate; receipt time and repeated or older announcements do not extend availability.
+
+The status API exposes `discoveryAvailableUntilUtc` for discovered, saved and active contacts. A contact with a recent announcement appears as **Disponible** in the **Disponibles** group even before a direct QUIC connection exists. Expiry moves it to **Sin conexión** and updates its presence indicator without requiring a page reload. An established direct connection remains connected independently of announcement age; an ongoing connection attempt keeps its **Conectando** state.
 
 ```mermaid
 sequenceDiagram

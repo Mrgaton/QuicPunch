@@ -24,10 +24,7 @@ namespace QuicPunch.Discovery
         CancellationToken LifecycleToken { get; }
 
         /// <summary>Whether auto-connection on discovery is enabled.</summary>
-        bool AutoConnectOnDiscovery { get; }
-
-        /// <summary>Whether incoming connections are automatically accepted.</summary>
-        bool AutoAcceptConnections { get; }
+        bool AutoConnectDiscoveredPeers { get; }
 
         /// <summary>The local WAN peer identity info.</summary>
         PeerInfo? LocalWanPeer { get; }
@@ -83,6 +80,9 @@ namespace QuicPunch.Discovery
         /// <summary>Reference to the local persistent peer store, if available.</summary>
         PeerStore? PeerStore { get; }
 
+        /// <summary>Whether this exact certificate hash was previously trusted.</summary>
+        bool IsTrustedPeer(byte[] certHash);
+
         /// <summary>Attempts to resolve an active or available peer by certificate hash.</summary>
         bool TryGetActivePeer(byte[] certHash, out PeerInfo? peer);
 
@@ -94,6 +94,9 @@ namespace QuicPunch.Discovery
 
         /// <summary>Dispatches a background interrogation against the specified WAN peer.</summary>
         Task InterrogatePeerAsync(PeerInfo peer, CancellationToken cancellationToken);
+
+        /// <summary>Queues a verified saved contact for persistent probing. True means the contact's own policy handled it.</summary>
+        bool QueueSavedPeerReconnect(PeerInfo peer, bool restartProbe) => false;
 
         /// <summary>Dispatches a background Tor connection against the specified onion target.</summary>
         Task ConnectTorAsync(string onionAddress, int port, CancellationToken cancellationToken);

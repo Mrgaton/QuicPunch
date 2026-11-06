@@ -20,6 +20,15 @@ namespace QuicPunch.Helpers
     {
         internal static HttpClient client = new HttpClient();
 
+        internal static bool IsPrivateLanAddress(IPAddress address)
+        {
+            if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+            if (address.AddressFamily != AddressFamily.InterNetwork) return false;
+            byte[] bytes = address.GetAddressBytes();
+            return bytes[0] == 10 || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) ||
+                   (bytes[0] == 192 && bytes[1] == 168) || (bytes[0] == 169 && bytes[1] == 254);
+        }
+
         public static ushort GetDeterministicPortFromCertHash(byte[] certHash, int minPort = 49152, int maxPort = 65535)
         {
             if (certHash == null || certHash.Length < 4)
@@ -62,7 +71,11 @@ namespace QuicPunch.Helpers
                         g.Address.AddressFamily == AddressFamily.InterNetwork);
 
                     bool isPhysical = ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
-                                     ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
+                                     ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ||
+                                     (OperatingSystem.IsAndroid() &&
+                                      (name.StartsWith("wlan", StringComparison.Ordinal) ||
+                                       name.StartsWith("rmnet", StringComparison.Ordinal) ||
+                                       name.StartsWith("eth", StringComparison.Ordinal)));
 
                     foreach (var unicast in props.UnicastAddresses)
                     {
@@ -81,6 +94,32 @@ namespace QuicPunch.Helpers
                 }
             }
             catch { }
+            if (list.Count == 0 && OperatingSystem.IsAndroid())
+            {
+                // Android often omits gateways and reports unusual interface types to
+                // NetworkInterface. Keep the actual Wi-Fi/cellular addresses available
+                // for host candidates instead of advertising a loopback placeholder.
+                try
+                {
+                    foreach (var ni in NetworkInterface.GetAllNetworkInterfaces()
+                        .OrderBy(n => n.Name.StartsWith("wlan", StringComparison.OrdinalIgnoreCase) ? 0 : 1))
+                    {
+                        string name = ni.Name.ToLowerInvariant();
+                        if (name.StartsWith("lo") || name.StartsWith("tun") || name.StartsWith("vgate") ||
+                            name.StartsWith("ppp") || name.StartsWith("dummy"))
+                            continue;
+                        foreach (var unicast in ni.GetIPProperties().UnicastAddresses)
+                        {
+                            IPAddress ip = unicast.Address;
+                            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+                            if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip) &&
+                                !list.Contains(ip))
+                                list.Add(ip);
+                        }
+                    }
+                }
+                catch { }
+            }
             return list;
         }
 
@@ -153,65 +192,35 @@ namespace QuicPunch.Helpers
             return false;
         }
 
-        public static async Task BigSendAsync(this UdpClient udp, ReadOnlyMemory<byte> data, PeerInfo peerInfo)
+        public static Task BigSendAsync(this UdpClient udp, ReadOnlyMemory<byte> data, PeerInfo peerInfo) =>
+            BigSendAsync(udp, data, peerInfo, null, default);
+
+        internal static async Task BigSendAsync(this UdpClient udp, ReadOnlyMemory<byte> data, PeerInfo peerInfo,
+            PortProbeSchedule? schedule = null, CancellationToken cancellationToken = default)
         {
             if (peerInfo.ActiveEndPoint is { } active &&
                 IsValidPeerAddress(active.Address) && active.Port is >= 1 and <= 65535)
             {
                 try
                 {
-                    await udp.SendAsync(data, active).ConfigureAwait(false);
+                    await udp.SendAsync(data, active, cancellationToken).ConfigureAwait(false);
                 }
                 catch (SocketException) { }
                 catch (ObjectDisposedException) { }
                 return;
             }
 
-            const int MaxEndpointsPerBurst = 32;
-            var targets = new HashSet<IPEndPoint>();
-            var addresses = (peerInfo.Addresses ?? Array.Empty<IPAddress>())
-                .Where(IsValidPeerAddress)
-                .Distinct()
-                .Take(32)
-                .ToArray();
+            IReadOnlyList<IPEndPoint> targets = QuicPunchConnection.BuildProbeTargets(
+                peerInfo,
+                remoteCandidates: null,
+                askedPort: 0,
+                maxEndpoints: schedule == null ? 32 : 16, schedule: schedule);
 
-            if (addresses.Length > 0 && targets.Count < MaxEndpointsPerBurst)
-            {
-                int portSpan = peerInfo.PortArray.Length;
-                long exhaustiveCount = (long)addresses.Length * portSpan;
-
-                if (exhaustiveCount + targets.Count <= MaxEndpointsPerBurst)
-                {
-                    foreach (var address in addresses)
-                    {
-                        foreach (int port in peerInfo.PortArray)
-                            targets.Add(new IPEndPoint(address, port));
-                    }
-                }
-                else
-                {
-                    foreach (var address in addresses)
-                    {
-                        if (targets.Count >= MaxEndpointsPerBurst) break;
-                        int port = peerInfo.PortArray[Random.Shared.Next(peerInfo.PortArray.Length)];
-                        targets.Add(new IPEndPoint(address, port));
-                    }
-
-                    int attempts = 0;
-                    while (targets.Count < MaxEndpointsPerBurst && attempts++ < MaxEndpointsPerBurst * 8)
-                    {
-                        var address = addresses[Random.Shared.Next(addresses.Length)];
-                        int port = peerInfo.PortArray[Random.Shared.Next(peerInfo.PortArray.Length)];
-                        targets.Add(new IPEndPoint(address, port));
-                    }
-                }
-            }
-
-            foreach (var target in targets)
+            foreach (IPEndPoint target in targets)
             {
                 try
                 {
-                    await udp.SendAsync(data, target).ConfigureAwait(false);
+                    await udp.SendAsync(data, target, cancellationToken).ConfigureAwait(false);
                 }
                 catch (SocketException) { }
                 catch (ObjectDisposedException) { return; }
@@ -321,39 +330,59 @@ namespace QuicPunch.Helpers
 
         public static ConnectionFlags GetConnectionFlags(IEnumerable<IPEndPoint> stunResponses, int originalPort)
         {
+            ArgumentNullException.ThrowIfNull(stunResponses);
+            return GetConnectionFlags(
+                stunResponses.Select(static endpoint => new KeyValuePair<IPEndPoint, int>(endpoint, 1)),
+                originalPort);
+        }
+
+        public static ConnectionFlags GetConnectionFlags(IEnumerable<KeyValuePair<IPEndPoint, int>> stunResponses, int originalPort)
+        {
             var cf = new ConnectionFlags();
-            var list = stunResponses?.ToList();
+            var list = stunResponses?
+                .Where(static response => response.Key != null && response.Key.Port is >= 1 and <= 65535 && response.Value > 0)
+                .ToList();
             if (list == null || list.Count == 0)
                 return cf;
 
-            int total = list.Count;
+            long total = list.Sum(static response => (long)response.Value);
 
-            var ipGroups = list.GroupBy(x => x.Address)
-                               .Select(g => g.Count())
-                               .OrderByDescending(c => c)
+            var ipGroups = list.GroupBy(static response => response.Key.Address)
+                               .Select(static group => group.Sum(response => (long)response.Value))
+                               .OrderByDescending(static count => count)
                                .ToArray();
 
             cf.MultipleIps = ipGroups.Length > 1 && ((double)ipGroups[0] / total) < 0.95;
 
-            var portGroups = list.GroupBy(x => x.Port)
-                                 .Select(g => new { Port = g.Key, Hits = g.Count() })
-                                 .OrderByDescending(x => x.Hits)
+            var portGroups = list.GroupBy(static response => response.Key.Port)
+                                 .Select(static group => new { Port = group.Key, Hits = group.Sum(response => (long)response.Value) })
+                                 .OrderByDescending(static port => port.Hits)
                                  .ToArray();
 
             int dominantPort = portGroups[0].Port;
-            double dominantRatio = (double)portGroups[0].Hits / total;
-            double avgHits = (double)total / portGroups.Length;
-
-            if (portGroups.Length == 1 || dominantRatio >= 0.95)
+            if (portGroups.Length == 1)
                 cf.PortMode = PortMode.Single;
-            else if (portGroups.Length <= 8 && portGroups[^1].Hits >= avgHits * 0.40)
+            else if (portGroups.Length <= PortAdvertisementCodec.MaxExplicitPorts)
                 cf.PortMode = PortMode.Multiple;
             else
                 cf.PortMode = PortMode.Range;
 
-            cf.IsNat = cf.MultipleIps || cf.PortMode != PortMode.Single || (originalPort > 0 && dominantPort != originalPort);
+            cf.ExternalPortMayDiffer = cf.PortMode != PortMode.Single || (originalPort > 0 && dominantPort != originalPort);
+            cf.IsNat = cf.MultipleIps || cf.ExternalPortMayDiffer;
 
             return cf;
+        }
+
+        public static QuicPunch.NetworkType GetNetworkType(ConnectionFlags flags)
+        {
+            ArgumentNullException.ThrowIfNull(flags);
+            if (flags.IsTor)
+                return QuicPunch.NetworkType.Tor;
+
+            bool dynamicPorts = flags.PortMode != PortMode.Single;
+            return flags.MultipleIps
+                ? (dynamicPorts ? QuicPunch.NetworkType.DynamicPortAndAddress : QuicPunch.NetworkType.DynamicAddress)
+                : (dynamicPorts ? QuicPunch.NetworkType.DynamicPort : QuicPunch.NetworkType.Static);
         }
 
         public const int TorTokenBinaryLength = 70; // 1 byte flags + 35 bytes onion raw + 2 bytes port + 32 bytes cert hash
@@ -483,33 +512,28 @@ namespace QuicPunch.Helpers
             if (addresses.Count == 0)
                 throw new InvalidOperationException("Peer has no valid IPv4 address to publish in an endpoint token.");
 
-            ushort[] portArray = p.PortArray?.Length > 0 ? p.PortArray : [];
+            ushort[] portArray = PortAdvertisementCodec.Normalize(p.PortArray);
 
             if (portArray.Length == 0)
                 throw new InvalidOperationException("Peer endpoint token requires at least one valid port.");
 
+            PortMode normalizedMode = PortAdvertisementCodec.ResolveMode(portArray, p.ConnectionFlags.PortMode);
+            portArray = PortAdvertisementCodec.NormalizeForMode(portArray, normalizedMode);
             p.PortArray = portArray;
             bool multipleAddresses = addresses.Count > 1;
             p.ConnectionFlags.MultipleIps = multipleAddresses;
-            if (portArray.Length <= 1)
-            {
-                p.ConnectionFlags.PortMode = PortMode.Single;
-            }
-            else if (p.ConnectionFlags.PortMode == PortMode.Single || (p.ConnectionFlags.PortMode == PortMode.Multiple && portArray.Length > 255))
-            {
-                bool isContiguous = true;
-                for (int i = 1; i < portArray.Length; i++)
-                {
-                    if (portArray[i] != portArray[i - 1] + 1)
-                    {
-                        isContiguous = false;
-                        break;
-                    }
-                }
-                p.ConnectionFlags.PortMode = (isContiguous || portArray.Length > 8) ? PortMode.Range : PortMode.Multiple;
-            }
+            p.ConnectionFlags.PortMode = normalizedMode;
 
-            w.Write(p.ConnectionFlags.RawValue);
+            bool hasHostPort = p.PreferredPort > 0;
+            var tokenFlags = new ConnectionFlags(p.ConnectionFlags.RawValue)
+            {
+                ExternalPortMayDiffer = p.ConnectionFlags.ExternalPortMayDiffer || normalizedMode != PortMode.Single ||
+                    (p.PreferredPort > 0 && portArray.Any(port => port != p.PreferredPort)),
+                UsesStructuredPorts = false,
+                HasHostPort = hasHostPort
+            };
+
+            w.Write(tokenFlags.RawValue);
 
             if (multipleAddresses)
             {
@@ -522,14 +546,14 @@ namespace QuicPunch.Helpers
                 w.Write(addresses[0].GetAddressBytes());
             }
 
-            switch (p.ConnectionFlags.PortMode)
+            switch (tokenFlags.PortMode)
             {
                 case PortMode.Single:
                     w.Write((ushort)portArray[0]);
                     break;
                 case PortMode.Multiple:
-                    if (portArray.Length > 255)
-                        throw new InvalidOperationException($"Too many ports ({portArray.Length}) for Multiple port mode. Maximum is 255.");
+                    if (portArray.Length > PortAdvertisementCodec.MaxExplicitPorts)
+                        throw new InvalidOperationException($"Too many ports ({portArray.Length}) for Multiple port mode. Maximum is {PortAdvertisementCodec.MaxExplicitPorts}.");
                     w.Write((byte)portArray.Length);
                     foreach (ushort port in portArray)
                         w.Write((ushort)port);
@@ -543,6 +567,7 @@ namespace QuicPunch.Helpers
             if (!p.TryGetCertificateHash(out var certHash) || certHash.Length != EndpointTokenCertificateHashLength)
                 throw new ArgumentException("Peer certificate hash must be exactly 32 bytes.", nameof(p));
 
+            if (hasHostPort) w.Write(p.PreferredPort);
             w.Write(certHash);
 
             return Base64Url.EncodeToString(ms.ToArray());
@@ -623,7 +648,7 @@ namespace QuicPunch.Helpers
             {
                 return DecodeModernWanEndpointToken(rawToken, flags);
             }
-            catch (Exception) when (TryDecodeLegacyWanToken(rawToken, out var legacyPeer) && legacyPeer != null)
+            catch (Exception) when (!flags.HasHostPort && TryDecodeLegacyWanToken(rawToken, out var legacyPeer) && legacyPeer != null)
             {
                 return legacyPeer;
             }
@@ -684,13 +709,24 @@ namespace QuicPunch.Helpers
                         offset += 2;
                         if (minPort == 0 || minPort > maxPort)
                             throw new InvalidDataException("Invalid port range in endpoint token.");
-                        peer.PortArray = Enumerable.Range(minPort, maxPort - minPort + 1).Select(p => (ushort)p).ToArray();
+                        peer.PortArray = [minPort, maxPort];
+                        if (flags.UsesStructuredPorts)
+                        {
+                            if (offset + 2 > span.Length)
+                                throw new InvalidDataException("Truncated preferred port in endpoint token.");
+                            peer.PreferredPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                            offset += 2;
+                            if (peer.PreferredPort == 0)
+                                throw new InvalidDataException("Endpoint token contains preferred port 0.");
+                        }
                         break;
 
                     case PortMode.Multiple:
                         if (offset + 1 > span.Length)
                             throw new InvalidDataException("Truncated port count in endpoint token.");
                         int portCount = span[offset++];
+                        if (portCount is < 2 or > PortAdvertisementCodec.MaxExplicitPorts)
+                            throw new InvalidDataException($"Endpoint token contains invalid explicit port count {portCount}.");
                         if (offset + (portCount * 2) > span.Length)
                             throw new InvalidDataException("Truncated port array in endpoint token.");
 
@@ -700,14 +736,24 @@ namespace QuicPunch.Helpers
                             ports[i] = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
                             offset += 2;
                         }
-                        peer.PortArray = ports;
+                        if (ports.Any(static port => port == 0) || ports.Distinct().Count() != ports.Length)
+                            throw new InvalidDataException("Endpoint token contains invalid or duplicate ports.");
+                        peer.PortArray = PortAdvertisementCodec.Normalize(ports);
                         break;
 
                     default:
                         throw new InvalidDataException("Invalid port mode in endpoint token.");
                 }
 
-                bool hasValidPorts = (peer.PortArray != null && peer.PortArray.Length > 0);
+                if (flags.HasHostPort)
+                {
+                    if (offset + 2 > span.Length) throw new InvalidDataException("Truncated host port in endpoint token.");
+                    peer.PreferredPort = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(offset, 2));
+                    offset += 2;
+                    if (peer.PreferredPort == 0) throw new InvalidDataException("Endpoint token contains host port 0.");
+                }
+
+                bool hasValidPorts = peer.PortArray is { Length: > 0 } && peer.PortArray.All(static port => port > 0);
 
                 if (!hasValidPorts)
                     throw new InvalidDataException("Endpoint token contains an invalid port configuration.");
@@ -720,6 +766,7 @@ namespace QuicPunch.Helpers
 
                 peer.SetCertificateHash(certHash);
                 peer.Addresses = allAddresses.ToArray();
+                peer.NetworkType = GetNetworkType(flags);
                 return peer;
             }
             catch
@@ -815,7 +862,7 @@ namespace QuicPunch.Helpers
                     Addresses = allAddresses.ToArray(),
                     PortArray = minPort == maxPort
                         ? [(ushort)minPort]
-                        : Enumerable.Range(minPort, maxPort - minPort + 1).Select(p => (ushort)p).ToArray(),
+                        : [(ushort)minPort, (ushort)maxPort],
                     NetworkType = QuicPunch.NetworkType.Static
                 };
                 legacyPeer.ConnectionFlags.PortMode = minPort == maxPort ? PortMode.Single : PortMode.Range;
@@ -890,7 +937,7 @@ namespace QuicPunch.Helpers
                 if (!decodedPeer.TryGetCertificateHash(out var expectedHash))
                     return false;
 
-                byte[] computedHash = SHA3_256.HashData(certPublicKey);
+                byte[] computedHash = Sha3Crypto.Hash256(certPublicKey);
                 if (!CryptographicOperations.FixedTimeEquals(computedHash, expectedHash))
                     return false;
 
@@ -1043,7 +1090,7 @@ namespace QuicPunch.Helpers
 
             if (a.Addresses != null && b.Addresses != null && a.Addresses.Intersect(b.Addresses).Any())
             {
-                if (a.PortArray != null && b.PortArray != null && a.PortArray.Intersect(b.PortArray).Any())
+                if (PortAdvertisementsOverlap(a.ConnectionFlags, a.PortArray, b.ConnectionFlags, b.PortArray))
                     return true;
             }
 
@@ -1058,7 +1105,53 @@ namespace QuicPunch.Helpers
             if (peer.Addresses == null || !peer.Addresses.Contains(endpoint.Address))
                 return false;
 
-            return peer.PortArray != null && peer.PortArray.Contains((ushort)endpoint.Port);
+            if (IsPrivateLanAddress(endpoint.Address) && peer.PreferredPort > 0)
+                return endpoint.Port == peer.PreferredPort;
+            return PortAdvertisementContains(peer.ConnectionFlags, peer.PortArray, endpoint.Port);
+        }
+
+        public static bool PortAdvertisementContains(ConnectionFlags? flags, IEnumerable<ushort>? ports, int port)
+        {
+            if (port is <= 0 or > ushort.MaxValue || ports == null)
+                return false;
+
+            ushort[] normalized = PortAdvertisementCodec.Normalize(ports);
+            if (normalized.Length == 0)
+                return false;
+
+            return flags?.PortMode == PortMode.Range && normalized.Length >= 2
+                ? port >= normalized[0] && port <= normalized[^1]
+                : normalized.Contains((ushort)port);
+        }
+
+        public static bool PortAdvertisementsOverlap(
+            ConnectionFlags? leftFlags,
+            IEnumerable<ushort>? leftPorts,
+            ConnectionFlags? rightFlags,
+            IEnumerable<ushort>? rightPorts)
+        {
+            ushort[] left = PortAdvertisementCodec.Normalize(leftPorts);
+            ushort[] right = PortAdvertisementCodec.Normalize(rightPorts);
+            if (left.Length == 0 || right.Length == 0)
+                return false;
+
+            bool leftRange = leftFlags?.PortMode == PortMode.Range && left.Length >= 2;
+            bool rightRange = rightFlags?.PortMode == PortMode.Range && right.Length >= 2;
+            if (leftRange && rightRange)
+                return left[0] <= right[^1] && right[0] <= left[^1];
+            if (leftRange)
+                return right.Any(port => port >= left[0] && port <= left[^1]);
+            if (rightRange)
+                return left.Any(port => port >= right[0] && port <= right[^1]);
+            return left.Intersect(right).Any();
+        }
+
+        public static bool HasExactAdvertisedPort(ConnectionFlags? flags, IEnumerable<ushort>? ports, int port)
+        {
+            if (port is <= 0 or > ushort.MaxValue || flags?.PortMode == PortMode.Range || ports == null)
+                return false;
+
+            return ports.Contains((ushort)port);
         }
     }
 }

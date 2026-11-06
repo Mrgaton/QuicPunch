@@ -1,0 +1,45 @@
+/* Compact agenda, shared mode controls and a palette tied to the actual transport state. */
+:root[data-connection-mode=tor]{--bg:#19151f;--surface:#221c2b;--surface-2:#2d2538;--surface-3:#3a3048;--text:#e7dfef;--text-strong:#f6f0fc;--muted:#bfb1ce;--muted-2:#b4a4c6;--line:#493c58;--line-strong:#7d6991;--accent:#cfb4ee;--accent-hover:#e1cef8;--accent-soft:#3d2c50;--accent-border:#8c6cab}
+:root[data-connection-mode=tor] .btn.primary{color:#291b38}
+.contact-page-head{flex-wrap:wrap;gap:16px;margin-bottom:18px}
+.contact-page-head h1{display:flex;align-items:center;gap:12px}
+.contact-page-head h1 .count-label{font-size:14px;letter-spacing:0}
+.contact-page-head p{font-size:14px;margin-top:8px}
+#connectionModeStatus[data-error=true]{color:var(--danger)}
+.contact-page-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.connection-mode-selector{display:inline-flex;padding:3px;border:1px solid var(--line-strong);border-radius:9px;gap:3px;background:var(--surface)}
+.connection-mode-selector button{border:0;border-radius:6px;padding:8px 14px;min-height:36px;background:transparent;color:var(--muted);font-size:14px;font-weight:600}
+.connection-mode-selector button[aria-pressed=true]{background:var(--accent-soft);color:var(--text-strong);box-shadow:inset 0 0 0 1px var(--accent-border)}
+.home-workspace .home-network-summary{margin:0 0 18px;font-size:13px}
+.contact-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:16px;border-bottom:1px solid var(--line)}
+.contact-controls .contact-filters{display:flex;border:0;padding:0;gap:4px;flex-wrap:wrap}
+.contact-controls .filter-chip{padding:7px 10px;font-size:13px;min-height:38px}
+.contact-controls .search-field{flex:1 1 180px;max-width:none;min-width:160px}
+.contact-controls .search-field input{font-size:14px}
+.contact-controls .contact-order{gap:6px;font-size:12px;flex:0 1 auto;min-width:0}
+.contact-controls .contact-order .select{min-width:0;width:165px;font-size:13px;min-height:40px}
+.home-workspace .contact-list{display:block;min-height:0;padding:0}
+.contact-group-title{display:flex;align-items:center;gap:8px;padding:14px 18px;font-size:14px;background:var(--surface-2);border-bottom:1px solid var(--line)}
+.contact-group-title .count-label{font-size:12px}
+.contact-state-group+.contact-state-group{border-top:1px solid var(--line)}
+.home-workspace .contact-list .contact-card{display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1.25fr) minmax(270px,1.4fr);align-items:center;gap:12px 20px;padding:14px 18px;border:0;border-bottom:1px solid var(--line);border-radius:0;min-height:84px;background:var(--surface)}
+.home-workspace .contact-list .contact-card:last-child{border-bottom:0}
+.home-workspace .contact-list .contact-card.needs-review{box-shadow:inset 3px 0 var(--warn)}
+.home-workspace .contact-list .contact-card-head{min-width:0;gap:10px}
+.home-workspace .contact-list .avatar{width:38px;height:38px;flex-shrink:0}
+.home-workspace .contact-list .contact-card-name strong{font-size:15px;line-height:1.4}
+.home-workspace .contact-list .contact-identity{font-size:12px}
+.contact-card[data-transport=tor] .contact-identity{color:#d4baf3}
+.home-workspace .contact-list .contact-card-signals{font-size:13px;gap:3px;min-width:0}
+.home-workspace .contact-list .contact-last-connected,.home-workspace .contact-list .contact-last-used{font-size:12px}
+.home-workspace .contact-list .contact-card-meta{margin-top:4px}
+.home-workspace .contact-list .contact-card-actions{margin:0;padding:0;display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.home-workspace .contact-list .contact-card-connection{flex:1 1 130px;width:auto;min-width:0;gap:8px}
+.home-workspace .contact-list .contact-card-connection .badge{font-size:13px;min-width:100px}
+.home-workspace .contact-list .contact-card .btn{font-size:13px;min-height:36px;padding:7px 10px;flex-shrink:0}
+.home-workspace .contact-list .contact-error{font-size:12px}
+.home-workspace .contact-list>.empty-state{padding:32px 20px}
+.add-contact-dialog #invitationCopyValue{width:100%;font-size:13px}
+.add-contact-dialog .add-contact-heading{position:sticky;top:0;background:var(--surface);z-index:1;padding-bottom:8px}
+@media(max-width:1180px){.home-workspace .contact-list .contact-card{grid-template-columns:minmax(160px,1fr) minmax(180px,1fr);gap:10px 16px}.home-workspace .contact-list .contact-card-actions{grid-column:1/-1;justify-content:flex-start}.home-workspace .contact-list .contact-card-connection{flex:0 1 auto;gap:16px}}
+@media(max-width:680px){.contact-page-head .contact-page-actions{width:100%;gap:8px}.contact-page-actions .connection-mode-selector{width:100%;display:flex}.connection-mode-selector button{flex:1}.contact-page-actions>.btn{flex:1;padding:9px;font-size:13px}.contact-controls{gap:10px;padding:12px}.contact-controls .contact-filters{width:100%;gap:3px}.contact-controls .filter-chip{font-size:12px;padding:7px}.contact-controls .search-field{flex-basis:100%;min-width:0}.contact-controls .contact-order{flex:1 1 120px;display:flex;flex-direction:column;align-items:stretch;gap:4px}.contact-controls .contact-order .select{width:100%}.home-workspace .contact-list .contact-card{grid-template-columns:1fr;padding:14px;gap:8px}.home-workspace .contact-list .contact-card-actions{grid-column:auto}.home-workspace .contact-list .contact-card-connection{flex:1 1 100%;justify-content:space-between}.home-workspace .contact-list .contact-card .btn{min-height:40px}.contact-group-title{padding:12px 14px}}

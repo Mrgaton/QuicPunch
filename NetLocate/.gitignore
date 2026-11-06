@@ -1,0 +1,6 @@
+/bin/
+/obj/
+/artifacts/
+/dist/
+# Real recordings are retained outside build/cache folders and are not committed automatically.
+/measurements/
