@@ -15,6 +15,7 @@ function selectChatPeer(peerId) {
   const search = document.getElementById('chatSearchInput');
   if (search) search.value = '';
   document.getElementById('chatSearchBar')?.classList.add('hidden');
+  document.getElementById('chatSearchToggleBtn')?.setAttribute('aria-expanded', 'false');
   for (const id of ['chatOptionsMenu', 'chatHistoryHelp']) {
     const menu = document.getElementById(id);
     if (menu) menu.open = false;
@@ -34,6 +35,9 @@ const connectionErrors = new Map();
 const sendingPeers = new Set();
 const sendCompletions = new Map();
 const fileTransfers = new Map(); // fileId -> { percent, received, total, isUpload, path, name, status }
+const fileActionRequests = new Map();
+const attachmentUploads = new Map();
+let preparingAttachments = 0;
 const messagePages = new Map(); // peerId -> { loaded, nextBefore, loading }
 const pendingSubmissions = new Map();
 const deletedChatMessages = new Set();
@@ -224,15 +228,22 @@ function renderNewChatContacts() {
   if (!list) return;
   const query = document.getElementById('chatNewSearch').value.trim().toLocaleLowerCase('es');
   const peers = chatTrustedPeers(chatStatus).filter(peer => `${peer.name} ${peer.id}`.toLocaleLowerCase('es').includes(query));
-  list.replaceChildren();
-  for (const peer of peers) {
-    const button = QP.button('', 'chat-new-peer', () => {
-      document.getElementById('chatNewDialog').close();
-      openChatPeer(peer.id);
-    });
-    const copy = QP.el('span');
-    copy.append(QP.identity.createCapsule(peer, {snapshot: chatStatus, interactive: false, size: 'compact'}), QP.el('small', 'muted', `ID · ${peer.id}`));
-    button.append(copy); list.append(button);
+  const existing = new Map([...list.children].filter(row => row.dataset.peerId).map(row => [row.dataset.peerId, row]));
+  const keep = new Set(peers.map(peer => peer.id));
+  for (const row of [...list.children]) if (!keep.has(row.dataset.peerId)) row.remove();
+  for (const [index, peer] of peers.entries()) {
+    let button = existing.get(peer.id);
+    if (!button) {
+      button = QP.button('', 'chat-new-peer', () => {
+        document.getElementById('chatNewDialog').close();
+        openChatPeer(peer.id);
+      });
+      button.dataset.peerId = peer.id;
+      const copy = QP.el('span');
+      copy.append(QP.identity.createCapsule(peer, {snapshot: chatStatus, interactive: false, size: 'compact'}), QP.el('small', 'muted', `ID · ${peer.id}`));
+      button.append(copy);
+    } else QP.identity.updateCapsule(button.querySelector('.ci'), peer, {snapshot: chatStatus});
+    if (list.children[index] !== button) list.insertBefore(button, list.children[index] || null);
   }
   if (!peers.length) list.append(QP.el('p', 'empty', query ? 'No hay contactos que coincidan.' : 'Añade un contacto con su invitación para empezar.'));
 }
@@ -281,16 +292,21 @@ function setupChatWorkspace() {
   document.getElementById('chatAliasForm')?.addEventListener('submit', saveChatAlias);
   document.getElementById('chatAliasCancel')?.addEventListener('click', () => document.getElementById('chatAliasDialog').close());
   document.getElementById('chatAliasReset')?.addEventListener('click', event => { document.getElementById('chatAliasInput').value = ''; saveChatAlias(event); });
+  for (const id of ['chatAliasDialog', 'chatClearDialog']) {
+    document.getElementById(id)?.addEventListener('close', () => {
+      if (QP.currentPage === 'chat') document.querySelector('#chatOptionsMenu summary')?.focus({preventScroll: true});
+    });
+  }
   const handle = document.getElementById('chatListResizer');
   const container = document.getElementById('chatContainer');
   const setWidth = width => {
-    width = Math.max(260, Math.min(420, Number(width) || 320));
+    width = Math.max(260, Math.min(420, Number(width) || 360));
     container.style.setProperty('--chat-list-width', `${width}px`);
     handle.setAttribute('aria-valuenow', String(width));
     return width;
   };
   if (handle && container) {
-    try { setWidth(localStorage.getItem('quicnet.chatListWidth')); } catch { setWidth(320); }
+    try { setWidth(localStorage.getItem('quicnet.chatListWidth')); } catch { setWidth(360); }
     const saveWidth = () => { try { localStorage.setItem('quicnet.chatListWidth', handle.getAttribute('aria-valuenow')); } catch {} };
     handle.addEventListener('keydown', event => {
       if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
@@ -315,7 +331,7 @@ function setupChatWorkspace() {
   document.getElementById('chatAddContactBtn')?.addEventListener('click', () => {
     document.getElementById('chatNewDialog').close();
     QP.navigate('dashboard');
-    document.getElementById('tokenInput')?.focus();
+    document.querySelector('#view-dashboard [data-focus-connect]')?.click();
   });
   document.getElementById('chatClearCancelBtn')?.addEventListener('click', () => document.getElementById('chatClearDialog').close());
   document.getElementById('chatClearConfirmBtn')?.addEventListener('click', confirmClearConversation);
@@ -418,13 +434,6 @@ function removeExpiredMessages(ids = null) {
   }
 }
 
-function formatBytes(bytes) {
-  if (!bytes || bytes <= 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
 
 function formatAudioDuration(seconds) {
   return Number.isFinite(seconds) && seconds >= 0 ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '';
@@ -700,7 +709,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('attachBtn')?.addEventListener('click', () => document.getElementById('fileInput').click());
   document.getElementById('fileInput')?.addEventListener('change', e => {
     const files = Array.from(e.target.files || []);
-    files.forEach(f => sendAttachment(f));
+    // Allow choosing the same file again after a failed send or cancelled read.
+    e.target.value = '';
+    queueAttachments(files);
   });
   document.getElementById('chatPeerSearch')?.addEventListener('input', e => {
     peerFilter = e.target.value.trim().toLowerCase();
@@ -730,6 +741,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('chatSearchToggleBtn')?.addEventListener('click', toggleInChatSearch);
   document.getElementById('chatSearchCloseBtn')?.addEventListener('click', closeInChatSearch);
   document.getElementById('chatSearchInput')?.addEventListener('input', onInChatSearchInput);
+  document.getElementById('chatSearchInput')?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeInChatSearch(); }
+  });
   document.getElementById('chatClearBtn')?.addEventListener('click', clearCurrentConversation);
   document.getElementById('chatCloseBtn')?.addEventListener('click', closeCurrentConversation);
   document.getElementById('chatExpirySelect')?.addEventListener('change', e =>
@@ -924,8 +938,11 @@ function onRealtimeFileComplete(data) {
 function onRealtimeFileCancelled(data) {
   if (!data) return;
   const existing = fileTransfers.get(fileTransferKey(data.fileId, data.peerId)) || {};
+  if (['completed', 'sent'].includes(existing.status)) return;
   fileTransfers.set(fileTransferKey(data.fileId, data.peerId), {
     ...existing,
+    received: 0,
+    percent: 0,
     status: 'cancelled'
   });
   updateFileCardDom(data.fileId, data.peerId);
@@ -1057,6 +1074,15 @@ async function loadConversation(peerId, force = false) {
         updateFileCardDom(download.fileId, peerId);
       }
     }
+    for (const upload of page.uploads || []) {
+      if (upload.peerId !== peerId) continue;
+      const key = fileTransferKey(upload.fileId, peerId);
+      // Restore historical receipts without replacing a later retry, cancellation or live progress.
+      if (!fileTransfers.has(key)) {
+        fileTransfers.set(key, { ...upload, isUpload: true, status: 'sent', percent: 100, received: upload.total });
+        updateFileCardDom(upload.fileId, peerId);
+      }
+    }
     mergeHistory(page.messages || []);
     if (!state.loaded) state.nextBefore = page.nextBefore || null;
     state.loaded = true;
@@ -1133,6 +1159,7 @@ function tickConnecting() {
 }
 
 function renderChat(forceScroll = false) {
+  renderAttachmentUploads();
   const latest = latestConversationMessages();
   const activity = peer => Math.max(Number(chatStatus?.chatActivity?.[peer.id]) || 0, latest.get(peer.id)?.timestampMs || 0);
   const allPeers = chatTrustedPeers(chatStatus).sort((a, b) => activity(b) - activity(a) || String(a.name || '').localeCompare(String(b.name || ''), 'es') || String(a.id).localeCompare(String(b.id)));
@@ -1150,7 +1177,11 @@ function renderChat(forceScroll = false) {
   updateDisappearingControl();
   renderTypingIndicator();
 
-  const list = document.getElementById('chatPeers'); QP.clear(list);
+  const list = document.getElementById('chatPeers');
+  const focusedPeer = list?.contains(document.activeElement) ? document.activeElement.closest('[data-peer-id]')?.dataset.peerId : null;
+  QP.clear(list);
+  const hasConversation = selectedPeerId === 'global' || allPeers.some(peer => peer.id === selectedPeerId);
+  document.getElementById('chatContainer')?.classList.toggle('has-no-conversation', !hasConversation);
 
   // 1. Public channel is paused unless the server explicitly enables it.
   if (chatStatus?.chatTransport?.nostrEnabled) {
@@ -1183,6 +1214,7 @@ function renderChat(forceScroll = false) {
 
   // 2. Direct peer list
   const peers = visiblePeers.filter(p => !peerFilter || `${p.name} ${p.endpoint} ${p.id}`.toLowerCase().includes(peerFilter));
+  QP.setText('chatConversationCount', String(peers.length + (chatStatus?.chatTransport?.nostrEnabled ? 1 : 0)));
   if (!visiblePeers.length && !peers.length) {
     list.appendChild(QP.el('div', 'empty', 'No hay conversaciones abiertas. Usa Nueva conversación para elegir un contacto.'));
   } else if (!peers.length && peerFilter) {
@@ -1198,12 +1230,15 @@ function renderChat(forceScroll = false) {
     row.type = 'button';
     const copy = QP.el('div', 'dm-peer-copy');
     const title = QP.el('div', 'dm-peer-name');
-    title.append(QP.identity.createCapsule(peer, {snapshot: chatStatus, slot: 'chat-peer', size: 'compact', interactive: false}));
+    const banner = QP.identity.createCapsule(peer, {snapshot: chatStatus, slot: 'chat-peer', interactive: false});
+    const bannerBody = banner.querySelector('.ci-body');
+    // Keep the certificate's existing ornament around the entire conversation.
+    title.append(...bannerBody.childNodes);
+    banner.removeAttribute('title');
     title.title = peer.name || 'Contacto';
     const titleLine = QP.el('div', 'dm-peer-title-line');
     const preview = conversationPreview(peer.id, latest);
     titleLine.appendChild(title);
-    if (preview?.time) titleLine.appendChild(QP.el('time', 'dm-peer-time', preview.time));
     const presence = QP.userPresence?.(peer, chatStatus);
     const statusLabel = isConnecting ? 'Conectando…' : presence?.label || (active ? 'Conectado' : peer.isQuicConnected ? 'Disponible' : 'Sin conexión');
     const meta = QP.el('div', 'dm-peer-meta', statusLabel);
@@ -1211,20 +1246,27 @@ function renderChat(forceScroll = false) {
       const dot = QP.el('span', 'user-presence-dot'); dot.dataset.userPresence = presence.state;
       dot.title = presence.label; dot.setAttribute('aria-hidden', 'true'); meta.prepend(dot);
     }
-    copy.append(titleLine, meta);
+    const statusLine = QP.el('div', 'dm-peer-status-line');
+    statusLine.appendChild(meta);
+    if (preview?.time) statusLine.appendChild(QP.el('time', 'dm-peer-time', preview.time));
+    copy.append(titleLine, statusLine);
     if (names.get(peer.name) > 1) {
       const identity = QP.el('div', 'dm-peer-device', `ID · …${peer.id.slice(-8)}`);
       identity.title = `Identidad del contacto: ${peer.id}`;
       copy.append(identity);
     }
-    if (preview) copy.appendChild(QP.el('div', 'dm-peer-preview', preview.text));
-    row.append(copy);
+    const excerpt = QP.el('div', `dm-peer-preview${preview ? '' : ' is-placeholder'}`, preview?.text || 'Inicia una conversación');
+    excerpt.title = preview?.text || '';
+    copy.appendChild(excerpt);
+    bannerBody.append(copy);
+    row.append(banner);
     row.setAttribute('aria-current', peer.id === selectedPeerId ? 'true' : 'false');
     row.title = `${peer.name || 'Contacto'} · ${statusLabel}${names.get(peer.name) > 1 ? ` · ${peer.id}` : ''}`;
     row.addEventListener('click', () => openChatPeer(peer.id));
     list.appendChild(row);
   });
   updateChatUnreadBadges();
+  if (focusedPeer) [...list.children].find(row => row.dataset.peerId === focusedPeer)?.focus({preventScroll: true});
   const aliasButton = document.getElementById('chatAliasBtn');
   if (aliasButton) aliasButton.disabled = !allPeers.some(peer => peer.id === selectedPeerId);
   const closeButton = document.getElementById('chatCloseBtn');
@@ -1270,7 +1312,7 @@ function renderChat(forceScroll = false) {
   const connected = !!peer && isChatConnected(peer.id);
   const isConnecting = !!peer && connectingPeers.has(peer.id);
   const failed = !!peer && connectionErrors.has(peer.id);
-  QP.identity.mount(document.getElementById('chatIdentity'), peer || {name: 'Tus conversaciones empiezan aquí'},
+  if (peer) QP.identity.mount(document.getElementById('chatIdentity'), peer,
     {snapshot: chatStatus, slot: 'chat-header', nameId: 'chatPeerName', avatarId: 'chatAvatar'});
   const presence = peer && QP.userPresence?.(peer, chatStatus);
   QP.setText('chatPeerMeta', !peer ? 'Selecciona alguien de la lista'
@@ -1326,10 +1368,28 @@ function renderMessages(peer, forceScroll = false, preserveScroll = false) {
   if (!peer) {
     lastRenderedPeerId = '';
     lastRenderedFingerprint = '';
+    // Keep the welcome actions mounted across status refreshes so keyboard focus survives.
+    if (box.querySelector('.chat-idle')) return;
     QP.clear(box);
-    const welcome = QP.el('div', 'empty-state');
-    welcome.append(QP.el('h3', '', 'Un mensaje puede acercarte'), QP.el('p', '', 'Elige un contacto para hablar en privado o añade uno desde Inicio.'));
-    const link = QP.el('a', 'btn', 'Añadir un contacto'); link.href = '/'; welcome.append(link);
+    const welcome = QP.el('div', 'empty-state chat-idle');
+    const illustration = QP.el('div', 'chat-idle-illustration');
+    illustration.setAttribute('aria-hidden', 'true');
+    const bubble = QP.el('div', 'chat-idle-bubble');
+    for (let i = 0; i < 3; i++) bubble.appendChild(QP.el('span'));
+    illustration.append(QP.el('div', 'chat-idle-bubble-back'), bubble);
+    welcome.append(illustration, QP.el('span', 'chat-idle-eyebrow', 'CERCA, ESTÉS DONDE ESTÉS'),
+      QP.el('h2', '', 'Todo empieza con un hola.'),
+      QP.el('p', 'chat-idle-description', 'Elige una conversación o empieza una nueva. Comparte mensajes, archivos y notas de voz en un mismo lugar.'));
+    const actions = QP.el('div', 'chat-idle-actions');
+    const start = QP.el('button', 'btn primary', 'Nueva conversación');
+    start.type = 'button'; start.setAttribute('aria-haspopup', 'dialog'); start.setAttribute('aria-controls', 'chatNewDialog');
+    start.addEventListener('click', () => document.getElementById('chatNewBtn').click());
+    const add = QP.el('button', 'btn', 'Añadir un contacto'); add.type = 'button';
+    add.addEventListener('click', () => {
+      QP.navigate('dashboard');
+      document.querySelector('#view-dashboard [data-focus-connect]')?.click();
+    });
+    actions.append(start, add); welcome.append(actions);
     box.appendChild(welcome);
     return;
   }
@@ -1337,13 +1397,16 @@ function renderMessages(peer, forceScroll = false, preserveScroll = false) {
   let items = (chatStatus?.chatMessages || []).filter(m =>
     m.peerId === peer.id && (!m.expiresAtUnixMs || m.expiresAtUnixMs > Date.now()));
   if (inChatSearchQuery) {
-    items = items.filter(m => m.message && m.message.toLowerCase().includes(inChatSearchQuery.toLowerCase()));
-    const badge = document.getElementById('chatSearchCount');
-    if (badge) badge.textContent = `${items.length} coincidencia${items.length === 1 ? '' : 's'}`;
+    items = items.filter(m => {
+      const text = typeof ChatSocial !== 'undefined' ? ChatSocial.decode(m.message).text : String(m.message || '');
+      return text.toLocaleLowerCase('es').includes(inChatSearchQuery.toLocaleLowerCase('es'));
+    });
   }
+  const badge = document.getElementById('chatSearchCount');
+  if (badge) badge.textContent = inChatSearchQuery ? `${items.length} coincidencia${items.length === 1 ? '' : 's'}` : '';
 
   const identityKey = JSON.stringify([peer.name, peer.certHash, peer.isTor, peer.networkType, peer.activeTransport, peer.onionAddress]);
-  const currentFingerprint = `${getMessagesFingerprint(items)}:${identityKey}:${chatDayKey(new Date())}:${chatStatus?.avatars?.[peer.id] || ''}:${typeof ChatSocial !== 'undefined' ? ChatSocial.signature(peer.id) : 0}`;
+  const currentFingerprint = `${getMessagesFingerprint(items)}:${identityKey}:${JSON.stringify(inChatSearchQuery)}:${chatDayKey(new Date())}:${chatStatus?.avatars?.[peer.id] || ''}:${typeof ChatSocial !== 'undefined' ? ChatSocial.signature(peer.id) : 0}`;
 
   if (peer.id === lastRenderedPeerId && currentFingerprint === lastRenderedFingerprint && !forceScroll) {
     markChatRead(); updateChatReadingUi();
@@ -1605,7 +1668,7 @@ function appendMessageContent(container, raw, item) {
     if (obj.type === 'file') {
       const src = QP.safeDataUrl(obj.data, 'file');
       if (src) {
-        const link = QP.el('a', 'btn sm accent', `Download ${obj.name || 'file'}`);
+        const link = QP.el('a', 'btn sm accent', `Descargar ${obj.name || 'archivo'}`);
         link.href = src;
         link.download = String(obj.name || 'file').replace(/[\\/:*?"<>|]/g, '_');
         container.appendChild(link);
@@ -1632,6 +1695,7 @@ function createFileCardDom(offer, item) {
   const wrapper = QP.el('div', 'chat-file-wrapper');
   wrapper.dataset.fileId = fileId;
   wrapper.dataset.isMe = String(!!item.isMe);
+  wrapper.dataset.localPath = item.isMe ? offer.path || '' : '';
 
   const isAvailable = transfer.status === 'completed' || (item.isMe && offer.path);
   if (isAvailable && ['cat-img', 'cat-video', 'cat-audio'].includes(cat.cls)) {
@@ -1650,20 +1714,26 @@ function createFileCardDom(offer, item) {
   const nameEl = QP.el('div', 'file-card-name', fileName);
   nameEl.title = fileName;
 
-  let statusLabel = `${cat.label} · ${formatBytes(fileSize)}`;
+  let statusLabel = `${cat.label} · ${QP.fmtBytes(fileSize)}`;
   if (transfer.status === 'downloading' || transfer.status === 'transferring') {
     const pct = transfer.percent || 0;
-    const recStr = formatBytes(transfer.received || 0);
-    const totStr = formatBytes(fileSize);
-    statusLabel = `${transfer.isUpload ? 'Uploading' : 'Downloading'} ${pct}% (${recStr} / ${totStr})`;
+    const recStr = QP.fmtBytes(transfer.received || 0);
+    const totStr = QP.fmtBytes(fileSize);
+    statusLabel = `${transfer.isUpload ? 'Enviando' : 'Descargando'} ${pct}% (${recStr} / ${totStr})`;
   } else if (transfer.status === 'completed') {
-    statusLabel = `Downloaded · ${formatBytes(fileSize)}`;
+    statusLabel = `Descargado · ${QP.fmtBytes(fileSize)}`;
   } else if (transfer.status === 'cancelled') {
-    statusLabel = `Cancelled · ${formatBytes(fileSize)}`;
+    statusLabel = `Cancelado · ${QP.fmtBytes(fileSize)}`;
   } else if (transfer.status === 'paused') {
-    statusLabel = `Paused · ${formatBytes(transfer.received || 0)} / ${formatBytes(fileSize)}`;
+    statusLabel = `En pausa · ${QP.fmtBytes(transfer.received || 0)} / ${QP.fmtBytes(fileSize)}`;
   } else if (transfer.status === 'verifying') {
-    statusLabel = `Checking saved data · ${formatBytes(transfer.received || 0)}`;
+    statusLabel = `Verificando datos guardados · ${QP.fmtBytes(transfer.received || 0)}`;
+  } else if (transfer.status === 'error') {
+    statusLabel = transfer.error || 'No se pudo completar la transferencia';
+  } else if (transfer.status === 'sent') {
+    statusLabel = 'Recibido y verificado por el contacto';
+  } else if (item.isMe && offer.path && (item.isConfirmed || item.deliveryState === 'sent')) {
+    statusLabel = `${QP.fmtBytes(fileSize)} · Disponible para que el contacto lo descargue`;
   }
 
   const metaEl = QP.el('div', 'file-card-meta', statusLabel);
@@ -1687,42 +1757,44 @@ function createFileCardDom(offer, item) {
   // Action Buttons column
   const actionCol = QP.el('div', 'file-card-actions');
 
-  if (transfer.status === 'completed' || (item.isMe && offer.path)) {
+  if ((transfer.status === 'completed' || (item.isMe && offer.path)) && !['downloading', 'transferring', 'verifying'].includes(transfer.status)) {
     const targetPath = transfer.path || offer.path;
-    const openBtn = QP.el('button', 'btn sm', 'Open');
+    const openBtn = QP.el('button', 'btn sm', 'Abrir');
     openBtn.type = 'button';
     openBtn.addEventListener('click', () => openChatFile(fileId, targetPath, false));
 
     const folderBtn = QP.el('button', 'btn sm icon-btn', '📂');
     folderBtn.type = 'button';
-    folderBtn.title = 'Reveal in folder';
+    folderBtn.title = 'Mostrar en la carpeta';
     folderBtn.addEventListener('click', () => openChatFile(fileId, targetPath, true));
 
-    actionCol.append(openBtn, folderBtn);
+    actionCol.appendChild(openBtn);
+    if (QP.capabilities?.platform !== 'android') actionCol.appendChild(folderBtn);
   } else if (['downloading', 'transferring', 'verifying'].includes(transfer.status)) {
-    if (!transfer.isUpload) {
-      const pauseBtn = QP.el('button', 'btn sm', 'Pause');
+    if (!transfer.isUpload && !item.isMe) {
+      const pauseBtn = QP.el('button', 'btn sm', 'Pausar');
       pauseBtn.type = 'button';
       pauseBtn.addEventListener('click', () => pauseChatFile(fileId));
       actionCol.appendChild(pauseBtn);
     }
     const cancelBtn = QP.el('button', 'btn sm danger', '✕');
     cancelBtn.type = 'button';
-    cancelBtn.title = 'Cancel transfer';
+    cancelBtn.title = 'Cancelar transferencia';
+    cancelBtn.setAttribute('aria-label', 'Cancelar transferencia de ' + fileName);
     cancelBtn.addEventListener('click', () => cancelChatFile(fileId));
     actionCol.appendChild(cancelBtn);
   } else if (item.isMe) {
-    const label = QP.el('span', 'file-card-tag', 'Sent');
+    const label = QP.el('span', 'file-card-tag', 'Enviado');
     actionCol.appendChild(label);
   } else {
-    const dlBtn = QP.el('button', 'btn sm primary', transfer.received > 0 ? '▶ Resume' : '⬇️ Download');
+    const dlBtn = QP.el('button', 'btn sm primary', transfer.received > 0 ? '▶ Reanudar' : '⬇️ Descargar');
     dlBtn.type = 'button';
     dlBtn.addEventListener('click', () => downloadChatFile(fileId, fileName, fileSize));
     actionCol.appendChild(dlBtn);
     if (transfer.received > 0) {
       const discardBtn = QP.el('button', 'btn sm danger', '✕');
       discardBtn.type = 'button';
-      discardBtn.title = 'Discard download';
+      discardBtn.title = 'Descartar descarga';
       discardBtn.addEventListener('click', () => cancelChatFile(fileId));
       actionCol.appendChild(discardBtn);
     }
@@ -1744,6 +1816,16 @@ function updateFileCardDom(fileId, peerId = selectedPeerId) {
     const fillEl = card.querySelector('.file-card-progress-fill');
     const trackEl = card.querySelector('.file-card-progress');
     const actionsEl = card.querySelector('.file-card-actions');
+    // Progress packets change counts, not actions. Keep controls mounted so a
+    // keyboard focus or an in-progress click survives the next packet.
+    const actionMode = ['downloading', 'transferring', 'verifying'].includes(transfer.status) ? 'active'
+      : ['paused', 'error', 'cancelled'].includes(transfer.status) ? 'resume' : transfer.status;
+    const actionState = JSON.stringify([actionMode, !!transfer.isUpload,
+      actionMode === 'resume' && transfer.received > 0,
+      actionMode === 'completed' ? transfer.path || '' : '',
+      actionMode === 'resume' ? transfer.total || 0 : 0]);
+    const refreshActions = actionsEl && actionsEl.dataset.state !== actionState;
+    if (refreshActions) actionsEl.dataset.state = actionState;
     const nameEl = card.querySelector('.file-card-name');
     const fileName = nameEl ? nameEl.textContent : (transfer.name || 'file');
     const cat = getFileCategory(fileName);
@@ -1752,27 +1834,31 @@ function updateFileCardDom(fileId, peerId = selectedPeerId) {
     if (fillEl) fillEl.style.width = `${pct}%`;
 
     if (['downloading', 'transferring', 'verifying'].includes(transfer.status)) {
-      if (actionsEl && !transfer.isUpload && wrapper.dataset.isMe !== 'true') {
+      if (refreshActions) {
         QP.clear(actionsEl);
-        const pauseBtn = QP.el('button', 'btn sm', 'Pause');
-        pauseBtn.type = 'button';
-        pauseBtn.addEventListener('click', () => pauseChatFile(fileId));
+        if (!transfer.isUpload && wrapper.dataset.isMe !== 'true') {
+          const pauseBtn = QP.el('button', 'btn sm', 'Pausar');
+          pauseBtn.type = 'button';
+          pauseBtn.addEventListener('click', () => pauseChatFile(fileId));
+          actionsEl.appendChild(pauseBtn);
+        }
         const cancelBtn = QP.el('button', 'btn sm danger', '✕');
         cancelBtn.type = 'button';
-        cancelBtn.title = 'Discard download';
+        cancelBtn.title = transfer.isUpload ? 'Cancelar envío' : 'Descartar descarga';
+        cancelBtn.setAttribute('aria-label', cancelBtn.title + ': ' + fileName);
         cancelBtn.addEventListener('click', () => cancelChatFile(fileId));
-        actionsEl.append(pauseBtn, cancelBtn);
+        actionsEl.appendChild(cancelBtn);
       }
       if (trackEl) trackEl.classList.add('active');
       if (metaEl) {
-        const recStr = formatBytes(transfer.received || 0);
-        const totStr = formatBytes(transfer.total || 0);
-        metaEl.textContent = `${transfer.isUpload ? 'Uploading' : 'Downloading'} ${pct}% (${recStr} / ${totStr})`;
-        if (transfer.status === 'verifying') metaEl.textContent = `Checking saved data · ${recStr}`;
+        const recStr = QP.fmtBytes(transfer.received || 0);
+        const totStr = QP.fmtBytes(transfer.total || 0);
+        metaEl.textContent = `${transfer.isUpload ? 'Enviando' : 'Descargando'} ${pct}% (${recStr} / ${totStr})`;
+        if (transfer.status === 'verifying') metaEl.textContent = `Verificando datos guardados · ${recStr}`;
       }
     } else if (transfer.status === 'completed') {
       if (trackEl) trackEl.classList.remove('active');
-      if (metaEl) metaEl.textContent = `Downloaded · ${formatBytes(transfer.total || 0)}`;
+      if (metaEl) metaEl.textContent = `Descargado · ${QP.fmtBytes(transfer.total || 0)}`;
 
       // Attach media preview if not present
       if (['cat-img', 'cat-video', 'cat-audio'].includes(cat.cls) && !wrapper.querySelector('.chat-file-preview')) {
@@ -1780,40 +1866,47 @@ function updateFileCardDom(fileId, peerId = selectedPeerId) {
         wrapper.insertBefore(preview, card);
       }
 
-      if (actionsEl) {
+      if (refreshActions) {
         QP.clear(actionsEl);
-        const openBtn = QP.el('button', 'btn sm', 'Open');
+        const openBtn = QP.el('button', 'btn sm', 'Abrir');
         openBtn.type = 'button';
         openBtn.addEventListener('click', () => openChatFile(fileId, transfer.path, false));
         const folderBtn = QP.el('button', 'btn sm icon-btn', '📂');
         folderBtn.type = 'button';
-        folderBtn.title = 'Reveal in folder';
+        folderBtn.title = 'Mostrar en la carpeta';
         folderBtn.addEventListener('click', () => openChatFile(fileId, transfer.path, true));
-        actionsEl.append(openBtn, folderBtn);
+        actionsEl.appendChild(openBtn);
+        if (QP.capabilities?.platform !== 'android') actionsEl.appendChild(folderBtn);
       }
     } else if (transfer.status === 'cancelled') {
       if (trackEl) trackEl.classList.remove('active');
-      if (metaEl) metaEl.textContent = 'Transfer cancelled';
+      if (metaEl) metaEl.textContent = 'Transferencia cancelada';
     } else if (transfer.status === 'error') {
       if (trackEl) trackEl.classList.remove('active');
-      if (metaEl) metaEl.textContent = transfer.error || 'Transfer failed';
+      if (metaEl) metaEl.textContent = transfer.error || 'No se pudo completar la transferencia';
     } else if (transfer.status === 'sent') {
       if (trackEl) trackEl.classList.remove('active');
-      if (metaEl) metaEl.textContent = 'Received and verified by peer';
+      if (metaEl) metaEl.textContent = 'Recibido y verificado por el contacto';
+    }
+    if (refreshActions && wrapper.dataset.isMe === 'true' && actionMode !== 'active' && wrapper.dataset.localPath) {
+      QP.clear(actionsEl);
+      actionsEl.appendChild(QP.button('Abrir', 'sm', () => openChatFile(fileId, wrapper.dataset.localPath, false)));
+      if (QP.capabilities?.platform !== 'android')
+        actionsEl.appendChild(QP.button('Carpeta', 'sm', () => openChatFile(fileId, wrapper.dataset.localPath, true)));
     }
     if (['paused', 'error', 'cancelled'].includes(transfer.status) && !transfer.isUpload && wrapper.dataset.isMe !== 'true') {
       if (trackEl) trackEl.classList.remove('active');
-      if (metaEl && transfer.status === 'paused') metaEl.textContent = `Paused · ${formatBytes(transfer.received || 0)} / ${formatBytes(transfer.total || 0)}`;
-      if (actionsEl) {
+      if (metaEl && transfer.status === 'paused') metaEl.textContent = `En pausa · ${QP.fmtBytes(transfer.received || 0)} / ${QP.fmtBytes(transfer.total || 0)}`;
+      if (refreshActions) {
         QP.clear(actionsEl);
-        const resumeBtn = QP.el('button', 'btn sm primary', transfer.received > 0 ? '▶ Resume' : '⬇️ Download');
+        const resumeBtn = QP.el('button', 'btn sm primary', transfer.received > 0 ? '▶ Reanudar' : '⬇️ Descargar');
         resumeBtn.type = 'button';
         resumeBtn.addEventListener('click', () => downloadChatFile(fileId, fileName, transfer.total || 0));
         actionsEl.appendChild(resumeBtn);
         if (transfer.received > 0) {
           const discardBtn = QP.el('button', 'btn sm danger', '✕');
           discardBtn.type = 'button';
-          discardBtn.title = 'Discard download';
+          discardBtn.title = 'Descartar descarga';
           discardBtn.addEventListener('click', () => cancelChatFile(fileId));
           actionsEl.appendChild(discardBtn);
         }
@@ -1826,6 +1919,9 @@ async function downloadChatFile(fileId, name, size) {
   if (!selectedPeerId) return;
   const peerId = selectedPeerId;
   const key = fileTransferKey(fileId, peerId);
+  if (fileActionRequests.get(key)?.kind === 'download') return;
+  const request = {kind:'download'};
+  fileActionRequests.set(key, request);
   fileTransfers.set(key, { ...(fileTransfers.get(key) || { percent: 0, received: 0 }), total: size, isUpload: false, status: 'downloading', name });
   updateFileCardDom(fileId, peerId);
   try {
@@ -1834,33 +1930,40 @@ async function downloadChatFile(fileId, name, size) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ peerId, fileId, name, size })
     });
+    if (fileActionRequests.get(key) !== request) return;
     if (res && res.cached && res.path) {
       fileTransfers.set(fileTransferKey(fileId, peerId), { percent: 100, received: size, total: size, isUpload: false, status: 'completed', path: res.path, name });
       updateFileCardDom(fileId, peerId);
-      QP.toast(`File ready: ${name}`, 'success');
+      QP.toast(`Archivo preparado: ${name}`, 'success');
     } else if (res?.download && fileTransfers.get(key)?.status === 'downloading') {
       fileTransfers.set(key, { ...fileTransfers.get(key), ...res.download, isUpload: false });
       updateFileCardDom(fileId, peerId);
     }
   } catch (e) {
+    if (fileActionRequests.get(key) !== request) return;
     if (['paused', 'completed', 'cancelled'].includes(fileTransfers.get(key)?.status)) return;
     fileTransfers.set(key, { ...fileTransfers.get(key), status: 'error', error: e.message });
     updateFileCardDom(fileId, peerId);
     QP.toast(e.message, 'error');
-  }
+  } finally { if (fileActionRequests.get(key) === request) fileActionRequests.delete(key); }
 }
 
 async function pauseChatFile(fileId) {
   const peerId = selectedPeerId;
   if (!peerId) return;
+  const key = fileTransferKey(fileId, peerId);
+  if (fileActionRequests.get(key)?.kind === 'pause') return;
+  const request = {kind:'pause'};
+  fileActionRequests.set(key, request);
   try {
     await QP.api('/api/chat/pause-file', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({peerId, fileId})});
-    const key = fileTransferKey(fileId, peerId);
+    if (fileActionRequests.get(key) !== request) return;
     if (fileTransfers.get(key)?.status !== 'completed') {
       fileTransfers.set(key, { ...fileTransfers.get(key), status: 'paused' });
       updateFileCardDom(fileId, peerId);
     }
-  } catch (e) { QP.toast(e.message, 'error'); }
+  } catch (e) { if (fileActionRequests.get(key) === request) QP.toast(e.message, 'error'); }
+  finally { if (fileActionRequests.get(key) === request) fileActionRequests.delete(key); }
 }
 
 async function openChatFile(fileId, path, openFolder = false) {
@@ -1868,7 +1971,7 @@ async function openChatFile(fileId, path, openFolder = false) {
     await QP.api('/api/chat/open-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileId, path, openFolder })
+      body: JSON.stringify({ peerId: selectedPeerId, fileId, openFolder })
     });
   } catch (e) {
     QP.toast(e.message, 'error');
@@ -1878,17 +1981,22 @@ async function openChatFile(fileId, path, openFolder = false) {
 async function cancelChatFile(fileId) {
   if (!selectedPeerId) return;
   const peerId = selectedPeerId;
+  const key = fileTransferKey(fileId, peerId);
+  if (fileActionRequests.get(key)?.kind === 'cancel') return;
+  const request = {kind:'cancel'};
+  fileActionRequests.set(key, request);
   try {
     await QP.api('/api/chat/cancel-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ peerId, fileId })
     });
-    fileTransfers.set(fileTransferKey(fileId, peerId), { status: 'cancelled' });
+    if (fileActionRequests.get(key) !== request || ['completed', 'sent'].includes(fileTransfers.get(key)?.status)) return;
+    fileTransfers.set(key, { ...fileTransfers.get(key), status: 'cancelled', received: 0, percent: 0 });
     updateFileCardDom(fileId, peerId);
   } catch (e) {
-    QP.toast(e.message, 'error');
-  }
+    if (fileActionRequests.get(key) === request) QP.toast(e.message, 'error');
+  } finally { if (fileActionRequests.get(key) === request) fileActionRequests.delete(key); }
 }
 
 async function connectChat(peerId = selectedPeerId) {
@@ -1979,59 +2087,184 @@ async function sendChatMessage(payload, peerId = selectedPeerId) {
   }
 }
 
-async function sendAttachment(file) {
+function queueAttachments(files) {
+  const available = Math.max(0, 8 - attachmentUploads.size);
+  files.slice(0, available).forEach(file => sendAttachment(file));
+  if (files.length > available) QP.toast(`${files.length - available} archivos no se añadieron: puedes preparar hasta 8 adjuntos a la vez. Vuelve a elegirlos cuando termine la cola.`, 'warn');
+}
+
+function sendAttachment(file) {
   const peerId = selectedPeerId;
   if (!file || !peerId) return;
+  if (attachmentUploads.size >= 8) { QP.toast('Puedes preparar hasta 8 adjuntos a la vez. Termina o descarta los pendientes antes de añadir más.', 'warn'); return; }
+  const job = {id:crypto.randomUUID(), peerId, file, state:'queued', loaded:0, controller:new AbortController()};
+  attachmentUploads.set(job.id, job);
+  renderAttachmentUploads();
+  drainAttachmentUploads();
+}
 
-  // 1. If image, audio, or video clip (<= 10 MB), send inline for instant display in memory
-  if ((file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/')) && file.size <= 10 * 1024 * 1024) {
-    try {
-      const data = await readDataUrl(file);
-      let type = 'file';
-      if (file.type.startsWith('image/')) type = 'image';
-      else if (file.type.startsWith('audio/')) type = 'audio';
-      else if (file.type.startsWith('video/')) type = 'video';
-      const sent = await sendChatMessage(JSON.stringify({ type, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, data }), peerId);
-      if (sent) document.getElementById('fileInput').value = '';
-    } catch(e) {
-      QP.toast(e.message, 'error');
+function renderAttachmentUploads() {
+  const host = document.getElementById('chatAttachmentUploads');
+  if (!host) return;
+  const jobs = [...attachmentUploads.values()].filter(job => job.peerId === selectedPeerId);
+  host.hidden = !jobs.length;
+  if (host.dataset.peer !== selectedPeerId) { host.replaceChildren(); host.dataset.peer = selectedPeerId; }
+  for (const job of jobs) {
+    if (!job.node) {
+      const row = QP.el('div', 'chat-attachment-upload');
+      const info = QP.el('div', 'chat-attachment-upload-info');
+      const title = QP.el('strong', '', job.file.name);
+      const status = QP.el('span', 'chat-attachment-upload-status');
+      const progress = document.createElement('progress');
+      progress.max = Math.max(1, job.file.size); progress.setAttribute('aria-label', `Preparación de ${job.file.name}`);
+      const actions = QP.el('div', 'chat-attachment-upload-actions');
+      info.append(title, status, progress); row.append(info, actions);
+      job.node = row; job.statusNode = status; job.progressNode = progress; job.actionsNode = actions;
     }
-    return;
-  }
-
-  // 2. Large files, documents, archives, videos: On-demand streaming from disk to disk
-  QP.toast(`Sharing "${file.name}" (${formatBytes(file.size)})...`, 'info');
-  try {
-    const csrf = (window.QP_CSRF || (window.QP && window.QP.csrf) || '');
-    const b64Name = btoa(unescape(encodeURIComponent(file.name)));
-    const res = await fetch(`/api/chat/share-file?peerId=${encodeURIComponent(peerId)}`, {
-      method: 'POST',
-      headers: {
-        'X-Peer-Id': peerId,
-        'X-File-Name-B64': b64Name,
-        'X-QuicPunch-CSRF': csrf,
-        'Content-Type': file.type || 'application/octet-stream'
-      },
-      body: file
-    });
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(data.error || 'Failed to share file.');
+    if (job.node.parentElement !== host) host.append(job.node);
+    job.progressNode.value = job.loaded;
+    job.progressNode.hidden = ['queued','error','cancelled'].includes(job.state);
+    job.statusNode.textContent = ({queued:'En cola · '+QP.fmtBytes(job.file.size), reading:'Leyendo archivo…',
+      uploading:`Preparando para compartir · ${QP.fmtBytes(job.loaded)} / ${QP.fmtBytes(job.file.size)}`,
+      sharing:'Publicando el adjunto para el contacto…', cancelled:'Carga cancelada. Puedes volver a intentarlo.', error:job.error})[job.state] || '';
+    const actionState = job.state + ':' + !!job.running + ':' + !!job.publicationUnknown;
+    if (job.actionsNode.dataset.state === actionState) continue;
+    job.actionsNode.dataset.state = actionState;
+    job.actionsNode.replaceChildren();
+    if (['error','cancelled'].includes(job.state)) {
+      const retry = QP.button(job.publicationUnknown ? 'Revisar historial' : 'Reintentar', 'sm', () => {
+        if (job.running) return;
+        if (job.publicationUnknown) { scrollToBottom(true); return; }
+        job.controller = new AbortController(); job.loaded = 0; job.error = ''; job.state = 'queued';
+        renderAttachmentUploads(); drainAttachmentUploads();
+      });
+      const discard = QP.button(job.publicationUnknown ? 'Cerrar aviso' : 'Descartar', 'sm ghost', () => {
+        if (job.running) return;
+        attachmentUploads.delete(job.id); job.node.remove(); renderAttachmentUploads();
+      });
+      retry.disabled = discard.disabled = !!job.running;
+      job.actionsNode.append(retry, discard);
+    } else {
+      const cancel = QP.button('Cancelar carga', 'sm', () => {
+        job.state = 'cancelled'; job.controller.abort(); renderAttachmentUploads(); drainAttachmentUploads();
+      });
+      // Once all bytes have arrived, the server can already be publishing the
+      // offer. Cancelling at that point could misleadingly claim to retract it.
+      cancel.disabled = job.state === 'sharing'; job.actionsNode.append(cancel);
     }
-    QP.toast(`Offered "${file.name}" to peer`, 'success');
-    document.getElementById('fileInput').value = '';
-    scrollToBottom(true);
-  } catch (e) {
-    QP.toast(`File share error: ${e.message}`, 'error');
   }
 }
 
-function readDataUrl(file) {
+function drainAttachmentUploads() {
+  for (const job of attachmentUploads.values()) {
+    if (preparingAttachments >= 2) break;
+    if (job.state !== 'queued') continue;
+    preparingAttachments++;
+    job.running = true;
+    job.state = 'reading';
+    prepareAttachment(job).finally(() => { job.running = false; preparingAttachments--; drainAttachmentUploads(); });
+  }
+  renderAttachmentUploads();
+}
+
+async function prepareAttachment(job) {
+  const {file, peerId, controller} = job;
+  try {
+    if (peerId !== 'global' && !isChatConnected(peerId)) throw new Error('El contacto está desconectado. Reintenta cuando se conecte.');
+    const inline = /^(image|audio|video)\//.test(file.type) && file.size <= 10 * 1024 * 1024;
+    if (job.sharedFileId && job.sharedMessageId) {
+      job.state = 'sharing'; job.loaded = file.size; renderAttachmentUploads();
+      await QP.api('/api/chat/retry-file-offer', {method:'POST', headers:{'Content-Type':'application/json'}, signal:AbortSignal.timeout(60000),
+        body:JSON.stringify({peerId, fileId:job.sharedFileId, msgId:job.sharedMessageId})});
+    } else if (inline) {
+      const data = await readDataUrl(file, controller.signal);
+      controller.signal.throwIfAborted();
+      job.state = 'sharing'; job.loaded = file.size; renderAttachmentUploads();
+      const type = file.type.split('/')[0];
+      if (!await sendChatMessage(JSON.stringify({type, name:file.name, mime:file.type, size:file.size, data}), peerId))
+        throw new Error('No se pudo enviar el adjunto. Puedes volver a intentarlo.');
+    } else {
+      if (peerId === 'global') throw new Error('Comparte este archivo desde una conversación privada.');
+      job.state = 'uploading'; renderAttachmentUploads();
+      await uploadAttachmentFile(job);
+    }
+    attachmentUploads.delete(job.id); job.node?.remove();
+    if (selectedPeerId === peerId) scrollToBottom(true);
+  } catch (error) {
+    job.state = controller.signal.aborted ? 'cancelled' : 'error';
+    job.error = error.name === 'TimeoutError' && job.sharedFileId
+      ? 'QuicNet no confirmó el reintento a tiempo. Puedes reintentar la misma oferta guardada sin volver a cargar el archivo.'
+      : error.message || 'No se pudo preparar el archivo.';
+    job.publicationUnknown = !!error.publicationUnknown;
+  } finally { renderAttachmentUploads(); }
+}
+
+function uploadAttachmentFile(job) {
   return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = () => reject(new Error(r.error?.message || 'No se pudo leer el archivo adjunto.'));
-    r.readAsDataURL(file);
+    const xhr = new XMLHttpRequest(), {file, peerId, controller} = job;
+    let inactivityTimer, settled = false, timedOut = false, bodyDelivered = false;
+    const markActivity = () => {
+      clearTimeout(inactivityTimer);
+      if (!settled) inactivityTimer = setTimeout(() => { timedOut = true; xhr.abort(); }, 60000);
+    };
+    const interrupted = (message) => {
+      const error = new Error(bodyDelivered
+        ? 'No se pudo confirmar si el adjunto se publicó. Revisa el historial antes de volver a elegir el archivo para evitar enviarlo dos veces.'
+        : message);
+      error.publicationUnknown = bodyDelivered;
+      return error;
+    };
+    const abort = () => xhr.abort();
+    const finish = (error, data) => {
+      if (settled) return;
+      settled = true; clearTimeout(inactivityTimer);
+      controller.signal.removeEventListener('abort', abort);
+      error ? reject(error) : resolve(data);
+    };
+    xhr.open('POST', `/api/chat/share-file?peerId=${encodeURIComponent(peerId)}`);
+    xhr.setRequestHeader('X-Peer-Id', peerId);
+    xhr.setRequestHeader('X-File-Name-B64', btoa(unescape(encodeURIComponent(file.name))));
+    xhr.setRequestHeader('X-QuicPunch-CSRF', window.__qp_csrf || '');
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = event => {
+      if (controller.signal.aborted) return;
+      markActivity();
+      job.loaded = event.loaded;
+      if (event.lengthComputable && event.loaded >= event.total) { bodyDelivered = true; job.state = 'sharing'; }
+      renderAttachmentUploads();
+    };
+    xhr.upload.onload = () => { if (!controller.signal.aborted) { bodyDelivered = true; markActivity(); job.state = 'sharing'; renderAttachmentUploads(); } };
+    xhr.onprogress = markActivity;
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        // A disconnected recipient can leave an offer already saved locally.
+        // Retry that identity instead of uploading another copy of the file.
+        if (data.fileId && data.msgId) { job.sharedFileId = data.fileId; job.sharedMessageId = data.msgId; }
+        if (xhr.status < 200 || xhr.status >= 300 || !data.success) throw new Error(data.error || 'No se pudo compartir el archivo.');
+        finish(null, data);
+      } catch (error) { finish(error instanceof SyntaxError ? interrupted('La respuesta de QuicNet no se pudo leer. Vuelve a intentarlo.') : error); }
+    };
+    xhr.onerror = () => finish(interrupted('Se perdió la conexión con QuicNet. Reintenta la carga.'));
+    xhr.onabort = () => finish(timedOut ? interrupted('La carga no ha avanzado durante un minuto. Comprueba la conexión con QuicNet y reintenta.') : new DOMException('Carga cancelada', 'AbortError'));
+    controller.signal.addEventListener('abort', abort, {once:true});
+    if (controller.signal.aborted) { finish(new DOMException('Carga cancelada', 'AbortError')); return; }
+    markActivity();
+    try { xhr.send(file); } catch (error) { finish(error); }
+  });
+}
+
+function readDataUrl(file, signal) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    const abort = () => reader.abort();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error(reader.error?.message || 'No se pudo leer el archivo adjunto.'));
+    reader.onabort = () => reject(new DOMException('Lectura cancelada', 'AbortError'));
+    reader.onloadend = () => signal?.removeEventListener('abort', abort);
+    signal?.addEventListener('abort', abort, {once:true});
+    if (signal?.aborted) { signal.removeEventListener('abort', abort); reject(new DOMException('Lectura cancelada', 'AbortError')); return; }
+    reader.readAsDataURL(file);
   });
 }
 
@@ -2040,7 +2273,7 @@ async function startVoiceRecording() {
   const peerId = selectedPeerId;
   if (!peerId || voiceRecordingPending || voiceRecording) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    QP.toast('Microphone access is not available in this environment.', 'error');
+    QP.toast('El acceso al micrófono no está disponible en este entorno.', 'error');
     return;
   }
   const generation = ++voiceRecordingGeneration;
@@ -2219,13 +2452,10 @@ function insertEmoji(emo) {
 function toggleInChatSearch() {
   const bar = document.getElementById('chatSearchBar');
   if (!bar) return;
-  bar.classList.toggle('hidden');
-  if (!bar.classList.contains('hidden')) {
-    document.getElementById('chatSearchInput')?.focus();
-  } else {
-    inChatSearchQuery = '';
-    renderChatMessagesOnly();
-  }
+  if (!bar.classList.contains('hidden')) { closeInChatSearch(); return; }
+  bar.classList.remove('hidden');
+  document.getElementById('chatSearchToggleBtn')?.setAttribute('aria-expanded', 'true');
+  document.getElementById('chatSearchInput')?.focus();
 }
 
 function closeInChatSearch() {
@@ -2233,7 +2463,9 @@ function closeInChatSearch() {
   inChatSearchQuery = '';
   const searchInput = document.getElementById('chatSearchInput');
   if (searchInput) searchInput.value = '';
+  document.getElementById('chatSearchToggleBtn')?.setAttribute('aria-expanded', 'false');
   renderChatMessagesOnly();
+  document.getElementById('chatSearchToggleBtn')?.focus({preventScroll: true});
 }
 
 function onInChatSearchInput(e) {
@@ -2336,7 +2568,7 @@ function setupDragAndDrop() {
     overlay.classList.add('hidden');
     const files = Array.from(e.dataTransfer?.files || []);
     if (files.length) {
-      files.forEach(f => sendAttachment(f));
+      queueAttachments(files);
     }
   });
 }
@@ -2351,7 +2583,7 @@ function setupClipboardPaste() {
     const files = Array.from(e.clipboardData?.files || []);
     if (files.length > 0) {
       e.preventDefault();
-      files.forEach(f => sendAttachment(f));
+      queueAttachments(files);
     }
   });
 }

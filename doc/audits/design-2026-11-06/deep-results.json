@@ -1,0 +1,161 @@
+[
+  {
+    "name": "saved-permissions-refresh",
+    "open": 0,
+    "focus": {
+      "id": "",
+      "tag": "BODY",
+      "previousConnected": false
+    }
+  },
+  {
+    "name": "edit-contact-a11y",
+    "violations": []
+  },
+  {
+    "name": "delete-contact-confirm",
+    "message": "Delete saved peer \"Ana · Portátil\"? This removes it from the persistent database."
+  },
+  {
+    "name": "admin-request",
+    "body": {
+      "certHash": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      "profile": "administrator"
+    }
+  },
+  {
+    "name": "active-call-844",
+    "rect": {
+      "x": 777.5,
+      "y": 432,
+      "width": 58,
+      "height": 44,
+      "top": 432,
+      "right": 835.5,
+      "bottom": 476,
+      "left": 777.5
+    },
+    "viewport": 390,
+    "disabled": false,
+    "dockClient": 283,
+    "dockScroll": 389,
+    "dockOverflow": "auto",
+    "bodyOverflow": "hidden"
+  },
+  {
+    "name": "active-call-667",
+    "rect": {
+      "x": 613.5,
+      "y": 416,
+      "width": 44,
+      "height": 44,
+      "top": 416,
+      "right": 657.5,
+      "bottom": 460,
+      "left": 613.5
+    },
+    "viewport": 375,
+    "disabled": false,
+    "dockClient": 192,
+    "dockScroll": 367,
+    "dockOverflow": "auto",
+    "bodyOverflow": "hidden"
+  },
+  {
+    "name": "active-call-320",
+    "rect": {
+      "x": 266.5,
+      "y": 416,
+      "width": 44,
+      "height": 44,
+      "top": 416,
+      "right": 310.5,
+      "bottom": 460,
+      "left": 266.5
+    },
+    "viewport": 568,
+    "disabled": false,
+    "elementAtCenter": "",
+    "dockClient": 385,
+    "dockScroll": 385,
+    "dockOverflow": "auto",
+    "bodyOverflow": "hidden"
+  },
+  {
+    "name": "video-settings-a11y",
+    "violations": []
+  },
+  {
+    "name": "disk-path-before-poll",
+    "value": "carpeta/que/estoy/escribiendo"
+  },
+  {
+    "name": "disk-path-after-poll",
+    "value": ""
+  },
+  {
+    "name": "upload-keyboard",
+    "html": "<label class=\"btn accent\" id=\"diskUploadLabel\">Enviar archivos<input type=\"file\" id=\"diskUpload\" multiple=\"\" hidden=\"\"></label>",
+    "tabIndex": -1,
+    "inputDisplay": "none"
+  },
+  {
+    "name": "disk-populated-a11y",
+    "violations": []
+  },
+  {
+    "name": "watch-empty-a11y",
+    "violations": []
+  },
+  {
+    "name": "watch-first-action",
+    "top": 1075.796875,
+    "viewport": 844,
+    "label": "Crear sala"
+  },
+  {
+    "name": "watch-long-name",
+    "width": 390,
+    "scrollWidth": 390,
+    "titleWidth": 265.53125
+  },
+  {
+    "name": "watch-room-a11y",
+    "violations": []
+  },
+  {
+    "name": "watch-role-rejected",
+    "value": "Controller"
+  },
+  {
+    "name": "watch-role-after-refresh",
+    "value": "Controller",
+    "toastVisible": false
+  },
+  {
+    "name": "download-error-a11y",
+    "violations": [
+      {
+        "id": "color-contrast",
+        "nodes": [
+          {
+            "target": [
+              "#status"
+            ],
+            "summary": "Fix any of the following:\n  Element has insufficient color contrast of 2.79 (foreground color: #bd3548, background color: #1b252b, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "download-error",
+    "release": "No hay una versión disponible para esta selección.",
+    "status": "No se pudo consultar el canal stable.",
+    "retryVisible": false
+  },
+  {
+    "name": "download-ready-a11y",
+    "violations": []
+  }
+]

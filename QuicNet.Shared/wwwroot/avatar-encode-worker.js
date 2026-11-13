@@ -3,7 +3,8 @@ import { defaultOptions } from './vendor/avif/meta.js';
 import { readStillFrame, muxAvifSequence } from './avatar-avif-sequence.js';
 import { MAX_AVATAR_BYTES } from './avatar-media.js';
 
-// Speed 2 applies to static images and every animation frame, with adaptive quality/size.
+// Stills use speed 5 for compact output; animations use speed 6 because every
+// frame and size-budget retry requires a full encode. Avoid archival speed 2.
 function resize(frame, size) {
   const source = new OffscreenCanvas(frame.width, frame.height), out = new OffscreenCanvas(size, size);
   source.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(frame.pixels), frame.width, frame.height), 0, 0);
@@ -23,7 +24,7 @@ self.onmessage = async ({ data }) => {
       for (let index = 0; index < frames.length; index++) {
         const frame = frames[index];
         const rgba = size === frame.width ? new Uint8Array(frame.pixels) : resize(frame, size);
-        const encoded = encoder.encode(rgba, size, size, { ...defaultOptions, speed: 2, quality: qualities[attempt], qualityAlpha: 100, subsample: animated ? 1 : 3 });
+        const encoded = encoder.encode(rgba, size, size, { ...defaultOptions, speed: animated ? 6 : 5, quality: qualities[attempt], qualityAlpha: 100, subsample: animated ? 1 : 3 });
         if (!encoded?.byteLength) throw new Error('No se pudo codificar el AVIF.');
         const buffer = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
         encodedFrames.push(animated ? { ...readStillFrame(buffer), duration: frame.duration } : buffer);

@@ -139,17 +139,18 @@ try {
   const result=await page.evaluate(async()=>{
    const requests=[];let release,active=0,maxActive=0;
    const gate=new Promise(resolve=>release=resolve);
+   const settled=async()=>{for(let i=0;i<250&&(preparingAttachments||[...attachmentUploads.values()].some(job=>job.state==='queued'));i++)await new Promise(resolve=>setTimeout(resolve,20));if(preparingAttachments)throw Error('Attachment queue did not settle');};
    QP.api=async(path,options={})=>{
     if(path==='/api/status')return testStatus;
     if(path==='/api/chat-send'){active++;maxActive=Math.max(maxActive,active);requests.push(JSON.parse(options.body));if(requests.length===1)await gate;active--;}
     return {success:true,messages:[],states:[],pins:[]};
    };
    const pending=['uno','dos','tres'].map(name=>sendAttachment(new File([name],name+'.png',{type:'image/png'})));
-   await new Promise(resolve=>setTimeout(resolve,100));const whileBlocked=requests.length;release();await Promise.all(pending);
+   await new Promise(resolve=>setTimeout(resolve,100));const whileBlocked=requests.length;release();await Promise.all(pending);await settled();
    // A failed first request must not discard or deadlock the next attachment.
    let attempts=0;
    QP.api=async(path)=>{if(path==='/api/chat-send'&&++attempts===1)throw Error('Simulated send failure');return {success:true,messages:[],states:[],pins:[]};};
-   await Promise.all(['a','b'].map(name=>sendAttachment(new File([name],name+'.png',{type:'image/png'}))));
+   await Promise.all(['a','b'].map(name=>sendAttachment(new File([name],name+'.png',{type:'image/png'}))));await settled();
    return {whileBlocked,maxActive,names:requests.map(request=>JSON.parse(request.message).name),recipients:requests.map(request=>request.peerId),attempts,busy:sendingPeers.size,tails:sendCompletions.size,notices:testNotices};
   });
   assert.equal(result.whileBlocked,1);assert.equal(result.maxActive,1);assert.deepEqual([...result.names].sort(),['dos.png','tres.png','uno.png']);

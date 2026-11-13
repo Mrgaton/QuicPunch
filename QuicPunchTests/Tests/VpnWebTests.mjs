@@ -5,6 +5,7 @@ const elements = new Map();
 function element(tag = 'div') {
   return { tag, children: [], listeners: {}, style: {}, checked: false, value: '', type: '', disabled: false,
     classList: { add() {}, remove() {}, contains() { return false; } },
+    removeAttribute(key) { delete this[key]; },
     append(...items) { this.children.push(...items); }, appendChild(item) { this.children.push(item); return item; },
     setAttribute(key, value) { this[key] = value; }, addEventListener(event, listener) { this.listeners[event] = listener; }, querySelector() { return null; }, querySelectorAll() { return []; }, focus() {}, showModal() { this.open = true; }, close() { this.open = false; }, remove() {} };
 }
@@ -30,6 +31,9 @@ const context = createContext({ document, QP, console, structuredClone, atob, se
 new Script(code).runInContext(context);
 await context.vpnTest.refreshVpn();
 assert.equal(elements.get('lanEnabled').checked, true);
+status.lan.mtu = 1500;
+await context.vpnTest.refreshVpn();
+assert.equal(elements.get('lanMtu').value, 1500, 'A valid MTU of 1500 is displayed unchanged');
 await context.vpnTest.toggleLan(true);
 assert.ok(requests.some(r => r.path === '/api/lan-toggle'), 'broker-backed toggle reaches the API without an elevation prompt');
 await context.vpnTest.applyLan();
@@ -37,6 +41,13 @@ const saved = JSON.parse(requests.findLast(r => r.path === '/api/vpn/config' && 
 assert.equal(saved.expectedRevision, 7, 'optimistic concurrency revision sent');
 assert.equal(saved.configuration.autoConnect, true, 'Adapter edits preserve existing reconnect choices');
 assert.equal(saved.configuration.mode, 'advanced', 'Adapter edits preserve the legacy mode for unmigrated peers');
+assert.equal(saved.configuration.mtu, 1500, 'Saving preserves a valid MTU of 1500');
+for (const invalid of ['', '1199', '9001', '1420.5']) {
+  elements.get('lanMtu').value = invalid;
+  const before = requests.length;
+  await context.vpnTest.applyLan();
+  assert.equal(requests.length, before, 'Invalid MTU must not be silently replaced or submitted');
+}
 status.lan.active = false; status.lan.requiresAdmin = true; status.lan.canStartWithoutElevation = false;
 config.enabled = false; config.autoConnect = false;
 await context.vpnTest.refreshVpn();
@@ -67,6 +78,12 @@ status.peers = [
   { id: 'untrusted', name: 'D sin autorizar', certHash: 'untrusted', isTrusted: false, isQuicConnected: true, vpnCanStart: true }
 ];
 status.savedPeers = [{ certHash: 'saved', name: 'Y guardado' }];
+await context.vpnTest.refreshVpn();
+assert.equal(elements.get('connectAllBtn').disabled, true, 'Remote readiness cannot override missing local permissions');
+const beforeLocalPermissions = requests.length;
+await context.vpnTest.connectLan('ready');
+assert.equal(requests.length, beforeLocalPermissions, 'Local permission gate also protects the connection action');
+status.lan.canStartWithoutElevation = true;
 await context.vpnTest.refreshVpn();
 const rows = elements.get('vpnPeers').children;
 assert.deepEqual(rows.map(row => row.children[1].children[0].text),

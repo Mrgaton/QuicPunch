@@ -40,6 +40,7 @@ try {
   assert.equal(await review.evaluate(node => node.classList.contains('needs-attention')), false);
   assert.equal(await page.locator('#untrustedAlert').isVisible(), false);
   await page.reload(); await page.locator('#homeContactCount').filter({hasText:'3'}).waitFor();
+  if(!await page.locator('.contact-options').evaluate(e=>e.open)) await page.locator('.contact-options > summary').click();
   await page.locator('#contactConnectionFilter').selectOption('all'); await review.click();
   assert.equal(await badge.isVisible(), false, 'Reload revived a reviewed contact');
   // A new connection ID for the same certificate stays reviewed; a different identity is new.
@@ -65,6 +66,7 @@ try {
     status.peers = status.peers.filter(p => p.id !== reviewed.id);
     QP.emit('status_updated', status);
   });
+  if(!await page.locator('.contact-options').evaluate(e=>e.open)) await page.locator('.contact-options > summary').click();
   await page.locator('#contactConnectionFilter').selectOption('all'); await review.click();
   assert.equal(await page.locator('#homeContacts .contact-card').count(), 1, 'Saved untrusted contacts must remain in Sin confianza while offline');
   assert.match(await page.locator('#homeContacts').textContent(), /Sin confianza · revisado/);

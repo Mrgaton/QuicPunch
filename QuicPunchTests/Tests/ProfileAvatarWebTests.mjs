@@ -1,6 +1,7 @@
+import {loadApp} from '../Fixtures/WebAppRuntime.mjs';
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
-import {Script, createContext} from 'node:vm';
+import {createContext} from 'node:vm';
 import { readStillFrame, muxAvifSequence } from '../../QuicNet.Shared/wwwroot/avatar-avif-sequence.js';
 import { MAX_AVATAR_BYTES, checkDimensions } from '../../QuicNet.Shared/wwwroot/avatar-media.js';
 const still = readFileSync(new URL('../Fixtures/profile-avatar.avif', import.meta.url));
@@ -36,7 +37,7 @@ class Element {
   querySelector(tag) { return this.children.find(v=>v.tag===tag) || null; }
 }
 const runtime=createContext({document:{createElement:tag=>new Element(tag),addEventListener(){}},window:{addEventListener(){}},navigator:{},location:{pathname:'/settings.html'}});
-new Script(readFileSync(new URL('../../QuicNet.Shared/wwwroot/app.js',import.meta.url),'utf8')).runInContext(runtime);
+loadApp(runtime);
 const peer={id:'4f3a5a1b-d319-476d-ad5d-561491689369',name:'Test'};
 const snapshot={avatars:{[peer.id]:'a'.repeat(64)}};
 const sidebarHost=new Element();

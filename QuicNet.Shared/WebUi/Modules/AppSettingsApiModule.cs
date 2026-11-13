@@ -6,7 +6,8 @@ using QuicNet.Settings;
 namespace QuicNet.WebUi.Modules;
 
 internal sealed record AppBehaviorSettings(bool StartWithSystem, bool RunInBackground, NotificationPreferences Notifications);
-internal sealed record AppSettingsResponse(bool success, AppBehaviorSettings settings, bool startupSupported, string platformHelp);
+internal sealed record AppSettingsResponse(bool success, AppBehaviorSettings settings, bool startupSupported, string platformHelp,
+    NotificationPlatformStatus? notificationStatus = null);
 internal sealed class AppSettingsApiModule(AppPreferencesStore preferences, AppNotificationService notifications, QuicNet.Presence.UserPresenceService presence)
 {
     private readonly SemaphoreSlim _edits = new(1, 1);
@@ -42,6 +43,18 @@ internal sealed class AppSettingsApiModule(AppPreferencesStore preferences, AppN
         if (path == "/api/notifications/test" && request.HttpMethod == "POST")
         {
             await WebUiContext.WriteJsonAsync(response, notifications.TestNotification()); return true;
+        }
+        if (path == "/api/notifications/system-settings" && request.HttpMethod == "POST")
+        {
+            if (notifications.Platform?.OpenNotificationSettings() != true)
+                throw new InvalidOperationException("Abre los ajustes de notificaciones del sistema desde este dispositivo.");
+            response.StatusCode = 204; return true;
+        }
+        if (path == "/api/notifications/status" && request.HttpMethod == "GET")
+        {
+            var state = notifications.Platform?.GetNotificationStatus() ??
+                new NotificationPlatformStatus(true, true, false, false, "El sonido y los avisos se gestionan desde QuicNet y los ajustes del sistema.");
+            await WebUiContext.WriteJsonAsync(response, JsonSerializer.SerializeToElement(state, WebUiContext.JsonOptionsFor(new(JsonSerializerDefaults.Web)))); return true;
         }
         if (path == "/api/notifications/ringtone" && request.HttpMethod == "GET")
         {
@@ -80,7 +93,8 @@ internal sealed class AppSettingsApiModule(AppPreferencesStore preferences, AppN
         else if (request.HttpMethod != "GET") { response.StatusCode = 405; response.Headers["Allow"] = "GET, POST"; return true; }
         var current = preferences.Snapshot();
         var result = new AppSettingsResponse(true, new(current.StartWithSystem, current.RunInBackground, current.Notifications),
-            notifications.Platform?.StartupSupported == true, notifications.Platform?.Description ?? "El host no ha configurado las notificaciones del sistema.");
+            notifications.Platform?.StartupSupported == true, notifications.Platform?.Description ?? "El host no ha configurado las notificaciones del sistema.",
+            notifications.Platform?.GetNotificationStatus());
         await WebUiContext.WriteJsonAsync(response, JsonSerializer.SerializeToElement(result, WebUiContext.JsonOptionsFor(new(JsonSerializerDefaults.Web))));
         return true;
     }

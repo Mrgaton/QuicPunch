@@ -2,7 +2,7 @@
 """Import a local IPTrust MMDB into the paged, compressed offline city catalogue.
 
 Requires Python 3.11+ and maxminddb (pip install maxminddb). No network access.
-The original MMDB is read only. ASN and router catalogues are independent.
+The original MMDB is read only. The ASN catalogue is independent.
 """
 import argparse
 import gzip
@@ -65,7 +65,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mmdb', type=Path)
     parser.add_argument('--output', type=Path, default=ROOT / 'QuicNet.Geolocation/Data')
-    parser.add_argument('--fixtures', type=Path, default=ROOT / 'QuicNet.Geolocation.App/Diagnostics/Fixtures/catalog-boundaries.json')
+    parser.add_argument('--fixtures', type=Path, default=ROOT / 'QuicNet.Geolocation/tests/catalog-boundaries.json')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     manifest_path = args.output / 'manifest.json'
@@ -180,7 +180,7 @@ def main():
             os.unlink(temporary)
     notice_path = args.output / 'NOTICE.txt'
     notice = notice_path.read_text(encoding='utf-8') if notice_path.exists() else ''
-    start = notice.find('\nIP geolocation: IPTrust,')
+    start = notice.find('IP geolocation: IPTrust,')
     if start >= 0:
         end = notice.find('\nASN numbers only:', start)
         notice = notice[:start] + (notice[end:] if end >= 0 else '')

@@ -59,8 +59,8 @@ namespace QuicPunch
 
         public SimpleStunClient(UdpClient udp, IReadOnlyList<IPEndPoint> servers)
         {
-            if (udp.Client.AddressFamily != AddressFamily.InterNetwork)
-                throw new ArgumentException("UdpClient must be IPv4 (InterNetwork) for this STUN implementation.", nameof(udp));
+            if (udp.Client.AddressFamily is not (AddressFamily.InterNetwork or AddressFamily.InterNetworkV6))
+                throw new ArgumentException("UdpClient must support IP.", nameof(udp));
 
             _udp = udp;
             _servers = servers;
@@ -156,19 +156,34 @@ namespace QuicPunch
                 uint p2 = BinaryPrimitives.ReadUInt32BigEndian(buffer.Slice(16, 4));
                 var txId = new TxId(p1, p2);
 
+                remoteEndPoint = EndpointAddressCodec.Normalize(remoteEndPoint);
                 PendingRequest req;
                 lock (_lock)
                 {
-                    if (!_pending.Remove(txId, out req))
+                    if (!_pending.TryGetValue(txId, out req) || !req.Remote.Equals(remoteEndPoint))
                         return false;
+                    if (Environment.TickCount64 - req.SentTicks >= Timeout.TotalMilliseconds)
+                    {
+                        _pending.Remove(txId);
+                        return false;
+                    }
                 }
 
                 var mapped = ParseMappedAddress(buffer);
-                if (mapped is null)
+                if (mapped is null || mapped.Port == 0)
                     return false;
 
                 if (IsBogonOrLocalhost(mapped.Address))
                     return false;
+
+                // Invalid or mismatched packets must not consume a live transaction.
+                // Remove only after validation, and atomically reject duplicate replies.
+                lock (_lock)
+                {
+                    if (!_pending.Remove(txId, out req) ||
+                        Environment.TickCount64 - req.SentTicks >= Timeout.TotalMilliseconds)
+                        return false;
+                }
 
                 var rtt = TimeSpan.FromMilliseconds(Environment.TickCount64 - req.SentTicks);
 
@@ -214,7 +229,7 @@ namespace QuicPunch
 
                 lock (_lock)
                 {
-                    _pending[txId] = new PendingRequest(remote, Environment.TickCount64);
+                    _pending[txId] = new PendingRequest(EndpointAddressCodec.Normalize(remote), Environment.TickCount64);
                 }
 
                 await _udp.SendAsync(reqBytes, remote, ct);
@@ -250,36 +265,42 @@ namespace QuicPunch
             ushort length = BinaryPrimitives.ReadUInt16BigEndian(buffer.Slice(2, 2));
             int offset = 20;
             int end = 20 + length;
+            if ((length & 3) != 0 || end != buffer.Length) return null;
+            IPEndPoint? mapped = null;
+            IPEndPoint? xorMapped = null;
 
-            while (offset + 4 <= end && offset + 4 <= buffer.Length)
+            while (offset < end)
             {
+                if (offset + 4 > end) return null;
                 ushort type = BinaryPrimitives.ReadUInt16BigEndian(buffer.Slice(offset, 2));
                 ushort attrLen = BinaryPrimitives.ReadUInt16BigEndian(buffer.Slice(offset + 2, 2));
                 int valOffset = offset + 4;
 
-                if (valOffset + attrLen > buffer.Length) break;
+                int nextOffset = valOffset + ((attrLen + 3) & ~3);
+                if (nextOffset > end) return null;
 
                 if (type == XorMappedAddress || type == MappedAddress)
                 {
                     var val = buffer.Slice(valOffset, attrLen);
-                    if (val.Length >= 8 && val[1] == 0x01) // 0x01 = IPv4
+                    if ((val.Length == 8 && val[1] == 1) || (val.Length == 20 && val[1] == 2))
                     {
                         ushort port = BinaryPrimitives.ReadUInt16BigEndian(val.Slice(2, 2));
-                        byte[] ipBytes = val.Slice(4, 4).ToArray();
+                        byte[] ipBytes = val.Slice(4).ToArray();
 
                         if (type == XorMappedAddress)
                         {
                             port ^= (ushort)(MagicCookie >> 16);
-                            Span<byte> cookieBytes = stackalloc byte[4];
-                            BinaryPrimitives.WriteUInt32BigEndian(cookieBytes, MagicCookie);
-                            for (int i = 0; i < 4; i++) ipBytes[i] ^= cookieBytes[i];
+                            // IPv6 XOR mask is cookie + the request's 96-bit transaction ID.
+                            for (int i = 0; i < ipBytes.Length; i++) ipBytes[i] ^= buffer[4 + i];
                         }
-                        return new IPEndPoint(new IPAddress(ipBytes), port);
+                        var endpoint = new IPEndPoint(new IPAddress(ipBytes), port);
+                        if (type == XorMappedAddress) xorMapped ??= endpoint;
+                        else mapped ??= endpoint;
                     }
                 }
-                offset = valOffset + ((attrLen + 3) & ~3);
+                offset = nextOffset;
             }
-            return null;
+            return xorMapped ?? mapped;
         }
 
         public static bool IsBogonOrLocalhost(IPAddress address)
@@ -380,7 +401,7 @@ namespace QuicPunch
                 var localIps = Utilities.GetValidLocalIPAddresses();
                 foreach (var ip in localIps)
                 {
-                    if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
+                    if (EndpointAddressCodec.CanAdvertise(ip) && !IPAddress.IsLoopback(ip))
                     {
                         var hostEp = new IPEndPoint(ip, localPort);
                         if (seen.Add(hostEp))
@@ -407,55 +428,50 @@ namespace QuicPunch
 
                     int count = Math.Min(stunServers.Count, 32);
 
-                    async Task SendStunBurstAsync(CancellationToken ct)
+                    var client = new SimpleStunClient(udp, stunServers);
+                    int resolved = 0;
+                    client.MappedAddressResolved += (_, result) =>
                     {
-                        byte[] buffer = new byte[20];
-                        BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(0, 2), BindingRequest);
-                        BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(2, 2), 0);
-                        BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(4, 4), MagicCookie);
-
-                        for (int i = 0; i < count; i++)
+                        if (seen.Add(result.MappedEndPoint))
                         {
-                            if (ct.IsCancellationRequested) break;
-                            RandomNumberGenerator.Fill(buffer.AsSpan(8, 12));
-                            try { await udp.SendAsync(buffer, stunServers[i], ct).ConfigureAwait(false); } catch { }
+                            candidates.Add(new CandidateEndpoint(result.MappedEndPoint, CandidateType.ServerReflexive, 1694498815));
+                            Interlocked.Increment(ref resolved);
                         }
-                    }
-
-                    _ = SendStunBurstAsync(cts.Token);
+                    };
+                    await client.SendRequest(cts.Token, count).ConfigureAwait(false);
 
                     // Retransmission watchdog: if no ServerReflexive candidate arrives after 300ms, re-burst
-                    _ = Task.Run(async () =>
+                    var retransmit = Task.Run(async () =>
                     {
                         try
                         {
                             await Task.Delay(300, cts.Token).ConfigureAwait(false);
-                            if (!candidates.Any(c => c.Type == CandidateType.ServerReflexive))
+                            if (Volatile.Read(ref resolved) == 0)
                             {
-                                await SendStunBurstAsync(cts.Token).ConfigureAwait(false);
+                                await client.SendRequest(cts.Token, count).ConfigureAwait(false);
                             }
                         }
                         catch { }
                     }, cts.Token);
 
-                    while (!cts.IsCancellationRequested)
+                    try
                     {
-                        try
+                        while (!cts.IsCancellationRequested)
                         {
-                            var res = await udp.ReceiveAsync(cts.Token).ConfigureAwait(false);
-                            if (res.Buffer.Length >= 20)
+                            try
                             {
-                                var mapped = ParseMappedAddress(res.Buffer);
-                                if (mapped != null && !IsBogonOrLocalhost(mapped.Address))
-                                {
-                                    if (seen.Add(mapped))
-                                    {
-                                        candidates.Add(new CandidateEndpoint(mapped, CandidateType.ServerReflexive, 1694498815));
-                                    }
-                                }
+                                var res = await udp.ReceiveAsync(cts.Token).ConfigureAwait(false);
+                                client.TryProcessIncoming(res.Buffer, res.RemoteEndPoint);
                             }
+                            catch (OperationCanceledException) when (cts.IsCancellationRequested) { break; }
+                            catch (SocketException) { break; }
                         }
-                        catch { break; }
+                    }
+                    finally
+                    {
+                        cts.Cancel();
+                        try { await retransmit.ConfigureAwait(false); }
+                        catch (OperationCanceledException) { }
                     }
                 }
             }

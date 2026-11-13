@@ -1,4 +1,3 @@
-using System.IO.Compression;
 using System.Net;
 using System.Text.Json;
 
@@ -19,29 +18,12 @@ public sealed class EmbeddedCatalog
     public static EmbeddedCatalog Default { get; } = new();
     private readonly Lazy<IpCatalogTable?> _city = new(() => HasResource("city.bin") ? new(() => Resource("city.bin"), false) : null);
     private readonly Lazy<IpCatalogTable?> _asn = new(() => HasResource("asn.bin") ? new(() => Resource("asn.bin"), true) : null);
-    private readonly Lazy<IpCatalogTable?> _routers = new(() => HasResource("routers.bin") ? new(() => Resource("routers.bin"), false) : null);
-    private readonly Lazy<Landmark[]> _anchors = new(() =>
-    {
-        using var stream = Resource("anchors.json.gz");
-        using var gzip = new GZipStream(stream, CompressionMode.Decompress);
-        return JsonSerializer.Deserialize(gzip, GeoJsonContext.Default.LandmarkArray) ?? throw new InvalidDataException("Empty anchors");
-    });
     public string Manifest { get { using var reader = new StreamReader(Resource("manifest.json")); return reader.ReadToEnd(); } }
     public string Notice { get { using var reader = new StreamReader(Resource("NOTICE.txt")); return reader.ReadToEnd(); } }
-    public IReadOnlyList<Landmark> Anchors => Array.AsReadOnly(_anchors.Value);
 
     private static readonly Lazy<string> CitySource = new(() => CityMetadata.Value.Source + " " + CityMetadata.Value.Date);
     public PublishedLocation? Lookup(IPAddress ip) => LookupLocation(_city, ip, CitySource);
     public uint? LookupAsn(IPAddress ip) => IsPublic(ip) ? _asn.Value?.FindValue(Normalize(ip)) : null;
-    public PublishedLocation? LookupRouter(IPAddress ip) => LookupLocation(_routers, ip, RouterSource);
-    private static readonly Lazy<string> RouterSource = new(() =>
-    {
-        using var stream = Resource("manifest.json");
-        using var manifest = JsonDocument.Parse(stream);
-        var table = manifest.RootElement.GetProperty("tables").GetProperty("routers");
-        string source = table.TryGetProperty("source", out var value) ? value.GetString()! : "IP router catalogue";
-        return table.TryGetProperty("databaseDate", out var date) ? source + " " + date.GetString() : source;
-    });
     private static PublishedLocation? LookupLocation(Lazy<IpCatalogTable?> lazy, IPAddress ip, Lazy<string> source)
     {
         if (!IsPublic(ip) || lazy.Value is not { } table) return null;
@@ -69,7 +51,6 @@ public sealed class EmbeddedCatalog
     public string IpLocationSource => CityMetadata.Value.Source;
     public string? IpLocationDatabaseDate => CityMetadata.Value.Date;
     public bool HasAsnDatabase => HasResource("asn.bin");
-    public bool HasRouterDatabase => HasResource("routers.bin");
     internal static bool HasResource(string name) => typeof(EmbeddedCatalog).Assembly.GetManifestResourceNames().Contains("GeoData." + name);
     internal static Stream Resource(string name) => typeof(EmbeddedCatalog).Assembly.GetManifestResourceStream("GeoData." + name)
         ?? throw new InvalidDataException("Missing embedded catalogue: " + name);

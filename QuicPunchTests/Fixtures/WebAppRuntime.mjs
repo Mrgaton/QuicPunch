@@ -2,6 +2,14 @@ import {readFileSync} from 'node:fs';
 import {Script} from 'node:vm';
 import assert from 'node:assert/strict';
 
+export function loadApp(context) {
+  for (const file of ['ui-values.js', 'app.js']) {
+    const url = new URL('../../QuicNet.Shared/wwwroot/' + file, import.meta.url);
+    new Script(readFileSync(url, 'utf8'), {filename: file}).runInContext(context);
+  }
+  return context.window.QP;
+}
+
 // Load the actual QP contract; retain only the IO/DOM doubles supplied by each test.
 export function attachApp(context) {
   const doubles = context.QP || {};
@@ -13,9 +21,11 @@ export function attachApp(context) {
   context.location ||= {pathname:'/chat.html',search:''};
   context.document.addEventListener ||= () => {};
   context.document.createElement ||= () => ({});
-  new Script(readFileSync(new URL('../../QuicNet.Shared/wwwroot/app.js', import.meta.url),'utf8')).runInContext(context);
-  const actual = context.window.QP;
-  context.QP = {...actual,...doubles,peerInConnectionMode:actual.peerInConnectionMode,trusted:actual.trusted};
+  const actual = loadApp(context);
+  const {peerInConnectionMode, trusted} = actual;
+  // Preserve getters such as isWsConnected; spreading the object freezes their values.
+  Object.defineProperties(actual, Object.getOwnPropertyDescriptors(doubles));
+  context.QP = Object.assign(actual, {peerInConnectionMode, trusted});
   context.window.QP = context.QP;
   return context.QP;
 }

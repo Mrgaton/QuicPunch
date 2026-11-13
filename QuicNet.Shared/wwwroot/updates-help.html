@@ -1,23 +1,42 @@
 <!doctype html>
-<html lang="es"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#151c21"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Publicar actualizaciones · QuicNet</title><link rel="stylesheet" href="/app.css"></head>
-<body><main class="workspace" style="max-width:960px;margin:auto;padding:24px">
-<a class="btn" href="/settings.html">Volver a ajustes</a><h1>Publicar una actualización</h1>
-<p>Las versiones se distribuyen desde <a href="https://cdn.gato.ovh/QuicNet/">cdn.gato.ovh/QuicNet</a>. El EXE AOT y la APK comparten una versión y un número de compilación creciente.</p>
-<section class="section"><div class="section-body"><h2>Para ti o para un agente</h2>
+<html lang="es"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#101116"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ayuda con las actualizaciones · QuicNet</title><link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/workspace.css"></head>
+<body class="updates-help"><main class="workspace" style="max-width:960px;margin:auto;padding:24px">
+<a class="btn" href="/settings.html?section=updates">Volver a Actualizaciones</a><h1>Ayuda con las actualizaciones</h1>
+<p>Comprueba tu versión, elige qué actualizaciones recibir y resuelve los problemas de descarga o instalación.</p>
+<section class="section"><div class="section-body"><h2>Buscar e instalar una actualización</h2>
+<ol><li>Abre <a href="/settings.html?section=updates">Ajustes → Actualizaciones</a>. Allí aparecen tu versión y la última comprobación.</li>
+<li>Pulsa <strong>Buscar ahora</strong>. Si hay una versión más reciente, verás la versión publicada y el botón para instalarla.</li>
+<li>En Windows, pulsa <strong>Instalar y reiniciar</strong>. En Android, pulsa <strong>Instalar actualización</strong> y continúa en el instalador del sistema.</li></ol>
+<p>Con <strong>Descargar e instalar actualizaciones automáticamente</strong> activado, QuicNet comprueba al abrir y cada 15 minutos. Si lo desactivas, puedes buscar e instalar manualmente desde esta misma pantalla.</p>
+<p>Las descargas se verifican antes de instalarlas. Una actualización conserva los datos de la aplicación.</p>
+</div></section>
+<section class="section"><div class="section-body"><h2>Elegir Estable o Beta</h2>
+<p><strong>Estable</strong> recibe las versiones publicadas para uso habitual. <strong>Beta</strong> incluye versiones de prueba y versiones estables; recibe la compilación más reciente de ambos canales.</p>
+<p>La elección se guarda en este dispositivo. Instalar una versión estable mientras estás en Beta no cambia tu canal: seguirás recibiendo las próximas pruebas.</p>
+<p>Al volver a Estable, QuicNet conserva la versión instalada y espera una compilación estable superior. El cambio de canal no instala una versión anterior ni borra tus datos.</p>
+</div></section>
+<section class="section"><div class="section-body"><h2>Qué esperar al instalar</h2>
+<h3>Windows</h3><p>QuicNet sustituye el archivo EXE y se reinicia. La instalación automática espera a que terminen las llamadas. Guarda el EXE en una carpeta donde tengas permiso de escritura.</p>
+<p>Se conserva una copia de la versión anterior para recuperarla si la nueva no arranca.</p>
+<h3>Android</h3><p>QuicNet descarga la APK y abre el instalador de Android. El sistema puede pedirte autorización para instalar desde esta fuente; revisa su solicitud y confirma la instalación si quieres continuar.</p>
+<p>Si cierras el instalador, vuelve a Actualizaciones y pulsa <strong>Instalar actualización</strong> para abrirlo de nuevo. Para actualizar sobre la aplicación existente y conservar sus datos debe mantenerse el mismo certificado de firma.</p>
+</div></section>
+<section class="section"><div class="section-body"><h2>Si algo no funciona</h2>
+<ul><li><strong>No se puede consultar o descargar:</strong> comprueba tu conexión y pulsa Buscar ahora para reintentar. Con las actualizaciones automáticas activadas, un fallo del servidor se vuelve a intentar cada minuto.</li>
+<li><strong>La actualización está lista pero no se instala:</strong> revisa el mensaje de estado. En Windows puede estar esperando a que termine una llamada; en Android puede faltar la confirmación del instalador.</li>
+<li><strong>La instalación anterior falló:</strong> se conserva la versión actual. Puedes volver a pulsar Instalar o esperar una nueva publicación.</li>
+<li><strong>Error de firma o de integridad:</strong> el archivo no ha superado la verificación y no se instala. Vuelve a buscar la actualización; si el error continúa, conserva la versión actual y espera una publicación válida.</li>
+<li><strong>La aplicación indica que está al día tras cambiar de canal:</strong> puede que aún no exista una compilación superior en el canal elegido. Puedes seguir usando tu versión actual.</li></ul>
+<p>Si tu versión es anterior al sistema de actualizaciones, descarga la aplicación desde <a href="https://cdn.gato.ovh/QuicNet/">la página de descargas de QuicNet</a> e instala la actualización manualmente.</p>
+</div></section>
+<details class="section"><summary class="section-head">Publicar versiones (desarrollo)</summary><div class="section-body">
+<p>Estas instrucciones son para quien mantiene y publica QuicNet. Las versiones se distribuyen desde <a href="https://cdn.gato.ovh/QuicNet/">cdn.gato.ovh/QuicNet</a>. El EXE AOT y la APK comparten una versión y un número de compilación creciente.</p>
 <ol><li>Abre el repositorio y lee <code>doc/deployment/auto-updates.md</code>. Conserva las claves de firma existentes.</li>
 <li>Elige una versión y un Build mayor que los publicados en Estable y Beta. Ejecuta las pruebas.</li>
-<li>Prepara una prueba en el canal Beta con PowerShell 7:<pre><code>./scripts/publish-updates.ps1 -Version 1.1.11 -Build 13 -Channel beta -LocalOnly</code></pre></li>
+<li>Prepara una prueba en el canal Beta con PowerShell 7. Los valores siguientes son ejemplos: sustitúyelos por la versión y el Build que hayas elegido.<pre><code>./scripts/publish-updates.ps1 -Version 1.1.11 -Build 13 -Channel beta -LocalOnly</code></pre></li>
 <li>Revisa la compilación y publica los mismos archivos:<pre><code>./scripts/publish-updates.ps1 -Version 1.1.11 -Build 13 -Channel beta -SkipBuild -CdnRoot 'Z:\CDN\QuicNet'</code></pre></li>
 <li>Verifica por HTTPS el manifiesto y prueba una actualización en PC y Android.</li></ol>
 <p>El script incorpora las bibliotecas al EXE AOT, firma la APK, calcula los hashes, firma el manifiesto y sube primero los archivos. Solo al terminar activa la nueva versión.</p>
 <p>No copies claves privadas al servidor. No sobrescribas archivos de una versión publicada: incrementa Build.</p>
 <p>Beta publica <code>latest-beta.json</code> y conserva intacto <code>latest.json</code>, el canal Estable. Para publicar una versión definitiva, recompila con un Build superior y <code>-Channel stable</code>.</p>
-</div></section>
-<section class="section"><div class="section-body"><h2>Qué hace cada dispositivo</h2>
-<p>Comprueba al abrir y cada 15 minutos; si el CDN falla, reintenta cada minuto. Puedes desactivar la instalación automática en Ajustes.</p>
-<p>En Ajustes → Actualizaciones puedes elegir Estable o Beta. Las instalaciones nuevas de pruebas seleccionan Beta por defecto. La elección se conserva al actualizar; volver a Estable espera una compilación superior y conserva tus datos.</p>
-<p>Estable recibe solo releases. Beta recibe tanto pruebas como releases y elige la compilación más reciente. Instalar una estable no te saca de Beta: seguirás recibiendo las próximas pruebas. La descarga e instalación automáticas respetan la opción de cada dispositivo.</p>
-<p>En PC sustituye el EXE y reinicia; conserva una copia anterior y la recupera si la nueva versión no arranca. El EXE debe estar en una carpeta donde puedas escribir.</p>
-<p>En Android descarga la APK y abre el instalador del sistema. Debes permitir esa fuente y confirmar. Debe mantenerse el certificado de firma de la APK instalada para conservar tus datos.</p>
-<p>Una instalación anterior a este sistema requiere instalar manualmente la primera versión que lo incorpora.</p>
-</div></section></main></body></html>
+</div></details></main></body></html>

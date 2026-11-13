@@ -18,6 +18,7 @@ namespace QuicPunchTests.Tests
     {
         public static async Task RunAllTestsAsync()
         {
+            Fixtures.LoopbackOnlyNetwork.Configure();
             Console.WriteLine("==================================================");
             Console.WriteLine("  QUIC DATAGRAM CATEGORIZATION & FRAMING TESTS    ");
             Console.WriteLine("==================================================");
@@ -405,8 +406,8 @@ namespace QuicPunchTests.Tests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 43311) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 43312) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 43311) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 43312) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 qpB.RegisterProtocol(handlerStreamingB);
                 qpA.RegisterProtocol(new StreamingProtocolHandler(protoStream, (c, s, p, ct) => Task.CompletedTask));
@@ -457,9 +458,16 @@ namespace QuicPunchTests.Tests
                         bool cSent = conn.SendCategorizedDatagram(QuicDatagramCategory.CursorInput, cursor);
                         QuicPunch.QuicPunchLog.Info($"[TEST 5 SENDER] Cursor sent: {cSent}");
 
-                        // 3. Send 32 KB Video KeyFrame (automatic fragmentation across datagrams)
-                        bool vSent = conn.SendFrame(QuicDatagramCategory.VideoKeyFrame, testVideoFrame, isKeyFrame: true, maxFragmentSize: 1200);
-                        QuicPunch.QuicPunchLog.Info($"[TEST 5 SENDER] Video sent: {vSent}");
+                        // DATAGRAM acceptance does not promise delivery. A cold congestion
+                        // window can discard part of a 32 KiB burst (CANCEL_ON_BLOCKED).
+                        // Send fresh independently framed keyframes, as a realtime sender
+                        // does, rather than requiring a lost frame to be retransmitted.
+                        for (int frame = 0; frame < 20 && !sessionDoneTcs.Task.IsCompleted; frame++)
+                        {
+                            bool vSent = conn.SendFrame(QuicDatagramCategory.VideoKeyFrame, testVideoFrame, isKeyFrame: true, maxFragmentSize: 1200);
+                            QuicPunch.QuicPunchLog.Info($"[TEST 5 SENDER] Fresh keyframe {frame} queued: {vSent}");
+                            await Task.Delay(100, ct);
+                        }
 
                         // Keep sender session open while receiver reads
                         await sessionDoneTcs.Task.WaitAsync(ct);

@@ -3,7 +3,8 @@
   let activePeerId = null, peerName = '', testId = null, baseline = null;
   let stages = [], liveUploadMbps = null, liveDownloadMbps = null;
   let liveUploadedBytes = 0, liveDownloadedBytes = 0, cancelIntent = false, revision = 0;
-  let requestVersion = 0;
+  let requestVersion = 0, clearingHistory = false;
+  let phaseElapsedSeconds = 0;
   const history = [];
   const labels = { All: 'Prueba completa', Both: 'Subida y bajada simultáneas', Upload: 'Solo subida', Download: 'Solo bajada', 'Latencia en reposo': 'Latencia inicial' };
   const stateLabels = { idle: 'Sin iniciar', connecting: 'Conectando', running: 'En curso', completed: 'Completada', interrupted: 'Interrumpida', cancelled: 'Cancelada', error: 'No iniciada' };
@@ -27,13 +28,18 @@
   document.addEventListener('DOMContentLoaded', () => {
     el('startSpeedTestBtn')?.addEventListener('click', startTest);
     el('cancelSpeedTestBtn')?.addEventListener('click', cancelTest);
+    el('speedTestPeerSelect')?.addEventListener('change', updateReadiness);
     for (const id of ['speedTestDuration', 'speedTestMode']) el(id)?.addEventListener('change', updateEstimate);
     el('clearSpeedTestHistoryBtn')?.addEventListener('click', async () => {
+      if (clearingHistory || !history.length) return;
+      clearingHistory = true;
+      renderHistory();
       try {
-        await QP.api('/api/speedtest/history/clear', { method: 'POST' });
+        const result = await QP.api('/api/speedtest/history/clear', { method: 'POST' });
+        if (result?.success === false) throw new Error('History clear failed');
         history.length = 0;
-        renderHistory();
       } catch { QP.toast('No se pudo limpiar el historial. Vuelve a intentarlo.', 'danger'); }
+      finally { clearingHistory = false; renderHistory(); }
     });
     if (window.QP && typeof QP.on === 'function') {
       QP.on('status_updated', updatePeerSelect);
@@ -93,7 +99,7 @@
         }
       });
     }
-    updateEstimate(); renderPhaseList();
+    updateEstimate(); updateReadiness(); renderHistory();
     syncStatus();
   });
 
@@ -135,17 +141,32 @@
       option.value = peer.id; select.appendChild(option);
     }
     if ([...select.options].some(o => o.value === previous)) select.value = previous;
+    updateReadiness();
+  }
+
+  function updateReadiness() {
+    const select = el('speedTestPeerSelect');
+    const option = [...(select?.options || [])].find(o => o.value && o.value === select.value);
+    const hasContacts = [...(select?.options || [])].some(o => o.value);
+    if (el('startSpeedTestBtn')) el('startSpeedTestBtn').disabled = isRunning || !option;
+    setText('speedTestStartHelp', !hasContacts ? 'Añade un contacto de confianza en Inicio para hacer una prueba.' : !option ? 'Selecciona un contacto para habilitar la prueba.' : 'Todo listo. Conectaremos con el contacto si hace falta.');
+    hide('speedTestStartHelp', isRunning);
+    if (state === 'idle') {
+      setText('speedTestResultContext', option ? 'Este equipo ↔ ' + option.textContent.replace(/ \([\d.]+ ms\)$/, '') : 'Velocidad de transferencia y tiempo de respuesta.');
+      setText('speedTestStatusNotice', option ? 'Todo listo. Pulsa «Iniciar prueba» para medir tu conexión.' : !hasContacts ? 'Necesitas un contacto de confianza para medir la conexión.' : 'Selecciona un contacto e inicia tu primera prueba.');
+    }
   }
 
   function updateEstimate() {
     const seconds = Number(el('speedTestDuration')?.value || 10) * modes(selectedMode()).length;
     setText('speedTestEstimate', 'Unos ' + seconds + ' segundos, más la conexión y la medición inicial de latencia.');
-    if (state === 'idle') { planMode = selectedMode(); renderPhaseList(); }
+    if (state === 'idle') { planMode = selectedMode(); renderPhaseList(); renderMeasurements(); }
   }
 
   function resetResults(peerId, name, mode) {
     activePeerId = peerId; peerName = name || ''; planMode = mode || selectedMode(); testId = null;
     phase = ''; stages = []; baseline = null; cancelIntent = false;
+    phaseElapsedSeconds = 0;
     liveUploadedBytes = liveDownloadedBytes = 0; liveUploadMbps = liveDownloadMbps = null;
     hide('speedTestError', true);
     if (el('speedTestErrorDetails')) el('speedTestErrorDetails').open = false;
@@ -154,6 +175,7 @@
   }
 
   function setState(next) {
+    const actionHadFocus = document.activeElement === el('startSpeedTestBtn') || document.activeElement === el('cancelSpeedTestBtn');
     state = next; isRunning = next === 'connecting' || next === 'running';
     el('speedTestResults')?.setAttribute('data-state', next);
     el('speedTestLayout')?.setAttribute('data-state', next);
@@ -166,6 +188,8 @@
     setText('speedTestActiveBadge', stateLabels[next]);
     setText('speedTestResultTitle', isRunning ? 'Prueba en curso' : 'Resultado de la prueba');
     setText('speedTestResultContext', peerName ? 'Este equipo ↔ ' + peerName : 'Conexión con el contacto seleccionado');
+    updateReadiness();
+    if (actionHadFocus) el(isRunning ? 'cancelSpeedTestBtn' : 'startSpeedTestBtn')?.focus();
     hide('speedTestProgress', !isRunning);
     if (!isRunning) setProgress(null);
   }
@@ -215,6 +239,7 @@
   function startPhase(next) {
     if (phase !== next) {
       phase = next; liveUploadedBytes = liveDownloadedBytes = 0;
+      phaseElapsedSeconds = 0;
       liveUploadMbps = liveDownloadMbps = null; setProgress(null);
     }
     setState('running');
@@ -246,8 +271,12 @@
     if (phase !== 'Latencia en reposo') {
       setText('speedTestMetricRtt', ms(data.rttMs));
       setText('speedTestRttHelp', 'Durante: ' + (labels[phase] || phase));
-      if (Number.isFinite(data.totalSeconds) && data.totalSeconds > 0) {
-        const elapsed = Math.max(0, Math.min(data.totalSeconds, Number(data.elapsedSeconds) || 0));
+      if (Number.isFinite(data.totalSeconds) && data.totalSeconds > 0 && Number.isFinite(data.elapsedSeconds)) {
+        // Upload progress comes from the remote receiver; download progress is
+        // local. Their independent clocks and delivery delays must not rewind
+        // the phase when both streams report alternately.
+        phaseElapsedSeconds = Math.max(phaseElapsedSeconds, data.elapsedSeconds);
+        const elapsed = Math.min(data.totalSeconds, phaseElapsedSeconds);
         const index = modes(planMode).indexOf(phase) + 1;
         setText('speedTestGaugeHelp', (labels[phase] || phase) + ' · fase ' + index + ' de ' + modes(planMode).length + ' · ' + elapsed.toFixed(1) + ' / ' + data.totalSeconds + ' s');
         setProgress(100 * elapsed / data.totalSeconds);
@@ -264,13 +293,15 @@
     for (const [direction, live] of [['Download', liveDownloadMbps], ['Upload', liveUploadMbps]]) {
       const stage = rateFor(stages, direction);
       const included = modes(planMode).some(mode => mode === direction || mode === 'Both');
-      const value = isRunning && live != null ? speed(live) : stage ? speed(direction === 'Download' ? stage.downloadMbps : stage.uploadMbps) : !included ? 'No incluida' : isRunning || state === 'idle' ? 'Pendiente' : 'Sin resultado';
+      const value = isRunning && live != null ? speed(live) : stage ? speed(direction === 'Download' ? stage.downloadMbps : stage.uploadMbps) : !included ? 'No incluida' : state === 'idle' ? '—' : isRunning ? 'Pendiente' : 'Sin resultado';
       setText('speedTestMetric' + direction, value);
+      el('speedTestMetric' + direction)?.setAttribute('data-measured', String(value.endsWith(' Mbps')));
+      el('speedTestMetric' + direction)?.setAttribute('aria-label', (direction === 'Download' ? 'Bajada: ' : 'Subida: ') + (value === '—' ? 'sin medir' : value));
       setText('speedTest' + direction + 'Help', isRunning && live != null ? 'En directo · ' + (labels[phase] || phase) : stage ? 'Fase completada · ' + labels[stage.mode] : direction === 'Download' ? 'Recibir en este equipo' : 'Enviar desde este equipo');
     }
-    setText('speedTestMetricIdleRtt', baseline ? ms(baseline.rttAverageMs) : isRunning || state === 'idle' ? 'Pendiente' : 'Sin resultado');
+    setText('speedTestMetricIdleRtt', baseline ? ms(baseline.rttAverageMs) : state === 'idle' ? '—' : isRunning ? 'Pendiente' : 'Sin resultado');
     const last = stages.at(-1);
-    setText('speedTestMetricRtt', last ? ms(last.quality?.rttAverageMs) : isRunning || state === 'idle' ? 'Pendiente' : 'Sin resultado');
+    setText('speedTestMetricRtt', last ? ms(last.quality?.rttAverageMs) : state === 'idle' ? '—' : isRunning ? 'Pendiente' : 'Sin resultado');
     setText('speedTestRttHelp', last ? 'Durante: ' + labels[last.mode] : 'Tiempo de ida y vuelta');
     const total = stages.reduce((sum, s) => sum + (s.totalBytes || 0), 0) + (isRunning ? liveUploadedBytes + liveDownloadedBytes : 0);
     setText('speedTestMetricBytes', stages.length || isRunning ? bytes(total) : '—');
@@ -291,6 +322,7 @@
         markedIncomplete = true;
       }
       const item = make('li', null, 'speed-phase ' + kind);
+      if (kind === 'running') item.setAttribute('aria-current', 'step');
       item.append(make('span', labels[mode] || mode), make('strong', label)); host.appendChild(item);
     }
   }
@@ -360,6 +392,7 @@
     const duration = Math.round(stages[0]?.durationSeconds);
     if (el('speedTestDuration') && [...el('speedTestDuration').options].some(o => Number(o.value) === duration)) el('speedTestDuration').value = String(duration);
     updateEstimate();
+    updateReadiness();
   }
 
   function withTime(data) {
@@ -374,6 +407,10 @@
   }
 
   function renderHistory() {
+    el('speedTestHistory')?.setAttribute('data-empty', String(history.length === 0));
+    setText('speedTestHistoryCount', String(history.length));
+    if (el('clearSpeedTestHistoryBtn')) el('clearSpeedTestHistoryBtn').disabled = clearingHistory || !history.length;
+    setText('clearSpeedTestHistoryBtn', clearingHistory ? 'Limpiando…' : 'Limpiar historial');
     const host = el('speedTestHistoryBody'); if (!host) return;
     host.replaceChildren();
     if (!history.length) {

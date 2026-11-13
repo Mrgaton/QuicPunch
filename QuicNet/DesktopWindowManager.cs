@@ -49,6 +49,10 @@ public static class DesktopWindowManager
                     watchWeb.SetFilePicker(new PhotinoWatchFilePicker(window));
                 }
 
+                window.RegisterWindowCreatedHandler((_, _) =>
+                {
+                    if (OperatingSystem.IsWindows()) QuicNet.Video.NativeVideoRuntime.Instance.Attach(new WindowsVideoHost(window));
+                });
                 window.Load(url);
 
                 window.WindowClosing += (_, _) =>

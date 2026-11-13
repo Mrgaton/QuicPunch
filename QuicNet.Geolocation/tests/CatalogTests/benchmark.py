@@ -64,7 +64,7 @@ def main():
     baseline = args.baseline.resolve() if args.baseline else HERE/'obj/legacy-baseline'
     if not args.baseline:
         baseline.mkdir(parents=True, exist_ok=True)
-        for name in ('city','asn','routers'):
+        for name in ('city','asn'):
             print('Regenerating legacy layout:', name, flush=True)
             export_legacy(args.data/(name+'.bin'), baseline/(name+'.bin'), name=='asn')
         shutil.copy2(args.data/'manifest.json', baseline/'manifest.json')
@@ -82,7 +82,7 @@ def main():
     for mode in ('legacy','compact'):
         rows = [r for r in results['runs'] if r['mode'] == mode]
         results['medians'][mode] = {k: statistics.median(r[k] for r in rows) for k in rows[0] if isinstance(rows[0][k], (float,int))}
-    for name in ('city','asn','routers'):
+    for name in ('city','asn'):
         results['files'][name] = dict(legacyBytes=(baseline/(name+'.bin')).stat().st_size,
                                      compactBytes=(args.data/(name+'.bin')).stat().st_size)
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -59,7 +59,9 @@ public static class FfmpegScreenEncoderTests
                 await TestRealPacketsAsync(capability.Id, tuning.ToArray(), capability.Codec switch { "h264" => "avc1.", "hevc" => "hvc1.", "vp9" => "vp09.", _ => "av01." });
             }
         }
-        if (capabilities.Any(c => c.Id == "h264_nvenc" && c.Available)) await TestCaptureLifecycleAsync();
+        foreach (string implementation in new[] { "libx264", "h264_nvenc" })
+            if (capabilities.Any(c => c.Id == implementation && c.Available)) await TestCaptureLifecycleAsync(implementation);
+        if (capabilities.Any(c => c.Id == "libx264" && c.Available)) await NativeWindowCaptureTests.RunAsync();
         if (Environment.GetEnvironmentVariable("QUICNET_SCREEN_TEST_FIXTURES") is { Length: > 0 } fixturePath)
             await File.WriteAllTextAsync(fixturePath, JsonSerializer.Serialize(BrowserFixtures));
         Console.WriteLine("FFmpeg screen encoder tests passed.");
@@ -67,6 +69,12 @@ public static class FfmpegScreenEncoderTests
 
     private static void TestValidationAndTuning()
     {
+        foreach (var (bitrate, bufferMs) in new[] { (12_000_000, 250), (30_000_000, 100), (100_000_000, 250) })
+        {
+            var largeBuffer = FfmpegScreenEncoder.EncodingArguments(new() { Bitrate = bitrate, BufferMs = bufferMs }, "libx264");
+            Assert(long.Parse(largeBuffer[largeBuffer.IndexOf("-bufsize") + 1]) == (long)bitrate * bufferMs / 1000,
+                "VBV size overflowed at a supported bitrate/latency setting.");
+        }
         foreach (var (encoder, codec) in new[] { ("libx264", "h264"), ("libx265", "hevc"), ("libvpx-vp9", "vp9"), ("libsvtav1", "av1") })
         {
             var cpu = new ScreenEncoderOptions { Encoder = encoder, Codec = codec };
@@ -152,7 +160,7 @@ public static class FfmpegScreenEncoderTests
         Assert(received.SequenceEqual(new byte[] { 5, 6 }), "Queue must recover at a fresh keyframe after overflow.");
     }
 
-    private static async Task TestCaptureLifecycleAsync()
+    private static async Task TestCaptureLifecycleAsync(string implementation)
     {
         using var encoder = new FfmpegScreenEncoder((options, selected) =>
         {
@@ -160,7 +168,7 @@ public static class FfmpegScreenEncoderTests
             args.AddRange(FfmpegScreenEncoder.EncodingArguments(options, selected));
             args.AddRange(FfmpegScreenEncoder.ContainerArguments(options.Codec)); args.Add("pipe:1"); return args;
         });
-        var options = new ScreenEncoderOptions { Width = 320, Height = 180, Fps = 30, Codec = "h264", Encoder = "h264_nvenc", KeyFrameIntervalMs = 250 };
+        var options = new ScreenEncoderOptions { Width = 320, Height = 180, Fps = 30, Codec = "h264", Encoder = implementation, KeyFrameIntervalMs = 250 };
         var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var profile = await encoder.StartAsync(options, _ => Task.FromResult(true), (_, _) => { received.TrySetResult(); return Task.CompletedTask; }, CancellationToken.None);
         await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -174,7 +182,16 @@ public static class FfmpegScreenEncoderTests
         }
         catch (InvalidOperationException) { }
         Assert(encoder.Profile == null, "Rejected capture must release process and state.");
-        Console.WriteLine("[LIFECYCLE] Synthetic GPU capture, stop and decoder rejection passed.");
+        using var cancelled = new CancellationTokenSource();
+        var negotiating = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var start = encoder.StartAsync(options, _ => { negotiating.TrySetResult(); return new TaskCompletionSource<bool>().Task; },
+            (_, _) => throw new Exception("Unapproved video leaked."), cancelled.Token);
+        await negotiating.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancelled.Cancel();
+        try { await start.WaitAsync(TimeSpan.FromSeconds(3)); throw new Exception("Cancelled negotiation completed."); }
+        catch (OperationCanceledException) { }
+        Assert(encoder.Profile == null && encoder.PendingProfile == null, "Cancelled negotiation retained capture state.");
+        Console.WriteLine($"[LIFECYCLE] Synthetic {implementation} capture, stop, decoder rejection and cancellation passed.");
     }
 
     private static async Task TestRealPacketsAsync(string encoder, string[] tuning, string prefix, int width = 320, int height = 180, int frameRate = 30)

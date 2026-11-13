@@ -24,7 +24,7 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
     private uint _directedBroadcast = 0x0A0000FF;
     private bool _hasDirectedBroadcast = true;
     private long _configurationRevision = -1;
-    public const int DefaultDatagramMtu = 1420; // Safe MTU for RFC 9221 QUIC datagrams over standard 1500-byte links without IP fragmentation
+    public const int DefaultDatagramMtu = 1420; // Inner IP MTU; negotiated datagram fragmentation handles smaller QUIC paths.
     private string _subnetMask = "255.255.255.0";
     private int _mtu = DefaultDatagramMtu;
 
@@ -118,6 +118,14 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
     }
 
     public bool SupportsSessionRecovery => true;
+    internal const byte VpnDatagramCategory = 9;
+
+    public void OnFrameReceived(QuicConnection connection, PeerInfo peer, byte category, ReadOnlyMemory<byte> payload, bool isKeyFrame)
+    {
+        if (category != VpnDatagramCategory || payload.Length > 9000) return;
+        var session = ActivePeers.Values.FirstOrDefault(s => ReferenceEquals(s.Connection, connection) && s.Peer.Id == peer.Id);
+        if (session?.SupportsFragmentedDatagrams == true) ProcessIncomingPacket(session, payload.Span);
+    }
 
     public event Action? StateChanged;
 
@@ -136,7 +144,7 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
     public IEnumerable<object> GetActivePeerSummaries() => ActivePeers.Values.Select(item => (object)
         System.Text.Json.JsonSerializer.SerializeToElement(new QuicNet.Serialization.LanPeerSummaryResponse(
             item.Peer.Id.ToString(), item.Peer.Name, item.Peer.Name, item.RemoteIp.ToString(), item.RemoteIp.ToString(),
-            "Datagram", item.Stream != null ? "Connected" : "Negotiating", item.Peer.Ping, item.TxPackets, item.RxPackets,
+            item.Connection.IsTor ? "Tor/stream" : "Datagram", item.Stream != null ? "Connected" : "Negotiating", item.Peer.Ping, item.TxPackets, item.RxPackets,
             item.TxBytes, item.RxBytes, item.DroppedPackets, item.ConnectedAt.ToString("HH:mm:ss"), item.ConnectedAt.ToString("o")),
             QuicNet.Serialization.NativeUiJsonContext.Default.LanPeerSummaryResponse));
 
@@ -394,7 +402,11 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
             Console.WriteLine($"[LAN] {peer.Name} joined as {remoteIp}. Active LAN peers: {ActivePeers.Count}.");
             StateChanged?.Invoke();
 
-            datagramHandler = dgram => ProcessIncomingPacket(peerSession, dgram);
+            datagramHandler = dgram =>
+            {
+                if (dgram.Length > 0 && dgram[0] == QuicPunch.Datagrams.QuicDatagramEnvelope.MagicMarker) return;
+                ProcessIncomingPacket(peerSession, dgram);
+            };
 
             if (connection.DatagramChannel != null)
             {
@@ -402,6 +414,10 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
             }
 
             byte[] lenBuffer = new byte[2];
+            // Zero-length frames were ignored by legacy receivers. Both updated
+            // ends advertise this capability before using fragmented datagrams.
+            await stream.WriteAsync(lenBuffer, ct).ConfigureAwait(false);
+            await stream.FlushAsync(ct).ConfigureAwait(false);
             byte[] rented = System.Buffers.ArrayPool<byte>.Shared.Rent(65536);
             try
             {
@@ -409,8 +425,7 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
                 {
                     await stream.ReadExactlyAsync(lenBuffer, ct).ConfigureAwait(false);
                     ushort len = BinaryPrimitives.ReadUInt16LittleEndian(lenBuffer);
-                    if (len == 0)
-                        continue;
+                    if (len == 0) { peerSession.SupportsFragmentedDatagrams = true; continue; }
 
                     await stream.ReadExactlyAsync(rented.AsMemory(0, len), ct).ConfigureAwait(false);
                     ProcessIncomingPacket(peerSession, rented.AsSpan(0, len));
@@ -510,10 +525,57 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
             return;
         }
 
+        // A native congestion drop must not become a reliable retransmission queue.
+        if (session.Connection.IsNativeQuic)
+        {
+            Interlocked.Increment(ref session.DroppedPackets);
+            // Older peers have no fragmentation capability. Tell local senders
+            // their actual path MTU instead of silently black-holing DF packets.
+            int mtu = session.Connection.DatagramChannel?.MaxSendDatagramLength ?? 0;
+            if (!session.SupportsFragmentedDatagrams && mtu > 0 && packet.Length > mtu &&
+                Ipv4Packet.TryRead(packet.Span, out var ip) && !IsBroadcastOrMulticast(ip.Destination) &&
+                (ip.Source == _localIpUint || Volatile.Read(ref _hostAddresses).Contains(ip.Source)))
+            {
+                var feedback = CreateMtuFeedback(packet.Span, _localIpUint, mtu);
+                if (feedback != null) try { _session?.SendPacket(feedback); } catch { }
+            }
+            return;
+        }
         packet.AddRef();
         session.EnqueuePacket(packet);
         Interlocked.Increment(ref TotalTxPackets);
         Interlocked.Add(ref TotalTxBytes, packet.Length);
+    }
+
+    internal static byte[]? CreateMtuFeedback(ReadOnlySpan<byte> packet, uint gateway, int mtu)
+    {
+        if (mtu < 68 || mtu > ushort.MaxValue || packet.Length <= mtu || !Ipv4Packet.TryRead(packet, out var ip)) return null;
+        ushort flags = BinaryPrimitives.ReadUInt16BigEndian(packet[6..8]);
+        if ((flags & 0x4000) == 0 || (flags & 0x1fff) != 0 || ip.Source == 0 || ip.Source >= 0xe0000000 ||
+            ip.Destination >= 0xe0000000) return null;
+        if (packet[9] == 1 && packet.Length > ip.HeaderLength && packet[ip.HeaderLength] is 3 or 4 or 5 or 11 or 12) return null;
+        int quote = Math.Min(packet.Length, ip.HeaderLength + 8);
+        byte[] reply = new byte[28 + quote];
+        reply[0] = 0x45; reply[8] = 64; reply[9] = 1;
+        BinaryPrimitives.WriteUInt16BigEndian(reply.AsSpan(2), (ushort)reply.Length);
+        BinaryPrimitives.WriteUInt32BigEndian(reply.AsSpan(12), gateway);
+        BinaryPrimitives.WriteUInt32BigEndian(reply.AsSpan(16), ip.Source);
+        reply[20] = 3; reply[21] = 4;
+        BinaryPrimitives.WriteUInt16BigEndian(reply.AsSpan(26), (ushort)mtu);
+        packet[..quote].CopyTo(reply.AsSpan(28));
+        BinaryPrimitives.WriteUInt16BigEndian(reply.AsSpan(10), InternetChecksum(reply.AsSpan(0, 20)));
+        BinaryPrimitives.WriteUInt16BigEndian(reply.AsSpan(22), InternetChecksum(reply.AsSpan(20)));
+        return reply;
+    }
+
+    private static ushort InternetChecksum(ReadOnlySpan<byte> data)
+    {
+        uint sum = 0;
+        int i = 0;
+        for (; i + 1 < data.Length; i += 2) sum += BinaryPrimitives.ReadUInt16BigEndian(data.Slice(i, 2));
+        if (i < data.Length) sum += (uint)data[i] << 8;
+        while (sum >> 16 != 0) sum = (sum & 65535) + (sum >> 16);
+        return (ushort)~sum;
     }
 
     private PeerLanSession? FindTarget(VpnPolicy? policy, uint destination)
@@ -833,6 +895,7 @@ public sealed class PeerLanSession : IDisposable
     public long RxBytes;
     public long TxBytes;
     public long DroppedPackets;
+    public volatile bool SupportsFragmentedDatagrams;
 
     private readonly PooledPacketQueue _outQueue = new(512);
     private readonly CancellationTokenSource _cts = new();
@@ -854,6 +917,13 @@ public sealed class PeerLanSession : IDisposable
         if (Connection.DatagramChannel != null && Connection.DatagramChannel.IsSendEnabled)
         {
             int maxLen = Connection.DatagramChannel.MaxSendDatagramLength;
+            if (packet.Length > maxLen && SupportsFragmentedDatagrams && packet.Length <= 9000)
+            {
+                if (!Connection.SendFrame(VirtualLanHandler.VpnDatagramCategory, packet.Span)) return false;
+                Interlocked.Increment(ref TxPackets);
+                Interlocked.Add(ref TxBytes, packet.Length);
+                return true;
+            }
             if (packet.Length <= maxLen)
             {
                 if (Connection.SendDatagram(packet.Span))

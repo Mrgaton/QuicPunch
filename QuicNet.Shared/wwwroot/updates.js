@@ -1,7 +1,7 @@
 (() => {
   const app = window.QP;
   if (!app) return;
-  let actionPending = false, channelPending = false, lastStatus;
+  let actionPending = false, channelPending = false, automaticPending = false, lastStatus;
   const notices = ['menuUpdate', 'mobileUpdate'];
   const labels = { idle: 'Pendiente de comprobar', checking: 'Comprobando', current: 'Al día', available: 'Nueva versión',
     downloading: 'Descargando', ready: 'Lista para instalar', installing: 'Instalando', error: 'No se pudo actualizar' };
@@ -9,7 +9,9 @@
   function renderNotices(status) {
     const disconnected = app.state.isWsConnected === false;
     const channelSelect = document.getElementById('updateChannel');
-    if (channelSelect) channelSelect.disabled = disconnected || channelPending || actionPending || busyStages.includes(status.Stage);
+    if (channelSelect) channelSelect.disabled = disconnected || channelPending || actionPending || automaticPending || busyStages.includes(status.Stage);
+    const automatic = document.getElementById('updateAutomatic');
+    if (automatic) automatic.disabled = disconnected || automaticPending || channelPending || actionPending || busyStages.includes(status.Stage);
     const newer = status.LatestBuild > status.CurrentBuild;
     const android = status.Platform === 'android-arm64';
     const percent = status.Total > 0 ? Math.min(100, Math.floor(status.Downloaded * 100 / status.Total)) : null;
@@ -29,13 +31,13 @@
       progress.hidden = status.Stage !== 'downloading';
       progress.value = status.Downloaded; progress.max = status.Total || 1;
       const button = document.getElementById(prefix + 'Install');
-      button.disabled = disconnected || actionPending || channelPending || busyStages.includes(status.Stage);
+      button.disabled = disconnected || actionPending || channelPending || automaticPending || busyStages.includes(status.Stage);
       button.textContent = actionPending ? 'Preparando…' : status.Stage === 'downloading' ? 'Descargando…'
         : status.Stage === 'installing' ? 'Instalando…' : android ? 'Instalar actualización' : 'Instalar y reiniciar';
     }
-    document.getElementById('updateInstall').disabled = disconnected || actionPending || channelPending || busyStages.includes(status.Stage);
+    document.getElementById('updateInstall').disabled = disconnected || actionPending || channelPending || automaticPending || busyStages.includes(status.Stage);
     document.getElementById('updateInstall').hidden = !['available', 'ready', 'error'].includes(status.Stage) || !newer;
-    document.getElementById('updateCheck').disabled = disconnected || actionPending || channelPending || busyStages.includes(status.Stage);
+    document.getElementById('updateCheck').disabled = disconnected || actionPending || channelPending || automaticPending || busyStages.includes(status.Stage);
   }
   function showError(error) {
     app.reportError?.(error, 'Actualizaciones');
@@ -51,11 +53,11 @@
       if (channelSelect && !channelPending) channelSelect.value = status.Channel || 'stable';
       const channelHelp = document.getElementById('updateChannelHelp');
       if (channelHelp) channelHelp.textContent = status.Channel === 'beta'
-        ? 'Recibirás versiones de prueba y releases estables, siempre que sean más recientes. Seguirás en Beta tras instalar una estable para recibir las próximas pruebas.'
+        ? 'Recibirás versiones de prueba y versiones estables más recientes. Seguirás en Beta tras instalar una estable para recibir las próximas pruebas.'
         : 'Solo versiones estables. Al salir de Beta se conserva la instalación actual hasta que haya una compilación estable superior.';
       document.getElementById('updateStatus').textContent = labels[status.Stage] || status.Stage;
       document.getElementById('updateMessage').textContent = status.Message || 'Se comprueba al abrir y cada 15 minutos.';
-      document.getElementById('updateAutomatic').checked = status.Automatic;
+      if (!automaticPending) document.getElementById('updateAutomatic').checked = status.Automatic;
       document.getElementById('updateLatest').textContent = status.LatestVersion ? status.LatestVersion + ' · compilación ' + status.LatestBuild : '—';
       document.getElementById('updateLastCheck').textContent = status.LastCheck ? new Date(status.LastCheck).toLocaleString() : 'Aún no comprobada';
       const progress = document.getElementById('updateProgress');
@@ -64,7 +66,7 @@
       document.getElementById('updateInstall').textContent = status.Platform === 'android-arm64' ? 'Instalar actualización' : 'Instalar y reiniciar';
       document.getElementById('updatePlatformHelp').textContent = status.Platform === 'android-arm64'
         ? 'La descarga es automática. Android te pedirá permitir esta fuente y confirmar la instalación. Tus datos se conservan.'
-        : 'El EXE AOT se sustituye y se reinicia automáticamente cuando no hay llamadas. Se conserva una copia anterior.';
+        : 'QuicNet se reinicia para instalar la actualización cuando no hay llamadas. Tus datos y una copia de la versión anterior se conservan.';
       renderNotices(status);
   }
   app.on('update_status', render);
@@ -73,7 +75,7 @@
     if (!data.connected) document.getElementById('updateMessage').textContent = 'Reconectando con la aplicación…';
   });
   async function runAction(path) {
-    if (actionPending || channelPending || (lastStatus && busyStages.includes(lastStatus.Stage))) return;
+    if (actionPending || channelPending || automaticPending || (lastStatus && busyStages.includes(lastStatus.Stage))) return;
     actionPending = true;
     if (lastStatus) renderNotices(lastStatus);
     document.getElementById('updateCheck').disabled = true;
@@ -85,7 +87,7 @@
       actionPending = false;
       if (lastStatus) {
         renderNotices(lastStatus);
-      }
+      } else document.getElementById('updateCheck').disabled = app.state.isWsConnected === false;
       if (failure) showError(failure);
     }
   }
@@ -103,12 +105,23 @@
       ...notices.map(prefix => [prefix + 'Install', 'install'])])
       document.getElementById(id)?.addEventListener('click', () => runAction(path));
     document.getElementById('updateAutomatic')?.addEventListener('change', async event => {
-      try { await app.wsRequest('updates.automatic', { enabled: event.target.checked }); }
-      catch (error) { if (lastStatus) render(lastStatus); showError(error); }
+      const checkbox = event.target, previous = lastStatus?.Automatic ?? !checkbox.checked;
+      if (automaticPending || actionPending || channelPending) { checkbox.checked = previous; return; }
+      automaticPending = true; checkbox.disabled = true;
+      if (lastStatus) renderNotices(lastStatus);
+      let failure;
+      try { await app.wsRequest('updates.automatic', { enabled: checkbox.checked }); }
+      catch (error) { checkbox.checked = previous; failure = error; }
+      finally {
+        automaticPending = false;
+        if (lastStatus) renderNotices(lastStatus);
+        else checkbox.disabled = true;
+      }
+      if (failure) showError(failure);
     });
     document.getElementById('updateChannel')?.addEventListener('change', async event => {
       const select = event.target;
-      if (actionPending || channelPending || (lastStatus && busyStages.includes(lastStatus.Stage))) {
+      if (actionPending || channelPending || automaticPending || (lastStatus && busyStages.includes(lastStatus.Stage))) {
         select.value = lastStatus?.Channel || 'stable'; return;
       }
       channelPending = true;
@@ -125,5 +138,9 @@
       if (failure) showError(failure);
     });
     render(app.state.updates);
+    if (!lastStatus) {
+      document.getElementById('updateAutomatic').disabled = true;
+      document.getElementById('updateChannel').disabled = true;
+    }
   });
 })();

@@ -14,8 +14,8 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
 
     private const int SampleRate = OpusVoiceCodec.DefaultSampleRate; // 48000
     private const int Channels = OpusVoiceCodec.DefaultChannels;     // 1 (mono)
-    private const int FrameSize = OpusVoiceCodec.DefaultFrameSize;   // 960 samples (20 ms)
-    private const int FrameBytes = FrameSize * sizeof(short);        // 1920 bytes
+    private const int FrameSize = OpusVoiceCodec.DefaultFrameSize;   // 480 samples (10 ms)
+    private const int FrameBytes = FrameSize * sizeof(short);        // 960 bytes
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PaSampleSpec
@@ -166,7 +166,7 @@ internal sealed class PulseAudioBackend : INativeAudioBackend
             TLength = uint.MaxValue,
             PreBuf = uint.MaxValue,
             MinReq = uint.MaxValue,
-            FragSize = FrameBytes // 60 ms frames
+            FragSize = FrameBytes // 10 ms frames
         };
 
         string? dev = string.IsNullOrWhiteSpace(deviceId) || deviceId.Equals("default", StringComparison.OrdinalIgnoreCase)

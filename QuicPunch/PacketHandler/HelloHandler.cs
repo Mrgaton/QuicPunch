@@ -44,20 +44,7 @@ namespace QuicPunch.PacketHandler
 
                 var flags = new ConnectionFlags(r.ReadByte());
 
-                var addressesAmount = r.ReadByte();
-                if (addressesAmount > MaxHelloAddresses)
-                    throw new InvalidDataException($"Hello advertises too many addresses: {addressesAmount}.");
-
-                var validAddresses = new List<IPAddress>(addressesAmount);
-                for (int i = 0; i < addressesAmount; i++)
-                {
-                    var ip = new IPAddress(ReadRequiredBytes(r, 4));
-                    if (Utilities.IsValidPeerAddress(ip) && !validAddresses.Contains(ip))
-                    {
-                        validAddresses.Add(ip);
-                    }
-                }
-                IPAddress[] addresses = validAddresses.ToArray();
+                IPAddress[] addresses = EndpointAddressCodec.ReadList(r);
 
                 ushort[] portArray = PortAdvertisementCodec.ReadDiscovery(r, flags, "Hello");
                 ushort hostPort = PortAdvertisementCodec.ReadHostPort(r, flags);

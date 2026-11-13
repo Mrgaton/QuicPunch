@@ -45,22 +45,7 @@ namespace QuicPunch.PacketHandler
                         pi.ConnectionFlags = flags;
                         pi.NetworkType = Utilities.GetNetworkType(flags);
 
-                        byte addressCount = r.ReadByte();
-                        if (addressCount > 32)
-                            throw new InvalidDataException($"Shared peer advertises too many addresses: {addressCount}.");
-
-                        var addresses = new List<IPAddress>(addressCount);
-                        for (int e = 0 ; e < addressCount; e++)
-                        {
-                            byte[] rawAddress = r.ReadBytes(4);
-                            if (rawAddress.Length != 4)
-                                throw new InvalidDataException("Truncated shared-peer address.");
-                            var address = new IPAddress(rawAddress);
-                            if (Utilities.IsValidPeerAddress(address) && !addresses.Contains(address))
-                                addresses.Add(address);
-                        }
-
-                        pi.Addresses = addresses.ToArray();
+                        pi.Addresses = EndpointAddressCodec.ReadList(r);
 
                         pi.PortArray = PortAdvertisementCodec.ReadDiscovery(r, flags, "ACK shared peer");
                         pi.PreferredPort = PortAdvertisementCodec.ReadHostPort(r, flags);

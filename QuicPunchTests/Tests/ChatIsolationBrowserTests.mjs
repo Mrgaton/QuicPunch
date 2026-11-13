@@ -58,6 +58,7 @@ try {
   await page.locator(`#chatPeers [data-peer-id="${alice}"]`).waitFor();
   await page.locator(`#chatPeers [data-peer-id="${alice}"]`).click();
   await page.locator('.nav-link[data-page=dashboard]').click();
+  await page.locator('.contact-options > summary').click();
   await page.locator('button[data-connection-mode=tor]').click();
   await page.waitForFunction(() => document.documentElement.dataset.connectionMode === 'tor');
   await page.locator('.nav-link[data-page=chat]').click();

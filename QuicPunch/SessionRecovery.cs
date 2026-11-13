@@ -14,6 +14,47 @@ internal sealed class SessionRecoveryRegistry
     private sealed record Grant(Guid Owner, long DetachedAt, TaskCompletionSource Cleanup);
     private readonly object _gate = new();
     private readonly Dictionary<(Guid Peer, Guid Protocol, Guid Session), Grant> _grants = new();
+    private readonly Dictionary<(Guid Peer, Guid Protocol, Guid Session), long> _denied = new();
+    private readonly Dictionary<(Guid Peer, Guid Protocol, Guid Session), (long At, Lazy<Task<bool>> Decision)> _decisions = new();
+
+    internal Task<bool> GetDecisionAsync(Guid peer, Guid protocol, Guid session, TimeSpan window, Func<Task<bool>> decide)
+    {
+        Lazy<Task<bool>> decision;
+        lock (_gate)
+        {
+            foreach (var key in _decisions.Where(p => Stopwatch.GetElapsedTime(p.Value.At) >= window)
+                         .Select(p => p.Key).ToArray()) _decisions.Remove(key);
+            var keyForSession = (peer, protocol, session);
+            if (_decisions.TryGetValue(keyForSession, out var existing)) decision = existing.Decision;
+            else
+            {
+                if (_decisions.Count >= 4096 || _decisions.Keys.Count(k => k.Peer == peer) >= 128)
+                    return Task.FromResult(false);
+                decision = new Lazy<Task<bool>>(decide);
+                _decisions.Add(keyForSession, (Stopwatch.GetTimestamp(), decision));
+            }
+        }
+        return decision.Value;
+    }
+
+    internal bool HasGrant(Guid peer, Guid protocol, Guid session)
+    { lock (_gate) return _grants.ContainsKey((peer, protocol, session)); }
+    internal bool WasDenied(Guid peer, Guid protocol, Guid session, TimeSpan window)
+    {
+        lock (_gate)
+        {
+            foreach (var key in _denied.Where(p => Stopwatch.GetElapsedTime(p.Value) >= window).Select(p => p.Key).ToArray()) _denied.Remove(key);
+            return _denied.ContainsKey((peer, protocol, session));
+        }
+    }
+    internal void RememberDenied(Guid peer, Guid protocol, Guid session)
+    {
+        lock (_gate)
+        {
+            if (_denied.Count >= 4096) _denied.Remove(_denied.MinBy(p => p.Value).Key);
+            _denied[(peer, protocol, session)] = Stopwatch.GetTimestamp();
+        }
+    }
 
     internal bool TryStart(Guid peer, Guid protocol, Guid session, Guid owner, bool resume, TimeSpan window)
     {
@@ -24,6 +65,7 @@ internal sealed class SessionRecoveryRegistry
             { _grants[key].Cleanup.TrySetCanceled(); _grants.Remove(key); }
             var keyForSession = (peer, protocol, session);
             if (session == Guid.Empty || owner == Guid.Empty) return false;
+            if (_denied.TryGetValue(keyForSession, out long deniedAt) && Stopwatch.GetElapsedTime(deniedAt) < window) return false;
             if (resume)
             {
                 if (!_grants.TryGetValue(keyForSession, out var grant) || grant.DetachedAt == 0 || !grant.Cleanup.Task.IsCompletedSuccessfully) return false;
@@ -43,7 +85,12 @@ internal sealed class SessionRecoveryRegistry
             if (!_grants.TryGetValue(key, out var grant) || grant.Owner != owner) return false;
             if (transportLost)
                 _grants[key] = grant with { DetachedAt = grant.DetachedAt == 0 ? Stopwatch.GetTimestamp() : grant.DetachedAt };
-            else { grant.Cleanup.TrySetCanceled(); _grants.Remove(key); return true; }
+            else
+            {
+                grant.Cleanup.TrySetCanceled(); _grants.Remove(key); _decisions.Remove(key);
+                RememberDenied(peer, protocol, session);
+                return true;
+            }
             return false;
         }
     }
@@ -51,14 +98,21 @@ internal sealed class SessionRecoveryRegistry
     internal void Revoke(Guid peer, Guid? protocol = null)
     {
         lock (_gate)
+        {
+            foreach (var key in _decisions.Keys.Where(x => x.Peer == peer && (!protocol.HasValue || x.Protocol == protocol)).ToArray())
+            {
+                RememberDenied(key.Peer, key.Protocol, key.Session);
+                _decisions.Remove(key);
+            }
             foreach (var key in _grants.Keys.Where(x => x.Peer == peer && (!protocol.HasValue || x.Protocol == protocol)).ToArray())
-            { _grants[key].Cleanup.TrySetCanceled(); _grants.Remove(key); }
+            { RememberDenied(key.Peer, key.Protocol, key.Session); _grants[key].Cleanup.TrySetCanceled(); _grants.Remove(key); }
+        }
     }
 
-    internal void Clear() { lock (_gate) { foreach (var grant in _grants.Values) grant.Cleanup.TrySetCanceled(); _grants.Clear(); } }
+    internal void Clear() { lock (_gate) { foreach (var grant in _grants.Values) grant.Cleanup.TrySetCanceled(); _grants.Clear(); _denied.Clear(); _decisions.Clear(); } }
     internal Task WaitForCleanup(Guid peer, Guid protocol, Guid session)
     {
-        lock (_gate) return _grants.TryGetValue((peer, protocol, session), out var grant) && grant.DetachedAt != 0
+        lock (_gate) return _grants.TryGetValue((peer, protocol, session), out var grant)
             ? grant.Cleanup.Task : Task.CompletedTask;
     }
     internal void HandlerFinished(Guid peer, Guid protocol, Guid session, Guid owner)

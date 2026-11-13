@@ -23,7 +23,8 @@ public static class FfmpegInstallationTests
         Check(Linux("ID=unknown\nID_LIKE=$(untrusted)")[0].command == "", "Unknown distribution must not produce a guessed/interpolated shell command.");
         int probes = 0;
         var android = await FfmpegInstallation.DetectAsync("android", "", ["not-run"], (_, _) => { probes++; throw new Exception("Android must not probe FFmpeg"); }, default);
-        Check(probes == 0 && android.options.Length == 0 && !android.nativeCaptureSupported, "Android must neither probe nor request FFmpeg.");
+        Check(probes == 0 && android.options.Length == 0 && android.installed && android.nativeCaptureSupported,
+            "Android bundles FFmpeg and must neither probe nor request an external executable.");
         var installed = await FfmpegInstallation.DetectAsync("windows", "", ["broken", "working"],
             (candidate, _) => Task.FromResult<string?>(candidate == "working" ? "ffmpeg version test" : null), default);
         Check(installed.installed && installed.executable == "working" && installed.options.Length == 0, "Skip broken installs and accept the usable candidate.");

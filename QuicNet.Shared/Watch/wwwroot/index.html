@@ -3,73 +3,72 @@
 <head>
   <meta charset="utf-8">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#151c21">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101116">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="quicwatch-csrf" content="__QUICWATCH_CSRF__">
   <script src="/watch/diagnostics.js"></script>
   <title>Ver juntos · QuicNet</title>
   <link rel="stylesheet" href="/watch/app.css">
 </head>
 <body>
+  <a class="skip-link" href="#roomTitle">Saltar a la sala</a>
   <header class="topbar">
-    <div class="brand"><div><strong>Ver juntos<span class="accent-text">.</span></strong><small>Un mismo vídeo. Un momento compartido.</small></div></div>
-    <div class="status"><span id="liveDot" class="dot"></span><span id="connectionText">Preparando conexión…</span></div>
+    <div><span class="eyebrow">UN PLAN, ESTÉIS DONDE ESTÉIS</span><h1>Ver juntos<span class="accent-text">.</span></h1><p>La misma película. El mismo momento.</p></div>
+    <div class="status" role="status"><span id="liveDot" class="dot"></span><span id="connectionText">Conectando…</span><button id="retryConnection" type="button" hidden>Reintentar</button></div>
   </header>
-
   <main class="layout">
-    <section class="stage card">
-      <div class="stage-head">
-        <div><span class="eyebrow">SALA ACTIVA</span><h1 id="roomTitle">Todavía no hay una sala</h1></div>
-        <div class="stage-tools">
-          <span id="roleBadge" class="badge">Sin sala</span>
-          <button id="leaveRoom" class="danger" type="button" hidden>Salir de la sala</button>
-          <button id="fullscreenBtn" class="icon-button" type="button" title="Ver vídeo a pantalla completa" aria-label="Ver vídeo a pantalla completa">⛶ Pantalla completa</button>
-        </div>
-      </div>
+    <section class="stage" aria-labelledby="roomTitle">
+      <header class="stage-head">
+        <div class="room-heading"><span class="room-icon" aria-hidden="true">▷</span><div><span class="eyebrow">TU SALA DE CINE</span><h2 id="roomTitle" tabindex="-1">Todo empieza con un buen plan</h2></div></div>
+        <span id="roleBadge" class="badge">Sin sala</span>
+      </header>
       <div class="player-shell" id="playerShell">
-        <video id="player" controls playsinline preload="metadata"></video>
+        <video id="player" controls playsinline preload="metadata" aria-label="Vídeo compartido"></video>
         <div id="emptyPlayer" class="empty-player">
-          <div class="play-glyph">▶</div>
-          <h2>Elige un vídeo para empezar</h2>
-          <p>Crea una sala, invita a tus contactos y disfruta del vídeo en sincronía, con su calidad original.</p>
+          <div class="cinema-art" aria-hidden="true"><div class="cinema-orbit"></div><div class="cinema-screen"><span>▷</span><i></i></div><span class="cinema-spark spark-one">✦</span><span class="cinema-spark spark-two">✦</span></div>
+          <span class="eyebrow">CERCA, AUNQUE ESTÉIS LEJOS</span>
+          <h3 id="emptyTitle">Hoy, la última fila es vuestra.</h3>
+          <p id="emptyDescription">Prepara una sala, invita a tu gente y comparte un vídeo en su calidad original.</p>
+          <button id="startWatching" class="primary" type="button">Preparar mi sala <span aria-hidden="true">↗</span></button>
+          <small id="emptyHint">Tú eliges quién entra y quién controla el vídeo.</small>
         </div>
+        <button id="resumePlayback" class="resume-playback primary" type="button" hidden>▶ Toca para unirte a la reproducción</button>
       </div>
       <div class="now-playing">
-        <div><strong id="mediaName">Sin contenido</strong><small id="mediaMeta">Esperando un vídeo</small></div>
-        <div class="cache-wrap"><span id="cacheText">Directo desde el origen</span><div class="progress"><i id="cacheBar"></i></div></div>
+        <div class="media-copy"><span class="eyebrow">EN PANTALLA</span><strong id="mediaName">Tu próximo momento compartido</strong><small id="mediaMeta">Elige un vídeo después de crear la sala.</small></div>
+        <button id="fullscreenBtn" class="icon-button" type="button" disabled aria-label="Ver vídeo a pantalla completa">⛶ <span>Pantalla completa</span></button>
       </div>
+      <div class="playback-status" role="status"><span id="playbackStatus">Todo a vuestro ritmo</span><span id="cacheText">Calidad original · Sin recodificar</span></div>
+      <div class="progress" role="progressbar" aria-label="Vídeo disponible localmente" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="cacheProgress"><i id="cacheBar"></i></div>
+      <ol class="steps" aria-label="Cómo empezar"><li id="stepRoom"><b>01</b><div><strong>Prepara la sala</strong><span>Ponle nombre a vuestro plan.</span></div></li><li id="stepPeople"><b>02</b><div><strong>Invita a tu gente</strong><span>Conecta e invita a tus contactos.</span></div></li><li id="stepMedia"><b>03</b><div><strong>Dale al play</strong><span>El vídeo se sincroniza para todos.</span></div></li></ol>
     </section>
-
-    <aside class="sidebar">
-      <section class="card panel">
-        <div class="section-title"><div><span class="eyebrow">TU IDENTIDAD</span><h2 id="localName">Este dispositivo</h2></div><button id="copyToken" class="icon-button" title="Copiar invitación">Copiar</button></div>
-        <details><summary>Ver código de invitación</summary><div id="myToken" class="token">Preparando invitación…</div></details>
+    <aside class="sidebar" aria-label="Preparar y gestionar la sala">
+      <section class="panel actions" aria-labelledby="setupTitle">
+        <div class="section-title"><div><span class="eyebrow">EL PLAN DE HOY</span><h2 id="setupTitle">Prepara tu sala</h2></div><span class="panel-number" aria-hidden="true">01</span></div>
+        <form id="roomForm"><label for="roomName">Nombre de la sala</label><input id="roomName" value="Noche de cine" maxlength="60" required autocomplete="off"><button id="createRoom" type="submit" class="primary wide">Crear sala</button></form>
+        <div class="media-action"><button id="pickMedia" class="secondary wide" type="button" disabled>Elegir vídeo</button><p id="mediaHelp">Primero crea una sala. Después podrás elegir un vídeo de tu dispositivo.</p></div>
+        <details id="pathDetails"><summary>Abrir un archivo por su ruta</summary><form id="pathForm" class="path-form"><label class="sr-only" for="pathInput">Ruta del archivo de vídeo</label><input id="pathInput" placeholder="Ruta completa del vídeo" required><button class="secondary" type="submit">Abrir</button></form></details>
+        <button id="leaveRoom" class="danger wide" type="button" hidden>Salir de la sala</button>
       </section>
-
-      <section class="card panel">
-        <div class="section-title"><div><span class="eyebrow">PARTICIPANTES</span><h2>Conectar dispositivos</h2></div><span id="peerCount" class="count">0</span></div>
-        <form id="tokenForm" class="inline-form">
-          <input id="tokenInput" aria-label="Código de invitación" autocomplete="off" placeholder="Pega una invitación" required>
-          <button type="submit" class="primary">Conectar</button>
-        </form>
-        <div id="peerList" class="peer-list"><p class="muted">Aún no hay nadie conectado.</p></div>
+      <section class="panel" aria-labelledby="peopleTitle">
+        <div class="section-title"><div><span class="eyebrow">MEJOR EN COMPAÑÍA</span><h2 id="peopleTitle">Tu gente</h2></div><span id="peerCount" class="count" aria-label="Contactos conectados">0</span></div>
+        <p id="peopleHelp" class="panel-description">Selecciona contactos para invitarlos al crear la sala.</p>
+        <div id="peerList" class="peer-list"><p class="muted">Tus contactos aparecerán aquí.</p></div>
+        <details id="joinDetails" class="join-details"><summary>Tengo una invitación</summary><form id="tokenForm" class="inline-form"><label class="sr-only" for="tokenInput">Código de invitación</label><input id="tokenInput" autocomplete="off" spellcheck="false" placeholder="Pega el código de invitación" required><button type="submit" class="secondary">Conectar</button></form></details>
       </section>
-
-      <section class="card panel actions">
-        <span class="eyebrow">SALA</span>
-        <label for="roomName">Nombre</label>
-        <input id="roomName" value="Noche de cine" maxlength="60" required>
-        <button id="createRoom" class="primary wide">Crear sala con los seleccionados</button>
-        <button id="pickMedia" class="secondary wide" disabled>Elegir vídeo original</button>
-        <details>
-          <summary>Seleccionar por ruta</summary>
-          <form id="pathForm" class="path-form"><input id="pathInput" aria-label="Ruta del archivo de vídeo" placeholder="C:\Vídeos\película.mp4" required><button class="secondary" type="submit">Abrir</button></form>
-        </details>
+      <section class="identity-panel" aria-label="Tu invitación">
+        <div class="section-title"><div><span class="eyebrow">TÚ EN ESTA SALA</span><h2 id="localName">Este dispositivo</h2></div><button id="copyToken" class="icon-button" type="button" disabled aria-label="Copiar mi invitación">Copiar invitación</button></div>
+        <details><summary>Ver mi código</summary><div id="myToken" class="token">Preparando invitación…</div></details>
       </section>
     </aside>
+    <footer class="watch-footer"><span aria-hidden="true">◇</span> De tu dispositivo a los suyos. Un espacio para compartir.</footer>
   </main>
-
-  <div id="toast" class="toast" role="status"></div>
+  <dialog id="closeRoomDialog" class="room-dialog" aria-labelledby="closeRoomTitle" aria-describedby="closeRoomDescription">
+    <h2 id="closeRoomTitle">¿Cerrar la sala para todos?</h2>
+    <p id="closeRoomDescription">Las demás personas saldrán de la sala y la reproducción compartida terminará. Para seguir viendo el vídeo juntos, conserva la sala abierta.</p>
+    <div class="dialog-actions"><button id="cancelCloseRoom" type="button" autofocus>Seguir en la sala</button><button id="confirmCloseRoom" type="button" class="danger">Cerrar para todos</button></div>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
   <script src="/watch/app.js"></script>
 </body>
 </html>

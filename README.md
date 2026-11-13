@@ -118,7 +118,11 @@ await quicPunch.InitQuicConnection(
 
 For compact agent output, run `./scripts/test.ps1 -Tests output,sha3,antireplay -Web` in PowerShell. It builds once and prints one line per successful suite. Failures and skips retain complete diagnostics in `.artifacts/test-output/`. Use `-Verbose` for full output or `-NoBuild` to reuse the build. See the [test runner documentation](doc/testing/test-suite.md#running-the-automated-test-suites) for exit codes and suite selection.
 
-For isolated browser tests, run `npm ci`, `npm run test:browser:install`, then `./scripts/test.ps1 -Browser` (or `npm run test:browser`). Shared web assets live in `QuicNet.Shared/wwwroot` and `QuicNet.Shared/Watch/wwwroot`; the shared map renderer and geography are in `QuicNet.Geolocation/Map`.
+## Cleaning the workspace
+
+Close running project applications and Visual Studio, then run `./scripts/clean-project.ps1 -WhatIf` to preview or `./scripts/clean-project.ps1` to remove regenerable build outputs, test artifacts and Python caches. Locked files are reported and retained. The script preserves tracked files, native libraries, nested repositories, backups and the historical `precached/` archive. Use standard `bin/` and `obj/` directories for builds; keep release signing keys outside the repository as described in [AGENTS.md](AGENTS.md).
+
+For isolated browser tests, run `npm ci`, `npm run test:browser:install`, then `./scripts/test.ps1 -Browser` (or `npm run test:browser`). Shared web assets live in `QuicNet.Shared/wwwroot` and `QuicNet.Shared/Watch/wwwroot`. Offline IP location data and the compressed catalogue reader live in `QuicNet.Geolocation`.
 
 ```bash
 # Run Security, Discovery & Lifecycle Test Suite:

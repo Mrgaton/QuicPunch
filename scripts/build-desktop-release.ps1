@@ -30,7 +30,7 @@ function Run-DotNet([string[]]$Arguments) {
 }
 $project=Join-Path $repo 'QuicNet/QuicNet.csproj'
 Run-DotNet (@('publish',$project,'-r',$Platform,'-c','Release','--self-contained','true','-p:PublishAot=false','-o',$dependencies,'-v','minimal')+$common)
-$names=if($Platform -eq 'win-x64'){@('msquic.dll','e_sqlite3.dll','Photino.Native.dll','WebView2Loader.dll','wintun.dll')}else{@('libmsquic.so','libe_sqlite3.so','Photino.Native.so')}
+$names=if($Platform -eq 'win-x64'){@('msquic.dll','qp_transport.dll','e_sqlite3.dll','Photino.Native.dll','WebView2Loader.dll','wintun.dll','nettt_media.dll','avcodec-62.dll','avutil-60.dll','swscale-9.dll','libwinpthread-1.dll')}else{@('libmsquic.so','libqp_transport.so','libe_sqlite3.so','Photino.Native.so')}
 foreach($name in $names){Copy-Item -LiteralPath (Join-Path $dependencies $name) -Destination (Join-Path $native $name) -Force}
 Run-DotNet (@('publish',$project,'-r',$Platform,'-c','Release','-p:PublishAot=true',"-p:NativeBundleDirectory=$native",'-o',$OutputDirectory,'-v','minimal')+$common)
 $binary=Join-Path $OutputDirectory $(if($Platform -eq 'win-x64'){'QuicNet.exe'}else{'QuicNet'})

@@ -68,6 +68,16 @@ internal sealed class ChatTransferStore
     public ChatTransferRecord? Find(Guid peerId, Guid fileId, bool includeExpired = false) =>
         Load(peerId, includeExpired).FirstOrDefault(r => r.FileId == fileId && !r.IsUpload);
 
+    public void UpdateUpload(Guid peerId, Guid fileId, Func<ChatTransferRecord, ChatTransferRecord> update)
+    {
+        lock (_gate)
+        {
+            var record = Load(peerId, includeExpired: true).FirstOrDefault(r => r.FileId == fileId && r.IsUpload);
+            // Do not recreate attachments concurrently removed with their conversation or expiry.
+            if (record != null) Save(update(record));
+        }
+    }
+
     public void Delete(Guid peerId, Guid fileId, bool upload = false)
     {
         lock (_gate)

@@ -143,6 +143,19 @@ foreach($platform in $Platforms) {
         if($LASTEXITCODE -ne 0){throw 'Firma de APK inválida.'}
         $expected=(Get-Content -LiteralPath (Join-Path $repo 'QuicPunch.AndroidProbe/signing-certificate.sha256') -Raw).Trim()
         if(($certificate|Where-Object {$_ -match 'certificate SHA-256 digest:'}) -notmatch [regex]::Escape($expected)){throw 'La clave Android no coincide con las instalaciones existentes. Importa el keystore original; no se publica.'}
+        $package=[IO.Compression.ZipFile]::OpenRead($apk.FullName)
+        try {
+            if($package.GetEntry('lib/arm64-v8a/libnettt_test_pattern.so')){throw 'La APK de publicación contiene el generador de pruebas Debug.'}
+            foreach($library in @('libnettt_media.so','libavcodec.so','libavutil.so','libswscale.so')) {
+                $entry=$package.GetEntry("lib/arm64-v8a/$library")
+                if(!$entry){throw "La APK no incluye $library."}
+                $input=$entry.Open()
+                try {$actual=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($input))} finally {$input.Dispose()}
+                $expectedLibrary=(Get-FileHash -LiteralPath (Join-Path $repo "QuicPunch.AndroidProbe/native/arm64-v8a/$library") -Algorithm SHA256).Hash
+                if($actual -cne $expectedLibrary){throw "La APK contiene una biblioteca multimedia desactualizada: $library."}
+            }
+        } finally {$package.Dispose()}
+        Write-Host 'APK verificada: firma original y cuatro bibliotecas multimedia actuales, sin generador Debug.'
         $source=$apk.FullName
     } else {
         $dir=if($platform -eq 'win-x64'){if($WindowsArtifact){$WindowsArtifact}else{$desktop}}else{if($LinuxArtifact){$LinuxArtifact}else{Join-Path $work 'linux'}}
@@ -193,7 +206,10 @@ $envelope = [ordered]@{ payload = [Convert]::ToBase64String($payload); signature
 Copy-Item -LiteralPath 'doc/deployment/auto-updates.md' -Destination (Join-Path $distribution 'PUBLISHING.md') -Force
 Copy-Item -LiteralPath 'doc/deployment/auto-updates.md' -Destination (Join-Path $releaseDir 'PUBLISHING.md') -Force
 Copy-Item -LiteralPath 'QuicNet.Geolocation/Data/NOTICE.txt' -Destination (Join-Path $releaseDir 'GEOLOCATION-NOTICE.txt') -Force
-Copy-Item -LiteralPath 'QuicNet.Geolocation/Map/NOTICE.txt' -Destination (Join-Path $releaseDir 'MAP-NOTICE.txt') -Force
+$mediaSource = Join-Path $repo '.artifacts/native-media-source.tar.gz'
+if (!(Test-Path -LiteralPath $mediaSource)) { throw 'Falta native-media-source.tar.gz. Ejecuta scripts/package-native-media-source.sh antes de publicar las bibliotecas FFmpeg.' }
+Copy-Item -LiteralPath $mediaSource -Destination (Join-Path $releaseDir 'native-media-source.tar.gz') -Force
+Copy-Item -LiteralPath (Join-Path $repo 'native/media/NOTICE.txt') -Destination (Join-Path $releaseDir 'NATIVE-MEDIA-NOTICE.txt') -Force
 Write-Host "Distribución lista: $distribution"
 if ($LocalOnly) { Write-Host 'Solo preparación local: no se ha escrito en el CDN.'; return }
 

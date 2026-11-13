@@ -23,6 +23,7 @@ internal static class SessionRecoveryTests
         public bool SupportsSessionRecovery => recovery;
         public Channel<(Guid Session, bool Recovered, byte Value)> Entries { get; } = Channel.CreateUnbounded<(Guid, bool, byte)>();
         public Channel<byte> Datagrams { get; } = Channel.CreateUnbounded<byte>();
+        public Channel<byte> VpnFrames { get; } = Channel.CreateUnbounded<byte>();
         private int _entries;
         private int _running;
         public async Task HandleAsync(QuicConnection connection, Stream stream, PeerInfo peer, CancellationToken ct)
@@ -48,7 +49,7 @@ internal static class SessionRecoveryTests
                 }
                 Entries.Writer.TryWrite((connection.SessionId, connection.IsRecoveredSession, value[0]));
                 using var pulseLifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                Task pulse = receive ? Task.CompletedTask : PulseAsync(connection, value[0], pulseLifetime.Token);
+                Task pulse = receive ? Task.CompletedTask : PulseAsync(connection, peer, value[0], pulseLifetime.Token);
                 try
                 {
                     try { await stream.ReadExactlyAsync(value, ct); }
@@ -66,16 +67,24 @@ internal static class SessionRecoveryTests
         }
         public void OnDatagramReceived(QuicConnection connection, PeerInfo peer, QuicPunch.Datagrams.QuicDatagramMessage message)
         { if (message.Category == 9 && message.Payload.Length == 1) Datagrams.Writer.TryWrite(message.Payload.Span[0]); }
-        private static async Task PulseAsync(QuicConnection connection, byte value, CancellationToken ct)
+        public void OnFrameReceived(QuicConnection connection, PeerInfo peer, byte category, ReadOnlyMemory<byte> payload, bool isKeyFrame)
         {
+            if (category == 9 && payload.Length == 2000 && payload.Span.ToArray().All(b => b == payload.Span[0]))
+                VpnFrames.Writer.TryWrite(payload.Span[0]);
+        }
+        private static async Task PulseAsync(QuicConnection connection, PeerInfo peer, byte value, CancellationToken ct)
+        {
+            using var vpn = new QuicNet.Protocols.PeerLanSession(0, IPAddress.Loopback, peer, new MemoryStream(), connection)
+                { SupportsFragmentedDatagrams = true };
+            using var packet = QuicNet.Protocols.PooledPacket.Create(Enumerable.Repeat(value, 2000).ToArray());
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
-            do { connection.SendCategorizedDatagram(9, new byte[] { value }); }
+            do { connection.SendCategorizedDatagram(9, new byte[] { value }); vpn.TrySendDatagram(packet); }
             while (await timer.WaitForNextTickAsync(ct));
         }
         public Task DeniedAsync(PeerInfo peer, CancellationToken ct) => Task.CompletedTask;
     }
 
-    private static async Task<QP> Node(string path)
+    private static async Task<QP> Node(string path, IPAddress? address = null)
     {
         var node = new QP(appDataPath: path) { EnableUpnp = false, StunServerEndpoints = [] };
         node.Discovery.LanDiscoveryPort = 0;
@@ -85,7 +94,7 @@ internal static class SessionRecoveryTests
             HeartbeatInterval = TimeSpan.FromMilliseconds(100), HeartbeatTimeout = TimeSpan.FromSeconds(2) };
         node.ReputationFilter?.Dispose(); node.ReputationFilter = null;
         await node.StartAsync(); await node.Mailbox.StopAsync();
-        node.CurrentPeer.Addresses = [IPAddress.Loopback];
+        node.CurrentPeer.Addresses = [address ?? IPAddress.Loopback];
         node.CurrentPeer.PortArray = [(ushort)node.LocalBoundPort];
         return node;
     }
@@ -94,6 +103,7 @@ internal static class SessionRecoveryTests
     {
         await Registry();
         await SilentTransport();
+        await InitialProbeCancellation();
         using (var nat = new QuicPunch.Discovery.NatPinCoordinator())
         {
             nat.AddManualSample(new IPEndPoint(IPAddress.Parse("93.184.216.34"), 40000), 16);
@@ -108,7 +118,7 @@ internal static class SessionRecoveryTests
         finally { try { Directory.Delete(root, true); } catch { } }
     }
 
-    internal sealed class SilentStream : Stream
+    internal class SilentStream : Stream
     {
         public int Writes;
         public override bool CanRead => true;
@@ -126,6 +136,35 @@ internal static class SessionRecoveryTests
         public override void Write(byte[] buffer, int offset, int count) => Interlocked.Increment(ref Writes);
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
+    private sealed class DropSessionResponseStream : SilentStream
+    {
+        private readonly Channel<byte> _replies = Channel.CreateUnbounded<byte>();
+        internal bool Requested;
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (!await _replies.Reader.WaitToReadAsync(ct)) return 0;
+            int count = 0;
+            while (count < buffer.Length && _replies.Reader.TryRead(out byte value)) buffer.Span[count++] = value;
+            return count;
+        }
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            var message = QuicPunch.Multiplexer.QuicPeerMultiplexer.ControlMessage.Decode(buffer.Span[4..]);
+            if (message.Type == QuicPunch.Multiplexer.QuicPeerMultiplexer.ControlMessageType.Ping)
+            {
+                byte[] reply = new byte[48];
+                new QuicPunch.Multiplexer.QuicPeerMultiplexer.ControlMessage
+                { Type = QuicPunch.Multiplexer.QuicPeerMultiplexer.ControlMessageType.Pong, SessionGuid = message.SessionGuid }
+                    .Encode(reply.AsSpan(4), out int size);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(reply, size);
+                foreach (byte value in reply) _replies.Writer.TryWrite(value);
+            }
+            else if (message.Type == QuicPunch.Multiplexer.QuicPeerMultiplexer.ControlMessageType.SessionRequest)
+            { Requested = true; _replies.Writer.TryComplete(); }
+            return ValueTask.CompletedTask;
+        }
     }
 
     internal sealed class SilentConnection : IQuicConnectionTransport
@@ -158,6 +197,18 @@ internal static class SessionRecoveryTests
         var registry = new SessionRecoveryRegistry();
         Guid peer = Guid.NewGuid(), protocol = Guid.NewGuid(), session = Guid.NewGuid(), owner = Guid.NewGuid();
         TimeSpan window = TimeSpan.FromSeconds(5);
+        int prompts = 0;
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool> Decide() { Interlocked.Increment(ref prompts); return answer.Task; }
+        var firstDecision = registry.GetDecisionAsync(peer, protocol, session, window, Decide);
+        using (var cancelled = new CancellationTokenSource())
+        {
+            cancelled.Cancel();
+            try { await firstDecision.WaitAsync(cancelled.Token); } catch (OperationCanceledException) { }
+        }
+        var retriedDecision = registry.GetDecisionAsync(peer, protocol, session, window, Decide);
+        answer.SetResult(true);
+        Check(await retriedDecision && prompts == 1, "loss of the requesting transport preserves a single pending consent decision");
         Check(registry.TryStart(peer, protocol, session, owner, false, window), "accepted session creates a scoped continuation grant");
         Check(!registry.TryStart(peer, protocol, session, Guid.NewGuid(), true, window), "an active session cannot be claimed twice");
         registry.Finish(peer, protocol, session, owner, true);
@@ -171,7 +222,10 @@ internal static class SessionRecoveryTests
         registry.Finish(peer, protocol, session, owner, false);
         Check(registry.Contains(peer, protocol, window), "late cleanup from an old connection cannot revoke its replacement");
         registry.Finish(peer, protocol, session, next, false);
+        Check(registry.WasDenied(peer, protocol, session, window), "closed logical requests cannot replay their cached consent");
         Check(!registry.TryStart(peer, protocol, session, owner, true, window), "normal close destroys continuation authority");
+        Check(!registry.TryStart(peer, protocol, session, owner, false, window), "a closed request cannot reopen by claiming to be initial");
+        session = Guid.NewGuid();
         registry.TryStart(peer, protocol, session, owner, false, window);
         registry.Finish(peer, protocol, session, owner, true);
         await Task.Delay(40);
@@ -180,23 +234,82 @@ internal static class SessionRecoveryTests
         registry.Finish(peer, protocol, session, owner, true);
         registry.Revoke(peer);
         Check(!registry.TryStart(peer, protocol, session, next, true, window), "revocation destroys suspended grants");
+        session = Guid.NewGuid();
         registry.TryStart(peer, protocol, session, owner, false, window);
         registry.Clear();
         Check(!registry.Contains(peer, protocol, window), "restart clears all recovery authority");
     }
 
-    private static async Task NativeRecovery(string root)
+    private static async Task InitialProbeCancellation()
     {
-        await using var a = await Node(Path.Combine(root, "a"));
-        await using var b = await Node(Path.Combine(root, "b"));
+        string root = Path.Combine(Path.GetTempPath(), "qp-initial-probe-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using var node = await Node(root);
+            using var peer = new PeerInfo().SetCertificateHash(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+            node.TrustPeer(peer.CertHash);
+            node.AvailablePeers[peer.Id] = peer;
+            var handler = new Protocol(Guid.NewGuid(), false);
+            node.RegisterProtocol(handler);
+            using var stream = new SilentStream();
+            await using var mux = new QuicPunch.Multiplexer.QuicPeerMultiplexer(
+                QuicConnection.FromTransport(new SilentConnection()), peer, true, _ => handler, _ => true,
+                initialControlStream: stream, transportOptions: node.PeerTransport);
+            await mux.StartAsync();
+            node.RegisterPeerMultiplexer(peer.Id, mux);
+            using (var cancelled = new CancellationTokenSource(TimeSpan.FromMilliseconds(150)))
+            {
+                try
+                {
+                    await node.InitQuicConnection(handler.ProtocolId, peer, cancellationToken: cancelled.Token)
+                        .WaitAsync(TimeSpan.FromSeconds(2));
+                    throw new Exception("Cancelled call unexpectedly started.");
+                }
+                catch (OperationCanceledException) when (cancelled.IsCancellationRequested) { }
+            }
+            Check(!node.HasLogicalProtocolSession(peer.Id, handler.ProtocolId) && !mux.IsDisposed,
+                "cancelling the initial liveness check ends the call without destroying the shared transport");
+            node.PeerTransport = node.PeerTransport with { AttemptTimeout = TimeSpan.FromMilliseconds(150) };
+            try
+            {
+                await node.InitQuicConnection(handler.ProtocolId, peer).WaitAsync(TimeSpan.FromSeconds(2));
+                throw new Exception("Silent transport unexpectedly started a call.");
+            }
+            catch (TimeoutException ex) when (ex.Message.StartsWith("No responsive connection")) { }
+            Check(!node.HasLogicalProtocolSession(peer.Id, handler.ProtocolId),
+                "initial connection preparation has a bounded deadline and releases its logical session");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    internal static async Task RunIpv6Async()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "qp-ipv6-session-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try { await NativeRecovery(root, IPAddress.IPv6Loopback); }
+        finally { try { Directory.Delete(root, true); } catch { } }
+    }
+
+    private static async Task NativeRecovery(string root, IPAddress? address = null)
+    {
+        address ??= IPAddress.Loopback;
+        await using var a = await Node(Path.Combine(root, "a"), address);
+        await using var b = await Node(Path.Combine(root, "b"), address);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var states = new ConcurrentQueue<SessionStateChange>();
         var receiverStates = new ConcurrentQueue<SessionStateChange>();
         a.OnSessionStateChanged += states.Enqueue;
         b.OnSessionStateChanged += receiverStates.Enqueue;
         int decisions = 0;
-        b.Manager.HandshakeRequested += (_, _) =>
+        Guid rejectedProtocol = Guid.NewGuid();
+        int rejections = 0;
+        b.Manager.HandshakeRequested += (request, _) =>
         {
+            if (request.ProtocolId == rejectedProtocol)
+            {
+                Interlocked.Increment(ref rejections);
+                return Task.FromResult(new HandshakeDecision(false, null, CancellationToken.None));
+            }
             Interlocked.Increment(ref decisions);
             return Task.FromResult(new HandshakeDecision(true, 0, CancellationToken.None));
         };
@@ -206,23 +319,55 @@ internal static class SessionRecoveryTests
         foreach (var handler in receivers) b.RegisterProtocol(handler);
         a.TrustPeer(b.CurrentPeer.CertHash); b.TrustPeer(a.CurrentPeer.CertHash);
         await a.ProcessIncomingPacketAsync(b.GenerateHelloPayload(QuicPunchStructures.MessageType.Interrogation, true),
-            new IPEndPoint(IPAddress.Loopback, b.LocalBoundPort), QP.TransportType.Wan);
+            new IPEndPoint(address, b.LocalBoundPort), QP.TransportType.Wan);
         await b.ProcessIncomingPacketAsync(a.GenerateHelloPayload(QuicPunchStructures.MessageType.Interrogation, true),
-            new IPEndPoint(IPAddress.Loopback, a.LocalBoundPort), QP.TransportType.Wan);
+            new IPEndPoint(address, a.LocalBoundPort), QP.TransportType.Wan);
         var peer = a.AvailablePeers[b.CurrentPeer.Id];
+        // The home screen can still show QUIC connected while the remote side
+        // has stopped answering. Both first application requests must survive
+        // replacing that tunnel, without needing another user click.
+        using SilentStream staleStream = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+            ? new DropSessionResponseStream() : new SilentStream();
+        await using var stale = new QuicPunch.Multiplexer.QuicPeerMultiplexer(
+            QuicConnection.FromTransport(new SilentConnection()), peer, true,
+            id => senders.FirstOrDefault(p => p.ProtocolId == id), _ => true,
+            initialControlStream: staleStream, transportOptions: a.PeerTransport);
+        await stale.StartAsync();
+        a.RegisterPeerMultiplexer(peer.Id, stale);
+        Check(!stale.IsDisposed, "first application requests see an apparently connected but silent tunnel");
         Task[] jobs = senders.Select(x => a.InitQuicConnection(x.ProtocolId, peer, cancellationToken: deadline.Token)).ToArray();
         try
         {
             var original = new Guid[2];
             for (int i = 0; i < 2; i++)
             {
-                var sent = await senders[i].Entries.Reader.ReadAsync(deadline.Token);
+                var sent = await senders[i].Entries.Reader.ReadAsync(deadline.Token).AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(12));
                 var received = await receivers[i].Entries.Reader.ReadAsync(deadline.Token);
                 original[i] = sent.Session;
                 Check(sent.Session == received.Session && !sent.Recovered && sent.Value == 1, "each protocol establishes its own logical session");
                 await ExpectDatagram(receivers[i], 1, deadline.Token);
             }
             Check(decisions == 2, "initial sessions require separate explicit decisions");
+            if (address.Equals(IPAddress.IPv6Loopback))
+            {
+                a.TryGetPeerMultiplexer(peer.Id, out var ipv6Mux);
+                Check(ipv6Mux?.RemoteEndPoint is IPEndPoint endpoint && endpoint.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6,
+                    "the full discovery/handshake/session path establishes a native IPv6 transport");
+            }
+            Check(stale.IsDisposed, "first application requests replace the silent tunnel without manual retry");
+            if (staleStream is DropSessionResponseStream pending)
+                Check(pending.Requested, "a lost initial SessionResponse recovers even after a successful liveness reply");
+            a.RegisterProtocol(new Protocol(rejectedProtocol, false));
+            b.RegisterProtocol(new Protocol(rejectedProtocol, true));
+            try
+            {
+                await a.InitQuicConnection(rejectedProtocol, peer, cancellationToken: deadline.Token);
+                throw new Exception("Rejected initial session unexpectedly started.");
+            }
+            catch (SessionRejectedException) { }
+            Check(rejections == 1 && !a.HasLogicalProtocolSession(peer.Id, rejectedProtocol),
+                "explicit rejection ends the first request without retrying or repeating consent");
             a.TryGetPeerMultiplexer(peer.Id, out var old);
             await old!.DisposeAsync();
             for (int i = 0; i < 2; i++)
@@ -280,5 +425,7 @@ internal static class SessionRecoveryTests
         byte value;
         do { value = await protocol.Datagrams.Reader.ReadAsync(ct); } while (value != expected);
         Check(value == expected, "categorized datagrams use the current protocol session after recovery");
+        do { value = await protocol.VpnFrames.Reader.ReadAsync(ct); } while (value != expected);
+        Check(value == expected, "VPN packets larger than the QUIC payload arrive intact through fragmented datagrams, including after recovery");
     }
 }

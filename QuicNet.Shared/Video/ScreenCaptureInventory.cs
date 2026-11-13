@@ -8,6 +8,32 @@ internal sealed record CaptureWindow(long Handle, string Title, int Width, int H
 // Read the active modes, not the list of modes a display could potentially use.
 internal static class ScreenCaptureInventory
 {
+    public static int GraphicsAdapterCount()
+    {
+        var adapters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (OperatingSystem.IsWindows())
+        {
+            for (uint index = 0; index < 32; index++)
+            {
+                var device = new DisplayDevice { Size = Marshal.SizeOf<DisplayDevice>() };
+                if (!EnumDisplayDevices(null, index, ref device, 0)) break;
+                // Several monitors on one adapter must not count as several GPUs.
+                if ((device.Flags & 8) == 0 && device.DeviceId.StartsWith("PCI\\", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(device.DeviceKey))
+                    adapters.Add(device.DeviceKey);
+            }
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            try
+            {
+                foreach (string card in Directory.EnumerateDirectories("/sys/class/drm", "card*"))
+                    if (int.TryParse(Path.GetFileName(card).AsSpan(4), out _) && Directory.ResolveLinkTarget(Path.Combine(card, "device"), true) is { } device)
+                        adapters.Add(device.FullName);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        return adapters.Count;
+    }
     public static IReadOnlyList<CaptureDisplay> Displays()
     {
         var displays = new List<CaptureDisplay>();

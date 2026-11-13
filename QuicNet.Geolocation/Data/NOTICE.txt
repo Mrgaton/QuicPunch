@@ -1,15 +1,9 @@
-RIPE Atlas public anchor records: https://atlas.ripe.net/api/v2/anchors/
-RIPE terms and measurement conditions: https://www.ripe.net/about-us/legal/
-Coordinates are operator declarations; availability has not been probed.
-Full RIPE Atlas snapshot and selected public Speedtest measurement endpoints; DNS resolved only at build time.
-When importing full GeoNames: https://www.geonames.org / CC BY 4.0
-https://creativecommons.org/licenses/by/4.0/ — data provided as-is.
-GeoNames points are not official municipal boundary polygons.
-Seed place coordinates describe the anchor city labels at infrastructure coordinates, not municipal centroids.
-
 IP geolocation: IPTrust, local user-supplied iptrust-geolocation.mmdb, build 2026-10-22.
 Converted to the compact paged GLP2 catalogue without network queries. Country-only records
 omit nominal capital labels; source identity and SHA-256 are in manifest.json.
 The input file did not include a licence statement; no additional redistribution rights are inferred.
 
 ASN numbers only: DB-IP ASN Lite, October 2026, https://db-ip.com/ (CC BY 4.0).
+Locality names and municipal relationships: GeoNames, https://www.geonames.org/ (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/ — data provided as-is.
+GeoNames points are not official municipal boundary polygons.

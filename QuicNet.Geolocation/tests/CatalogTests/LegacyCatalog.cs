@@ -22,20 +22,11 @@ public sealed class LegacyCatalog
     public static LegacyCatalog Default { get; } = new();
     private readonly Lazy<PagedTable?> _city = new(() => HasResource("city.bin") ? new("city.bin", false) : null);
     private readonly Lazy<PagedTable?> _asn = new(() => HasResource("asn.bin") ? new("asn.bin", true) : null);
-    private readonly Lazy<PagedTable?> _routers = new(() => HasResource("routers.bin") ? new("routers.bin", false) : null);
-    private readonly Lazy<Landmark[]> _anchors = new(() =>
-    {
-        using var stream = Resource("anchors.json.gz");
-        using var gzip = new GZipStream(stream, CompressionMode.Decompress);
-        return JsonSerializer.Deserialize(gzip, GeoJsonContext.Default.LandmarkArray) ?? throw new InvalidDataException("Empty anchors");
-    });
     public string Manifest { get { using var reader = new StreamReader(Resource("manifest.json")); return reader.ReadToEnd(); } }
     public string Notice { get { using var reader = new StreamReader(Resource("NOTICE.txt")); return reader.ReadToEnd(); } }
-    public IReadOnlyList<Landmark> Anchors => Array.AsReadOnly(_anchors.Value);
 
     public PublishedLocation? Lookup(IPAddress ip) => IsPublic(ip) ? _city.Value?.Find(Normalize(ip))?.Location : null;
     public uint? LookupAsn(IPAddress ip) => IsPublic(ip) ? _asn.Value?.Find(Normalize(ip))?.Asn : null;
-    public PublishedLocation? LookupRouter(IPAddress ip) => IsPublic(ip) ? _routers.Value?.Find(Normalize(ip))?.Location : null;
 
     internal static IPAddress Normalize(IPAddress ip) => ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip;
     public static bool IsPublic(IPAddress address)
@@ -57,7 +48,6 @@ public sealed class LegacyCatalog
     public string IpLocationSource => CityMetadata.Value.Source;
     public string? IpLocationDatabaseDate => CityMetadata.Value.Date;
     public bool HasAsnDatabase => HasResource("asn.bin");
-    public bool HasRouterDatabase => HasResource("routers.bin");
     internal static string DataDirectory { get; set; } = "";
     internal static bool HasResource(string name) => File.Exists(Path.Combine(DataDirectory, name));
     internal static Stream Resource(string name) => File.OpenRead(Path.Combine(DataDirectory, name));

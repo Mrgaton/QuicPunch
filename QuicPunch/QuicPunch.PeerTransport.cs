@@ -55,6 +55,7 @@ public partial class QuicPunch
     {
         public PeerInfo Peer = null!;
         public int Failures;
+        public double RetryJitter = 0.8 + Random.Shared.NextDouble() * 0.4;
         public long FailedAt;
         public bool Parked;
         public Multiplexer.QuicPeerMultiplexer? LastMultiplexer;
@@ -128,7 +129,7 @@ public partial class QuicPunch
                         continue;
                     double delayMs = Math.Min(PeerTransport.MaxRetryDelay.TotalMilliseconds,
                         PeerTransport.InitialRetryDelay.TotalMilliseconds * Math.Pow(2, Math.Min(retry.Failures - 1, 16)));
-                    if (retry.Failures > 0 && Stopwatch.GetElapsedTime(retry.FailedAt).TotalMilliseconds < delayMs)
+                    if (retry.Failures > 0 && Stopwatch.GetElapsedTime(retry.FailedAt).TotalMilliseconds < delayMs * retry.RetryJitter)
                         continue;
                     if (attempts.Count >= PeerTransport.MaxConcurrentAttempts) continue;
                     attempts[peer.Id] = ConnectDiscoveredPeerAsync(peer, token);

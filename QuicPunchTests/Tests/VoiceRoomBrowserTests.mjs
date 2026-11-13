@@ -28,6 +28,7 @@ try {
           const body=JSON.parse(options?.body||'{}');roomRequests.push({path,body});
           if(path==='/api/voice-hangup'){voiceStatus.activeVoiceCalls=voiceStatus.activeVoiceCalls.filter(c=>c.peerId!==body.peerId);voiceState.activeCalls=voiceState.activeCalls.filter(c=>c.peerId!==body.peerId);}
           if(path==='/api/voice/state')return voiceState;
+          if(path.startsWith('/api/voice/native-video')&&(!options||!options.method))return {local:{available:true,engine:'FFmpeg fixture',decoderMask:2,hardwareMask:0,decoders:[]},peers:[],streams:[]};
           if(path==='/api/voice/codec-settings') {
             voiceState.requestedOpusBitrate=body.bitrate;voiceState.opusBitrate=body.bitrate;
             return {success:true,requestedBitrate:body.bitrate,bitrate:body.bitrate};
@@ -108,8 +109,8 @@ try {
   await page.focus('#voiceRoomMedia');
   await page.mouse.move(20,20);
   await page.waitForFunction(()=>document.getElementById('view-voice').classList.contains('is-media-idle'));
-  assert.equal(await remoteTile.locator('.screen-tile-name').isVisible(),false,'Names hide after inactivity');
-  assert.equal(await remoteTile.locator('.screen-tile-actions').isVisible(),false,'Video controls hide after inactivity');
+  assert.equal(await remoteTile.locator('.screen-tile-name').isVisible(),true,'Native video identity remains visible');
+  assert.equal(await remoteTile.locator('.screen-tile-actions').isVisible(),true,'Native controls remain accessible without hover');
   await page.locator('#voiceRoomMedia').hover();
   assert.equal(await remoteTile.locator('.screen-tile-name').isVisible(),true,'Pointer activity restores names');
   await page.keyboard.press('Tab');
@@ -120,12 +121,12 @@ try {
   }
   assert.match(await remoteTile.locator('.screen-tile-user img').getAttribute('src'),/10000000-0000-0000-0000-000000000000\?v=a{64}$/);
   assert.match(await localTile.locator('.screen-tile-user img').getAttribute('src'),/20000000-0000-0000-0000-000000000000\?v=b{64}$/);
-  await page.evaluate(()=>{window.streamPhoto=document.querySelector('.screen-tile:not(.is-local-stream) .screen-tile-user img');window.streamMedia=document.querySelector('.screen-tile:not(.is-local-stream) canvas');testRoom.stream();testRoom.render();});
+  await page.evaluate(()=>{window.streamPhoto=document.querySelector('.screen-tile:not(.is-local-stream) .screen-tile-user img');window.streamMedia=document.querySelector('.screen-tile:not(.is-local-stream) .screen-tile-body');testRoom.stream();testRoom.render();});
   assert.ok(await page.evaluate(()=>streamPhoto===document.querySelector('.screen-tile:not(.is-local-stream) .screen-tile-user img')),'Stream metadata restarted the profile image');
   await page.screenshot({path:'.artifacts/voice-room/stream-profile-photos.png'});
   await page.evaluate(()=>testRoom.photos('c'));
   assert.match(await remoteTile.locator('.screen-tile-user img').getAttribute('src'),/v=c{64}$/);
-  assert.ok(await page.evaluate(()=>streamMedia===document.querySelector('.screen-tile:not(.is-local-stream) canvas')),'Profile update replaced video media');
+  assert.ok(await page.evaluate(()=>streamMedia===document.querySelector('.screen-tile:not(.is-local-stream) .screen-tile-body')),'Profile update replaced video media');
   await page.evaluate(()=>testRoom.photos('c',true));
   assert.equal(await remoteTile.locator('.screen-tile-user img').count(),0,'Tor profile visibility must follow the shared avatar rules');
   await page.evaluate(()=>testRoom.photos('c',false));
@@ -170,13 +171,13 @@ try {
       assert.equal(await page.locator('#voiceTrayToggle').getAttribute('aria-expanded'),'true');
       await assertRoomFits('open '+width);
       await page.click('#voiceSettingsTab');
-      assert.equal(await page.locator('#voiceDrawerSettings #screenShareSettingsModal').getAttribute('role'),'region');
+      assert.equal(await page.locator('#screenShareSettingsModal').getAttribute('role'),'dialog');
       assert.ok(await page.locator('#micSelect').isVisible());
       await page.evaluate(()=>testRoom.render());
       assert.ok(await page.evaluate(()=>roomVideo===document.querySelector('.screen-tile')&&roomVideoChild===roomVideo.querySelector('video,canvas')),'Opening drawer or updating status remounted media');
       if((width===1280||width===390)&&theme==='dark')await page.screenshot({path:fileURLToPath(new URL('../../.artifacts/voice-room/settings-'+width+'.png',import.meta.url)),fullPage:true});
-      await page.focus('#voiceSettingsTab');await page.keyboard.press('ArrowLeft');
-      assert.equal(await page.locator('#voiceContactsTab').getAttribute('aria-selected'),'true',JSON.stringify({width,theme,errors,focus:await page.evaluate(()=>document.activeElement?.id)}));
+      await page.keyboard.press('Escape');await page.click('#voiceTrayToggle');await page.click('#voiceContactsTab');
+      assert.equal(await page.locator('#voiceContactsTab').getAttribute('aria-pressed'),'true',JSON.stringify({width,theme,errors,focus:await page.evaluate(()=>document.activeElement?.id)}));
       if((width===1280||width===390)&&theme==='dark')await page.screenshot({path:fileURLToPath(new URL('../../.artifacts/voice-room/contacts-'+width+'.png',import.meta.url)),fullPage:true});
       await page.keyboard.press('Escape');
       assert.equal(await page.locator('#voiceTrayToggle').getAttribute('aria-expanded'),'false');
@@ -188,7 +189,7 @@ try {
   for(const viewport of [{width:320,height:568},{width:390,height:430},{width:844,height:390}]){
     await page.setViewportSize(viewport);await page.evaluate(()=>testRoom.setup());await assertRoomFits('small closed '+JSON.stringify(viewport));
     await page.click('#voiceTrayToggle');await assertRoomFits('small open '+JSON.stringify(viewport));
-    await page.click('#voiceSettingsTab');await assertRoomFits('small settings '+JSON.stringify(viewport));
+    await page.click('#voiceSettingsTab');await assertRoomFits('small settings '+JSON.stringify(viewport));await page.keyboard.press('Escape');
   }
   await page.setViewportSize({width:1280,height:900});await page.evaluate(()=>testRoom.setup());
   await page.click('#voiceTrayToggle');await page.click('#voiceDrawerClose');
@@ -226,7 +227,7 @@ try {
   await page.locator('#screenResolutionSelect').selectOption('720');
   await page.locator('#screenFpsSelect').selectOption('30');
   await page.click('#saveScreenModalBtn');
-  await page.waitForFunction(()=>document.getElementById('voiceDrawer').hidden);
+  await page.locator('#screenShareSettingsModal').waitFor({state:'hidden'});
   assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('qp_screen_config')).resolution),'720');
   await page.click('#voiceScreenSettingsBtn');await page.click('#mediaVideoTab');
   assert.equal(await page.locator('#screenResolutionSelect').inputValue(),'720');
@@ -241,7 +242,7 @@ try {
   for(const bitrate of ['160000','192000','256000','300000']) {
     await page.locator('#opusBitrateSelect').selectOption(bitrate);
     await page.click('#saveOpusModalBtn');
-    await page.click('#voiceScreenSettingsBtn');
+    await page.locator('#closeScreenModalBtn').click();await page.click('#voiceScreenSettingsBtn');
     assert.equal(await page.locator('#opusBitrateSelect').inputValue(),bitrate);
   }
   assert.deepEqual(errors,[]);

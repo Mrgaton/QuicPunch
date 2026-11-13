@@ -10,6 +10,7 @@ try {
   page.on('pageerror',e=>errors.push(e.message));
   await page.goto(url);await page.waitForFunction(()=>QP.state.status&&QP.isWsConnected);
   const tor=page.locator('button[data-connection-mode=tor]'),wan=page.locator('button[data-connection-mode=wan]'),both=page.locator('button[data-connection-mode=both]');
+  await page.locator('.contact-options > summary').click();
   await tor.click();
   await page.waitForFunction(()=>document.querySelector('#connectionModeStatus').textContent.includes('no disponible'));
   assert.equal(await page.evaluate(()=>QP.state.status.wan.isStarted),false,'Failed Tor activation restored WAN');

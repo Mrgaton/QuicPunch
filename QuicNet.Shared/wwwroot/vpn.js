@@ -3,6 +3,8 @@ let vpnStatus = null;
 let settingsDirty = false;
 let vpnConfiguration = null;
 let refreshingConfiguration = false;
+let togglingLan = false;
+let savingSettings = false;
 const connectingPeers = new Set();
 const peerPingResults = new Map();
 
@@ -21,7 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById('lanMtu');
     if (el) {
       el.value = 1420;
-      settingsDirty = true;
+      el.removeAttribute('aria-invalid');
+      markSettingsDirty();
       QP.toast('MTU restablecido a 1420');
     }
   };
@@ -34,7 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Auto assign toggle
   document.getElementById('lanAutoAssign')?.addEventListener('change', e => {
-    settingsDirty = true;
+    markSettingsDirty();
     updateAutoAssignState(e.target.checked, true);
   });
 
@@ -44,7 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   ['lanIp', 'lanMask', 'lanMtu'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('change', () => { settingsDirty = true; });
+    if (el) el.addEventListener('input', () => { el.removeAttribute('aria-invalid'); markSettingsDirty(); });
   });
 
   if (window.QP && typeof QP.on === 'function') {
@@ -77,20 +80,34 @@ async function refreshVpn() {
   }
 }
 
+function markSettingsDirty() {
+  settingsDirty = true;
+  QP.setText('lanApplyStatus', 'Cambios sin guardar');
+}
+
+function needsElevation(lan) {
+  return !lan.active && !lan.canStartWithoutElevation && !!lan.requiresAdmin;
+}
+
 function updateAutoAssignState(autoAssign, focus = false) {
   const lanIp = document.getElementById('lanIp');
   const lanMask = document.getElementById('lanMask');
   if (lanIp) {
     lanIp.disabled = autoAssign;
+    if (autoAssign) lanIp.removeAttribute('aria-invalid');
     if (!autoAssign && focus) lanIp.focus();
   }
   if (lanMask) {
     lanMask.disabled = autoAssign;
+    if (autoAssign) lanMask.removeAttribute('aria-invalid');
   }
 }
 
 async function toggleLan(enabled) {
+  if (togglingLan) return;
+  togglingLan = true;
   const switchEl = document.getElementById('lanEnabled');
+  if (switchEl) switchEl.disabled = true;
   const badge = document.getElementById('lanLiveBadge');
 
   if (badge) {
@@ -98,7 +115,7 @@ async function toggleLan(enabled) {
     badge.textContent = enabled ? 'Iniciando...' : 'Deteniendo...';
   }
 
-  QP.toast(enabled ? 'Iniciando adaptador Wintun...' : 'Deteniendo adaptador...', 'warn');
+  QP.toast(enabled ? 'Activando red privada...' : 'Deteniendo adaptador...', 'warn');
 
   try {
     const res = await QP.api('/api/lan-toggle', {
@@ -108,7 +125,6 @@ async function toggleLan(enabled) {
     });
 
     if (res && res.success) {
-      settingsDirty = false;
       QP.toast(enabled ? (res.active ? `Adaptador activo (${res.ip})` : 'Preferencia guardada. La VPN se activará cuando tenga permisos.') : 'Red privada desactivada', res.active || !enabled ? 'ok' : 'warn');
     } else {
       if (switchEl) switchEl.checked = !enabled;
@@ -128,6 +144,12 @@ async function toggleLan(enabled) {
   }
 
   await refreshVpn();
+  togglingLan = false;
+  if (switchEl) {
+    switchEl.disabled = false;
+    switchEl.checked = !!vpnStatus?.lan?.desiredEnabled;
+  }
+  renderVpn();
 }
 
 function renderVpn() {
@@ -140,10 +162,7 @@ function renderVpn() {
       .catch(e => QP.toast(e.message, 'error')).finally(() => { refreshingConfiguration = false; });
   }
 
-  // Check admin requirement: if not admin, Wintun always requires elevation on Windows
-  const needsAdmin = (!!lan.requiresAdmin && !lan.canStartWithoutElevation) ||
-    (lan.adapterStatus && lan.adapterStatus.toLowerCase().includes('administrator')) ||
-    (lan.lastError && lan.lastError.toLowerCase().includes('administrator'));
+  const needsAdmin = needsElevation(lan);
 
   const banner = document.getElementById('adminRequiredBanner');
   if (banner) {
@@ -153,7 +172,7 @@ function renderVpn() {
 
   // Live badge
   const liveBadge = document.getElementById('lanLiveBadge');
-  if (liveBadge) {
+  if (liveBadge && !togglingLan) {
     if (lan.active) {
       liveBadge.className = 'badge ok';
       liveBadge.textContent = 'Activo';
@@ -171,13 +190,17 @@ function renderVpn() {
 
   const connectAllBtn = document.getElementById('connectAllBtn');
   if (connectAllBtn) connectAllBtn.disabled = !(vpnStatus.peers || []).some(canConnectLan);
+  QP.setText('vpnConnectHint', needsAdmin ? 'Concede permisos en este equipo para iniciar conexiones.' :
+    connectAllBtn?.disabled ? 'Los contactos disponibles aparecerán con la opción Conectar.' : 'Puedes conectar los contactos que tienen la red disponible.');
 
   const activeCount = (lan.activePeers || []).length;
   const myIp = lan.localIp || '—';
   QP.setText('virtualIp', myIp);
 
-  const statusSuffix = lan.active ? 'Activo en Wintun' : (needsAdmin ? 'Requiere Administrador' : 'Adaptador detenido');
-  QP.setText('addressMode', `${lan.autoAssign ? 'Automática (10.0.0.x/24)' : 'Manual'} · ${statusSuffix}`);
+  const statusSuffix = lan.active ? 'En uso' : 'Asignada · sin activar';
+  QP.setText('addressMode', `${lan.autoAssign ? 'Automática' : 'Manual'} · ${statusSuffix}`);
+  const myIpChip = document.getElementById('myIpChip');
+  if (myIpChip) myIpChip.disabled = myIp === '—';
   QP.setText('lanMaskSummary', lan.subnetMask || '255.255.255.0');
   QP.setText('lanMtuSummary', `MTU: ${lan.mtu || 1420}`);
   QP.setText('lanPeerCount', activeCount);
@@ -189,25 +212,25 @@ function renderVpn() {
   const switchHint = document.getElementById('lanSwitchHint');
   if (switchHint) {
     if (lan.active) {
-      switchHint.textContent = `Adaptador activo en ${myIp} (${lan.adapterName || 'Wintun'})`;
+      switchHint.textContent = `Adaptador activo en ${myIp}`;
       switchHint.style.color = 'var(--ok)';
     } else if (needsAdmin) {
       switchHint.textContent = lan.desiredEnabled ? 'Activación automática guardada · esperando permisos' : 'Puedes configurar la VPN antes de conceder permisos';
-      switchHint.style.color = '#f87171';
+      switchHint.style.color = 'var(--warn)';
     } else {
       switchHint.textContent = lan.desiredEnabled ? 'La red se activará automáticamente al estar disponible' : 'Habilitar ahora y al abrir la aplicación';
       switchHint.style.color = 'var(--muted)';
     }
   }
 
-  // Form fields
+  const lanEnabled = document.getElementById('lanEnabled');
+  if (lanEnabled && !togglingLan) lanEnabled.checked = !!lan.desiredEnabled;
+  if (vpnConfiguration?.configuration) {
+    QP.setText('vpnConfigLocation', `Configuración: ${vpnConfiguration.path}`);
+    QP.setText('vpnConfigError', vpnConfiguration.error || lan.vpnConfigurationError || '');
+  }
+  // Live updates must not replace a draft while the user is typing.
   if (!settingsDirty) {
-    const lanEnabled = document.getElementById('lanEnabled');
-    if (lanEnabled) lanEnabled.checked = !!lan.desiredEnabled;
-    if (vpnConfiguration?.configuration) {
-      QP.setText('vpnConfigLocation', `Configuración: ${vpnConfiguration.path}`);
-      QP.setText('vpnConfigError', vpnConfiguration.error || lan.vpnConfigurationError || '');
-    }
     const lanAutoAssign = document.getElementById('lanAutoAssign');
     if (lanAutoAssign) lanAutoAssign.checked = !!lan.autoAssign;
     const lanIp = document.getElementById('lanIp');
@@ -215,7 +238,7 @@ function renderVpn() {
     const lanMask = document.getElementById('lanMask');
     if (lanMask) lanMask.value = lan.subnetMask || '255.255.255.0';
     const lanMtu = document.getElementById('lanMtu');
-    if (lanMtu) lanMtu.value = (lan.mtu && lan.mtu !== 1500) ? lan.mtu : 1420;
+    if (lanMtu) lanMtu.value = lan.mtu || 1420;
 
     updateAutoAssignState(!!lan.autoAssign);
   }
@@ -244,7 +267,7 @@ function createIpChip(ip, isLg = false) {
 }
 
 function canConnectLan(peer) {
-  return !!peer?.isTrusted && peer.isQuicConnected === true && peer.vpnCanStart === true &&
+  return !needsElevation(vpnStatus?.lan || {}) && !!peer?.isTrusted && peer.isQuicConnected === true && peer.vpnCanStart === true &&
     !connectingPeers.has(peer.id) && !(vpnStatus?.lan?.activePeers || []).some(session => session.peerId === peer.id);
 }
 
@@ -294,7 +317,7 @@ function renderPeers() {
   const allPeers = Array.from(peerMap.values());
 
   if (!allPeers.length) {
-    box.appendChild(QP.el('div', 'empty', 'Todavía no hay peers de confianza. Añade un peer desde Red P2P para abrir un túnel LAN.'));
+    box.appendChild(QP.el('div', 'empty', 'Todavía no hay contactos. Añade un contacto desde Inicio para configurar tu red privada.'));
     return;
   }
 
@@ -352,15 +375,15 @@ function renderPeers() {
     } else if (isConnecting) {
       meta.textContent = 'Estableciendo túnel...';
     } else if (peer.isSavedOffline) {
-      meta.textContent = 'Guardado · conexión automática pendiente';
+      meta.textContent = 'Guardado · sin conexión';
     } else if (!peer.isQuicConnected) {
-      meta.textContent = 'Conexión QUIC automática pendiente';
+      meta.textContent = 'Sin conexión con el dispositivo';
     } else if (peer.vpnCanStart == null) {
-      meta.textContent = 'QUIC conectado · comprobando disponibilidad de LAN';
+      meta.textContent = 'Contacto conectado · comprobando red privada';
     } else if (!peer.vpnCanStart) {
-      meta.textContent = 'QUIC conectado · LAN remota no disponible';
+      meta.textContent = 'Contacto conectado · red privada remota no disponible';
     } else {
-      meta.textContent = 'QUIC conectado · LAN disponible';
+      meta.textContent = needsElevation(vpnStatus?.lan || {}) ? 'Contacto disponible · faltan permisos en este equipo' : 'Disponible para conectar a la red privada';
     }
     copy.appendChild(meta);
     if (isTrusted && peer.certHash && vpnConfiguration?.configuration) {
@@ -568,6 +591,7 @@ async function connectAll() {
 }
 
 async function applyLan() {
+  if (savingSettings || togglingLan) return;
   const lanEnabled = document.getElementById('lanEnabled');
   const lanAutoAssign = document.getElementById('lanAutoAssign');
   const lanIp = document.getElementById('lanIp');
@@ -576,6 +600,30 @@ async function applyLan() {
   if (!lanEnabled || !lanAutoAssign || !lanIp || !lanMask || !lanMtu) return;
 
   const autoAssign = lanAutoAssign.checked;
+
+  if (!vpnConfiguration?.configuration) {
+    QP.setText('lanApplyStatus', 'Espera a que se carguen los ajustes o pulsa Actualizar antes de guardar.');
+    return;
+  }
+  const ipv4 = value => /^(\d{1,3}\.){3}\d{1,3}$/.test(value) && value.split('.').every(part => Number(part) <= 255);
+  if (!autoAssign && !ipv4(lanIp.value.trim())) {
+    QP.setText('lanApplyStatus', 'Introduce una dirección IPv4 válida, por ejemplo 10.0.0.8.');
+    lanIp.setAttribute('aria-invalid', 'true'); lanIp.focus(); return;
+  }
+  const mask = lanMask.value.trim();
+  const maskBits = ipv4(mask) ? mask.split('.').map(part => Number(part).toString(2).padStart(8, '0')).join('') : '';
+  if (!autoAssign && (!maskBits || !/^1*0*$/.test(maskBits))) {
+    QP.setText('lanApplyStatus', 'Introduce una máscara de subred válida, por ejemplo 255.255.255.0.');
+    lanMask.setAttribute('aria-invalid', 'true'); lanMask.focus(); return;
+  }
+
+  const mtu = Number(lanMtu.value);
+  if (!Number.isInteger(mtu) || mtu < 1200 || mtu > 9000) {
+    QP.setText('lanApplyStatus', 'Introduce una MTU entera entre 1200 y 9000.');
+    lanMtu.setAttribute('aria-invalid', 'true');
+    lanMtu.focus();
+    return;
+  }
 
   let activePeers = vpnStatus?.lan?.activePeers || [];
   if (activePeers.length > 0) {
@@ -586,12 +634,6 @@ async function applyLan() {
     }
   }
 
-  let mtu = Number(lanMtu.value);
-  if (!mtu || mtu < 1200 || mtu > 9000 || mtu === 1500) {
-    mtu = 1420;
-    lanMtu.value = 1420;
-  }
-
   const payload = {
     enabled: lanEnabled.checked,
     autoAssign: autoAssign,
@@ -600,6 +642,10 @@ async function applyLan() {
     mtu: mtu
   };
 
+  savingSettings = true;
+  const applyButton = document.getElementById('applyLanBtn');
+  if (applyButton) applyButton.disabled = true;
+  QP.setText('lanApplyStatus', 'Guardando…');
   try {
     const configuration = JSON.parse(JSON.stringify(vpnConfiguration.configuration));
     Object.assign(configuration, { enabled: payload.enabled, autoAssign: payload.autoAssign,
@@ -612,13 +658,19 @@ async function applyLan() {
 
     if (res && res.success) {
       settingsDirty = false;
+      QP.setText('lanApplyStatus', 'Configuración guardada');
       QP.toast('Configuración guardada correctamente', 'ok');
       await refreshVpn();
     } else {
+      QP.setText('lanApplyStatus', res?.error || 'No se ha podido guardar. Reintenta.');
       QP.toast(res?.error || 'Error al guardar configuración', 'error');
     }
   } catch (e) {
+    QP.setText('lanApplyStatus', e.message || 'No se ha podido guardar. Reintenta.');
     QP.toast(e.message, 'error');
+  } finally {
+    savingSettings = false;
+    if (applyButton) applyButton.disabled = false;
   }
 }
 

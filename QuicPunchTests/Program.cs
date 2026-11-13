@@ -25,7 +25,7 @@ internal static class Program
         if (args.FirstOrDefault() == "--test-discovery-announcements")
             AppContext.SetSwitch("System.Text.Json.JsonSerializer.IsReflectionEnabledByDefault", false);
         Console.OutputEncoding = Encoding.UTF8;
-        if (args.FirstOrDefault() == "--serve-geolocation-workbench") return await GeolocationWorkbenchTests.ServeAsync();
+        if (args.FirstOrDefault() == "--serve-webui-preview") return await Fixtures.WebUiPreview.ServeAsync();
         if (args.Contains("--loopback-only"))
         {
             if (args.FirstOrDefault() is not ("--test-birthday-punch" or "--test-contact-reconnect" or "--test-contact-history" or "--test-discovery-presence" or "--test-automatic-transport" or "--test-geolocation" or "--test-discovery-announcements" or "--test-watch-reliability" or "--test-rotating-logger"))
@@ -35,12 +35,15 @@ internal static class Program
 
         Func<Task>? test = args.FirstOrDefault() switch
         {
+            "--test-native-video" => NativeVideoTests.RunAsync,
+            "--test-stun-validation" => StunValidationTests.RunAsync,
+            "--test-ipv6" => Ipv6ConnectivityTests.RunAsync,
+            "--test-voice-mobility" => VoiceMobilityTests.RunAsync,
             "--test-watch-reliability" => WatchReliabilityTests.RunAsync,
             "--test-output" => TestOutputTests.RunAsync,
             "--test-virtual-disk" => VirtualDiskTests.RunAsync,
             "--test-notifications" => NotificationTests.RunAsync,
               "--test-geolocation" => GeolocationTests.RunAsync,
-            "--test-geolocation-workbench" => GeolocationWorkbenchTests.RunAsync,
             "--test-updates" => AutoUpdateTests.RunAsync,
             "--test-discovery-announcements" => DiscoveryAnnouncementTests.RunAsync,
             "--test-aot-json" => () => { QuicPunch.Helpers.PeerStore.VerifyAotJsonContract(); Console.WriteLine($"Verified {QuicNet.Serialization.AotContractValidation.Run()} JSON contracts."); return Task.CompletedTask; },
@@ -85,6 +88,7 @@ internal static class Program
             "--benchmark-quic-default" => QuicPerformanceTests.RunBaselineAsync,
             "--test-quic-bbr" or "--inspect-quic" => TestQuicCongestionControlTuning,
             "--test-quic-datagrams" => QuicDatagramTests.RunAsync,
+            "--test-wan-listener" => WanNativeProbe.RunAsync,
             "--test-quic-telemetry" => QuicAdvancedNativeTests.RunAsync,
             "--test-quic-optimizations" or "--test-native-quic" => NativeQuicOptimizationsTests.RunAsync,
             "--test-pqc" or "--test-pqc-handshake" => PqcHandshakeTests.RunAsync,
@@ -120,7 +124,7 @@ internal static class Program
         Console.WriteLine("\nAvailable test flags:");
         Console.WriteLine("  --test-output");
         Console.WriteLine("  --test-watch-reliability");
-        Console.WriteLine("  --test-geolocation / --test-geolocation-workbench");
+        Console.WriteLine("  --test-geolocation");
         Console.WriteLine("  --test-virtual-disk");
         Console.WriteLine("  --test-updates");
         Console.WriteLine("  --test-critical-reliability");
@@ -132,6 +136,8 @@ internal static class Program
         Console.WriteLine("  --test-contact-reconnect (persistent UDP retries; approximately one minute)");
         Console.WriteLine("  --test-peer-state");
         Console.WriteLine("  --test-connectivity-security");
+        Console.WriteLine("  --test-stun-validation");
+        Console.WriteLine("  --test-voice-mobility");
         Console.WriteLine("  --test-punch-packet / --test-hole-packet");
         Console.WriteLine("  --test-multiplexer / --test-mux");
         Console.WriteLine("  --test-discovery-announcements (Android/AOT: JSON reflection disabled)");
@@ -169,84 +175,5 @@ internal static class Program
         return 0;
     }
 
-    private static async Task TestQuicCongestionControlTuning()
-    {
-        Console.WriteLine("==================================================");
-        Console.WriteLine("    MSQUIC DYNAMIC CONGESTION CONTROL (BBR) TEST  ");
-        Console.WriteLine("==================================================");
-
-        // Generate a quick self-signed cert for loopback QUIC
-        using var rsa = RSA.Create(2048);
-        var certReq = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        using var tempCert = certReq.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1));
-        using var cert = X509CertificateLoader.LoadPkcs12(tempCert.Export(X509ContentType.Pfx), null);
-
-        var alpn = new List<System.Net.Security.SslApplicationProtocol> { new("qtest") };
-
-        var listenerOptions = new System.Net.Quic.QuicListenerOptions
-        {
-            ListenEndPoint = new IPEndPoint(IPAddress.Loopback, 0),
-            ApplicationProtocols = alpn,
-            ConnectionOptionsCallback = (connection, sslHello, ct) =>
-            {
-                return ValueTask.FromResult(new System.Net.Quic.QuicServerConnectionOptions
-                {
-                    DefaultStreamErrorCode = 0,
-                    DefaultCloseErrorCode = 0,
-                    ServerAuthenticationOptions = new System.Net.Security.SslServerAuthenticationOptions
-                    {
-                        ServerCertificate = cert,
-                        ApplicationProtocols = alpn
-                    }
-                });
-            }
-        };
-
-        await using var listener = await System.Net.Quic.QuicListener.ListenAsync(listenerOptions);
-        var listenEp = listener.LocalEndPoint;
-        Console.WriteLine($"[SERVER] Listening on QUIC {listenEp}");
-
-        var clientOptions = new System.Net.Quic.QuicClientConnectionOptions
-        {
-            RemoteEndPoint = listenEp,
-            DefaultStreamErrorCode = 0,
-            DefaultCloseErrorCode = 0,
-            ClientAuthenticationOptions = new System.Net.Security.SslClientAuthenticationOptions
-            {
-                TargetHost = "localhost",
-                ApplicationProtocols = alpn,
-                RemoteCertificateValidationCallback = (sender, certificate, chain, errors) => true
-            }
-        };
-
-        var serverTask = listener.AcceptConnectionAsync();
-        var clientConn = await System.Net.Quic.QuicConnection.ConnectAsync(clientOptions);
-        var serverConn = await serverTask;
-        Console.WriteLine("[SUCCESS] Local QUIC Connection established!");
-
-        // 1. Check initial algorithm (should be CUBIC = 0)
-        if (MsQuicTuner.TryGetCongestionControl(clientConn, out var initialCc))
-        {
-            Console.WriteLine($"[1] Initial Congestion Control: {initialCc} ({(int)initialCc})");
-        }
-
-        // A live change must not overwrite the setting while the old native controller keeps running.
-        var requestedCc = initialCc == QuicCongestionAlgorithm.Bbr ? QuicCongestionAlgorithm.Cubic : QuicCongestionAlgorithm.Bbr;
-        if (MsQuicTuner.TrySetCongestionControl(clientConn, requestedCc) ||
-            !MsQuicTuner.TryGetCongestionControl(clientConn, out var activeCc) || activeCc != initialCc)
-            throw new InvalidOperationException("Live controller switching must require reconnecting.");
-        Console.WriteLine($"[2] Controller remains {activeCc}; changing it requires a prepared configuration and a new connection: PASSED");
-
-        // 4. Test Telemetry
-        bool telemOk = MsQuicTuner.TryGetTelemetry(clientConn, out var telem);
-        Console.WriteLine($"[4] MsQuicTuner.TryGetTelemetry => {(telemOk ? "SUCCESS" : "FAILED")}");
-        if (telemOk && telem != null)
-        {
-            Console.WriteLine($"    RTT: {telem.RttMs:F2}ms, MinRTT: {telem.MinRttMs:F2}ms, CWND: {telem.SendCongestionWindow}, PathMTU: {telem.PathMtu}");
-        }
-
-        await clientConn.DisposeAsync();
-        await serverConn.DisposeAsync();
-        Console.WriteLine("==================================================");
-    }
+    private static Task TestQuicCongestionControlTuning() => NativeBridgeTests.RunAsync();
 }

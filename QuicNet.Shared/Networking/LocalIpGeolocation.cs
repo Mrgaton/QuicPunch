@@ -12,11 +12,9 @@ internal sealed record PeerLocation(string status, string? city = null, string? 
 internal sealed record GeolocationStatus(bool ready, bool downloading, long downloadedBytes, string? databaseDate, string? error)
 {
     public bool embeddedReady { get; init; } = true;
-    public AutomaticGeolocationStatus? connection { get; init; }
 }
 
-// Uses the same embedded IPTrust snapshot as the latency workbench. Existing
-// DB-IP files in the settings directory cannot override this catalogue.
+// Looks up the embedded compressed IPTrust catalogue without network requests.
 internal sealed class LocalIpGeolocation : IDisposable
 {
     private readonly object _sync = new();

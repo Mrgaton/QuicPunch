@@ -17,8 +17,7 @@ try {
    for(const id of [...activeScreenStreams.keys()])removeScreenTile(id);
    for(const [id,name,local] of [['${remote}','Ana · Pantalla',false],['local','Tú · Cámara',true]]){
     const e=createOrUpdateScreenTile(id,name,1280,720,1,30,local);
-    e.videoEl.classList.add('hidden');e.loadingEl.classList.add('hidden');e.canvasEl.classList.remove('hidden');
-    e.canvasEl.width=640;e.canvasEl.height=360;e.canvasCtx.fillStyle='#22aa66';e.canvasCtx.fillRect(0,0,640,360);
+    e.loadingEl.classList.add('hidden');
    }
   },remove:removeScreenTile,vad:onVoiceVad
  };})();`;
@@ -35,10 +34,10 @@ try {
   const tile=page.locator(`.screen-tile[data-stream-peer-id="${remote}"]`),button=tile.locator('.screen-fullscreen-btn');
   assert.equal(await page.locator('#screenShareGlobalLiveBadge').isVisible(),false);
   assert.equal(await page.locator('.screen-tile-live-badge:visible').count(),0,'Mobile removes remote and local badges');
-  const controlCenters=await tile.locator('.screen-tile-actions .btn').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};}));
+  const controlCenters=await tile.locator('.screen-tile-actions .btn:visible').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};}));
   const tileBounds=await tile.boundingBox();
   assert.ok(controlCenters.every(r=>r.w>=44&&r.h>=44&&r.x>=tileBounds.x&&r.x+r.w<=tileBounds.x+tileBounds.width),'Mobile video controls wrap inside the tile and remain touch sized: '+JSON.stringify(controlCenters));
-  await tile.evaluate(el=>{window.originalMedia=el.querySelector('canvas');window.originalVideo=el.querySelector('video');});
+  await tile.evaluate(el=>{window.originalMedia=el.querySelector('.screen-tile-body');});
   await page.evaluate(id=>testVideo.vad({peerId:id,speaking:true}),remote);
   assert.equal(await tile.evaluate(el=>el.classList.contains('is-speaking')),true);
   await button.click();await page.waitForFunction(()=>!document.querySelector('.screen-fullscreen-btn').disabled);
@@ -47,19 +46,19 @@ try {
    const b=await tile.boundingBox();const viewport=page.viewportSize();
    assert.ok(Math.abs(b.x)<1&&Math.abs(b.y)<1&&Math.abs(b.width-viewport.width)<1&&Math.abs(b.height-viewport.height)<1,`${mode}: video does not fill viewport ${JSON.stringify(b)}`);
    assert.equal(await button.getAttribute('aria-label'),'Salir de pantalla completa');
-   assert.equal(await page.evaluate(()=>originalMedia===document.querySelector('.is-tile-fullscreen canvas')&&originalVideo===document.querySelector('.is-tile-fullscreen video')),true,'Fullscreen remounted media');
-   assert.deepEqual(await page.evaluate(()=>[...originalMedia.getContext('2d').getImageData(10,10,1,1).data]),[34,170,102,255]);
+   assert.equal(await page.evaluate(()=>originalMedia===document.querySelector('.is-tile-fullscreen .screen-tile-body')),true,'Fullscreen remounted media');
+   assert.equal(await tile.locator('canvas,video').count(),0,'Decoded media must not enter the WebView');
    const body=await tile.locator('.screen-tile-body').boundingBox(),exit=await button.boundingBox();
    assert.ok(exit.y>=0&&exit.y+exit.height<=viewport.height,'Exit control leaves the viewport');
-   assert.ok(Math.abs(body.x)<1&&Math.abs(body.y)<1&&Math.abs(body.width-viewport.width)<1&&Math.abs(body.height-viewport.height)<1,'Header or safe-area padding steals space from the video');
+   assert.ok(Math.abs(body.x)<1&&body.y>=exit.y+exit.height&&Math.abs(body.width-viewport.width)<1&&Math.abs(body.y+body.height-viewport.height)<1,'Native surface covers controls or leaves unused space');
    assert.equal(await tile.locator('.screen-tile-codec').isVisible(),false,'Codec details remain optional in fullscreen');
    assert.equal(await tile.evaluate(el=>getComputedStyle(el).boxShadow),'none','Speaking must not illuminate fullscreen video');
   }
   await assertExpanded();await page.screenshot({path:`.artifacts/voice-fullscreen/${mode}-portrait.png`});
   await tile.locator('.screen-tile-body').focus();
   await page.waitForFunction(()=>document.getElementById('view-voice').classList.contains('is-media-idle'));
-  assert.equal(await tile.locator('.screen-tile-name').isVisible(),false,'Fullscreen names hide after inactivity');
-  assert.equal(await tile.locator('.screen-tile-actions').isVisible(),false,'Fullscreen overlays hide after inactivity');
+  assert.equal(await tile.locator('.screen-tile-name').isVisible(),true,'Native surface must keep identity visible without hover forwarding');
+  assert.equal(await tile.locator('.screen-tile-actions').isVisible(),true,'Native exit control must remain accessible');
   await tile.locator('.screen-tile-body').hover();
   assert.equal(await tile.locator('.screen-tile-name').isVisible(),true,'Fullscreen identity returns on movement');
   await page.setViewportSize({width:844,height:390});await assertExpanded();
@@ -77,5 +76,5 @@ try {
   assert.equal(await page.locator('#view-dashboard').isVisible(),true);
   assert.deepEqual(errors,[]);await context.close();
  }
- console.log('PASS voice fullscreen: native/rejected/unsupported, edge-to-edge media with overlay controls, hidden identity, media continuity, mobile touch targets, rotation, exit/Escape, stream end and navigation');
+ console.log('PASS voice fullscreen: native/rejected/unsupported, native surface with accessible controls, identity, surface continuity, mobile touch targets, rotation, exit/Escape, stream end and navigation');
 }finally{await closeBrowserFixture(browser, server);}

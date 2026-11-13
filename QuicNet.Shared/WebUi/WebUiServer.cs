@@ -27,6 +27,7 @@ public sealed class WebUiServer
     private readonly AppPreferencesStore? _preferences;
     private readonly CancellationTokenSource _cts;
     private readonly SemaphoreSlim _requestSlots = new(WebUiContext.MaxConcurrentHttpRequests, WebUiContext.MaxConcurrentHttpRequests);
+    private readonly SemaphoreSlim _webSocketSlots = new(WebUiContext.MaxConcurrentWebSocketRequests, WebUiContext.MaxConcurrentWebSocketRequests);
     private readonly string _csrfToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
     private readonly WebUiWebSocketHub _hub;
@@ -37,17 +38,24 @@ public sealed class WebUiServer
     private readonly PeerApiModule? _peerModule;
     private readonly StatusApiModule? _statusModule;
     private readonly QuicNet.Networking.LocalIpGeolocation? _geolocation;
-    private readonly QuicNet.Networking.AutomaticIpGeolocation? _connectionGeolocation;
-    private GeolocationWorkbenchApiModule? _geolocationWorkbench;
-    private readonly object _geolocationWorkbenchGate = new();
     private readonly AppSettingsApiModule? _appSettingsModule;
     private readonly QuicNet.Presence.UserPresenceService? _presence;
     internal QuicNet.Notifications.AppNotificationService? Notifications { get; }
     public QuicNet.Notifications.IAppPlatform? AppPlatform { get => Notifications?.Platform; set { if (Notifications != null) Notifications.Platform = value; } }
+    public IChatFileOpener? ChatFiles
+    {
+        get => _chatModule?.FileOpener;
+        set { if (_chatModule != null) _chatModule.FileOpener = value; }
+    }
     internal QuicNet.Video.IPlatformScreenCapture? PlatformScreenCapture { get; set; }
     private readonly LocalProfileApiModule? _profileModule;
     private readonly WatchWebServer? _watchWeb;
     private readonly VirtualDiskApiModule? _diskModule;
+    public QuicNet.VirtualDisk.IVirtualDiskDocuments? DiskDocuments
+    {
+        get => _diskModule?.Service.Documents;
+        set { if (_diskModule != null) _diskModule.Service.Documents = value; }
+    }
 
     private HttpListener? _listener;
     private int _port;
@@ -148,14 +156,17 @@ public sealed class WebUiServer
         _hub = new WebUiWebSocketHub(_cts, shutdownWhenNoClients: Capabilities.Platform != "android");
         _hub.KeepRunning = () => _preferences.Snapshot().RunInBackground;
         Notifications = new(_preferences, notice => _hub.Broadcast("app_notice", notice));
+        _diskModule.Service.FileReceived += receipt => Notifications.Publish("files", "Archivo recibido",
+            Path.GetFileName(receipt.Path), "/virtual-disk.html?share=" + receipt.ShareId,
+            Convert.ToHexString(Convert.FromBase64String(receipt.Actor)));
         _presence = new(qcc, preferences, () => Notifications.Platform, cts.Token);
         _appSettingsModule = new(_preferences, Notifications, _presence);
         _instance = this;
         _qcc.OnIncomingSessionRequested += (peer, protocol) =>
         {
-            if (protocol == _voiceHandler.ProtocolId)
+            if (protocol == _voiceHandler.ProtocolId && _qcc.HasAutomaticProtocolPermission(peer, protocol))
                 Notifications.Publish("calls", peer.Name ?? "Llamada", "Llamada entrante", "/call.html", Convert.ToHexString(peer.CertHash),
-                    playSound: _qcc.HasAutomaticProtocolPermission(peer, protocol));
+                    playSound: true);
         };
         _chatModule = new ChatApiModule(_qcc, _chatHandler, _hub);
         _voiceModule = new VoiceApiModule(_voiceHandler, _hub);
@@ -163,9 +174,7 @@ public sealed class WebUiServer
         _speedTestModule = new SpeedTestApiModule(_qcc, _speedTestHandler, _hub, _cts);
         _peerModule = new PeerApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _speedTestHandler, _preferences, _hub, _cts);
         _geolocation = new();
-        _connectionGeolocation = new(_preferences.StorageDirectory, _cts.Token);
-        _connectionGeolocation.Changed += _hub.NotifyStatusChanged;
-        _statusModule = new StatusApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _preferences, _peerModule, _chatModule, _profileModule.Avatars, _geolocation, _presence, _connectionGeolocation);
+        _statusModule = new StatusApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _preferences, _peerModule, _chatModule, _profileModule.Avatars, _geolocation, _presence);
 
         _hub.GetStatusSnapshot = () => _statusModule.GetStatusObject();
         ConfigureUpdateSocket();
@@ -181,7 +190,7 @@ public sealed class WebUiServer
         _qcc.Discovery.PeerUpdated += (_, _) => BroadcastStatusUpdate();
         if (_qcc.NatCoordinator != null)
         {
-            _qcc.NatCoordinator.MappingChanged += (_, _) => { ObserveConnectionAddresses(); BroadcastStatusUpdate(); };
+            _qcc.NatCoordinator.MappingChanged += (_, _) => { BroadcastStatusUpdate(); };
         }
         if (_qcc.PeerStore != null)
         {
@@ -223,10 +232,6 @@ public sealed class WebUiServer
 
     public int Port => _port;
     public string CsrfToken => _csrfToken;
-    private IEnumerable<IPAddress> ConnectionAddresses() => _qcc?.IsWanStarted == true
-        ? _qcc.CurrentPeer?.Addresses ?? [] : [];
-    private void ObserveConnectionAddresses() => _connectionGeolocation?.Observe(ConnectionAddresses());
-    internal void StartGeolocation() => _connectionGeolocation?.StartMonitoring(ConnectionAddresses);
 
     public void Start()
     {
@@ -254,41 +259,57 @@ public sealed class WebUiServer
 
         string url = $"http://127.0.0.1:{_port}/";
         Console.WriteLine($"\nQuicPunch Console: {url}\n");
-        _ = Task.Run(ListenLoopAsync);
+        // Capture before scheduling: the owner can stop and dispose its source
+        // while the listener is completing an accepted request.
+        CancellationToken stopToken = _cts.Token;
+        _ = Task.Run(() => ListenLoopAsync(stopToken));
     }
 
     public void Stop()
     {
-        lock (_geolocationWorkbenchGate)
-            if (_geolocationWorkbench != null) _ = _geolocationWorkbench.DisposeAsync();
         try { _listener?.Stop(); } catch { }
         try { _listener?.Close(); } catch { }
         _chatModule?.Dispose();
         _diskModule?.Dispose();
         _geolocation?.Dispose();
-        if (_connectionGeolocation != null) { _connectionGeolocation.Changed -= _hub.NotifyStatusChanged; _connectionGeolocation.Dispose(); }
         Notifications?.Dispose();
         _presence?.Dispose();
         Updates = null;
         _ = _hub.DisposeAsync();
     }
 
-    private async Task ListenLoopAsync()
+    private async Task ListenLoopAsync(CancellationToken stopToken)
     {
-        while (!_cts.Token.IsCancellationRequested && _listener is { IsListening: true })
+        while (!stopToken.IsCancellationRequested && _listener is { IsListening: true })
         {
             try
             {
                 HttpListenerContext context = await _listener.GetContextAsync().ConfigureAwait(false);
-                await _requestSlots.WaitAsync(_cts.Token).ConfigureAwait(false);
+                // An upgraded socket keeps its handler alive until disconnect.
+                // Reserve it separately so open tabs cannot consume HTTP capacity.
+                // Never wait in the accept loop: a full pool must not block the other.
+                SemaphoreSlim slots = context.Request.IsWebSocketRequest ? _webSocketSlots : _requestSlots;
+                if (!slots.Wait(0))
+                {
+                    try
+                    {
+                        ApplySecurityHeaders(context.Response);
+                        context.Response.StatusCode = 503;
+                        context.Response.Headers["Retry-After"] = "1";
+                        context.Response.ContentLength64 = 0;
+                        context.Response.Close();
+                    }
+                    catch { try { context.Response.Abort(); } catch { } }
+                    continue;
+                }
                 _ = Task.Run(async () =>
                 {
                     try { await HandleRequestAsync(context).ConfigureAwait(false); }
-                    finally { _requestSlots.Release(); }
+                    finally { slots.Release(); }
                 });
             }
             catch (ObjectDisposedException) { break; }
-            catch (OperationCanceledException) when (_cts.Token.IsCancellationRequested) { break; }
+            catch (OperationCanceledException) when (stopToken.IsCancellationRequested) { break; }
             catch (Exception ex) { LogEvent($"[HTTP] {ex.Message}"); }
         }
     }
@@ -338,19 +359,6 @@ public sealed class WebUiServer
             if (path == "/api/capabilities" && req.HttpMethod == "GET")
             {
                 await WebUiContext.WriteJsonAsync(resp, Capabilities.ToResponseObject()).ConfigureAwait(false);
-                return;
-            }
-
-            if ((path == "/api/probe/ping" || path == "/api/mobile/ping") && req.HttpMethod == "POST")
-            {
-                using JsonDocument doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
-                string host = doc.RootElement.TryGetProperty("host", out var hEl) ? hEl.GetString() ?? "" : "";
-                int pingPort = doc.RootElement.TryGetProperty("port", out var pEl) ? pEl.GetInt32() : 0;
-                string fingerprint = doc.RootElement.TryGetProperty("fingerprint", out var fEl) ? fEl.GetString() ?? "" : "";
-                string message = ProbePingHandler != null && pingPort is > 0 and <= 65535 && fingerprint.Length == 64
-                    ? ProbePingHandler(host, (ushort)pingPort, fingerprint)
-                    : "Probe ping handler not configured or invalid parameters.";
-                await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.WebUiServerMessage3(true, message)).ConfigureAwait(false);
                 return;
             }
 
@@ -414,41 +422,22 @@ public sealed class WebUiServer
                 }
             }
 
+            // Probe handlers can initiate network activity, so they must run only
+            // after the same CSRF and body-size checks as the other API writes.
+            if ((path == "/api/probe/ping" || path == "/api/mobile/ping") && req.HttpMethod == "POST")
+            {
+                using JsonDocument doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
+                string host = doc.RootElement.TryGetProperty("host", out var hEl) ? hEl.GetString() ?? "" : "";
+                int pingPort = doc.RootElement.TryGetProperty("port", out var pEl) ? pEl.GetInt32() : 0;
+                string fingerprint = doc.RootElement.TryGetProperty("fingerprint", out var fEl) ? fEl.GetString() ?? "" : "";
+                string message = ProbePingHandler != null && pingPort is > 0 and <= 65535 && fingerprint.Length == 64
+                    ? ProbePingHandler(host, (ushort)pingPort, fingerprint)
+                    : "Probe ping handler not configured or invalid parameters.";
+                await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.WebUiServerMessage3(true, message)).ConfigureAwait(false);
+                return;
+            }
+
             if (await TryServeStaticAsync(path, resp).ConfigureAwait(false)) return;
-
-            if (path == "/geolocation/localities" && req.HttpMethod == "GET")
-            {
-                double Number(string key) => double.TryParse(req.QueryString[key], System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double value) ? value : double.NaN;
-                try
-                {
-                    var places = QuicNet.Geolocation.LocalityCatalog.Default.InBounds(Number("south"), Number("west"), Number("north"), Number("east"));
-                    resp.ContentType = "application/json";
-                    resp.Headers["Cache-Control"] = "private, max-age=86400";
-                    await JsonSerializer.SerializeAsync(resp.OutputStream, places, QuicNet.Geolocation.GeoJsonContext.Default.LocalityArray).ConfigureAwait(false);
-                }
-                catch (ArgumentException) { resp.StatusCode = 400; }
-                return;
-            }
-
-            if (path == "/geolocation/map-data" && req.HttpMethod == "GET")
-            {
-                using var compressed = typeof(WebUiServer).Assembly.GetManifestResourceStream("QuicNet.Geolocation.WorldMap.gz")!;
-                resp.ContentType = "application/json";
-                resp.SendChunked = true;
-                resp.Headers["Cache-Control"] = "private, max-age=86400";
-                using var unzip = new System.IO.Compression.GZipStream(compressed, System.IO.Compression.CompressionMode.Decompress);
-                await unzip.CopyToAsync(resp.OutputStream).ConfigureAwait(false);
-                return;
-            }
-            if (path.StartsWith("/api/geolocation/workbench/", StringComparison.Ordinal))
-            {
-                GeolocationWorkbenchApiModule workbench;
-                lock (_geolocationWorkbenchGate)
-                    workbench = _geolocationWorkbench ??= new(_preferences?.StorageDirectory ?? Path.GetTempPath(),
-                        ConnectionAddresses, _connectionGeolocation, _cts.Token);
-                if (await workbench.HandleAsync(path, req, resp).ConfigureAwait(false)) return;
-            }
 
             if (await UpdatesApiModule.HandleAsync(Updates, path, req, resp).ConfigureAwait(false)) return;
             if (_appSettingsModule != null && await _appSettingsModule.HandleAsync(path, req, resp).ConfigureAwait(false)) return;
@@ -582,12 +571,6 @@ public sealed class WebUiServer
         }
 
         resp.ContentType = contentType;
-        if (cleanPath.Equals("geolocation/workbench.html", StringComparison.OrdinalIgnoreCase))
-        {
-            // Only this on-demand map document can display optional street tiles.
-            resp.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
-            resp.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'";
-        }
         resp.ContentLength64 = body.Length;
         await resp.OutputStream.WriteAsync(body).ConfigureAwait(false);
         return true;
@@ -606,9 +589,10 @@ public sealed class WebUiServer
     private bool ResourceExists(string relativePath)
     {
         relativePath = relativePath.TrimStart('/', '\\').Replace('\\', '/');
-        if (DevWwwRoot != null)
+        if (!IsSafeResourcePath(relativePath)) return false;
+        string? diskPath = GetDevResourcePath(relativePath);
+        if (diskPath != null)
         {
-            string diskPath = Path.Combine(DevWwwRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
             if (File.Exists(diskPath)) return true;
         }
         return FindManifestResourceName(relativePath) != null;
@@ -616,20 +600,35 @@ public sealed class WebUiServer
 
     private string? FindManifestResourceName(string relativePath)
     {
+        if (!IsSafeResourcePath(relativePath)) return null;
         Assembly assembly = typeof(WebUiServer).Assembly;
         string normalized = relativePath.Replace('/', '.').Replace('\\', '.');
         return assembly.GetManifestResourceNames().FirstOrDefault(name =>
-            name.EndsWith("wwwroot." + normalized, StringComparison.OrdinalIgnoreCase) ||
-            name.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
-            name.EndsWith(relativePath, StringComparison.OrdinalIgnoreCase));
+            name.Equals("QuicNet.wwwroot." + normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsSafeResourcePath(string relativePath) =>
+        !string.IsNullOrEmpty(relativePath) &&
+        !Path.IsPathRooted(relativePath) &&
+        !relativePath.Any(c => char.IsControl(c) || c is ':' or '%' or '\\') &&
+        relativePath.Split('/').All(segment => segment.Length > 0 && segment == segment.TrimEnd(' ', '.'));
+
+    private static string? GetDevResourcePath(string relativePath)
+    {
+        if (DevWwwRoot == null || !IsSafeResourcePath(relativePath)) return null;
+        string root = Path.GetFullPath(DevWwwRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        string candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        return candidate.StartsWith(root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+            ? candidate : null;
     }
 
     private byte[]? ReadRawBytes(string relativePath)
     {
         relativePath = relativePath.TrimStart('/', '\\').Replace('\\', '/');
-        if (DevWwwRoot != null)
+        if (!IsSafeResourcePath(relativePath)) return null;
+        string? diskPath = GetDevResourcePath(relativePath);
+        if (diskPath != null)
         {
-            string diskPath = Path.Combine(DevWwwRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
             if (File.Exists(diskPath))
             {
                 try { return File.ReadAllBytes(diskPath); } catch { }

@@ -33,6 +33,9 @@ namespace QuicPunch.Discovery
         private Task? _burstLoopTask;
         private CancellationTokenSource? _loopCts;
         private int _consecutiveFailures = 0;
+        private int _stableBursts;
+        internal TimeSpan EffectiveBurstInterval => TimeSpan.FromMilliseconds(Math.Min(30000, BurstInterval.TotalMilliseconds *
+            Math.Pow(2, Math.Min(5, Math.Max(Volatile.Read(ref _stableBursts) / 3, Volatile.Read(ref _consecutiveFailures) / 2)))));
         private readonly SemaphoreSlim _burstGate = new(1, 1);
 
         public int BurstBatchSize { get; set; } = DefaultBurstBatchSize;
@@ -219,7 +222,7 @@ namespace QuicPunch.Discovery
             {
                 try
                 {
-                    await Task.Delay(BurstInterval, token).ConfigureAwait(false);
+                    await Task.Delay(EffectiveBurstInterval, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -309,7 +312,7 @@ namespace QuicPunch.Discovery
                 if (sample.ResponsesReceived == 0)
                 {
                     _consecutiveFailures++;
-                    if (_consecutiveFailures >= 3 && OnStunRefreshRequested != null)
+                    if (_consecutiveFailures % 3 == 0 && OnStunRefreshRequested != null)
                     {
                         QuicPunchLog.Info($"[NAT PIN RESILIENCE] {_consecutiveFailures} consecutive STUN bursts received 0 responses. Requesting endpoint refresh...");
                         try
@@ -328,6 +331,7 @@ namespace QuicPunch.Discovery
                 if (token.IsCancellationRequested || !ReferenceEquals(stunClient, _stunClient)) return CurrentMapping;
                 var newMapping = ComputeAggregatedMapping();
                 bool changed = HasMappingChanged(CurrentMapping, newMapping);
+                _stableBursts = changed || !newMapping.HasMapping || sample.ResponsesReceived == 0 ? 0 : Math.Min(15, _stableBursts + 1);
                 CurrentMapping = newMapping;
 
                 if (changed)
@@ -369,10 +373,13 @@ namespace QuicPunch.Discovery
             }
 
             int localPort = _udp?.Client.LocalEndPoint is IPEndPoint localEndpoint ? localEndpoint.Port : 0;
-            var connectionFlags = Utilities.GetConnectionFlags(aggregatedHits, localPort);
-            int mostUsedPort = Utilities.GetMostUsedPort(aggregatedHits);
+            // Native IPv6 ports must not widen an IPv4 NAT's predicted port range.
+            var portHits = aggregatedHits.Where(p => p.Key.Address.AddressFamily == AddressFamily.InterNetwork).ToDictionary();
+            if (portHits.Count == 0) portHits = aggregatedHits;
+            var connectionFlags = Utilities.GetConnectionFlags(portHits, localPort);
+            int mostUsedPort = Utilities.GetMostUsedPort(portHits);
 
-            var ports = aggregatedHits.Keys.Select(static endpoint => endpoint.Port).ToList();
+            var ports = portHits.Keys.Select(static endpoint => endpoint.Port).ToList();
             int minObservedPort = ports.Count > 0 ? ports.Min() : mostUsedPort;
             int maxObservedPort = ports.Count > 0 ? ports.Max() : mostUsedPort;
 
@@ -390,14 +397,16 @@ namespace QuicPunch.Discovery
                 .GroupBy(static pair => pair.Key.Address)
                 .Select(static group => new { Address = group.Key, Hits = group.Sum(pair => pair.Value) })
                 .OrderByDescending(static entry => entry.Hits)
-                .ThenBy(static entry => Utilities.IpToUint(entry.Address))
+                .ThenBy(static entry => entry.Address.ToString(), StringComparer.Ordinal)
                 .ToArray();
 
-            var discoveredAddresses = (connectionFlags.MultipleIps
-                    ? addressHits.Select(static entry => entry.Address)
-                    : addressHits.Take(1).Select(static entry => entry.Address))
-                .OrderBy(Utilities.IpToUint)
+            var discoveredAddresses = addressHits
+                .GroupBy(entry => entry.Address.AddressFamily)
+                .SelectMany(group => connectionFlags.MultipleIps ? group : group.Take(1))
+                .Select(entry => entry.Address)
+                .OrderBy(static address => address.ToString(), StringComparer.Ordinal)
                 .ToArray();
+            connectionFlags.MultipleIps = discoveredAddresses.Length > 1;
 
             ushort[] portArray = connectionFlags.PortMode switch
             {
@@ -450,6 +459,7 @@ namespace QuicPunch.Discovery
             try
             {
                 ResetMapping();
+                _stableBursts = 0;
                 _consecutiveFailures = 0;
                 lock (_lock) { if (_udp != null && _allServers.Length > 0) RebuildStunClient(_udp); }
             }

@@ -13,6 +13,9 @@ public sealed class VirtualDiskService : IDisposable
     private readonly Func<string, bool> _administrator;
     private readonly string _store;
     private readonly string _journal;
+    public IVirtualDiskDocuments? Documents { get; set; }
+    public string InboxPath { get; }
+    public event Action<DiskReceipt>? FileReceived;
     private readonly HashSet<string> _pendingCleanup = new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, StoredDiskShare> _shares = new();
     private readonly Dictionary<Guid, Transfer> _transfers = new();
@@ -22,13 +25,13 @@ public sealed class VirtualDiskService : IDisposable
     private bool _disposed;
     private static readonly StringComparison PathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
-    private sealed class Transfer(string? actor, Guid share, string path, FileStream stream, bool writing,
+    private sealed class Transfer(string? actor, Guid share, string path, Stream stream, bool writing,
         string? version, long length, string? temporary = null, Guid leaseId = default)
     {
         public readonly string? Actor = actor;
         public readonly Guid Share = share;
         public readonly string Path = path;
-        public readonly FileStream Stream = stream;
+        public readonly Stream Stream = stream;
         public readonly bool Writing = writing;
         public readonly string? Version = version;
         public readonly long Length = length;
@@ -46,6 +49,7 @@ public sealed class VirtualDiskService : IDisposable
         Directory.CreateDirectory(storageDirectory);
         _store = System.IO.Path.Combine(storageDirectory, "virtual-disks.json");
         _journal = System.IO.Path.Combine(storageDirectory, "virtual-disk-uploads.json");
+        InboxPath = System.IO.Path.Combine(storageDirectory, "Received files");
         if (File.Exists(_store))
         {
             // Corrupt ACLs fail closed; never silently replace them with broader grants.
@@ -97,17 +101,38 @@ public sealed class VirtualDiskService : IDisposable
                 return new(true, Audit: _audit.ToArray());
             case "explore":
                 if (!admin) throw new UnauthorizedAccessException();
+                if (Documents != null)
+                    return new(true, CanExplore: true, Entries: Documents.GetRoots());
                 if (string.IsNullOrEmpty(r.Path))
                     return new(true, CanExplore: true, Entries: DriveInfo.GetDrives()
                         .Select(d => new DiskEntry(d.Name, d.RootDirectory.FullName, true)).ToArray());
                 return List(CheckedAbsolute(r.Path), true, r.Skip);
+            case "outbox":
+            case "inbox":
+                if (actor != null) throw new UnauthorizedAccessException();
+                if (!_trusted(r.Recipient)) throw new UnauthorizedAccessException();
+                // Each sender gets a separate inbox, never access to other contacts' files.
+                string inbox = r.Operation == "inbox"
+                    ? System.IO.Path.Combine(InboxPath, Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(r.Recipient)))[..16])
+                    : System.IO.Path.Combine(System.IO.Path.GetDirectoryName(_store)!, "Sent files", DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..8]);
+                Directory.CreateDirectory(inbox);
+                if (r.Operation == "inbox" && _shares.Values.FirstOrDefault(s => s.Root == inbox && s.Recipient == r.Recipient && !s.AdministratorGrant) is { } existing)
+                {
+                    if (r.ExpiresUtc is DateTime until && until.ToUniversalTime() <= DateTime.UtcNow) throw new ArgumentException("La autorización ya ha caducado.");
+                    var renewed = existing with { ExpiresUtc = r.ExpiresUtc?.ToUniversalTime(), Writable = true, AllowDelete = false };
+                    _shares[existing.Id] = renewed;
+                    try { Save(); } catch { _shares[existing.Id] = existing; throw; }
+                    return new(true, Shares: [View(renewed, true)]);
+                }
+                return ExecuteCore(null, r with { Operation = "grant", Path = inbox, Writable = r.Operation == "inbox", AllowDelete = false });
             case "grant":
             {
                 if (!admin) throw new UnauthorizedAccessException();
+                if (Documents != null && actor != null && !IsDocumentRoot(r.Path)) throw new UnauthorizedAccessException();
                 string recipient = actor ?? r.Recipient;
                 if (!_trusted(recipient)) throw new UnauthorizedAccessException();
-                string root = CheckedAbsolute(r.Path);
-                if (!Directory.Exists(root)) throw new IOException("Selecciona una carpeta o un disco.");
+                string root = IsDocumentRoot(r.Path) ? DocumentStore.ValidateRoot(r.Path, r.Writable) : CheckedAbsolute(r.Path);
+                if (!IsDocumentRoot(root) && !Directory.Exists(root)) throw new IOException("Selecciona una carpeta o un disco.");
                 if (r.ExpiresUtc is DateTime expiry && expiry.ToUniversalTime() <= DateTime.UtcNow) throw new ArgumentException("La autorización ya ha caducado.");
                 if (_shares.Count >= 256) throw new IOException("Límite de carpetas compartidas alcanzado.");
                 var share = new StoredDiskShare(Guid.NewGuid(), root, recipient, r.Writable, r.Writable && r.AllowDelete,
@@ -127,13 +152,17 @@ public sealed class VirtualDiskService : IDisposable
                 return new(true);
             }
             case "list":
-                return List(Resolve(Authorize(actor, r.ShareId), r.Path), false, r.Skip, r.Path);
+            {
+                var share = Authorize(actor, r.ShareId);
+                string resolved = Resolve(share, r.Path);
+                return IsDocumentRoot(share.Root) ? DocumentStore.List(share.Root, r.Path, r.Skip) : List(resolved, false, r.Skip, r.Path);
+            }
             case "open-read":
             {
                 EnsureTransferCapacity(actor);
                 var share = Authorize(actor, r.ShareId);
                 string path = Resolve(share, r.Path);
-                var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+                var stream = OpenRead(path);
                 try
                 {
                     string version = Convert.ToHexString(SHA256.HashData(stream)); stream.Position = 0;
@@ -160,13 +189,15 @@ public sealed class VirtualDiskService : IDisposable
                 if (_transfers.Values.Where(t => t.Writing).Sum(t => t.Length) + r.Length > 2 * MaxFileBytes)
                     throw new IOException("El límite de almacenamiento reservado para transferencias está ocupado.");
                 var share = Authorize(actor, r.ShareId, write: true);
+                if (IsDocumentRoot(share.Root)) DocumentStore.ValidateRoot(share.Root, true);
                 string path = Resolve(share, r.Path, allowMissingLeaf: true);
-                if (path.Equals(share.Root, PathComparison)) throw new UnauthorizedAccessException();
+                if (string.IsNullOrEmpty(r.Path.Trim('/')) || path.Equals(share.Root, PathComparison)) throw new UnauthorizedAccessException();
                 var lease = CheckLease(actor, path, r.LeaseId);
                 string? expected = r.Version ?? lease?.Version;
                 CheckVersion(path, expected);
+                if (IsDocumentRoot(path) && expected != null) throw new IOException("Android no permite reemplazos seguros aquí. Envía el archivo con otro nombre.");
                 // A unique sibling permits atomic publication without exposing partially uploaded files.
-                string temp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path)!, ".quicnet-upload-" + Guid.NewGuid().ToString("N"));
+                string temp = System.IO.Path.Combine(IsDocumentRoot(path) ? System.IO.Path.GetDirectoryName(_store)! : System.IO.Path.GetDirectoryName(path)!, ".quicnet-upload-" + Guid.NewGuid().ToString("N"));
                 var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
                 var id = Guid.NewGuid();
                 _transfers.Add(id, new(actor, r.ShareId, r.Path, stream, true, expected, r.Length, temp, r.LeaseId));
@@ -189,7 +220,8 @@ public sealed class VirtualDiskService : IDisposable
                 try
                 {
                     if (transfer.Stream.Length != transfer.Length) throw new IOException("Transferencia incompleta.");
-                    transfer.Stream.Flush(true); transfer.Stream.Position = 0;
+                    if (transfer.Stream is FileStream file) file.Flush(true); else transfer.Stream.Flush();
+                    transfer.Stream.Position = 0;
                     string hash = Convert.ToHexString(SHA256.HashData(transfer.Stream));
                     string received = Convert.ToHexString(transfer.ReceivedHash.GetHashAndReset());
                     if (hash != received || (r.Sha256 != null && !hash.Equals(r.Sha256, StringComparison.OrdinalIgnoreCase)))
@@ -200,10 +232,17 @@ public sealed class VirtualDiskService : IDisposable
                     CheckVersion(target, transfer.Version);
                     transfer.Stream.Dispose();
                     // No overwrite on a create: even a local concurrent creator wins safely.
-                    if (transfer.Version == null) File.Move(transfer.Temporary!, target);
+                    if (IsDocumentRoot(target))
+                    {
+                        var (root, relative) = DocumentPath(target);
+                        DocumentStore.Publish(root, relative, transfer.Temporary!, transfer.Version);
+                    }
+                    else if (transfer.Version == null) File.Move(transfer.Temporary!, target);
                     else File.Replace(transfer.Temporary!, target, destinationBackupFileName: null);
                     if (transfer.LeaseId != Guid.Empty && _leases.TryGetValue(transfer.LeaseId, out var held))
                         _leases[transfer.LeaseId] = held with { Version = hash };
+                    // Notification delivery cannot turn a successful publication into a failed upload.
+                    if (actor != null) try { FileReceived?.Invoke(new(actor, transfer.Share, transfer.Path, transfer.Length)); } catch { }
                     return new(true, Version: hash, Length: transfer.Length);
                 }
                 finally { Close(r.TransferId); }
@@ -216,8 +255,10 @@ public sealed class VirtualDiskService : IDisposable
                 var share = Authorize(actor, r.ShareId, write: true);
                 string target = Resolve(share, r.Path, allowMissingLeaf: true);
                 CheckLease(actor, target, r.LeaseId);
-                if (File.Exists(target) || Directory.Exists(target)) throw new DiskConflictException();
-                Directory.CreateDirectory(target); return new(true);
+                if (FileExists(target) || DirectoryExists(target)) throw new DiskConflictException();
+                if (IsDocumentRoot(target)) { var (root, relative) = DocumentPath(target); DocumentStore.CreateDirectory(root, relative); }
+                else Directory.CreateDirectory(target);
+                return new(true);
             }
             case "delete":
             {
@@ -225,15 +266,18 @@ public sealed class VirtualDiskService : IDisposable
                 if (!share.AllowDelete) throw new UnauthorizedAccessException();
                 string path = Resolve(share, r.Path);
                 var lease = CheckLease(actor, path, r.LeaseId);
-                if (path.Equals(share.Root, PathComparison)) throw new UnauthorizedAccessException();
-                if (Directory.Exists(path)) Directory.Delete(path, recursive: false);
-                else { CheckVersion(path, r.Version ?? lease?.Version); File.Delete(path); }
+                if (string.IsNullOrEmpty(r.Path.Trim('/')) || path.Equals(share.Root, PathComparison)) throw new UnauthorizedAccessException();
+                if (!DirectoryExists(path)) CheckVersion(path, r.Version ?? lease?.Version);
+                if (IsDocumentRoot(path)) { var (root, relative) = DocumentPath(path); DocumentStore.Delete(root, relative); }
+                else if (Directory.Exists(path)) Directory.Delete(path, recursive: false);
+                else File.Delete(path);
                 return new(true);
             }
             case "lock":
             {
                 var share = Authorize(actor, r.ShareId, write: true);
                 string path = Resolve(share, r.Path, allowMissingLeaf: true);
+                if (IsDocumentRoot(path)) throw new IOException("El proveedor de Android no admite bloqueos WebDAV. Usa la vista de archivos.");
                 if (Directory.Exists(path)) throw new IOException("Solo se admiten bloqueos de archivos.");
                 var lease = CheckLease(actor, path, r.LeaseId);
                 Guid id = r.LeaseId == Guid.Empty ? Guid.NewGuid() : r.LeaseId;
@@ -261,7 +305,7 @@ public sealed class VirtualDiskService : IDisposable
 
     private StoredDiskShare Authorize(string? actor, Guid id, bool write = false)
     {
-        if (!_shares.TryGetValue(id, out var share) || !Active(share) || (actor != null && share.Recipient != actor) || (write && !share.Writable))
+        if (!_shares.TryGetValue(id, out var share) || !Active(share) || (actor != null && share.Recipient != actor) || (write && actor != null && !share.Writable))
             throw new UnauthorizedAccessException();
         return share;
     }
@@ -269,18 +313,31 @@ public sealed class VirtualDiskService : IDisposable
     private Transfer GetTransfer(string? actor, Guid id, bool writing)
     {
         if (!_transfers.TryGetValue(id, out var transfer) || transfer.Actor != actor || transfer.Writing != writing) throw new UnauthorizedAccessException();
-        try { Resolve(Authorize(actor, transfer.Share, write: writing), transfer.Path, allowMissingLeaf: writing); }
+        try
+        {
+            var share = Authorize(actor, transfer.Share, write: writing);
+            if (writing && IsDocumentRoot(share.Root)) DocumentStore.ValidateRoot(share.Root, true);
+            Resolve(share, transfer.Path, allowMissingLeaf: writing);
+        }
         catch { Close(id); throw; }
         transfer.Touched = DateTime.UtcNow;
         return transfer;
     }
 
-    private static string Resolve(StoredDiskShare share, string relative, bool allowMissingLeaf = false)
+    private string Resolve(StoredDiskShare share, string relative, bool allowMissingLeaf = false)
     {
-        if (System.IO.Path.IsPathRooted(relative) || relative.Contains('\\') || relative.Contains(':') || relative.Length > 4096) throw new UnauthorizedAccessException();
+        if (System.IO.Path.IsPathRooted(relative) || relative.Contains('\\') || relative.Contains(':') || relative.Contains('\0') || relative.Length > 4096) throw new UnauthorizedAccessException();
         var parts = relative.Split('/', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Any(p => p is "." or ".." || p.EndsWith('.') || p.EndsWith(' ') || p.StartsWith(".quicnet-", StringComparison.OrdinalIgnoreCase)))
             throw new UnauthorizedAccessException();
+        if (IsDocumentRoot(share.Root))
+        {
+            DocumentStore.ValidateRoot(share.Root, false);
+            string normalized = string.Join('/', parts);
+            if (!allowMissingLeaf && DocumentStore.Stat(share.Root, normalized) == null) throw new FileNotFoundException();
+            // The fragment is internal only; callers can never submit arbitrary document IDs.
+            return share.Root + "#" + Uri.EscapeDataString(normalized);
+        }
         string root = CheckedAbsolute(share.Root);
         string combined = System.IO.Path.GetFullPath(System.IO.Path.Combine(root, System.IO.Path.Combine(new[] { "" }.Concat(parts).ToArray())));
         if (!combined.Equals(root, PathComparison) && !combined.StartsWith(System.IO.Path.TrimEndingDirectorySeparator(root) + System.IO.Path.DirectorySeparatorChar, PathComparison))
@@ -340,17 +397,42 @@ public sealed class VirtualDiskService : IDisposable
         return new(true, CanExplore: exploration, Entries: entries.ToArray());
     }
 
-    private static void CheckVersion(string path, string? expected)
+    private void CheckVersion(string path, string? expected)
     {
-        if (!File.Exists(path)) { if (expected != null) throw new DiskConflictException(); return; }
+        if (!FileExists(path)) { if (expected != null) throw new DiskConflictException(); return; }
         if (expected == null) throw new DiskConflictException();
-        using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        using var source = OpenRead(path);
         if (!Convert.ToHexString(SHA256.HashData(source)).Equals(expected, StringComparison.Ordinal)) throw new DiskConflictException();
     }
 
     private void EnsureTransferCapacity(string? actor)
     {
         if (_transfers.Count >= 32 || _transfers.Count(t => t.Value.Actor == actor) >= 4) throw new IOException("Demasiadas transferencias abiertas.");
+    }
+    private static bool IsDocumentRoot(string path) => path.StartsWith("content://", StringComparison.Ordinal);
+    private IVirtualDiskDocuments DocumentStore => Documents ?? throw new UnauthorizedAccessException("Proveedor de documentos no disponible.");
+    private static (string Root, string Path) DocumentPath(string key)
+    {
+        int fragment = key.IndexOf('#');
+        return fragment < 0 ? (key, "") : (key[..fragment], Uri.UnescapeDataString(key[(fragment + 1)..]));
+    }
+    private Stream OpenRead(string path)
+    {
+        if (!IsDocumentRoot(path)) return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        var (root, relative) = DocumentPath(path);
+        return DocumentStore.OpenRead(root, relative);
+    }
+    private bool FileExists(string path)
+    {
+        if (!IsDocumentRoot(path)) return File.Exists(path);
+        var (root, relative) = DocumentPath(path);
+        return DocumentStore.Stat(root, relative) is { Directory: false };
+    }
+    private bool DirectoryExists(string path)
+    {
+        if (!IsDocumentRoot(path)) return Directory.Exists(path);
+        var (root, relative) = DocumentPath(path);
+        return DocumentStore.Stat(root, relative) is { Directory: true };
     }
     private void ExpireTransfers()
     {
@@ -409,7 +491,7 @@ public sealed class VirtualDiskService : IDisposable
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
-    private static DiskShare View(StoredDiskShare s, bool owner) => new(s.Id, System.IO.Path.GetFileName(s.Root) is { Length: > 0 } name ? name : s.Root,
+    private DiskShare View(StoredDiskShare s, bool owner) => new(s.Id, IsDocumentRoot(s.Root) ? DocumentStore.GetName(s.Root) : System.IO.Path.GetDirectoryName(s.Root) == InboxPath ? "Bandeja de recepción" : System.IO.Path.GetFileName(s.Root) is { Length: > 0 } name ? name : s.Root,
         s.Recipient, s.Writable, s.AllowDelete, s.ExpiresUtc, owner ? s.Root : null, s.AdministratorGrant);
     private void Save()
     {

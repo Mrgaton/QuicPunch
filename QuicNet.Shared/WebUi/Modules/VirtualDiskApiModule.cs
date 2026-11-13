@@ -60,9 +60,45 @@ internal sealed class VirtualDiskApiModule : IDisposable
         if (req.HttpMethod != "POST") { resp.StatusCode = 405; return true; }
         using var doc = await WebUiContext.ReadJsonAsync(req, path);
         var root = doc.RootElement;
+        if (path == "/api/virtual-disk/pick-folder")
+        {
+            if (Service.Documents == null) { await WriteAsync(resp, new(false, "Selector de Android no disponible.")); return true; }
+            string? folder = await Service.Documents.PickFolderAsync(_lifetime);
+            await WriteAsync(resp, new(folder != null, folder == null ? "Selección cancelada." : null, NativePath: folder));
+            return true;
+        }
         Guid target = Guid.Empty;
         if (root.TryGetProperty("peerId", out var id) && id.ValueKind != JsonValueKind.Null && !string.IsNullOrEmpty(id.GetString()) && !Guid.TryParse(id.GetString(), out target))
             throw new InvalidDataException("Identidad de equipo inválida.");
+        if (path == "/api/virtual-disk/save")
+        {
+            if (Service.Documents == null) { await WriteAsync(resp, new(false, "Selector de Android no disponible.")); return true; }
+            Guid share = WebUiContext.ParseGuid(root, "shareId");
+            string filePath = root.GetProperty("path").GetString() ?? "";
+            // Ask for the destination before opening a remote transfer (the picker can stay open indefinitely).
+            using var download = await Service.Documents.CreateDownloadAsync(System.IO.Path.GetFileName(filePath), _lifetime);
+            if (download == null) { await WriteAsync(resp, new(false, "Guardado cancelado.", "Cancelled")); return true; }
+            var output = download.Stream;
+            var opened = await ExecuteAsync(target, new("open-read", ShareId: share, Path: filePath));
+            if (!opened.Success) { await WriteAsync(resp, opened); return true; }
+            try
+            {
+                using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+                for (long offset = 0; offset < opened.Length;)
+                {
+                    var chunk = await ExecuteAsync(target, new("read", TransferId: opened.TransferId, Offset: offset));
+                    if (!chunk.Success || chunk.Data is not { Length: > 0 } || chunk.Data.Length > opened.Length - offset) throw new IOException("Descarga interrumpida.");
+                    await output.WriteAsync(chunk.Data, _lifetime);
+                    hash.AppendData(chunk.Data); offset += chunk.Data.Length;
+                }
+                if (!Convert.ToHexString(hash.GetHashAndReset()).Equals(opened.Version, StringComparison.OrdinalIgnoreCase)) throw new IOException("La comprobación de integridad ha fallado.");
+                await output.FlushAsync(_lifetime);
+                download.Complete();
+                await WriteAsync(resp, new(true));
+            }
+            finally { try { await ExecuteAsync(target, new("close", TransferId: opened.TransferId)); } catch { } }
+            return true;
+        }
         if (path == "/api/virtual-disk/mount")
         {
             Guid share = WebUiContext.ParseGuid(root, "shareId");

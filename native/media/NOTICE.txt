@@ -1,0 +1,29 @@
+NetTT native video engine
+
+This software uses FFmpeg n8.1.3, commit
+1041abdc962f4cc4f394aa8de9dc5236c0c3b9e7, under the GNU Lesser General
+Public License, version 2.1 or later. GPL and nonfree components are disabled.
+FFmpeg contains dav1d 1.5.1 (42b2b24fb8819f1ed3643aa9cf2a62f03868e3aa),
+Copyright VideoLAN and dav1d authors, under the BSD 2-Clause license.
+Windows also redistributes MinGW-w64 winpthreads under its MIT/BSD notices.
+The native C++ bridge is linked with GCC/libstdc++ or Android libc++; their
+runtime redistribution notices are included in licenses/.
+
+Complete upstream sources, the deterministic local FFmpeg patch, bridge source,
+build scripts and license texts are provided beside each release as
+native-media-source.tar.gz. This archive can be regenerated using
+scripts/package-native-media-source.sh. FFmpeg is dynamically linked.
+
+Windows: set QUICNET_MEDIA_LIBRARY_DIRECTORY to an absolute directory containing
+ABI-compatible avutil-60.dll, swscale-9.dll, avcodec-62.dll and nettt_media.dll
+(and their dependencies) to use modified libraries. The application does not
+replace these explicitly selected libraries with its embedded originals.
+
+Android: replace lib/arm64-v8a/libavcodec.so, libavutil.so and libswscale.so
+in an APK, then sign the modified APK with your own key and install it under
+a separate application ID. Android requires an APK signing identity; replacing
+an installed APK signed by a different key requires a separate installation.
+
+Reverse engineering for debugging modifications to these LGPL libraries is
+permitted. This notice does not restrict the rights granted by their licenses.
+FFmpeg: https://ffmpeg.org/  dav1d: https://code.videolan.org/videolan/dav1d

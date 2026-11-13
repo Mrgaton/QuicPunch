@@ -52,17 +52,27 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
         public async Task SendBinaryAsync(ReadOnlyMemory<byte> bytes, CancellationToken ct = default)
         {
             if (Socket.State != WebSocketState.Open) return;
-            await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(TimeSpan.FromSeconds(2));
+            bool locked = false;
             try
             {
+                await _sendLock.WaitAsync(deadline.Token).ConfigureAwait(false);
+                locked = true;
                 if (Socket.State == WebSocketState.Open)
                 {
-                    await Socket.SendAsync(bytes, WebSocketMessageType.Binary, true, ct).ConfigureAwait(false);
+                    await Socket.SendAsync(bytes, WebSocketMessageType.Binary, true, deadline.Token).ConfigureAwait(false);
                 }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or ObjectDisposedException)
+            {
+                // A closed or stalled preview must not stop the P2P encoder or
+                // another viewer. Abort also prevents a partial message reuse.
+                try { Socket.Abort(); } catch (ObjectDisposedException) { }
             }
             finally
             {
-                _sendLock.Release();
+                if (locked) _sendLock.Release();
             }
         }
 
@@ -81,7 +91,7 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
             finally
             {
                 Socket.Dispose();
-                _sendLock.Dispose();
+                // Pending senders still release this gate after socket shutdown.
             }
         }
     }
@@ -196,10 +206,11 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
 
     public async Task AcceptSocketAsync(HttpListenerContext context)
     {
+        ClientConnection? client = null;
         try
         {
             HttpListenerWebSocketContext wsContext = await context.AcceptWebSocketAsync(subProtocol: null).ConfigureAwait(false);
-            var client = new ClientConnection(wsContext.WebSocket);
+            client = new ClientConnection(wsContext.WebSocket);
             _clients[client.Id] = client;
             OnClientConnected();
 
@@ -221,10 +232,18 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
             if (GetUpdateSnapshot?.Invoke() is { } update)
                 await client.SendTextAsync(JsonSerializer.Serialize(new global::QuicNet.Serialization.WebUiWebSocketHubMessage2("update_status", update), WebUiContext.JsonOptions), _cts.Token, "update_status");
 
-            _ = Task.Run(() => HandleClientLoopAsync(client), _cts.Token);
+            // The listener owns a bounded WebSocket reservation for this task.
+            // Keep it until disconnect instead of detaching an unbounded reader.
+            await HandleClientLoopAsync(client).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            if (client != null)
+            {
+                _clients.TryRemove(client.Id, out _);
+                await client.DisposeAsync().ConfigureAwait(false);
+                CheckAutoShutdown();
+            }
             WebUiServer.LogEvent($"[WS] Failed to accept WebSocket connection: {ex.Message}");
             try
             {
@@ -252,7 +271,8 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
                     {
                         try
                         {
-                            await client.Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None).ConfigureAwait(false);
+                            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                            await client.Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Closing", deadline.Token).ConfigureAwait(false);
                         }
                         catch { }
                     }
@@ -285,22 +305,8 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
                     // Legacy Audio: [TargetPeerId (16B)][Audio Data]
                     if (buffer[0] == 0x02 && messageLength > 18)
                     {
-                        Guid targetPeerId = new Guid(buffer.AsSpan(1, 16));
-                        byte codecId = buffer[17];
-                        int videoLen = messageLength - 18;
-                        byte[] videoPayload = new byte[videoLen];
-                        Buffer.BlockCopy(buffer, 18, videoPayload, 0, videoLen);
-
-                        if (targetPeerId == Guid.Empty)
-                        {
-                            // Await the QUIC write so TCP/WebSocket backpressure reaches the
-                            // producer instead of building an unbounded queue of stale frames.
-                            await VoiceCallHandler.SendScreenFrameAsync(videoPayload).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            await VoiceCallHandler.SendScreenFrameToPeerAsync(targetPeerId, videoPayload).ConfigureAwait(false);
-                        }
+                        // Video is produced and consumed exclusively by the native FFmpeg pipeline.
+                        continue;
                     }
                     else if (buffer[0] == 0x03 && messageLength > 1)
                     {

@@ -16,7 +16,7 @@ El rediseño toma como referencia la [cuadrícula y vista de enfoque de Discord]
 
 `voice-room.css` usa variables de tema existentes y reglas limitadas a `#view-voice`. No incorpora dependencias. Las capturas de pruebas usan personas simuladas y no acceden a cámaras, micrófonos ni pantallas reales.
 
-Verificación: `VoiceRoomBrowserTests.mjs` comprueba 320–1920 px, tema oscuro, volumen/foco estables, menú, silenciamiento, actividad de voz, búsqueda móvil, salida y vídeo visible. `CameraBrowserTests.mjs`, `ScreenCaptureBrowserTests.mjs` y `ScreenPickerBrowserTests.mjs` verifican los flujos multimedia y atajos existentes. Las capturas de referencia se generan en `.artifacts/voice-room/`.
+Verificación: `VoiceRoomBrowserTests.mjs` comprueba 320–1920 px, tema oscuro, volumen/foco estables, menú, silenciamiento, actividad de voz, búsqueda móvil, salida y vídeo visible. `CameraBrowserTests.mjs`, `ScreenViewerBrowserTests.mjs` y `ScreenPickerBrowserTests.mjs` verifican los flujos multimedia y atajos existentes. Las capturas de referencia se generan en `.artifacts/voice-room/`.
 
 `VoiceFullscreenBrowserTests.mjs` verifica pantalla completa nativa en Chromium y las alternativas por rechazo o ausencia de la API, sin remontar vídeo/canvas; comprueba controles, insignias, salida, Escape, fin de transmisión y navegación, en vertical y horizontal. Capturas en `.artifacts/voice-fullscreen/`. La compilación Android verifica las firmas y el empaquetado del contenedor; queda pendiente la comprobación de los gestos y barras del sistema en un teléfono físico.
 

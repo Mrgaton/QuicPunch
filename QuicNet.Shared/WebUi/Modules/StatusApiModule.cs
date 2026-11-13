@@ -21,7 +21,6 @@ internal sealed class StatusApiModule
     private readonly ProfileAvatarStore _avatars;
     private readonly LocalIpGeolocation _geolocation;
     private readonly QuicNet.Presence.UserPresenceService _presence;
-    private readonly AutomaticIpGeolocation _connectionGeolocation;
 
     public StatusApiModule(
         QuicPunch.QuicPunch qcc,
@@ -32,7 +31,7 @@ internal sealed class StatusApiModule
         PeerApiModule peerModule,
         ChatApiModule chatModule,
         ProfileAvatarStore avatars,
-        LocalIpGeolocation geolocation, QuicNet.Presence.UserPresenceService presence, AutomaticIpGeolocation connectionGeolocation)
+        LocalIpGeolocation geolocation, QuicNet.Presence.UserPresenceService presence)
     {
         _qcc = qcc;
         _chatHandler = chatHandler;
@@ -44,7 +43,6 @@ internal sealed class StatusApiModule
         _avatars = avatars;
         _geolocation = geolocation;
         _presence = presence;
-        _connectionGeolocation = connectionGeolocation;
     }
 
     private DateTime? GetDiscoveryAvailableUntilUtc(byte[]? certHash) => certHash != null &&
@@ -53,7 +51,6 @@ internal sealed class StatusApiModule
 
     public object GetStatusObject(bool includeChat = false, bool includeClipboard = false)
     {
-        _connectionGeolocation.Observe(_qcc.IsWanStarted ? _qcc.CurrentPeer?.Addresses ?? [] : []);
         string wanToken = "";
         if (_qcc.IsWanStarted)
         {
@@ -295,7 +292,7 @@ internal sealed class StatusApiModule
             }).OrderByDescending(p => p.isSaved).ThenBy(p => p.name).ToList();
 
         string quickUri = !string.IsNullOrWhiteSpace(wanToken) ? $"qp://{wanToken}" : "";
-        return new global::QuicNet.Serialization.StatusApiModuleMessage19(new global::QuicNet.Serialization.StatusApiModuleMessage20(_qcc.CurrentPeer?.Name ?? "LocalNode", _qcc.CurrentPeer?.Id.ToString() ?? "", _qcc.CurrentPeer?.TryGetCertificateHash(out var myHash) == true ? Utilities.ToCanonicalPeerId(myHash) : "", _qcc.LocalDiscoveryPort, _qcc.CurrentPeer?.PortArray ?? Array.Empty<ushort>(), _qcc.CurrentPeer?.ConnectionFlags?.PortMode.ToString() ?? "Single", _qcc.CurrentPeer?.NetworkType.ToString() ?? "Unknown", wanToken, torToken, quickUri, _qcc.CurrentPeer?.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>()), stun, prefs, discovery, new global::QuicNet.Serialization.StatusApiModuleMessage21(_qcc.Mailbox?.IsRunning ?? false, _qcc.Mailbox?.ConnectedRelayCount ?? 0, _qcc.Mailbox?.PublicKeyHex ?? ""), wan, tor, lan, apps, peers, peers.Where(p => p.isQuicConnected).ToList(), discoveredPeers, savedPeers, chatMessages, new global::QuicNet.Serialization.StatusApiModuleMessage22(_chatHandler.NostrMessagingEnabled), _chatModule.DisappearingSeconds, clipboardItems, petitions, interrogations, WebUiServer.UserNotifications.TakeLast(20).Select(n => new global::QuicNet.Serialization.StatusApiModuleMessage23(n.Id, n.Type, n.Message, n.Timestamp.ToString("HH:mm:ss"))).ToArray(), WebUiServer.EventLogs.TakeLast(80).ToList(), peers.Count(p => p.isTrusted), peers.Count(p => !p.isTrusted), quicTelemetry, quicTelemetry, _qcc.CurrentPeer?.Name ?? "LocalNode", _qcc.CurrentPeer?.Id.ToString() ?? "", wanToken, wanToken, torToken, quickUri, _qcc.LocalDiscoveryPort, peers, discovery, wan, lan, tor, ChatHandler.ActiveChats.Values.Select(s => new global::QuicNet.Serialization.StatusApiModuleMessage24(s.Peer.Id.ToString(), s.Peer.Name ?? "")).ToList(), VoiceCallHandler.ActiveCalls.Values.Select(s => new global::QuicNet.Serialization.StatusApiModuleMessage24(s.Peer.Id.ToString(), s.Peer.Name ?? "")).ToList(), _qcc.ProtocolHandlers.Select(pair => new global::QuicNet.Serialization.StatusApiModuleMessage25(pair.Key.ToString(), pair.Value.ProtocolName)).ToList()) { presence = _presence.Snapshot(), peerPresence = _presence.RemoteSnapshot(), geolocation = _geolocation.Status with { connection = _connectionGeolocation.Status }, avatars = _avatars.Versions(_qcc.CurrentPeer!.Id), chatActivity = _chatModule.ConversationActivity };
+        return new global::QuicNet.Serialization.StatusApiModuleMessage19(new global::QuicNet.Serialization.StatusApiModuleMessage20(_qcc.CurrentPeer?.Name ?? "LocalNode", _qcc.CurrentPeer?.Id.ToString() ?? "", _qcc.CurrentPeer?.TryGetCertificateHash(out var myHash) == true ? Utilities.ToCanonicalPeerId(myHash) : "", _qcc.LocalDiscoveryPort, _qcc.CurrentPeer?.PortArray ?? Array.Empty<ushort>(), _qcc.CurrentPeer?.ConnectionFlags?.PortMode.ToString() ?? "Single", _qcc.CurrentPeer?.NetworkType.ToString() ?? "Unknown", wanToken, torToken, quickUri, _qcc.CurrentPeer?.Addresses?.Select(a => a.ToString()).ToArray() ?? Array.Empty<string>()), stun, prefs, discovery, new global::QuicNet.Serialization.StatusApiModuleMessage21(_qcc.Mailbox?.IsRunning ?? false, _qcc.Mailbox?.ConnectedRelayCount ?? 0, _qcc.Mailbox?.PublicKeyHex ?? ""), wan, tor, lan, apps, peers, peers.Where(p => p.isQuicConnected).ToList(), discoveredPeers, savedPeers, chatMessages, new global::QuicNet.Serialization.StatusApiModuleMessage22(_chatHandler.NostrMessagingEnabled), _chatModule.DisappearingSeconds, clipboardItems, petitions, interrogations, WebUiServer.UserNotifications.TakeLast(20).Select(n => new global::QuicNet.Serialization.StatusApiModuleMessage23(n.Id, n.Type, n.Message, n.Timestamp.ToString("HH:mm:ss"))).ToArray(), WebUiServer.EventLogs.TakeLast(80).ToList(), peers.Count(p => p.isTrusted), peers.Count(p => !p.isTrusted), quicTelemetry, quicTelemetry, _qcc.CurrentPeer?.Name ?? "LocalNode", _qcc.CurrentPeer?.Id.ToString() ?? "", wanToken, wanToken, torToken, quickUri, _qcc.LocalDiscoveryPort, peers, discovery, wan, lan, tor, ChatHandler.ActiveChats.Values.Select(s => new global::QuicNet.Serialization.StatusApiModuleMessage24(s.Peer.Id.ToString(), s.Peer.Name ?? "")).ToList(), VoiceCallHandler.ActiveCalls.Values.Select(s => new global::QuicNet.Serialization.StatusApiModuleMessage24(s.Peer.Id.ToString(), s.Peer.Name ?? "")).ToList(), _qcc.ProtocolHandlers.Select(pair => new global::QuicNet.Serialization.StatusApiModuleMessage25(pair.Key.ToString(), pair.Value.ProtocolName)).ToList()) { presence = _presence.Snapshot(), peerPresence = _presence.RemoteSnapshot(), geolocation = _geolocation.Status, avatars = _avatars.Versions(_qcc.CurrentPeer!.Id), chatActivity = _chatModule.ConversationActivity };
     }
 
     /// <summary>

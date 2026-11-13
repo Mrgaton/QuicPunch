@@ -163,7 +163,7 @@
       section.append(heading, rows); box.append(section); groups.set(value, rows);
     }
     for (const p of list) {
-      const card = QP.el('article', 'contact-card');
+      const card = QP.el('div', 'contact-card');
       card.dataset.contactKey = p.certHash || p.id;
       card.dataset.transport = p.isTor || p.networkType === 'Tor' ? 'tor' : 'wan';
       card.setAttribute('role', 'listitem');

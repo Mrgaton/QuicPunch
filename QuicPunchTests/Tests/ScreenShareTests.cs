@@ -24,6 +24,8 @@ public static class ScreenShareTests
 
     public static async Task RunAsync()
     {
+        TestDecoderProbeContracts();
+        await ScreenPreviewTransportTests.RunAsync();
         if (!VoiceCallHandler.ActiveCalls.IsEmpty) throw new Exception("Screen test requires isolated call state.");
         try
         {
@@ -45,6 +47,21 @@ public static class ScreenShareTests
         Console.WriteLine("==================================================");
     }
 
+    private static void TestDecoderProbeContracts()
+    {
+        var request = Guid.NewGuid();
+        var reply = new QuicNet.Serialization.ScreenDecoderProbeReplyMessage(request, true,
+            new("hvc1.1.6.L120.90", 1920, 1080, "prefer-software", "GPU rechazada; CPU aceptada."));
+        var json = System.Text.Json.JsonSerializer.Serialize(reply, QuicNet.Serialization.SharedJson.Options);
+        var parsed = System.Text.Json.JsonSerializer.Deserialize<QuicNet.Serialization.ScreenDecoderProbeReplyMessage>(json, QuicNet.Serialization.SharedJson.Options);
+        if (parsed != reply) throw new Exception("Decoder diagnostics did not survive the generated JSON contract.");
+        // Old receivers send only the two original fields. Their replies remain valid.
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<QuicNet.Serialization.ScreenDecoderProbeReplyMessage>(
+            "{\"requestId\":\"" + request + "\",\"supported\":true}", QuicNet.Serialization.SharedJson.Options);
+        if (legacy?.requestId != request || legacy.supported != true || legacy.diagnostic != null)
+            throw new Exception("Legacy decoder replies must not require diagnostics.");
+    }
+
     private static async Task Test_ScreenShare_FramingAndStreamingAsync()
     {
         Console.Write("[TEST] VoiceCallHandler screen sharing framing and frame delivery... ");
@@ -52,59 +69,16 @@ public static class ScreenShareTests
         using var serverCert = GenerateTestCert();
         using var clientCert = GenerateTestCert();
 
-        var alpn = new SslApplicationProtocol("qpmux");
-        var serverEndPoint = new IPEndPoint(IPAddress.Loopback, 0);
-
-        var serverOptions = new QuicServerConnectionOptions
-        {
-            DefaultStreamErrorCode = 0,
-            DefaultCloseErrorCode = 0,
-            MaxInboundBidirectionalStreams = 512,
-            MaxInboundUnidirectionalStreams = 512,
-            ServerAuthenticationOptions = new SslServerAuthenticationOptions
-            {
-                ApplicationProtocols = new List<SslApplicationProtocol> { alpn },
-                ServerCertificate = serverCert,
-                ClientCertificateRequired = true,
-                RemoteCertificateValidationCallback = (_, _, _, _) => true
-            }
-        };
-
-        await using var listener = await QuicListener.ListenAsync(new QuicListenerOptions
-        {
-            ListenEndPoint = serverEndPoint,
-            ApplicationProtocols = new List<SslApplicationProtocol> { alpn },
-            ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(serverOptions)
-        });
-
-        var clientOptions = new QuicClientConnectionOptions
-        {
-            DefaultStreamErrorCode = 0,
-            DefaultCloseErrorCode = 0,
-            MaxInboundBidirectionalStreams = 512,
-            MaxInboundUnidirectionalStreams = 512,
-            RemoteEndPoint = listener.LocalEndPoint,
-            ClientAuthenticationOptions = new SslClientAuthenticationOptions
-            {
-                TargetHost = QuicPunchConnection.DefaultDisguiseHost,
-                ApplicationProtocols = new List<SslApplicationProtocol> { alpn },
-                ClientCertificates = new X509CertificateCollection { clientCert },
-                RemoteCertificateValidationCallback = (_, _, _, _) => true
-            }
-        };
-
-        var serverAcceptTask = listener.AcceptConnectionAsync();
-        var clientNative = await NativeQuicConnection.ConnectAsync(clientOptions);
-        var serverNative = await serverAcceptTask;
-
-        var serverQuicConn = QuicConnection.Wrap(serverNative);
-        var clientQuicConn = QuicConnection.Wrap(clientNative);
+        using var setupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var nativePair = await Fixtures.NativeBridgePair.CreateAsync(serverCert, clientCert, setupDeadline.Token);
+        var serverQuicConn = nativePair.Server;
+        var clientQuicConn = nativePair.Client;
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         var dummyQcc = new QuicPunch.QuicPunch(cts.Token) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
-        using var handlerServer = new VoiceCallHandler(dummyQcc);
-        using var handlerClient = new VoiceCallHandler(dummyQcc);
+        using var handlerServer = new VoiceCallHandler(dummyQcc, new QuicPunch.Audio.NullAudioBackend());
+        using var handlerClient = new VoiceCallHandler(dummyQcc, new QuicPunch.Audio.NullAudioBackend());
 
         var serverPeer = new PeerInfo(serverCert, null) { Name = "Bob (Viewer)" };
         var clientPeer = new PeerInfo(clientCert, null) { Name = "Alice (Screen Sharer)" };
@@ -151,6 +125,16 @@ public static class ScreenShareTests
             await Task.Delay(50);
         }
 
+        // The optional tail preserves the legacy masks/control byte and bounds GPU hints to supported codecs.
+        await VoiceCallHandler.SetLocalScreenCodecCapabilitiesAsync(2, 2, 34);
+        for (int i = 0; i < 50 && VoiceCallHandler.ActiveCalls.Values.Any(s => s.RemoteScreenDecoderHardwarePreferenceMask != 2); i++) await Task.Delay(20);
+        if (VoiceCallHandler.ActiveCalls.Values.Any(s => !s.RemoteScreenCapabilitiesReceived || s.RemoteScreenDecoderHardwarePreferenceMask != 2 || s.RemoteScreenControlVersion != 2))
+            throw new Exception("Receiver GPU preferences did not survive the capability frame.");
+        await VoiceCallHandler.SetLocalScreenCodecCapabilitiesAsync(2, 0);
+        for (int i = 0; i < 50 && VoiceCallHandler.ActiveCalls.Values.Any(s => s.RemoteScreenDecoderHardwarePreferenceMask != null || s.RemoteScreenDecoderCodecMask != 0); i++) await Task.Delay(20);
+        if (VoiceCallHandler.ActiveCalls.Values.Any(s => !s.RemoteScreenCapabilitiesReceived || s.RemoteScreenDecoderHardwarePreferenceMask != null || s.RemoteScreenDecoderCodecMask != 0))
+            throw new Exception("Legacy/no-decoder report retained stale GPU support or became unknown.");
+
         // 1. Trigger Screen Share Start from Alice (client) with H.264 (codecId=1) at 60 FPS
         await VoiceCallHandler.StartScreenShareAsync(1920, 1080, codecId: 1, fps: 60);
         var (recvW, recvH, recvCodec, recvFps) = await tcsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -176,6 +160,29 @@ public static class ScreenShareTests
         if (recvAudio.Length != dummyPcm.Length || !recvAudio.SequenceEqual(dummyPcm))
             throw new Exception("Received screen audio frame corrupted or size mismatch!");
 
+        // A receiver veto must not prevent the sender from announcing/encoding.
+        // Both sessions reject video first, then one becomes compatible.
+        foreach (var call in VoiceCallHandler.ActiveCalls.Values) call.IsScreenDecoderApproved = false;
+        var unsupportedStart = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var compatibleFrame = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var incompatibleAudio = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool incompatibleVideoReceived = false;
+        handlerServer.OnScreenShareStarted += (_, _, _, codec, _) => { if (codec == 5) unsupportedStart.TrySetResult(); };
+        handlerClient.OnScreenFrameReceived += (_, _, _) => compatibleFrame.TrySetResult();
+        handlerServer.OnScreenFrameReceived += (_, _, _) => incompatibleVideoReceived = true;
+        handlerServer.OnScreenAudioReceived += (_, _) => incompatibleAudio.TrySetResult();
+        await VoiceCallHandler.StartScreenShareAsync(1920, 1080, codecId: 5, fps: 60);
+        await unsupportedStart.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (!VoiceCallHandler.IsLocalScreenSharing || VoiceCallHandler.LocalScreenCodecId != 5)
+            throw new Exception("An incompatible receiver stopped or changed the selected codec.");
+        VoiceCallHandler.ActiveCalls[clientPeer.Id].IsScreenDecoderApproved = true;
+        await VoiceCallHandler.SendScreenFrameAsync(dummyJpeg);
+        await VoiceCallHandler.SendScreenAudioAsync(dummyPcm);
+        await compatibleFrame.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await incompatibleAudio.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (incompatibleVideoReceived) throw new Exception("Undecodable video was sent to the incompatible receiver.");
+        foreach (var call in VoiceCallHandler.ActiveCalls.Values) call.IsScreenDecoderApproved = true;
+
         await TestRemoteScreenControlsAsync(dummyQcc, handlerServer, handlerClient, serverPeer, clientPeer);
 
         // 4. Trigger Screen Share Stop
@@ -183,7 +190,24 @@ public static class ScreenShareTests
         handlerServer.OnScreenShareStarted += (peer, _, _, _, _) => cameraStarted.TrySetResult(VoiceCallHandler.ActiveCalls[peer.Id].RemoteVideoKind);
         await VoiceCallHandler.StartScreenShareAsync(640, 480, 1, 30, kind: "camera");
         if (await cameraStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)) != "camera") throw new Exception("Camera source kind was lost across QUIC.");
-        await VoiceCallHandler.StopScreenShareAsync();
+        var decoderEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDecoder = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int decoderCalls = 0;
+        Task SlowDecoder(PeerInfo _, byte codec, byte[] data)
+        { Interlocked.Increment(ref decoderCalls); decoderEntered.TrySetResult(); return releaseDecoder.Task; }
+        handlerServer.OnScreenFrameReceivedAsync += SlowDecoder;
+        try
+        {
+            await VoiceCallHandler.SendScreenFrameAsync(dummyJpeg);
+            await decoderEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(350);
+            for (int i = 0; i < 16; i++) await VoiceCallHandler.SendScreenFrameAsync(dummyJpeg);
+            await Task.Delay(300);
+            if (decoderCalls != 1) throw new Exception("A stalled decoder accumulated media callbacks after expiry.");
+            await VoiceCallHandler.StopScreenShareAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            await tcsStopped.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally { releaseDecoder.TrySetResult(); handlerServer.OnScreenFrameReceivedAsync -= SlowDecoder; }
         bool stopped = await tcsStopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
         if (!stopped)
             throw new Exception("Did not receive ScreenShareStopped!");

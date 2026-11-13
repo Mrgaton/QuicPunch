@@ -181,7 +181,7 @@ namespace QuicPunch
 
         public QuicPunch(CancellationToken cancellationToken = default, byte[]? discoveryId = null, byte[]? connectionPassword = null, int listeningPort = 0, string? appDataPath = null)
         {
-            if (!QuicConnection.IsSupported && !OperatingSystem.IsAndroid())
+            if (!MsQuicNativeLoader.IsCustomLibraryLoaded && !OperatingSystem.IsAndroid())
             {
                 throw new NotSupportedException("QUIC is not supported on this machine.");
             }
@@ -616,7 +616,7 @@ namespace QuicPunch
                     ? new[] { mappedAddress } : mapping.DiscoveredAddresses ?? Array.Empty<IPAddress>())
                 .Concat(localIps)
                 .Distinct()
-                .OrderBy(Utilities.IpToUint)
+                .OrderBy(a => a.AddressFamily).ThenBy(a => a.ToString(), StringComparer.Ordinal)
                 .ToArray();
 
             if (allAddresses.Length > 0)
@@ -2379,18 +2379,18 @@ namespace QuicPunch
             ushort localPort, string? logLabel = null, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var nudp = new UdpClient();
+            var nudp = EndpointAddressCodec.CreateUdpClient();
             try
             {
                 ConfigureUdpSocket(nudp);
                 nudp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
                 try
                 {
-                    nudp.Client.Bind(new IPEndPoint(IPAddress.Any, localPort));
+                    nudp.Client.Bind(new IPEndPoint(EndpointAddressCodec.BindAddress(nudp), localPort));
                 }
                 catch
                 {
-                    nudp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+                    nudp.Client.Bind(new IPEndPoint(EndpointAddressCodec.BindAddress(nudp), 0));
                 }
                 ushort boundPort = (ushort)((IPEndPoint)nudp.Client.LocalEndPoint!).Port;
 
@@ -3028,7 +3028,7 @@ namespace QuicPunch
                         int bytesRead = result.ReceivedBytes;
                         if (bytesRead <= 0) continue;
 
-                        var remoteEp = (IPEndPoint)result.RemoteEndPoint;
+                        var remoteEp = EndpointAddressCodec.Normalize((IPEndPoint)result.RemoteEndPoint);
 
                         if (NatCoordinator.TryProcessIncoming(receiveBuffer.AsSpan(0, bytesRead), remoteEp))
                         {

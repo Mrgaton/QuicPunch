@@ -94,7 +94,9 @@ try {
     assert.equal(await presenceDot.count(),1);
     assert.equal(await presenceDot.getAttribute('data-user-presence'),'unknown');
     assert.match(await presenceDot.getAttribute('title'),/Estado desconocido/);
-    assert.equal(await page.locator('#chatPeers .ci [data-user-presence]').count(),0,'Presence must not alter the certificate capsule');
+    // The full-width identity banner contains the contact metadata, including
+    // presence. The certificate mark/avatar must remain independent of it.
+    assert.equal(await page.locator('#chatPeers .ci[data-user-presence], #chatPeers .ci-avatar[data-user-presence], #chatPeers .ci-avatar [data-user-presence]').count(),0,'Presence must not alter the certificate mark or avatar');
     assert.equal(await page.locator('#messages [data-user-presence]').count(),0);
   }
   await page.evaluate(id=>{chatStatus.peerPresence={[id]:{IsAfk:false,AcceptsNotifications:false}};renderChat();},alice);

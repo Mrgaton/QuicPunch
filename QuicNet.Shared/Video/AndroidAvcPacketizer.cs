@@ -4,7 +4,7 @@ using QuicNet.Serialization;
 
 namespace QuicNet.Video;
 
-// Android MediaCodec emits Annex B. WebCodecs with an AVC description expects length-prefixed NALs.
+// Legacy AVC wire packetizer retained for protocol compatibility tests. Native capture uses Annex B directly.
 internal sealed class AndroidAvcPacketizer(int width, int height, long generation)
 {
     private byte[]? _sps, _pps;

@@ -38,7 +38,7 @@ internal sealed record ScreenEncoderOptions
         if (!string.IsNullOrEmpty(EncoderPreset) && !PresetsFor(Encoder).Contains(EncoderPreset))
             throw new ArgumentException("Preset is not supported by the selected encoder.");
     }
-    internal static readonly string[] Candidates = ["h264_nvenc", "hevc_nvenc", "av1_nvenc", "h264_amf", "hevc_amf", "av1_amf", "libx264", "libx265", "libvpx-vp9", "libsvtav1"];
+    internal static readonly string[] Candidates = ["h264_nvenc", "hevc_nvenc", "av1_nvenc", "h264_amf", "hevc_amf", "av1_amf", "libx264", "libx265", "libvpx-vp9", "libsvtav1", "h264_mediacodec", "hevc_mediacodec", "av1_mediacodec"];
     internal static string CodecForEncoder(string encoder) => encoder switch
     {
         "libx264" => "h264", "libx265" => "hevc", "libvpx-vp9" => "vp9", "libsvtav1" => "av1",
@@ -84,8 +84,7 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
 
     internal static string ResolveExecutable() => FfmpegInstallation.ResolveExecutable();
 
-    // Android receives the same packets through WebCodecs. Native screen capture
-    // on Android requires a separate MediaProjection backend, not a desktop CLI.
+    // Windows capture uses the CLI. Android uses FFmpeg libraries with MediaProjection/Camera2.
     public static bool CaptureAvailable => OperatingSystem.IsWindows();
 
     public FfmpegScreenEncoder() : this(CaptureArguments) { _allowCaptureFallback = true; }
@@ -190,7 +189,15 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
 
     internal static List<string> CaptureArguments(ScreenEncoderOptions options, string encoder)
     {
-        if (!CaptureAvailable) throw new PlatformNotSupportedException("La captura FFmpeg requiere Windows; usa WebCodecs en este dispositivo.");
+        if (!CaptureAvailable) throw new PlatformNotSupportedException("La captura requiere el adaptador FFmpeg nativo de este dispositivo.");
+        if (options.Source.StartsWith("camera:", StringComparison.Ordinal))
+        {
+            string name = options.Source[7..];
+            if (string.IsNullOrWhiteSpace(name) || name.Length > 2048 || name.Contains('\0')) throw new ArgumentException("Cámara inválida.");
+            var camera = new List<string> { "-hide_banner", "-loglevel", "warning", "-nostdin", "-f", "dshow", "-i", "video=" + name,
+                "-vf", ScaleFilter(options), "-r", options.Fps.ToString(CultureInfo.InvariantCulture) };
+            camera.AddRange(EncodingArguments(options, encoder)); camera.AddRange(ContainerArguments(options.Codec)); camera.Add("pipe:1"); return camera;
+        }
         if (options.Source == "dxgi:0" && ScreenEncoderOptions.IsHardware(encoder))
         {
             var gpuArgs = new List<string> { "-hide_banner", "-loglevel", "warning", "-nostdin", "-f", "lavfi", "-i",
@@ -229,6 +236,28 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
         args.AddRange(ContainerArguments(options.Codec));
         args.Add("pipe:1");
         return args;
+    }
+
+    internal static async Task<NativeCamera[]> CamerasAsync()
+    {
+        if (!OperatingSystem.IsWindows()) return [];
+        var start=new ProcessStartInfo(Executable){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true,RedirectStandardOutput=true};
+        foreach(string arg in new[]{"-hide_banner","-list_devices","true","-f","dshow","-i","dummy"})start.ArgumentList.Add(arg);
+        using var process=Process.Start(start)!;using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            var stderr=process.StandardError.ReadToEndAsync(timeout.Token);var stdout=process.StandardOutput.ReadToEndAsync(timeout.Token);
+            await Task.WhenAll(process.WaitForExitAsync(timeout.Token),stderr,stdout).ConfigureAwait(false);
+            var result=new List<NativeCamera>();string? label=null;
+            foreach(string line in (await stderr).Split('\n'))
+            {
+                var video=Regex.Match(line,"\"(.*)\" \\(video\\)");
+                if(video.Success){label=video.Groups[1].Value;continue;}
+                if(label!=null){var alternative=Regex.Match(line,"Alternative name \"(.*)\"");if(alternative.Success){result.Add(new("camera:"+alternative.Groups[1].Value,label));label=null;}}
+            }
+            return result.ToArray();
+        }
+        finally{try{if(!process.HasExited)process.Kill();}catch{}}
     }
 
     internal static string[] ContainerArguments(string codec) => codec == "av1"
@@ -335,7 +364,7 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
                     using var startupCts = CancellationTokenSource.CreateLinkedTokenSource(ct, captureCts.Token);
                     var profile = await ready.Task.WaitAsync(TimeSpan.FromSeconds(12), startupCts.Token).ConfigureAwait(false);
                     PendingProfile = profile;
-                    if (!await approve(profile).WaitAsync(startupCts.Token).ConfigureAwait(false)) throw new InvalidOperationException("Un receptor no admite la configuración exacta de este encoder.");
+                    if (!await approve(profile).WaitAsync(startupCts.Token).ConfigureAwait(false)) throw new InvalidOperationException("No se ha autorizado el inicio de esta captura.");
                     Profile = profile;
                     PendingProfile = null;
                     resume.TrySetResult();
@@ -435,6 +464,16 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             throw new TimeoutException("El codificador FFmpeg no respondió en ocho segundos.");
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or InvalidDataException)
+        {
+            // IVF can fail before its header exists when a driver rejects the
+            // encoder. Preserve FFmpeg's actual reason in the capability table.
+            Kill(process);
+            string diagnostic = "";
+            try { diagnostic = Tail(await errors.WaitAsync(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false)); }
+            catch (TimeoutException) { }
+            throw new IOException(ex.Message + " " + diagnostic, ex);
         }
         finally
         {

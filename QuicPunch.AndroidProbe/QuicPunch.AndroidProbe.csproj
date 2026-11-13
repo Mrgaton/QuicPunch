@@ -21,14 +21,15 @@
     <TrimMode>copyused</TrimMode>
   </PropertyGroup>
   <ItemGroup>
+    <AndroidNativeLibrary Include="bin/native-tests/arm64-v8a/libnettt_test_pattern.so" Condition="'$(Configuration)' == 'Debug' and Exists('bin/native-tests/arm64-v8a/libnettt_test_pattern.so')" Link="lib/arm64-v8a/libnettt_test_pattern.so" />
     <Compile Include="../QuicPunch.AndroidProbe.Shared/QuicProbe.cs" Link="QuicProbe.cs" />
     <ProjectReference Include="..\QuicNet.Shared\QuicNet.Shared.csproj" />
     <AndroidAsset Include="../QuicNet.Geolocation/Data/NOTICE.txt" Link="Assets/GEOLOCATION-NOTICE.txt" />
-    <AndroidAsset Include="../QuicNet.Geolocation/Map/NOTICE.txt" Link="Assets/MAP-NOTICE.txt" />
     <AndroidNativeLibrary Include="../QuicPunch/runtimes/android-arm64/native/libmsquic.so"
                           Link="lib/arm64-v8a/libmsquic.so" />
   </ItemGroup>
   <Target Name="RequireAndroidMsQuic" BeforeTargets="Build">
+    <Error Condition="!Exists('native/arm64-v8a/libnettt_media.so') or !Exists('native/arm64-v8a/libavcodec.so') or !Exists('native/arm64-v8a/libavutil.so') or !Exists('native/arm64-v8a/libswscale.so')" Text="Build the native FFmpeg libraries with scripts/build-native-media.sh android-arm64 before packaging." />
     <Error Condition="!Exists('native/arm64-v8a/libtor.so')"
            Text="Run QuicPunch.AndroidProbe/prepare-tor-android.ps1 before packaging the Android Tor runtime." />
     <Error Condition="!Exists('../QuicPunch/runtimes/android-arm64/native/libmsquic.so')"

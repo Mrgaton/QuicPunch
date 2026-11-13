@@ -7,14 +7,82 @@ using System.Text;
 
 namespace QuicPunch.AndroidProbe;
 
-[Activity(Label = "QuicPunch", MainLauncher = true, Exported = true, LaunchMode = LaunchMode.SingleTop, ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.SmallestScreenSize | ConfigChanges.KeyboardHidden, Theme = "@android:style/Theme.Material.NoActionBar")]
+[Activity(Label = "@string/app_name", MainLauncher = true, Exported = true, LaunchMode = LaunchMode.SingleTop, ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.SmallestScreenSize | ConfigChanges.KeyboardHidden, Theme = "@android:style/Theme.Material.NoActionBar")]
 public class MainActivity : Activity
 {
     private WebView? _webView;
     private MobileChromeClient? _chromeClient;
+    private bool _startupPermissionsPending;
     internal static MainActivity? Foreground { get; private set; }
     private TaskCompletionSource<Android.Content.Intent>? _projectionPermission;
     private const int ProjectionRequest = 74;
+    private const int WatchVideoRequest = 75;
+    private TaskCompletionSource<Android.Net.Uri?>? _watchSelection;
+    private TaskCompletionSource<Android.Content.Intent?>? _diskSelection;
+    private const int DiskSelectionRequest = 76;
+
+    internal Task<Android.Content.Intent?> PickDiskDocumentAsync(bool folder, string? name, CancellationToken cancellationToken)
+    {
+        var completion = new TaskCompletionSource<Android.Content.Intent?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        RunOnUiThread(() =>
+        {
+            if (cancellationToken.IsCancellationRequested) { completion.TrySetCanceled(cancellationToken); return; }
+            if (Foreground != this || _diskSelection != null) { completion.TrySetException(new IOException("Abre QuicNet y termina la selección pendiente.")); return; }
+            _diskSelection = completion;
+            try
+            {
+                var intent = new Android.Content.Intent(folder ? Android.Content.Intent.ActionOpenDocumentTree : Android.Content.Intent.ActionCreateDocument);
+                intent.AddFlags(Android.Content.ActivityFlags.GrantReadUriPermission | Android.Content.ActivityFlags.GrantWriteUriPermission);
+                if (folder) intent.AddFlags(Android.Content.ActivityFlags.GrantPersistableUriPermission | Android.Content.ActivityFlags.GrantPrefixUriPermission);
+                else { intent.SetType("application/octet-stream"); intent.AddCategory(Android.Content.Intent.CategoryOpenable); intent.PutExtra(Android.Content.Intent.ExtraTitle, name); }
+#pragma warning disable CA1422
+                StartActivityForResult(intent, DiskSelectionRequest);
+#pragma warning restore CA1422
+            }
+            catch (Exception ex) { _diskSelection = null; completion.TrySetException(ex); }
+        });
+        return completion.Task.WaitAsync(cancellationToken);
+    }
+
+    internal Task<Android.Net.Uri?> PickWatchVideoAsync(CancellationToken cancellationToken)
+    {
+        var completion = new TaskCompletionSource<Android.Net.Uri?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        RunOnUiThread(() =>
+        {
+            if (cancellationToken.IsCancellationRequested) { completion.TrySetCanceled(cancellationToken); return; }
+            if (Foreground != this || _watchSelection != null)
+            {
+                completion.TrySetException(new InvalidOperationException("Abre QuicNet y termina la selección pendiente."));
+                return;
+            }
+            _watchSelection = completion;
+            try
+            {
+                var intent = new Android.Content.Intent(Android.Content.Intent.ActionOpenDocument);
+                intent.SetType("video/*");
+                intent.AddCategory(Android.Content.Intent.CategoryOpenable);
+                intent.AddFlags(Android.Content.ActivityFlags.GrantReadUriPermission);
+#pragma warning disable CA1422
+                StartActivityForResult(intent, WatchVideoRequest);
+#pragma warning restore CA1422
+            }
+            catch (Exception ex) { _watchSelection = null; completion.TrySetException(ex); }
+        });
+        return completion.Task.WaitAsync(cancellationToken);
+    }
+
+    private TaskCompletionSource? _cameraPermission;
+    internal Task RequestNativeCameraAsync()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RunOnUiThread(() => {
+            if (CheckSelfPermission(Android.Manifest.Permission.Camera) == Permission.Granted) { done.TrySetResult(); return; }
+            if (Foreground != this || _cameraPermission != null) { done.TrySetException(new InvalidOperationException("Abre QuicNet para autorizar la cámara.")); return; }
+            _cameraPermission = done;
+            RequestPermissions(new[] { Android.Manifest.Permission.Camera }, 77);
+        });
+        return done.Task;
+    }
 
     internal Task<Android.Content.Intent> RequestProjectionAsync()
     {
@@ -49,7 +117,7 @@ public class MainActivity : Activity
             WebView.SetWebContentsDebuggingEnabled(true);
 #endif
             _webView = new WebView(this);
-            _webView.SetBackgroundColor(Android.Graphics.Color.Rgb(21, 28, 33));
+            _webView.SetBackgroundColor(Android.Graphics.Color.Rgb(16, 17, 22));
             _webView.Settings.JavaScriptEnabled = true;
             _webView.Settings.DomStorageEnabled = true;
             _webView.Settings.MediaPlaybackRequiresUserGesture = false;
@@ -57,11 +125,13 @@ public class MainActivity : Activity
             _chromeClient = new MobileChromeClient(this, AndroidConnectionService.Url);
             _webView.SetWebChromeClient(_chromeClient);
             var content = new SystemInsetLayout(this);
-            content.SetBackgroundColor(Android.Graphics.Color.Rgb(21, 28, 33));
+            content.SetBackgroundColor(Android.Graphics.Color.Rgb(16, 17, 22));
             content.AddView(_webView, new FrameLayout.LayoutParams(
                 Android.Views.ViewGroup.LayoutParams.MatchParent,
                 Android.Views.ViewGroup.LayoutParams.MatchParent));
             SetContentView(content);
+            QuicNet.Video.NativeMedia.qpv_android_init(Android.Runtime.JNIEnv.Handle);
+            QuicNet.Video.NativeVideoRuntime.Instance.Attach(new AndroidVideoHost(this, content));
             content.RequestApplyInsets();
             _webView.PostDelayed(() => OpenNotification(Intent), 300);
 
@@ -73,7 +143,9 @@ public class MainActivity : Activity
                 missingPermissions.Add(Android.Manifest.Permission.PostNotifications);
             if (missingPermissions.Count > 0)
             {
-                RequestPermissions(missingPermissions.ToArray(), 1);
+                _startupPermissionsPending = true;
+                try { RequestPermissions(missingPermissions.ToArray(), 1); }
+                catch { _startupPermissionsPending = false; throw; }
             }
         }
         catch (Exception ex)
@@ -107,8 +179,14 @@ public class MainActivity : Activity
 
     protected override void OnDestroy()
     {
+        _cameraPermission?.TrySetCanceled(); _cameraPermission = null;
         _projectionPermission?.TrySetCanceled();
         _projectionPermission = null;
+        _watchSelection?.TrySetResult(null);
+        _watchSelection = null;
+        _diskSelection?.TrySetResult(null);
+        _diskSelection = null;
+        QuicNet.Video.NativeVideoRuntime.Instance.Detach();
         _chromeClient?.CancelPendingOperations();
         _webView?.Destroy();
         base.OnDestroy();
@@ -117,19 +195,20 @@ public class MainActivity : Activity
     protected override void OnStop()
     {
         base.OnStop();
-        if (!IsChangingConfigurations && _projectionPermission == null && !AndroidScreenCaptureService.IsCapturing && _chromeClient?.HasPendingOperation != true && !AndroidAppPlatform.Preferences(this).RunInBackground)
+        if (!IsChangingConfigurations && !_startupPermissionsPending && _projectionPermission == null && _cameraPermission == null && _watchSelection == null && _diskSelection == null && !AndroidWatchFilePicker.IsImporting && !AndroidScreenCaptureService.IsCapturing && _chromeClient?.HasPendingOperation != true && !AndroidAppPlatform.Preferences(this).RunInBackground)
             StopService(new Android.Content.Intent(this, typeof(AndroidConnectionService)));
     }
 
     protected override void OnNewIntent(Android.Content.Intent? intent)
     {
         base.OnNewIntent(intent);
+        Intent = intent;
         OpenNotification(intent);
     }
     private void OpenNotification(Android.Content.Intent? intent)
     {
         string route = intent?.GetStringExtra("quicnetRoute") ?? "/";
-        if (!route.StartsWith('/') || route.StartsWith("//")) route = "/";
+        if (!route.StartsWith('/') || route.StartsWith("//") || route.Contains('\\')) route = "/";
         _webView?.LoadUrl(AndroidConnectionService.Url.TrimEnd('/') + route);
     }
 
@@ -147,6 +226,12 @@ public class MainActivity : Activity
     public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResults)
     {
         base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1) _startupPermissionsPending = false;
+        if (requestCode == 77) {
+            var camera = _cameraPermission; _cameraPermission = null;
+            if (CheckSelfPermission(Android.Manifest.Permission.Camera) == Permission.Granted) camera?.TrySetResult();
+            else camera?.TrySetException(new UnauthorizedAccessException("Permiso de cámara denegado."));
+        }
         StartNodeService();
         _chromeClient?.CompletePermissionRequest(requestCode);
     }
@@ -155,6 +240,17 @@ public class MainActivity : Activity
     protected override void OnActivityResult(int requestCode, Result resultCode, Android.Content.Intent? data)
     {
         base.OnActivityResult(requestCode, resultCode, data);
+        if (requestCode == DiskSelectionRequest)
+        {
+            var completion = _diskSelection; _diskSelection = null;
+            completion?.TrySetResult(resultCode == Result.Ok ? data : null);
+        }
+        if (requestCode == WatchVideoRequest)
+        {
+            var completion = _watchSelection;
+            _watchSelection = null;
+            completion?.TrySetResult(resultCode == Result.Ok ? data?.Data : null);
+        }
         if (requestCode == ProjectionRequest)
         {
             var completion = _projectionPermission; _projectionPermission = null;
@@ -268,7 +364,10 @@ public class MainActivity : Activity
             {
                 var intent = new Android.Content.Intent(Android.Content.Intent.ActionOpenDocument);
                 intent.SetType("*/*");
-                intent.PutExtra(Android.Content.Intent.ExtraMimeTypes, new[] { "image/*", "video/*" });
+                var types = fileChooserParams?.GetAcceptTypes()?.Where(t => t.Contains('/') && !t.StartsWith('.')).ToArray() ?? [];
+                if (types.Length > 0) intent.PutExtra(Android.Content.Intent.ExtraMimeTypes, types);
+                intent.PutExtra(Android.Content.Intent.ExtraAllowMultiple, fileChooserParams?.Mode == ChromeFileChooserMode.OpenMultiple);
+                intent.AddFlags(Android.Content.ActivityFlags.GrantReadUriPermission);
                 intent.AddCategory(Android.Content.Intent.CategoryOpenable);
                 activity.StartActivityForResult(intent, PhotoSelectionRequest);
             }
@@ -279,14 +378,35 @@ public class MainActivity : Activity
         {
             if (code != PhotoSelectionRequest || _fileCallback == null) return;
             var callback = _fileCallback; _fileCallback = null;
-            callback.OnReceiveValue(result == Result.Ok && data?.Data != null ? Java.Lang.Object.FromArray(new[] { data.Data }) : null);
+            var uris = new List<Android.Net.Uri>();
+            if (result == Result.Ok)
+            {
+                if (data?.ClipData is { } clips)
+                    for (int i = 0; i < clips.ItemCount; i++) { if (clips.GetItemAt(i)?.Uri is { } uri) uris.Add(uri); }
+                else if (data?.Data is { } uri) uris.Add(uri);
+            }
+            callback.OnReceiveValue(uris.Count > 0 ? Java.Lang.Object.FromArray(uris.ToArray()) : null);
         }
         public void CancelFileSelection() { _fileCallback?.OnReceiveValue(null); _fileCallback = null; }
-        public void CancelPendingOperations() { HideFullscreen(); CancelFileSelection(); _pending?.Deny(); _pending = null; _resources = []; }
+        public void CancelPendingOperations()
+        {
+            _closing = true;
+            HideFullscreen(); CancelFileSelection();
+            var pending = _pending; _pending = null; _resources = [];
+            pending?.Deny();
+            foreach (var item in _permissionQueue.ToArray()) item.Request.Deny();
+            _permissionQueue.Clear();
+        }
         private PermissionRequest? _pending;
         private string[] _resources = [];
+        private readonly Queue<(PermissionRequest Request, string[] Resources)> _permissionQueue = new();
+        private readonly HashSet<string> _deniedPermissions = new(StringComparer.Ordinal);
+        private string[] _requestedPermissions = [];
+        private bool _runtimePermissionPending;
+        private bool _closing;
         private const int MediaPermissionRequest = 42;
-        public bool HasPendingOperation => _fileCallback != null || _pending != null;
+        public bool HasPendingOperation => _fileCallback != null || _pending != null || _runtimePermissionPending ||
+            _permissionQueue.Count > 0 || activity._startupPermissionsPending;
         public override void OnPermissionRequest(PermissionRequest? request)
         {
             if (request is null) return;
@@ -294,45 +414,95 @@ public class MainActivity : Activity
             {
                 string origin = request.Origin?.ToString() ?? "";
                 string expected = new Uri(localUrl).GetLeftPart(UriPartial.Authority);
-                if (origin.TrimEnd('/') != expected ||
+                if (_closing || activity.IsFinishing || activity.IsDestroyed || origin.TrimEnd('/') != expected ||
                     request.GetResources() is not { Length: > 0 } resources ||
                     resources.Any(resource => resource != PermissionRequest.ResourceAudioCapture && resource != PermissionRequest.ResourceVideoCapture))
                 {
                     request.Deny();
                     return;
                 }
-                _pending?.Deny();
-                _pending = request;
-                _resources = resources;
+                if (_permissionQueue.Count >= 4) { request.Deny(); return; }
+                _permissionQueue.Enqueue((request, resources));
+                ProcessPermissionQueue();
+            });
+        }
+
+        private void ProcessPermissionQueue()
+        {
+            // Android's result code belongs to the one system dialog in flight.
+            // Never replace its WebView request with a later camera/audio request.
+            if (_closing) return;
+            while (!_closing && _pending == null && !_runtimePermissionPending && !activity._startupPermissionsPending &&
+                _permissionQueue.TryDequeue(out var next))
+            {
+                if (activity.IsFinishing || activity.IsDestroyed) { next.Request.Deny(); continue; }
+                _pending = next.Request; _resources = next.Resources;
                 var missing = new List<string>();
-                if (resources.Contains(PermissionRequest.ResourceAudioCapture) &&
+                if (_resources.Contains(PermissionRequest.ResourceAudioCapture) &&
                     activity.CheckSelfPermission(Android.Manifest.Permission.RecordAudio) != Permission.Granted)
                     missing.Add(Android.Manifest.Permission.RecordAudio);
-                if (resources.Contains(PermissionRequest.ResourceVideoCapture) &&
+                if (_resources.Contains(PermissionRequest.ResourceVideoCapture) &&
                     activity.CheckSelfPermission(Android.Manifest.Permission.Camera) != Permission.Granted)
                     missing.Add(Android.Manifest.Permission.Camera);
-                if (missing.Count > 0) activity.RequestPermissions(missing.ToArray(), MediaPermissionRequest);
-                else CompletePermissionRequest(MediaPermissionRequest);
-            });
+                if (missing.Count == 0) { ResolvePermissionRequest(); continue; }
+                if (missing.Any(_deniedPermissions.Contains))
+                {
+                    var denied = _pending; _pending = null; _resources = [];
+                    denied?.Deny(); continue;
+                }
+                _runtimePermissionPending = true;
+                _requestedPermissions = missing.ToArray();
+                try { activity.RequestPermissions(_requestedPermissions, MediaPermissionRequest); }
+                catch
+                {
+                    _runtimePermissionPending = false; _requestedPermissions = [];
+                    var request = _pending; _pending = null; _resources = [];
+                    request?.Deny();
+                    continue;
+                }
+                return;
+            }
+            if (_pending == null && !_runtimePermissionPending && _permissionQueue.Count == 0) _deniedPermissions.Clear();
         }
 
         public void CompletePermissionRequest(int code)
         {
-            if (code != MediaPermissionRequest || _pending == null) return;
+            if (code == MediaPermissionRequest)
+            {
+                foreach (string permission in _requestedPermissions)
+                    if (activity.CheckSelfPermission(permission) != Permission.Granted) _deniedPermissions.Add(permission);
+                _requestedPermissions = [];
+                _runtimePermissionPending = false;
+                ResolvePermissionRequest();
+            }
+            else if (code == 1 && activity.CheckSelfPermission(Android.Manifest.Permission.RecordAudio) != Permission.Granted)
+                _deniedPermissions.Add(Android.Manifest.Permission.RecordAudio);
+            if (code == MediaPermissionRequest || code == 1) ProcessPermissionQueue();
+        }
+
+        private void ResolvePermissionRequest()
+        {
+            if (_pending == null) return;
             var request = _pending;
             _pending = null;
-            bool audio = !_resources.Contains(PermissionRequest.ResourceAudioCapture) ||
+            var resources = _resources; _resources = [];
+            bool audio = !resources.Contains(PermissionRequest.ResourceAudioCapture) ||
                 activity.CheckSelfPermission(Android.Manifest.Permission.RecordAudio) == Permission.Granted;
-            bool video = !_resources.Contains(PermissionRequest.ResourceVideoCapture) ||
+            bool video = !resources.Contains(PermissionRequest.ResourceVideoCapture) ||
                 activity.CheckSelfPermission(Android.Manifest.Permission.Camera) == Permission.Granted;
-            if (audio && video) request.Grant(_resources);
+            if (!activity.IsFinishing && !activity.IsDestroyed && audio && video) request.Grant(resources);
             else request.Deny();
-            _resources = [];
         }
 
         public override void OnPermissionRequestCanceled(PermissionRequest? request)
         {
             if (_pending == request) { _pending = null; _resources = []; }
+            var remaining = _permissionQueue.Where(item => item.Request != request).ToArray();
+            _permissionQueue.Clear();
+            foreach (var item in remaining) _permissionQueue.Enqueue(item);
+            // Cancelling the document request does not dismiss Android's dialog.
+            // Its result must arrive before another dialog uses the same code.
+            ProcessPermissionQueue();
         }
     }
 }

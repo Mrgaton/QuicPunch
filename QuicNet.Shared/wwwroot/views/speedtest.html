@@ -2,15 +2,16 @@
   <main class="workspace speed-workspace">
     <header class="page-head compact-head">
       <div>
+        <span class="eyebrow">CONEXIÓN ENTRE CONTACTOS</span>
         <h1>Prueba de velocidad</h1>
-        <p>Mide la conexión entre este equipo y un contacto. Bajada es recibir datos aquí; subida es enviarlos.</p>
+        <p>Comprueba la velocidad y la latencia entre este equipo y otro contacto de QuicNet.</p>
       </div>
     </header>
     <div class="speed-layout" id="speedTestLayout" data-state="idle">
       <section class="section speed-setup" aria-labelledby="speedTestSetupTitle">
         <div class="section-head"><div>
-          <h2 id="speedTestSetupTitle">Prepara tu prueba</h2>
-          <p>Conectaremos con el contacto si hace falta.</p>
+          <h2 id="speedTestSetupTitle">Configura la prueba</h2>
+          <p>Elige con quién medir tu conexión.</p>
         </div></div>
         <div class="section-body">
           <div class="field">
@@ -18,12 +19,12 @@
             <select class="select" id="speedTestPeerSelect" aria-describedby="speedTestPeerHelp">
               <option value="">Selecciona un contacto…</option>
             </select>
-            <p id="speedTestPeerHelp" class="speed-help">El tiempo junto al nombre es la última latencia conocida; puede diferir de esta prueba.</p>
+            <p id="speedTestPeerHelp" class="speed-help">Conectaremos si hace falta. Los ms del contacto son su última latencia conocida.</p>
           </div>
           <div class="field space-top">
             <label for="speedTestMode">Qué medir</label>
             <select class="select" id="speedTestMode">
-              <option value="all" selected>Prueba completa · tres fases</option>
+              <option value="all" selected>Completa · 3 fases de velocidad</option>
               <option value="both">Subida y bajada a la vez</option>
               <option value="upload">Solo subida</option>
               <option value="download">Solo bajada</option>
@@ -39,23 +40,27 @@
             </select>
           </div>
           <p id="speedTestEstimate" class="speed-help space-top">Unos 30 segundos, más la conexión y la medición inicial de latencia.</p>
-          <p class="speed-help">La prueba genera tráfico y puede afectar temporalmente a las llamadas y otras transferencias.</p>
+          <p class="speed-help speed-traffic-note">Durante la prueba, las llamadas y otras transferencias pueden ralentizarse.</p>
           <div class="toolbar space-top" id="speedTestActions">
-            <button class="btn primary large-btn" id="startSpeedTestBtn">Iniciar prueba</button>
+            <button class="btn primary large-btn" id="startSpeedTestBtn" aria-describedby="speedTestStartHelp" disabled>Iniciar prueba</button>
             <button class="btn danger hidden" id="cancelSpeedTestBtn">Cancelar prueba</button>
           </div>
+          <p id="speedTestStartHelp" class="speed-help speed-start-help">Selecciona un contacto para habilitar la prueba.</p>
         </div>
       </section>
       <section class="section speed-results" id="speedTestResults" data-state="idle" aria-labelledby="speedTestResultTitle">
         <div class="section-head">
           <div>
-            <h2 id="speedTestResultTitle">Resultado de la prueba</h2>
-            <p id="speedTestResultContext">Selecciona un contacto para empezar.</p>
+            <h2 id="speedTestResultTitle">Tu conexión, en cifras</h2>
+            <p id="speedTestResultContext">Velocidad de transferencia y tiempo de respuesta.</p>
           </div>
           <span class="badge speed-state" id="speedTestActiveBadge">Sin iniciar</span>
         </div>
         <div class="section-body">
-          <div id="speedTestStatusNotice" class="speed-status" role="status" aria-live="polite" aria-atomic="true">Todavía no hay mediciones.</div>
+          <div class="speed-status-banner">
+            <svg class="speed-status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 17a9 9 0 1 1 16 0M12 4v3M5 8l2 2M19 8l-2 2M12 15l4-4"/><circle cx="12" cy="15" r="2"/></svg>
+            <div id="speedTestStatusNotice" class="speed-status" role="status" aria-live="polite" aria-atomic="true">Selecciona un contacto e inicia tu primera prueba.</div>
+          </div>
           <div id="speedTestError" class="speed-error hidden" role="alert" aria-atomic="true">
             <strong id="speedTestErrorTitle">La prueba se ha interrumpido</strong>
             <p id="speedTestErrorMessage"></p>
@@ -72,22 +77,23 @@
             </div>
           </div>
           <div class="speed-rates">
-            <div class="speed-rate">
-              <h3>↓ Bajada</h3>
-              <div class="speed-rate-value" id="speedTestMetricDownload">Pendiente</div>
+            <div class="speed-rate speed-rate-download">
+              <h3><span class="speed-direction" aria-hidden="true">↓</span> Bajada <span class="speed-rate-unit" aria-hidden="true">Mbps</span></h3>
+              <div class="speed-rate-value" id="speedTestMetricDownload" aria-label="Bajada: sin medir">—</div>
               <p id="speedTestDownloadHelp">Recibir en este equipo</p>
             </div>
-            <div class="speed-rate">
-              <h3>↑ Subida</h3>
-              <div class="speed-rate-value" id="speedTestMetricUpload">Pendiente</div>
+            <div class="speed-rate speed-rate-upload">
+              <h3><span class="speed-direction" aria-hidden="true">↑</span> Subida <span class="speed-rate-unit" aria-hidden="true">Mbps</span></h3>
+              <div class="speed-rate-value" id="speedTestMetricUpload" aria-label="Subida: sin medir">—</div>
               <p id="speedTestUploadHelp">Enviar desde este equipo</p>
             </div>
           </div>
           <div class="speed-quality-grid">
-            <div><span>Latencia en reposo</span><strong id="speedTestMetricIdleRtt">Pendiente</strong></div>
-            <div><span>Latencia con tráfico</span><strong id="speedTestMetricRtt">Pendiente</strong><small id="speedTestRttHelp">Tiempo de ida y vuelta</small></div>
-            <div><span>Datos transferidos</span><strong id="speedTestMetricBytes">—</strong><small>Fases completadas y fase actual</small></div>
+            <div><span>Latencia en reposo</span><strong id="speedTestMetricIdleRtt">—</strong><small>Antes de transferir</small></div>
+            <div><span>Latencia con tráfico</span><strong id="speedTestMetricRtt">—</strong><small id="speedTestRttHelp">Tiempo de ida y vuelta</small></div>
+            <div><span>Datos transferidos</span><strong id="speedTestMetricBytes">—</strong><small>Total de la prueba</small></div>
           </div>
+          <h3 class="speed-phases-title">Recorrido de la prueba <span>Latencia inicial + fases de velocidad</span></h3>
           <ol id="speedTestPhaseList" class="speed-phases" aria-label="Estado de las fases"></ol>
           <details class="speed-details">
             <summary>Detalles técnicos y resultados por fase</summary>
@@ -101,13 +107,13 @@
         </div>
       </section>
     </div>
-    <section class="section speed-history" aria-labelledby="speedTestHistoryTitle">
+    <section class="section speed-history" id="speedTestHistory" data-empty="true" aria-labelledby="speedTestHistoryTitle">
       <div class="section-head">
         <div>
-          <h2 id="speedTestHistoryTitle">Pruebas de esta sesión</h2>
-          <p>Últimas 50 pruebas, incluidas las interrumpidas. Se conservan al recargar esta página.</p>
+          <h2 id="speedTestHistoryTitle">Historial de la sesión <span class="speed-history-count" id="speedTestHistoryCount">0</span></h2>
+          <p>Hasta 50 pruebas. Se conservan al recargar esta página.</p>
         </div>
-        <button class="btn ghost" id="clearSpeedTestHistoryBtn">Limpiar historial</button>
+        <button class="btn ghost" id="clearSpeedTestHistoryBtn" disabled>Limpiar historial</button>
       </div>
       <div class="section-body no-pad">
         <div class="table-wrap borderless">

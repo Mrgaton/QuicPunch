@@ -2,13 +2,16 @@
 #include <msquic.h>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
-#include <pthread.h>
+#include "qp_platform.h"
 #include <stdlib.h>
 #include <string.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+
+
 #include <time.h>
 #include <errno.h>
+#include "qp_datagram_queue.h"
+
+
 #if defined(__ANDROID__)
 #include <android/log.h>
 #define QERROR(...) __android_log_print(ANDROID_LOG_WARN, "qp_transport", __VA_ARGS__)
@@ -28,7 +31,7 @@
 
 static struct timespec deadline_ms(int ms) {
     struct timespec t;
-    clock_gettime(CLOCK_REALTIME, &t);
+    timespec_get(&t, TIME_UTC);
     t.tv_nsec += (long)(ms % 1000) * 1000000L;
     t.tv_sec += ms / 1000 + t.tv_nsec / 1000000000L;
     t.tv_nsec %= 1000000000L;
@@ -37,6 +40,35 @@ static struct timespec deadline_ms(int ms) {
 
 typedef struct qp_stream qp_stream;
 typedef struct qp_context qp_context;
+static const QUIC_API_TABLE* process_api;
+// Called once by the managed bridge before opening registrations/bindings.
+// This reports the requested policy, not whether an XDP driver owns the path.
+QP_EXPORT int qp_initialize(int request_xdp) {
+    const QUIC_API_TABLE* api = NULL;
+    if (QUIC_FAILED(MsQuicOpen2(&api))) return 0;
+    // Keep one API reference for the process. Closing the last reference here
+    // would discard global policy before the first registration is opened.
+#ifdef _WIN32
+    const QUIC_API_TABLE* previous = (const QUIC_API_TABLE*)InterlockedCompareExchangePointer(
+        (PVOID volatile*)&process_api, (PVOID)api, NULL);
+    if (previous) { MsQuicClose(api); api = previous; }
+#else
+    const QUIC_API_TABLE* previous = NULL;
+    if (!__atomic_compare_exchange_n(&process_api, &previous, api, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        MsQuicClose(api); api = previous;
+    }
+#endif
+    QUIC_SETTINGS settings = {0};
+    settings.IsSet.XdpEnabled = TRUE;
+    settings.XdpEnabled = request_xdp != 0;
+    int enabled = 0;
+    if (QUIC_SUCCEEDED(api->SetParam(NULL, QUIC_PARAM_GLOBAL_SETTINGS, sizeof(settings), &settings))) {
+        uint32_t length = sizeof(settings);
+        if (QUIC_SUCCEEDED(api->GetParam(NULL, QUIC_PARAM_GLOBAL_SETTINGS, &length, &settings)))
+            enabled = settings.XdpEnabled;
+    }
+    return enabled;
+}
 typedef struct qp_chunk { struct qp_chunk* next; size_t size, offset; unsigned char data[]; } qp_chunk;
 typedef struct qp_send { QUIC_BUFFER buffer; unsigned char data[]; } qp_send;
 
@@ -59,13 +91,15 @@ struct qp_context {
     pthread_mutex_t mutex;
     pthread_cond_t condition;
     qp_stream *streams_head, *streams_tail;
-    qp_chunk *datagrams_head, *datagrams_tail;
+    qp_datagram_queue datagrams;
+    size_t pending_datagram_bytes;
     // SHA3-256 of the peer's public key, the same identity desktop pins (PeerInfo.CertHash).
     unsigned char expected_hash[32];
     // DER of the certificate that passed pinning, and the handshake it belongs to.
     unsigned char* peer_cert;
     int peer_cert_length;
     HQUIC validated;
+    HQUIC datagram_state_owner;
     int server, connected, stopped, error, datagram_send_enabled;
     unsigned short max_datagram_length;
     unsigned short negotiated_cipher;
@@ -73,7 +107,17 @@ struct qp_context {
     char negotiated_alpn[32];
 };
 
-__attribute__((visibility("default"))) void qp_stream_close(qp_stream* s);
+typedef struct qp_datagram_send { QUIC_BUFFER buffer; qp_context* owner; unsigned char data[]; } qp_datagram_send;
+static void release_datagram_send(void* context) {
+    if (!context) return;
+    qp_datagram_send* send = context;
+    pthread_mutex_lock(&send->owner->mutex);
+    send->owner->pending_datagram_bytes -= send->buffer.Length;
+    pthread_mutex_unlock(&send->owner->mutex);
+    free(send);
+}
+
+QP_EXPORT void qp_stream_close(qp_stream* s);
 
 // Matches Sha3Crypto.Hash256(X509Certificate.GetPublicKey()): the hash covers the
 // subjectPublicKey BIT STRING contents (for EC keys, the uncompressed point).
@@ -85,7 +129,7 @@ static int public_key_hash(X509* cert, unsigned char hash[32]) {
         hash, &length, EVP_sha3_256(), NULL) == 1 && length == 32;
 }
 
-__attribute__((visibility("default"))) int qp_public_key_hash(const unsigned char* der, unsigned der_len, unsigned char* hash) {
+QP_EXPORT int qp_public_key_hash(const unsigned char* der, unsigned der_len, unsigned char* hash) {
     if (!der || !der_len || !hash) return 0;
     const unsigned char* p = der;
     X509* cert = d2i_X509(NULL, &p, (long)der_len);
@@ -159,7 +203,7 @@ static QUIC_STATUS QUIC_API stream_event(HQUIC handle, void* context, QUIC_STREA
         pthread_mutex_unlock(&s->mutex);
     } else if (event->Type == QUIC_STREAM_EVENT_SEND_SHUTDOWN_COMPLETE) {
         pthread_mutex_lock(&s->mutex);
-        s->send_shutdown_complete = 1;
+        s->send_shutdown_complete = event->SEND_SHUTDOWN_COMPLETE.Graceful ? 1 : -1;
         pthread_cond_broadcast(&s->condition);
         pthread_mutex_unlock(&s->mutex);
     }
@@ -210,12 +254,24 @@ static QUIC_STATUS QUIC_API connection_event(HQUIC h, void* context, QUIC_CONNEC
         QUIC_HANDSHAKE_INFO info = {0};
         uint32_t info_length = sizeof(info);
         QUIC_STATUS tls_status = q->api->GetParam(h, QUIC_PARAM_TLS_HANDSHAKE_INFO, &info_length, &info);
+        BOOLEAN datagram_enabled = FALSE;
+        uint32_t datagram_size = sizeof(datagram_enabled);
+        q->api->GetParam(h, QUIC_PARAM_CONN_DATAGRAM_SEND_ENABLED, &datagram_size, &datagram_enabled);
         pthread_mutex_lock(&q->mutex);
         // A server may see several handshakes on the punched port; only the
         // first one that passed pinning becomes the session.
         int accept = q->validated == h && !q->stopped && (q->connection == NULL || q->connection == h);
         if (accept) {
             q->connection = h;
+            // A server's initial DATAGRAM_STATE_CHANGED can precede installation
+            // of our listener callback. On a minimum-MTU path no later MTU event
+            // repairs that missed notification. Query the public negotiated flag.
+            // 1150 fits our minimum path MTU with worst-case QUIC/IP overhead;
+            // DatagramSend still validates the peer's negotiated limit.
+            if (q->datagram_state_owner != h || !q->max_datagram_length)
+                q->max_datagram_length = datagram_enabled ? 1150 : 0;
+            q->datagram_send_enabled = datagram_enabled;
+            q->datagram_state_owner = h;
             if (QUIC_SUCCEEDED(tls_status)) {
                 q->negotiated_cipher = info.CipherSuite;
                 q->negotiated_group = info.TlsGroup;
@@ -242,13 +298,14 @@ static QUIC_STATUS QUIC_API connection_event(HQUIC h, void* context, QUIC_CONNEC
             // Transport parameters arrive before CONNECTED; keep them for the pending session.
             pthread_mutex_lock(&q->mutex);
             if (!q->connection) {
+                q->datagram_state_owner = h;
                 q->datagram_send_enabled = event->DATAGRAM_STATE_CHANGED.SendEnabled;
                 q->max_datagram_length = event->DATAGRAM_STATE_CHANGED.MaxSendLength;
             }
             pthread_mutex_unlock(&q->mutex);
         } else if (event->Type == QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED) {
             if (QUIC_DATAGRAM_SEND_STATE_IS_FINAL(event->DATAGRAM_SEND_STATE_CHANGED.State))
-                free(event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
+                release_datagram_send(event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
         } else if (event->Type == QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT) {
             QLOG("rejected handshake ended: 0x%x", event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
         } else if (event->Type == QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE) {
@@ -269,6 +326,7 @@ static QUIC_STATUS QUIC_API connection_event(HQUIC h, void* context, QUIC_CONNEC
         pthread_mutex_unlock(&q->mutex);
     } else if (event->Type == QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED) {
         pthread_mutex_lock(&q->mutex);
+        q->datagram_state_owner = h;
         q->datagram_send_enabled = event->DATAGRAM_STATE_CHANGED.SendEnabled;
         q->max_datagram_length = event->DATAGRAM_STATE_CHANGED.MaxSendLength;
         pthread_cond_broadcast(&q->condition);
@@ -276,20 +334,14 @@ static QUIC_STATUS QUIC_API connection_event(HQUIC h, void* context, QUIC_CONNEC
     } else if (event->Type == QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED) {
         const QUIC_BUFFER* b = event->DATAGRAM_RECEIVED.Buffer;
         if (b && b->Length && b->Length <= 65535) {
-            qp_chunk* c = malloc(sizeof(qp_chunk) + b->Length);
-            if (c) {
-                c->next = NULL; c->size = b->Length; c->offset = 0;
-                memcpy(c->data, b->Buffer, b->Length);
-                pthread_mutex_lock(&q->mutex);
-                if (q->datagrams_tail) q->datagrams_tail->next = c; else q->datagrams_head = c;
-                q->datagrams_tail = c;
+            pthread_mutex_lock(&q->mutex);
+            if (!q->stopped && qp_datagram_enqueue(&q->datagrams, b->Buffer, b->Length, monotonic_ms()))
                 pthread_cond_broadcast(&q->condition);
-                pthread_mutex_unlock(&q->mutex);
-            }
+            pthread_mutex_unlock(&q->mutex);
         }
     } else if (event->Type == QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED) {
         if (QUIC_DATAGRAM_SEND_STATE_IS_FINAL(event->DATAGRAM_SEND_STATE_CHANGED.State))
-            free(event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
+            release_datagram_send(event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
     } else if (event->Type == QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT) {
         pthread_mutex_lock(&q->mutex);
         QERROR("Transport shutdown: status=0x%x, QUIC error=0x%llx",
@@ -330,7 +382,7 @@ static QUIC_STATUS QUIC_API listener_event(HQUIC h, void* context, QUIC_LISTENER
     return QUIC_STATUS_SUCCESS;
 }
 
-__attribute__((visibility("default"))) qp_context* qp_create(const unsigned char* pfx, unsigned pfx_len,
+QP_EXPORT qp_context* qp_create(const unsigned char* pfx, unsigned pfx_len,
         const unsigned char* expected_hash, unsigned expected_len, int server) {
     if (!pfx || !pfx_len || !expected_hash || expected_len != sizeof(((qp_context*)0)->expected_hash)) return NULL;
     qp_context* q = calloc(1, sizeof(*q));
@@ -340,7 +392,7 @@ __attribute__((visibility("default"))) qp_context* qp_create(const unsigned char
     memcpy(q->expected_hash, expected_hash, expected_len);
     q->server = server;
     if (QUIC_FAILED(MsQuicOpen2(&q->api))) goto fail;
-    QUIC_REGISTRATION_CONFIG reg = { "quicpunch-android", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
+    QUIC_REGISTRATION_CONFIG reg = { "quicpunch", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
     if (QUIC_FAILED(q->api->RegistrationOpen(&reg, &q->registration))) goto fail;
     uint8_t a[] = "h3", b[] = "h3-29", c[] = "quic-punch";
     QUIC_BUFFER alpn[] = { { 2, a }, { 5, b }, { 10, c } };
@@ -353,6 +405,10 @@ __attribute__((visibility("default"))) qp_context* qp_create(const unsigned char
     settings.ConnFlowControlWindow = 16 * 1024 * 1024;
     settings.IsSet.StreamRecvWindowDefault = TRUE;
     settings.StreamRecvWindowDefault = 4 * 1024 * 1024;
+    settings.IsSet.StreamRecvBufferDefault = TRUE;
+    settings.StreamRecvBufferDefault = 64 * 1024;
+    settings.IsSet.MigrationEnabled = TRUE; settings.MigrationEnabled = TRUE;
+    settings.IsSet.GreaseQuicBitEnabled = TRUE; settings.GreaseQuicBitEnabled = TRUE;
     settings.IsSet.SendBufferingEnabled = TRUE;
     settings.SendBufferingEnabled = TRUE;
     settings.IsSet.PacingEnabled = TRUE;
@@ -365,6 +421,9 @@ __attribute__((visibility("default"))) qp_context* qp_create(const unsigned char
     settings.PeerUnidiStreamCount = 512;
     settings.IsSet.DatagramReceiveEnabled = TRUE;
     settings.DatagramReceiveEnabled = TRUE;
+    settings.IsSet.MinimumMtu = TRUE; settings.MinimumMtu = 1248;
+    settings.IsSet.MaximumMtu = TRUE; settings.MaximumMtu = 1500;
+    settings.IsSet.EcnEnabled = TRUE; settings.EcnEnabled = TRUE;
     settings.IsSet.KeepAliveIntervalMs = TRUE;
     settings.KeepAliveIntervalMs = 19000;
     // Same as desktop (QuicPunchConnection: IdleTimeout = 10 min). Without it MsQuic's
@@ -391,13 +450,68 @@ fail:
     return NULL;
 }
 
-__attribute__((visibility("default"))) int qp_listen(qp_context* q, unsigned short port) {
+// Stable bridge ABI: QUIC_SETTINGS layout stays on the native side, compiled
+// against the pinned public header. Never inspect System.Net.Quic objects.
+QP_EXPORT int qp_configure(qp_context* q, const uint64_t* v, int count) {
+    if (!q || !v || count != 13 || q->connection || q->listener || v[12] > 1 ||
+        v[0] < 1248 || v[1] < v[0] || v[1] > 65527 || !v[2] || !v[3]) return 0;
+    QUIC_SETTINGS s = {0};
+    s.IsSet.CongestionControlAlgorithm = TRUE; s.CongestionControlAlgorithm = (uint16_t)v[12];
+    s.IsSet.MinimumMtu = TRUE; s.MinimumMtu = (uint16_t)v[0];
+    s.IsSet.MaximumMtu = TRUE; s.MaximumMtu = (uint16_t)v[1];
+    s.IsSet.ConnFlowControlWindow = TRUE; s.ConnFlowControlWindow = (uint32_t)v[2];
+    s.IsSet.StreamRecvWindowDefault = TRUE; s.StreamRecvWindowDefault = (uint32_t)v[3];
+    s.IsSet.KeepAliveIntervalMs = TRUE; s.KeepAliveIntervalMs = (uint32_t)v[4];
+    s.IsSet.MtuDiscoverySearchCompleteTimeoutUs = TRUE; s.MtuDiscoverySearchCompleteTimeoutUs = v[5];
+    s.IsSet.MtuDiscoveryMissingProbeCount = TRUE; s.MtuDiscoveryMissingProbeCount = (uint8_t)v[6];
+    s.IsSet.InitialWindowPackets = TRUE; s.InitialWindowPackets = (uint32_t)v[7];
+    // Application authentication is replay-sensitive. Do not enable 0-RTT.
+    if (v[8]) return 0;
+    s.IsSet.PacingEnabled = TRUE; s.PacingEnabled = v[9] != 0;
+    s.IsSet.EcnEnabled = TRUE; s.EcnEnabled = v[10] != 0;
+    s.IsSet.HyStartEnabled = TRUE; s.HyStartEnabled = v[11] != 0;
+    return QUIC_SUCCEEDED(q->api->SetParam(q->configuration, QUIC_PARAM_CONFIGURATION_SETTINGS, sizeof(s), &s));
+}
+
+QP_EXPORT int qp_get_param(qp_context* q, uint32_t param, uint32_t* length, void* value) {
+    return q && q->connection && QUIC_SUCCEEDED(q->api->GetParam(q->connection, param, length, value));
+}
+QP_EXPORT int qp_set_param(qp_context* q, uint32_t param, uint32_t length, const void* value) {
+    return q && q->connection && QUIC_SUCCEEDED(q->api->SetParam(q->connection, param, length, value));
+}
+QP_EXPORT int qp_global_get_param(uint32_t param, uint32_t* length, void* value) {
+    const QUIC_API_TABLE* api = NULL;
+    if (QUIC_FAILED(MsQuicOpen2(&api))) return 0;
+    int result = QUIC_SUCCEEDED(api->GetParam(NULL, param, length, value));
+    MsQuicClose(api); return result;
+}
+QP_EXPORT int qp_tune(qp_context* q, int option, uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
+    if (!q || !q->connection) return 0;
+    QUIC_SETTINGS s = {0};
+    if (option == 0) { s.IsSet.KeepAliveIntervalMs = TRUE; s.KeepAliveIntervalMs = (uint32_t)a; }
+    else if (option == 1) {
+        if (!a || !b || a > UINT32_MAX || b > UINT32_MAX) return 0;
+        s.IsSet.ConnFlowControlWindow = TRUE; s.ConnFlowControlWindow = (uint32_t)a;
+        s.IsSet.StreamRecvWindowDefault = TRUE; s.StreamRecvWindowDefault = (uint32_t)b;
+    } else if (option == 2) {
+        QUIC_SETTINGS current = {0}; uint32_t size = sizeof(current);
+        if (QUIC_FAILED(q->api->GetParam(q->connection, QUIC_PARAM_CONN_SETTINGS, &size, &current)) ||
+            current.MinimumMtu != a || current.MaximumMtu != b || !d || d > 255) return 0;
+        s.IsSet.MtuDiscoverySearchCompleteTimeoutUs = TRUE; s.MtuDiscoverySearchCompleteTimeoutUs = c;
+        s.IsSet.MtuDiscoveryMissingProbeCount = TRUE; s.MtuDiscoveryMissingProbeCount = (uint8_t)d;
+    } else return 0;
+    return QUIC_SUCCEEDED(q->api->SetParam(q->connection, QUIC_PARAM_CONN_SETTINGS, sizeof(s), &s));
+}
+
+QP_EXPORT int qp_listen(qp_context* q, unsigned short port) {
     if (!q) return -1;
     if (!q->listener && QUIC_FAILED(q->api->ListenerOpen(q->registration, listener_event, q, &q->listener))) return -2;
     uint8_t a[] = "h3", b[] = "h3-29", c[] = "quic-punch";
     QUIC_BUFFER alpn[] = { { 2, a }, { 5, b }, { 10, c } };
     QUIC_ADDR addr = {0};
-    addr.Ipv4.sin_family = AF_INET; addr.Ipv4.sin_port = htons(port);
+    // MsQuic listener matching uses AF_UNSPEC for both families. AF_INET6
+    // alone opens a dual UDP binding but rejects IPv4 clients with ALPN failure.
+    addr.Ipv6.sin6_family = AF_UNSPEC; addr.Ipv6.sin6_port = htons(port);
     QUIC_STATUS status = q->api->ListenerStart(q->listener, alpn, 3, &addr);
     if (QUIC_FAILED(status)) {
         q->api->ListenerClose(q->listener);
@@ -409,7 +523,7 @@ __attribute__((visibility("default"))) int qp_listen(qp_context* q, unsigned sho
 
 // host must be a literal IP address. server_name is only sent as SNI, matching the
 // desktop client's disguise host; NULL or empty falls back to the address.
-__attribute__((visibility("default"))) int qp_connect(qp_context* q, const char* host, unsigned short port,
+QP_EXPORT int qp_connect(qp_context* q, const char* host, unsigned short port,
         unsigned short local_port, const char* server_name) {
     if (!q || !host || q->connection) return -1;
     QUIC_ADDR remote = {0};
@@ -443,7 +557,7 @@ __attribute__((visibility("default"))) int qp_connect(qp_context* q, const char*
 
 // Copies the pinned peer certificate (DER). Returns its length, the negated
 // required length when capacity is too small, or 0 before a session exists.
-__attribute__((visibility("default"))) int qp_get_peer_certificate(qp_context* q, unsigned char* output, int capacity) {
+QP_EXPORT int qp_get_peer_certificate(qp_context* q, unsigned char* output, int capacity) {
     if (!q) return 0;
     pthread_mutex_lock(&q->mutex);
     int length = q->connected && q->peer_cert ? q->peer_cert_length : 0;
@@ -455,7 +569,7 @@ __attribute__((visibility("default"))) int qp_get_peer_certificate(qp_context* q
     return length;
 }
 
-__attribute__((visibility("default"))) int qp_wait_connected(qp_context* q, int timeout_ms) {
+QP_EXPORT int qp_wait_connected(qp_context* q, int timeout_ms) {
     if (!q) return -1;
     pthread_mutex_lock(&q->mutex);
     struct timespec deadline = deadline_ms(timeout_ms);
@@ -465,7 +579,7 @@ __attribute__((visibility("default"))) int qp_wait_connected(qp_context* q, int 
     return result;
 }
 
-__attribute__((visibility("default"))) qp_stream* qp_open_stream(qp_context* q, int bidi) {
+QP_EXPORT qp_stream* qp_open_stream(qp_context* q, int bidi) {
     if (!q || !q->connection || !q->connected) return NULL;
     HQUIC h = NULL;
     QUIC_STATUS status = q->api->StreamOpen(q->connection,
@@ -474,20 +588,20 @@ __attribute__((visibility("default"))) qp_stream* qp_open_stream(qp_context* q, 
     if (QUIC_FAILED(status)) return NULL;
     qp_stream* s = new_stream(q, h, bidi, 0);
     if (!s) { q->api->StreamClose(h); return NULL; }
-    status = q->api->StreamStart(h, QUIC_STREAM_START_FLAG_NONE);
+    status = q->api->StreamStart(h, QUIC_STREAM_START_FLAG_FAIL_BLOCKED);
     if (QUIC_FAILED(status)) { qp_stream_close(s); return NULL; }
-    pthread_mutex_lock(&s->mutex);
-    struct timespec deadline = deadline_ms(2000);
-    while (!s->started && !s->stopped &&
-           pthread_cond_timedwait(&s->condition, &s->mutex, &deadline) != ETIMEDOUT) {}
-    int start_ok = s->started && !QUIC_FAILED(s->start_status);
-    pthread_mutex_unlock(&s->mutex);
-    if (!start_ok) { qp_stream_close(s); return NULL; }
-    QLOG("outbound stream started");
     return s;
 }
 
-__attribute__((visibility("default"))) qp_stream* qp_accept_stream(qp_context* q, int timeout_ms) {
+QP_EXPORT int qp_stream_start_status(qp_stream* s) {
+    if (!s) return -2;
+    pthread_mutex_lock(&s->mutex);
+    int result = s->stopped ? -2 : !s->started ? -3 : QUIC_FAILED(s->start_status) ? -2 : 0;
+    pthread_mutex_unlock(&s->mutex);
+    return result;
+}
+
+QP_EXPORT qp_stream* qp_accept_stream(qp_context* q, int timeout_ms) {
     if (!q) return NULL;
     pthread_mutex_lock(&q->mutex);
     struct timespec deadline = deadline_ms(timeout_ms);
@@ -502,7 +616,7 @@ __attribute__((visibility("default"))) qp_stream* qp_accept_stream(qp_context* q
     return s;
 }
 
-__attribute__((visibility("default"))) int qp_stream_read(qp_stream* s, unsigned char* data, int capacity, int timeout_ms) {
+QP_EXPORT int qp_stream_read(qp_stream* s, unsigned char* data, int capacity, int timeout_ms) {
     if (!s || !data || capacity <= 0) return -1;
     pthread_mutex_lock(&s->mutex);
     struct timespec deadline = deadline_ms(timeout_ms);
@@ -527,7 +641,7 @@ __attribute__((visibility("default"))) int qp_stream_read(qp_stream* s, unsigned
     return result;
 }
 
-__attribute__((visibility("default"))) int qp_stream_write(qp_stream* s, const unsigned char* data, int length) {
+QP_EXPORT int qp_stream_write(qp_stream* s, const unsigned char* data, int length) {
     if (!s || !data || length < 0) return -1;
     if (!s->can_write) return -2;
     pthread_mutex_lock(&s->mutex);
@@ -557,14 +671,34 @@ __attribute__((visibility("default"))) int qp_stream_write(qp_stream* s, const u
     return length;
 }
 
-__attribute__((visibility("default"))) void qp_stream_complete(qp_stream* s) {
-    if (s && s->can_write && !s->writes_closed) {
-        s->writes_closed = 1;
-        s->owner->api->StreamShutdown(s->handle, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, 0);
-    }
+QP_EXPORT void qp_stream_complete(qp_stream* s) {
+    if (!s) return;
+    pthread_mutex_lock(&s->mutex);
+    int complete = s->can_write && !s->writes_closed && !s->stopped;
+    if (complete) s->writes_closed = 1;
+    pthread_mutex_unlock(&s->mutex);
+    if (complete) s->owner->api->StreamShutdown(s->handle, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, 0);
 }
 
-__attribute__((visibility("default"))) int qp_stream_flush(qp_stream* s, int timeout_ms) {
+QP_EXPORT int qp_stream_writes_closed(qp_stream* s) {
+    if (!s) return -1;
+    pthread_mutex_lock(&s->mutex);
+    int result = s->send_shutdown_complete == 1 ? 1 : (s->stopped || s->send_shutdown_complete < 0 ? -1 : 0);
+    pthread_mutex_unlock(&s->mutex);
+    return result;
+}
+
+QP_EXPORT void qp_stream_abort(qp_stream* s, uint64_t error) {
+    if (!s) return;
+    pthread_mutex_lock(&s->mutex);
+    s->stopped = 1;
+    pthread_cond_broadcast(&s->condition);
+    pthread_mutex_unlock(&s->mutex);
+    s->owner->api->StreamShutdown(s->handle,
+        s->can_write ? QUIC_STREAM_SHUTDOWN_FLAG_ABORT : QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, error);
+}
+
+QP_EXPORT int qp_stream_flush(qp_stream* s, int timeout_ms) {
     if (!s) return -1;
     pthread_mutex_lock(&s->mutex);
     struct timespec deadline = deadline_ms(timeout_ms);
@@ -575,7 +709,7 @@ __attribute__((visibility("default"))) int qp_stream_flush(qp_stream* s, int tim
     return result;
 }
 
-__attribute__((visibility("default"))) void qp_stream_close(qp_stream* s) {
+QP_EXPORT void qp_stream_close(qp_stream* s) {
     if (!s) return;
     struct timespec deadline = deadline_ms(1000);
     pthread_mutex_lock(&s->mutex);
@@ -607,7 +741,7 @@ __attribute__((visibility("default"))) void qp_stream_close(qp_stream* s) {
     free(s);
 }
 
-__attribute__((visibility("default"))) uint64_t qp_stream_id(qp_stream* s) {
+QP_EXPORT uint64_t qp_stream_id(qp_stream* s) {
     if (!s) return 0;
     uint64_t id = s->id;
     uint32_t length = sizeof(id);
@@ -615,54 +749,56 @@ __attribute__((visibility("default"))) uint64_t qp_stream_id(qp_stream* s) {
         s->id = id;
     return s->id;
 }
-__attribute__((visibility("default"))) int qp_stream_bidi(qp_stream* s) { return s ? s->bidi : 0; }
-__attribute__((visibility("default"))) int qp_stream_set_priority(qp_stream* s, unsigned short priority) {
+QP_EXPORT int qp_stream_bidi(qp_stream* s) { return s ? s->bidi : 0; }
+QP_EXPORT int qp_stream_set_priority(qp_stream* s, unsigned short priority) {
     if (!s) return 0;
     return !QUIC_FAILED(s->owner->api->SetParam(s->handle, QUIC_PARAM_STREAM_PRIORITY, sizeof(priority), &priority));
 }
-__attribute__((visibility("default"))) unsigned short qp_stream_get_priority(qp_stream* s) {
+QP_EXPORT unsigned short qp_stream_get_priority(qp_stream* s) {
     if (!s) return 0;
     unsigned short priority = 0x7fff;
     uint32_t length = sizeof(priority);
     s->owner->api->GetParam(s->handle, QUIC_PARAM_STREAM_PRIORITY, &length, &priority);
     return priority;
 }
-__attribute__((visibility("default"))) int qp_is_stopped(qp_context* q) { return !q || q->stopped; }
+QP_EXPORT int qp_stream_get_stats(qp_stream* s, uint32_t* length, void* output) {
+    return s && QUIC_SUCCEEDED(s->owner->api->GetParam(s->handle, QUIC_PARAM_STREAM_STATISTICS, length, output));
+}
+QP_EXPORT int qp_is_stopped(qp_context* q) { if (!q) return 1; pthread_mutex_lock(&q->mutex); int stopped = q->stopped; pthread_mutex_unlock(&q->mutex); return stopped; }
 
-__attribute__((visibility("default"))) int qp_send_datagram(qp_context* q, const unsigned char* data, int length) {
+QP_EXPORT int qp_send_datagram(qp_context* q, const unsigned char* data, int length) {
     if (!q || !q->connection || !data || length <= 0 || length > 65535) return -1;
     pthread_mutex_lock(&q->mutex);
-    int allowed = q->datagram_send_enabled && length <= q->max_datagram_length;
+    int allowed = !q->stopped && q->datagram_send_enabled && length <= q->max_datagram_length &&
+        q->pending_datagram_bytes + (size_t)length <= QP_DATAGRAM_MAX_BYTES;
+    if (allowed) q->pending_datagram_bytes += (size_t)length;
     pthread_mutex_unlock(&q->mutex);
     if (!allowed) return -2;
-    qp_send* send = malloc(sizeof(qp_send) + length);
-    if (!send) return -3;
-    send->buffer.Buffer = send->data; send->buffer.Length = length;
+    qp_datagram_send* send = malloc(sizeof(*send) + length);
+    if (!send) {
+        pthread_mutex_lock(&q->mutex); q->pending_datagram_bytes -= (size_t)length; pthread_mutex_unlock(&q->mutex);
+        return -3;
+    }
+    send->owner = q; send->buffer.Buffer = send->data; send->buffer.Length = length;
     memcpy(send->data, data, length);
-    QUIC_STATUS status = q->api->DatagramSend(q->connection, &send->buffer, 1, QUIC_SEND_FLAG_NONE, send);
-    if (QUIC_FAILED(status)) { free(send); return (int)status; }
+    QUIC_STATUS status = q->api->DatagramSend(q->connection, &send->buffer, 1,
+        QUIC_SEND_FLAG_DGRAM_PRIORITY | QUIC_SEND_FLAG_CANCEL_ON_BLOCKED, send);
+    if (QUIC_FAILED(status)) { release_datagram_send(send); return (int)status; }
     return length;
 }
 
-__attribute__((visibility("default"))) int qp_receive_datagram(qp_context* q, unsigned char* data, int capacity, int timeout_ms) {
+QP_EXPORT int qp_receive_datagram(qp_context* q, unsigned char* data, int capacity, int timeout_ms) {
     if (!q || !data || capacity <= 0) return -1;
     pthread_mutex_lock(&q->mutex);
     struct timespec deadline = deadline_ms(timeout_ms);
-    while (!q->datagrams_head && !q->stopped && pthread_cond_timedwait(&q->condition, &q->mutex, &deadline) != ETIMEDOUT) {}
+    while (!q->datagrams.head && !q->stopped && pthread_cond_timedwait(&q->condition, &q->mutex, &deadline) != ETIMEDOUT) {}
     int result = q->stopped ? -2 : -3;
-    if (q->datagrams_head) {
-        qp_chunk* c = q->datagrams_head;
-        q->datagrams_head = c->next;
-        if (!q->datagrams_head) q->datagrams_tail = NULL;
-        result = c->size <= (size_t)capacity ? (int)c->size : -4;
-        if (result > 0) memcpy(data, c->data, result);
-        free(c);
-    }
+    if (!q->stopped) result = qp_datagram_dequeue(&q->datagrams, data, (size_t)capacity, monotonic_ms());
     pthread_mutex_unlock(&q->mutex);
     return result;
 }
 
-__attribute__((visibility("default"))) int qp_datagram_state(qp_context* q) {
+QP_EXPORT int qp_datagram_state(qp_context* q) {
     if (!q) return 0;
     pthread_mutex_lock(&q->mutex);
     int state = q->datagram_send_enabled ? q->max_datagram_length : 0;
@@ -670,7 +806,7 @@ __attribute__((visibility("default"))) int qp_datagram_state(qp_context* q) {
     return state;
 }
 
-__attribute__((visibility("default"))) int qp_get_address(qp_context* q, int remote,
+QP_EXPORT int qp_get_address(qp_context* q, int remote,
         char* output, int capacity, unsigned short* port) {
     if (!q || !q->connection || !output || capacity < 16 || !port) return 0;
     QUIC_ADDR addr = {0};
@@ -680,17 +816,17 @@ __attribute__((visibility("default"))) int qp_get_address(qp_context* q, int rem
         &length, &addr);
     if (QUIC_FAILED(status)) return 0;
     const void* ip = NULL;
-    if (addr.Ip.sa_family == AF_INET) {
+    if (QuicAddrGetFamily(&addr) == AF_INET) {
         ip = &addr.Ipv4.sin_addr;
         *port = ntohs(addr.Ipv4.sin_port);
-    } else if (addr.Ip.sa_family == AF_INET6) {
+    } else if (QuicAddrGetFamily(&addr) == AF_INET6) {
         ip = &addr.Ipv6.sin6_addr;
         *port = ntohs(addr.Ipv6.sin6_port);
     } else return 0;
-    return inet_ntop(addr.Ip.sa_family, ip, output, capacity) != NULL;
+    return inet_ntop(QuicAddrGetFamily(&addr), ip, output, capacity) != NULL;
 }
 
-__attribute__((visibility("default"))) int qp_get_stats(qp_context* q, uint64_t* output, int capacity) {
+QP_EXPORT int qp_get_stats(qp_context* q, uint64_t* output, int capacity) {
     if (!q || !q->connection || !output || capacity < 20) return 0;
     QUIC_STATISTICS_V2 stats = {0};
     uint32_t length = sizeof(stats);
@@ -724,7 +860,7 @@ __attribute__((visibility("default"))) int qp_get_stats(qp_context* q, uint64_t*
     return 1;
 }
 
-__attribute__((visibility("default"))) int qp_get_tls(qp_context* q, char* alpn, int capacity, unsigned short* cipher) {
+QP_EXPORT int qp_get_tls(qp_context* q, char* alpn, int capacity, unsigned short* cipher) {
     if (!q || !q->connection || !alpn || capacity < 32 || !cipher) return 0;
     pthread_mutex_lock(&q->mutex);
     memcpy(alpn, q->negotiated_alpn, sizeof(q->negotiated_alpn));
@@ -733,7 +869,7 @@ __attribute__((visibility("default"))) int qp_get_tls(qp_context* q, char* alpn,
     return *cipher != 0;
 }
 
-__attribute__((visibility("default"))) uint32_t qp_get_tls_group(qp_context* q) {
+QP_EXPORT uint32_t qp_get_tls_group(qp_context* q) {
     if (!q) return 0;
     pthread_mutex_lock(&q->mutex);
     uint32_t group = q->negotiated_group;
@@ -741,7 +877,7 @@ __attribute__((visibility("default"))) uint32_t qp_get_tls_group(qp_context* q) 
     return group;
 }
 
-__attribute__((visibility("default"))) void qp_close(qp_context* q) {
+QP_EXPORT void qp_close(qp_context* q) {
     if (!q) return;
     pthread_mutex_lock(&q->mutex);
     q->stopped = 1;
@@ -768,8 +904,7 @@ __attribute__((visibility("default"))) void qp_close(qp_context* q) {
     if (q->configuration) q->api->ConfigurationClose(q->configuration);
     if (q->registration) q->api->RegistrationClose(q->registration);
     if (q->api) MsQuicClose(q->api);
-    qp_chunk* c = q->datagrams_head;
-    while (c) { qp_chunk* next = c->next; free(c); c = next; }
+    while (q->datagrams.head) qp_datagram_drop(&q->datagrams);
     free(q->peer_cert);
     pthread_cond_destroy(&q->condition);
     pthread_mutex_destroy(&q->mutex);

@@ -266,8 +266,10 @@ internal sealed partial class VoiceCallHandler
         var profile = await ScreenEncoder.StartAsync(options, async config =>
         {
             if (remoteOwner != null && !HasScreenPermission(remoteOwner, "screen-share-request")) return false;
-            if (!await ProbeScreenDecodersAsync(config, options.TargetPeerId, ct).ConfigureAwait(false)) return false;
-            await StartScreenShareAsync(config.Width, config.Height, config.CodecId, (byte)config.Fps, options.TargetPeerId).ConfigureAwait(false);
+            // Reception is advisory per peer; it must never veto local encoding.
+            await ProbeScreenDecodersAsync(config, options.TargetPeerId, ct).ConfigureAwait(false);
+            if (remoteOwner != null && !HasScreenPermission(remoteOwner, "screen-share-request")) return false;
+            await StartScreenShareAsync(config.Width, config.Height, config.CodecId, (byte)config.Fps, options.TargetPeerId, options.Source.StartsWith("camera:", StringComparison.Ordinal) ? "camera" : "screen").ConfigureAwait(false);
             return true;
         }, async (codecId, packet) =>
         {

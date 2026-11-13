@@ -21,8 +21,8 @@ public sealed class OpusVoiceCodec : IDisposable
 
     public const int DefaultSampleRate = 48000;
     public const int DefaultChannels = 1;
-    public const int DefaultFrameDurationMs = 20; // 20 ms frames, a common low-latency VoIP duration
-    public const int DefaultFrameSize = (DefaultSampleRate * DefaultFrameDurationMs) / 1000; // 960 samples
+    public const int DefaultFrameDurationMs = 10;
+    public const int DefaultFrameSize = (DefaultSampleRate * DefaultFrameDurationMs) / 1000; // 480 samples
     public const int MinimumBitrate = 8000;
     // Concentus limits the mono microphone encoder to 300 kbps.
     public const int MaximumBitrate = 300000;

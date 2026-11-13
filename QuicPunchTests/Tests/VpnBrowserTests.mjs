@@ -11,6 +11,16 @@ try {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   let prompts = 0; page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
   await page.goto(url + 'vpn.html');
+  assert.equal(await page.locator('#connectAllBtn').isDisabled(), true, 'Missing local permissions disable bulk connect');
+  await page.locator('#lanMtu').fill('1500');
+  await page.evaluate(() => QP.emit('status_updated', QP.state.status));
+  assert.equal(await page.locator('#lanMtu').inputValue(), '1500', 'Status updates retain an edit before blur');
+  assert.match(await page.locator('#lanApplyStatus').innerText(), /sin guardar/);
+  for (const width of [1920, 1280, 768, 390, 320]) {
+    await page.setViewportSize({width, height:900});
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `VPN fits at ${width}px`);
+  }
+  await page.setViewportSize({width:1100,height:850});
   assert.equal(await page.locator('#vpnMode, #vpnAutoConnect').count(), 0, 'Mode and startup choices are per contact');
   await page.getByRole('button', {name:'Configurar VPN'}).first().click();
   const dialog = page.getByRole('dialog');
@@ -62,10 +72,19 @@ try {
     assert.equal(await dialog.getByLabel('Destinos de mi tráfico que van hacia este contacto').inputValue(), '192.168.50.0/24', 'Switching modes retains advanced fields');
   }
   await dialog.getByRole('button', {name:'Cancelar',exact:true}).click();
+  await page.locator('#lanMtu').fill('1500');
   await page.locator('#lanEnabled').uncheck();
   await page.waitForFunction(() => document.getElementById('lanLiveBadge').textContent !== 'Deteniendo...');
   await page.locator('#lanEnabled').check();
   await page.waitForFunction(() => document.getElementById('lanSwitchHint').textContent.includes('esperando permisos'));
+  assert.equal(await page.locator('#lanMtu').inputValue(), '1500', 'Toggling the adapter retains unsaved fields');
+  await page.locator('#applyLanBtn').click();
+  await page.waitForFunction(() => document.getElementById('lanApplyStatus').textContent === 'Configuración guardada');
+  response = await (await page.request.get(url+'api/vpn/config')).json();
+  assert.equal(response.configuration.Mtu, 1500);
+  const manualRow = page.locator('#vpnPeers .peer-row').filter({hasText:'Mi ordenador'});
+  assert.match(await manualRow.innerText(), /Conexión manual/);
+  assert.doesNotMatch(await manualRow.innerText(), /automática pendiente/);
   await page.evaluate(() => {
     QP.emit('ws_status', {connected:false}); QP.emit('ws_status', {connected:true});
     const original = Date.now, start = original() - 30000;

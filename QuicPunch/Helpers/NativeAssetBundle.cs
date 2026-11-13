@@ -44,8 +44,23 @@ internal static class NativeAssetBundle
         }
         if (OperatingSystem.IsWindows() && !SetDllDirectory(directory)) throw new IOException("No se pudo configurar la carpeta de bibliotecas nativas.");
         // Explicit full paths prevent a library beside the downloaded EXE from shadowing embedded assets.
+        string? mediaOverride = Environment.GetEnvironmentVariable("QUICNET_MEDIA_LIBRARY_DIRECTORY");
+        string[] mediaLibraries = ["avutil-60.dll", "swscale-9.dll", "avcodec-62.dll", "nettt_media.dll"];
+        if (OperatingSystem.IsWindows() && !string.IsNullOrWhiteSpace(mediaOverride))
+        {
+            // Explicit user opt-in permits replacing LGPL libraries with ABI-compatible builds.
+            // Other signed native components continue to use the verified embedded bundle.
+            mediaOverride = Path.GetFullPath(mediaOverride);
+            foreach (string name in mediaLibraries)
+            {
+                string path = Path.Combine(mediaOverride, name);
+                if (!File.Exists(path) || LoadLibraryEx(path, 0, 8) == 0)
+                    throw new IOException("No se pudo cargar la biblioteca multimedia alternativa: " + path);
+            }
+        }
         foreach (var asset in assets.Where(a => a.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).OrderBy(a => a.Name == "Photino.Native.dll" ? 1 : 0))
-            NativeLibrary.Load(Path.Combine(directory, asset.Name));
+            if (string.IsNullOrWhiteSpace(mediaOverride) || !mediaLibraries.Contains(asset.Name))
+                NativeLibrary.Load(Path.Combine(directory, asset.Name));
         if (OperatingSystem.IsLinux())
             foreach (var asset in assets.Where(a => a.Name.EndsWith(".so", StringComparison.Ordinal) && !a.Name.Contains("Photino", StringComparison.OrdinalIgnoreCase)))
                 NativeLibrary.Load(Path.Combine(directory, asset.Name));
@@ -55,4 +70,6 @@ internal static class NativeAssetBundle
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetDllDirectory(string path);
+    [DllImport("kernel32.dll", EntryPoint = "LoadLibraryExW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern nint LoadLibraryEx(string path, nint file, uint flags);
 }

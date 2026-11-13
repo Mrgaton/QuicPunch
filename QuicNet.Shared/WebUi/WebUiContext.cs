@@ -15,6 +15,7 @@ public static class WebUiContext
     internal static JsonSerializerOptions JsonOptionsFor(JsonSerializerOptions? options) => options == null ? JsonOptions : new(options) { TypeInfoResolver = JsonOptions.TypeInfoResolver };
     internal static T? ReadJsonValue<T>(JsonElement element, JsonSerializerOptions? options = null) => JsonSerializer.Deserialize<T>(element.GetRawText(), JsonOptionsFor(options));
     public const int MaxConcurrentHttpRequests = 32;
+    public const int MaxConcurrentWebSocketRequests = 32;
     public const int MaxJsonBodyBytes = 128 * 1024;
     public const int MaxChatBodyBytes = 32 * 1024 * 1024;
     public const int MaxVoiceBodyBytes = 1024 * 1024;

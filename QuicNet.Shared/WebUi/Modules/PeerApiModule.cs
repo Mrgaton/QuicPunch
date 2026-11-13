@@ -74,7 +74,7 @@ internal sealed class PeerApiModule
     public Task<HandshakeDecision> HandleHandshakeRequestAsync(HandshakeRequest request, CancellationToken ct)
     {
         PeerInfo? peer = ResolvePeer(request.PeerId, request.CertHash, request.RemoteEndPoint);
-        string protocolName = _qcc.ProtocolHandlers.TryGetValue(request.ProtocolId, out var handler) ? handler.ProtocolName : "Connection";
+        string protocolName = ResolveProtocolName(request.ProtocolId);
         string peerName = peer?.Name ?? (request.PeerId != Guid.Empty ? $"Peer-{request.PeerId.ToString()[..6]}" : request.RemoteEndPoint.ToString());
         Guid peerId = peer?.Id ?? request.PeerId;
 
@@ -105,7 +105,11 @@ internal sealed class PeerApiModule
         var tcs = new TaskCompletionSource<HandshakeDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
         PendingPetitions[request.Id] = new WebUiServer.PendingPetitionItem(request.Id, request.ProtocolId, protocolName, peerName, peerId, tcs);
         if (request.ProtocolId == _voiceHandler.ProtocolId)
+        {
             WebUiServer.Instance?.Notifications?.RingIncomingCall(request.Id, Convert.ToHexString(peer.CertHash), tcs.Task);
+            WebUiServer.Instance?.Notifications?.Publish("calls", peerName, "Llamada entrante", "/call.html",
+                Convert.ToHexString(peer.CertHash), request.Id.ToString("N"), playSound: false);
+        }
         WebUiServer.LogEvent($"[PETITION] {protocolName} request from {peerName}");
         bool showNotice = WebUiServer.Instance?.Notifications?.AllowsInApp(request.ProtocolId == _voiceHandler.ProtocolId ? "calls" : "system", Convert.ToHexString(peer.CertHash)) ?? true;
         _hub.Broadcast("petition_received", new global::QuicNet.Serialization.PeerApiModuleMessage2(request.Id.ToString(), peerId.ToString(), peerName, request.ProtocolId.ToString(), protocolName, showNotice));
@@ -138,10 +142,8 @@ internal sealed class PeerApiModule
 
     public string ResolveProtocolName(Guid protocolId)
     {
-        if (protocolId == _chatHandler.ProtocolId) return "Direct Chat";
-        if (protocolId == _voiceHandler.ProtocolId) return "Voice Studio";
-        if (_lanHandler != null && protocolId == _lanHandler.ProtocolId) return "LAN Bridge";
-        return _qcc.ProtocolHandlers.TryGetValue(protocolId, out var handler) ? handler.ProtocolName : "Application";
+        return _qcc.ProtocolHandlers.TryGetValue(protocolId, out var handler) && !string.IsNullOrWhiteSpace(handler.ProtocolName)
+            ? handler.ProtocolName : "Application";
     }
 
     public Guid ResolveProtocolId(string value)
@@ -185,6 +187,7 @@ internal sealed class PeerApiModule
         {
             try
             {
+                QuicPunchLog.Info($"[APP] Starting {ResolveProtocolName(protocolId)} with {peer.Name} (attempt {attemptId}).");
                 await _qcc.InitQuicConnection(protocolId, peer, 0, cancellation.Token).ConfigureAwait(false);
                 _qcc.RecordPeerUsage(peer.Id);
             }
@@ -196,6 +199,7 @@ internal sealed class PeerApiModule
                     string protoName = ResolveProtocolName(protocolId);
                     string peerName = peer.Name ?? "Peer";
                     string err = $"Failed to connect {protoName} with {peerName}: {ex.Message}";
+                    QuicPunchLog.Info($"[APP] {err} (attempt {attemptId}).");
                     WebUiServer.LogEvent($"[APP] {err}");
                     WebUiServer.AddNotification("error", err);
                 }

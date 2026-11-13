@@ -40,6 +40,7 @@ try {
   assert.equal(await page.locator('[data-contact-key="Reciente"] .contact-card-connection .badge').textContent(), 'Disponible');
   assert.equal(await page.locator('#homeConnectedFilterCount').textContent(), 'Conectados (1)');
   assert.equal(await page.locator('#homeAvailableFilterCount').textContent(), 'Disponibles (1)');
+  await page.locator('.contact-options > summary').click();
   await page.selectOption('#contactConnectionFilter', 'available');
   assert.deepEqual(await page.locator('.contact-card').evaluateAll(cards => cards.map(card => card.dataset.contactKey)), ['Reciente']);
   await page.selectOption('#contactConnectionFilter', 'disconnected');

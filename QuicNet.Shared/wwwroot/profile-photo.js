@@ -24,28 +24,34 @@ document.addEventListener('DOMContentLoaded', () => {
     catch (error) { $('profilePhotoStatus').textContent = error.message; }
   }
   function crop() {
-    const side = Math.min(image.width, image.height) / zoom;
-    centerX = Math.max(side / 2, Math.min(image.width - side / 2, centerX));
-    centerY = Math.max(side / 2, Math.min(image.height - side / 2, centerY));
+    const width = rotation % 2 ? source.height : source.width, height = rotation % 2 ? source.width : source.height;
+    const side = Math.min(width, height) / zoom;
+    centerX = Math.max(side / 2, Math.min(width - side / 2, centerX));
+    centerY = Math.max(side / 2, Math.min(height - side / 2, centerY));
     return { x: centerX - side / 2, y: centerY - side / 2, side, size: Math.max(1, Math.min(source.animated ? 320 : 512, Math.floor(side))) };
   }
   function orient(drawable) {
     const result = image || document.createElement('canvas');
-    const width = rotation % 2 ? source.height : source.width, height = rotation % 2 ? source.width : source.height;
+    const scale = Math.min(1, 1024 / Math.max(source.width, source.height));
+    const width = Math.max(1, Math.round((rotation % 2 ? source.height : source.width) * scale));
+    const height = Math.max(1, Math.round((rotation % 2 ? source.width : source.height) * scale));
     if (result.width !== width || result.height !== height) { result.width = width; result.height = height; }
     const ctx = result.getContext('2d'); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, width, height); ctx.translate(result.width / 2, result.height / 2); ctx.rotate(rotation * Math.PI / 2);
-    ctx.drawImage(drawable, -source.width / 2, -source.height / 2, source.width, source.height); return result;
+    const drawWidth = rotation % 2 ? height : width, drawHeight = rotation % 2 ? width : height;
+    ctx.drawImage(drawable, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight); return result;
   }
   function draw() {
     if (!image || !source) return;
     const { x, y, side, size } = crop(), ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, 512, 512);
     if (source.animated) { ctx.fillStyle = background(); ctx.fillRect(0, 0, 512, 512); }
-    ctx.imageSmoothingQuality = 'high'; ctx.drawImage(image, x, y, side, side, 0, 0, 512, 512);
+    const scaleX = image.width / (rotation % 2 ? source.height : source.width);
+    const scaleY = image.height / (rotation % 2 ? source.width : source.height);
+    ctx.imageSmoothingQuality = 'high'; ctx.drawImage(image, x * scaleX, y * scaleY, side * scaleX, side * scaleY, 0, 0, 512, 512);
     const small = preview.getContext('2d'); small.clearRect(0, 0, 80, 80); small.drawImage(canvas, 0, 0, 80, 80);
     $('avatarCropSize').textContent = `Hasta ${size} × ${size} · AVIF${source.animated ? ' animado' : ''} · máximo 512 KB`;
     $('avatarCropZoomValue').textContent = `${Math.round(zoom * 100)} %`;
   }
-  function reset() { if (!image) return; zoom = 1; zoomInput.value = '1'; centerX = image.width / 2; centerY = image.height / 2; draw(); }
+  function reset() { if (!image) return; zoom = 1; zoomInput.value = '1'; centerX = (rotation % 2 ? source.height : source.width) / 2; centerY = (rotation % 2 ? source.width : source.height) / 2; draw(); }
   function stopPreview() { playing = false; previewGeneration++; clearTimeout(previewTimer); $('avatarClipPlay').textContent = 'Reproducir vista previa'; }
   function startPreview() {
     stopPreview(); if (!source?.animated || encoding) return;
@@ -140,9 +146,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const frame = await source.frameAt(source.animated ? clipStart + index * clipLength / count : 0);
         try {
           if (currentJob !== job || !source) return;
-          const oriented = orient(frame.drawable); ctx.clearRect(0, 0, region.size, region.size);
+          ctx.clearRect(0, 0, region.size, region.size);
           if (source.animated) { ctx.fillStyle = background(); ctx.fillRect(0, 0, region.size, region.size); }
-          ctx.drawImage(oriented, region.x, region.y, region.side, region.side, 0, 0, region.size, region.size);
+          // Sample the original directly into the small output. The bounded preview
+          // must not limit export detail when zooming into a large photograph.
+          ctx.save();
+          const scale = region.size / region.side;
+          ctx.scale(scale, scale); ctx.translate(-region.x, -region.y);
+          ctx.translate((rotation % 2 ? source.height : source.width) / 2, (rotation % 2 ? source.width : source.height) / 2);
+          ctx.rotate(rotation * Math.PI / 2);
+          ctx.drawImage(frame.drawable, -source.width / 2, -source.height / 2, source.width, source.height);
+          ctx.restore();
           frames.push({ width: region.size, height: region.size, pixels: ctx.getImageData(0, 0, region.size, region.size).data.buffer,
             duration: Math.round((index + 1) * milliseconds / count) - Math.round(index * milliseconds / count) });
         } finally { frame.release(); }

@@ -37,6 +37,24 @@ For a manual WebRTC call, open **Llamada rápida** in the Android app and `/mobi
 
 ## Verification status
 
+Watch together now registers the shared control and media protocols on Android.
+Hosting uses the system video picker and a bounded import into private disposable
+cache; joining uses the same range transfer and playback synchronization as desktop.
+See [the implementation and validation notes](../doc/webui-and-apps/watch-and-workspace-redesign.md)
+for behavior, storage requirements, browser tests and physical-device limitations.
+
+### Virtual disk and file exchange
+
+**Disco virtual → Enviar y recibir** supports any file type and multiple files from Android's document picker. **Compartir archivos** creates a private, recipient-specific outbox with 24-hour read-only access. The owner can populate it; the recipient connects to that device and downloads the files. **Activar recepción** grants the selected contact 24-hour write access to a separate inbox, without deletion rights. Repeating this action renews the same grant. Uploads to a remote writable folder send files directly to that device.
+
+**Compartir carpeta de Android** opens the system folder picker. It shares the actual document tree, including its subfolders, using persisted Storage Access Framework permissions; it does not guess a filesystem path or copy the selected tree into the app. Only trees explicitly authorized in Android are exposed to remote administrators. Revoking access in Android stops subsequent reads and writes. See Android's [Storage Access Framework documentation](https://developer.android.com/training/data-storage/shared/documents-files).
+
+**Guardar en el móvil** opens Android's destination picker and streams the selected local or remote file there. Downloads verify SHA-256 and remove incomplete destinations on failure. Uploads have a per-file queue, chunked progress, cancellation, integrity checks, and arrival notifications. Desktop browsers can additionally drop files or upload a directory while retaining its relative paths. Empty directories are not included by browser directory uploads. Both devices must have the updated app, trust each other, and establish the disk connection.
+
+SAF providers have no general atomic replace/lock primitive: this implementation rejects replacement of existing SAF documents and WebDAV locks on them. Use another filename or the app's reception inbox. Providers must support document creation, readback and rename for uploads into selected folders. Reads use private disposable snapshots for seekable, stable content; uploads use private staging and provider readback before publishing. These operations require temporary free space, and slow cloud providers may exceed the disk protocol's 60-second operation timeout. Expiration or revocation removes access, not the transferred files. Inbox/outbox data lives under the node's persistent app data, never a build/cache directory.
+
+Validation: desktop host/protocol/HTTP tests include a document-provider fixture, permission revocation, traversal rejection, per-contact inbox isolation, read-only outboxes, empty files and native save cleanup. Browser tests cover batch uploads, cancellation, failures, Android picker/save routing and 390/1280px layouts. The ARM64 Debug APK builds with the installed .NET 11 RC1 Android workload. Real-device SAF provider behavior and a full phone↔desktop transfer still require device validation; browser fixtures do not exercise Android's native picker.
+
 `System.Net.Quic` on the tested .NET 11 Android runtime loads MsQuic but fails during certificate validation because `libSystem.Security.Cryptography.Native.OpenSsl.so` is absent. The Android peer tunnel bypasses that runtime path. A Linux build of the same native bridge passed TLS, exact certificate pinning (including rejection of a different certificate), bidirectional streams, simultaneous inbound/outbound streams, datagrams, endpoint lookup and telemetry.
 
 On 2026-09-30, the complete Android-to-desktop QuicPunch session was verified on a OnePlus CPH2769 (API 36): direct chat in both directions, a short bidirectional speed test and a voice session using QUIC datagrams. The user confirmed audible voice. TLS telemetry and the startup self-test confirmed `X25519MLKEM768` (group 4588), with `TLS_AES_256_GCM_SHA384`. Peer identity certificates remain ECDSA P-256. Background operation was checked with the foreground service; prolonged Doze and WAN roaming remain unverified. See [the verification record](../doc/android/verification-2026-09-30.md).

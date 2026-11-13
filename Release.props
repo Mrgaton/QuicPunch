@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
-    <ReleaseVersion Condition="'$(ReleaseVersion)' == ''">1.1.16</ReleaseVersion>
-    <ReleaseNumber Condition="'$(ReleaseNumber)' == ''">18</ReleaseNumber>
+    <ReleaseVersion Condition="'$(ReleaseVersion)' == ''">1.1.21</ReleaseVersion>
+    <ReleaseNumber Condition="'$(ReleaseNumber)' == ''">23</ReleaseNumber>
     <ReleaseChannel Condition="'$(ReleaseChannel)' == ''">stable</ReleaseChannel>
     <Version>$(ReleaseVersion)</Version>
     <InformationalVersion>$(ReleaseVersion)</InformationalVersion>

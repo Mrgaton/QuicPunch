@@ -1,4 +1,5 @@
 (() => {
+  const {fmtBytes, formatDuration, formatPorts, parsePorts} = QuicNetUiValues;
   const toastHost = document.createElement('div');
   toastHost.className = 'toast-host';
 
@@ -102,6 +103,8 @@
     currentPage = page;
     document.body.dataset.page = page;
     document.title = PAGE_TITLES[page] || 'QuicPunch';
+    const workspaceLabel = document.getElementById('currentWorkspace');
+    if (workspaceLabel) workspaceLabel.textContent = (PAGE_TITLES[page] || 'Inicio').split(' · ')[0];
 
     // Update nav links active state
     document.querySelectorAll('.nav-link').forEach(link => {
@@ -162,13 +165,23 @@
 
   function observeTableLabels() {
     let queued = false;
+    const dirtyTables = new Set();
     const relabel = () => {
       queued = false;
-      document.querySelectorAll('table.data-table').forEach(labelTableCells);
+      for (const table of dirtyTables) if (table.isConnected) labelTableCells(table);
+      dirtyTables.clear();
     };
-    relabel();
-    new MutationObserver(() => {
-      if (!queued) { queued = true; requestAnimationFrame(relabel); }
+    document.querySelectorAll('table.data-table').forEach(labelTableCells);
+    new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        const table = mutation.target.closest?.('table.data-table');
+        if (table) dirtyTables.add(table);
+        for (const node of mutation.addedNodes) {
+          if (node.matches?.('table.data-table')) dirtyTables.add(node);
+          node.querySelectorAll?.('table.data-table').forEach(table => dirtyTables.add(table));
+        }
+      }
+      if (dirtyTables.size && !queued) { queued = true; requestAnimationFrame(relabel); }
     }).observe(document.getElementById('spaContainer') || document.body, { childList: true, subtree: true });
   }
 
@@ -203,6 +216,7 @@
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || a.target === '_blank' || a.hasAttribute('download')) return;
 
       const rawHref = (a.getAttribute('href') || '').trim();
+      if (rawHref.startsWith('#')) return;
       if (rawHref.startsWith('file:') || rawHref.startsWith('file:///')) {
         e.preventDefault();
         toast('El navegador no permite abrir enlaces locales file:/// directamente. Usa los botones de carpeta.', 'warn');
@@ -318,28 +332,38 @@
     });
   }
 
-  window.addEventListener('pagehide', () => {
+  function rejectPendingRequests() {
+    for (const pending of pendingRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Se perdió la conexión con QuicNet. Comprueba el estado antes de reintentar.'));
+    }
+    pendingRequests.clear();
+  }
+
+  // pagehide only runs after navigation is committed; beforeunload can be cancelled.
+  window.addEventListener('pagehide', event => {
+    leaving = true;
+    clearTimeout(reconnectTimer); reconnectTimer = null;
+    const socket = activeSocket; activeSocket = null;
+    isConnected = false; syncPending = false;
+    window.QuicNetDiagnostics?.setTransport(null);
+    rejectPendingRequests();
+    try { socket?.close(); } catch {}
+    // A cached page is suspended, not closed. It will reconnect on pageshow.
+    if (event.persisted) return;
     try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon('/api/client-closing');
-      } else {
-        fetch('/api/client-closing', { method: 'POST', keepalive: true }).catch(() => {});
+      const csrfParam = window.__qp_csrf ? `?csrf=${encodeURIComponent(window.__qp_csrf)}` : '';
+      const path = '/api/client-closing' + csrfParam;
+      if (!navigator.sendBeacon?.(path)) {
+        fetch(path, { method: 'POST', keepalive: true }).catch(() => {});
       }
     } catch (e) { }
   });
 
-  window.addEventListener('beforeunload', () => {
-    leaving = true;
-    clearTimeout(reconnectTimer);
-    try {
-      if (activeSocket) {
-        try { activeSocket.close(); } catch (e) { }
-      }
-      if (navigator.sendBeacon) {
-        const csrfParam = window.__qp_csrf ? `?csrf=${encodeURIComponent(window.__qp_csrf)}` : '';
-        navigator.sendBeacon('/api/client-closing' + csrfParam);
-      }
-    } catch (e) { }
+  window.addEventListener('pageshow', event => {
+    if (!event.persisted) return;
+    leaving = false;
+    initWebSocket();
   });
 
   function wsRequest(command, data = {}) {
@@ -409,10 +433,12 @@
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const csrfParam = window.__qp_csrf ? `?csrf=${encodeURIComponent(window.__qp_csrf)}` : '';
       const wsUrl = `${protocol}//${location.host}/ws${csrfParam}`;
-      activeSocket = new WebSocket(wsUrl);
-      activeSocket.binaryType = 'arraybuffer';
+      const socket = new WebSocket(wsUrl);
+      activeSocket = socket;
+      socket.binaryType = 'arraybuffer';
 
-      activeSocket.onopen = () => {
+      socket.onopen = () => {
+        if (socket !== activeSocket || leaving) return;
         isConnected = true;
         reconnectAttempt = 0; syncPending = false;
         state.updates = null;
@@ -423,7 +449,8 @@
         emit('ws_status', { connected: true });
       };
 
-      activeSocket.onmessage = (evt) => {
+      socket.onmessage = (evt) => {
+        if (socket !== activeSocket || leaving) return;
         try {
           if (evt.data instanceof ArrayBuffer) {
             emit('ws_binary', evt.data);
@@ -460,21 +487,23 @@
         } catch (error) { reportError(error, 'Procesar mensaje WebSocket'); }
       };
 
-      activeSocket.onclose = event => {
+      socket.onclose = event => {
+        if (socket !== activeSocket) return;
+        activeSocket = null;
         window.QuicNetDiagnostics?.setTransport(null);
         if (!leaving && (event.code !== 1000 || pendingRequests.size))
           reportError(new Error(`Conexión cerrada (código ${event.code}, ${event.wasClean ? 'cierre normal' : 'interrumpida'}). ${event.reason || ''}`), 'WebSocket', 'warn');
         isConnected = false;
         syncPending = false;
-        for (const pending of pendingRequests.values()) { clearTimeout(pending.timer); pending.reject(new Error('Se perdió la conexión con QuicNet. Comprueba el estado antes de reintentar.')); }
-        pendingRequests.clear();
+        rejectPendingRequests();
         emit('ws_status', { connected: false });
         scheduleReconnect();
       };
 
-      activeSocket.onerror = () => {
+      socket.onerror = () => {
+        if (socket !== activeSocket || leaving) return;
         reportError(new Error('Error de conexión WebSocket.'), 'WebSocket');
-        try { activeSocket.close(); } catch (e) { }
+        try { socket.close(); } catch (e) { }
       };
     } catch (e) {
       reportError(e, 'Abrir WebSocket');
@@ -583,13 +612,6 @@
     const parts = String(name || 'P').trim().split(/\s+/).filter(Boolean);
     return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0]?.slice(0, 2) || 'P').toUpperCase();
   }
-  function fmtBytes(bytes) {
-    const n = Number(bytes || 0);
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-    if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-    return `${(n / 1024 ** 3).toFixed(1)} GB`;
-  }
   function peerMeta(peer) {
     if (peer.isTor) return peer.onionAddress || 'Tor peer';
     return peer.endpoint || (peer.addresses || []).join(', ') || shortId(peer.id, 14);
@@ -606,11 +628,22 @@
     if (handler) node.addEventListener('click', handler);
     return node;
   }
-  function toast(message, kind = '') {
+  function toast(message, kind = '', action = null) {
     if (kind === 'error' || kind === 'warn' || kind === 'warning') reportError(new Error(message), 'Aviso de interfaz', kind === 'error' ? 'error' : 'warn');
     const node = el('div', `toast ${kind}`.trim());
     node.setAttribute('role', kind === 'error' ? 'alert' : 'status');
     node.appendChild(el('span', '', message));
+    if (action?.href) {
+      try {
+        const target = new URL(action.href, location.origin);
+        if (target.origin === location.origin && target.protocol === location.protocol) {
+          const open = el('button', 'toast-action', action.label || 'Abrir');
+          open.type = 'button';
+          open.addEventListener('click', () => { navigate(target.pathname + target.search + target.hash); node.remove(); });
+          node.appendChild(open); node.classList.add('toast-with-action');
+        }
+      } catch { /* Invalid notification links must never navigate away from the app. */ }
+    }
     const close = el('button', '', '×');
     close.setAttribute('aria-label', 'Cerrar aviso');
     close.onclick = () => node.remove();
@@ -624,7 +657,7 @@
       const pause = () => clearTimeout(timer);
       const resume = () => {
         pause();
-        timer = setTimeout(() => { if (!node.matches(':hover') && !node.contains(document.activeElement)) node.remove(); }, 5000);
+        timer = setTimeout(() => { if (!node.matches(':hover') && !node.contains(document.activeElement)) node.remove(); }, action ? 8000 : 5000);
       };
       node.addEventListener('mouseenter', pause); node.addEventListener('mouseleave', resume);
       node.addEventListener('focusin', pause); node.addEventListener('focusout', resume);
@@ -667,15 +700,6 @@
     return data;
   }
 
-  function formatDuration(sec) {
-    const s = Math.max(0, Math.floor(sec || 0));
-    if (s < 60) return `${s}s`;
-    const m = Math.floor(s / 60);
-    if (m < 60) return `${m}m ${s % 60}s`;
-    const h = Math.floor(m / 60);
-    return `${h}h ${m % 60}m`;
-  }
-
   function formatPingStatus(peer) {
     if (!peer) return '—';
     const unresponsive = Number(peer.unresponsiveSeconds ?? peer.lastSeenSecondsAgo ?? 99999);
@@ -706,7 +730,7 @@
 
   window.QP = {
     api, el, clear, canonicalId, shortId, initials, paintAvatar, fmtBytes, peerMeta, peerInConnectionMode, trusted, findPeer,
-    button, toast, copy, setText, safeDataUrl, on, off, emit, formatDuration, formatPingStatus,
+    button, toast, copy, setText, safeDataUrl, on, off, emit, formatDuration, formatPingStatus, formatPorts, parsePorts,
     sendBinary, navigate, requestSync, getStatus, wsRequest, reportError, state,
     get capabilities() { return capabilities; },
     get currentPage() { return currentPage; },

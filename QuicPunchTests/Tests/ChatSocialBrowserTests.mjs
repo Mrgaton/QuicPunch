@@ -71,7 +71,7 @@ try {
   await page.evaluate(peerId=>QP.emit('chat_typing',{peerId,peerName:'Ana',isTyping:true}),alice);
   await page.setViewportSize({width:390,height:430});
   const composer=await input.boundingBox(),nav=await page.locator('.nav-wrap').boundingBox();
-  assert.ok(composer.y>=0&&composer.y+composer.height<=nav.y,`Reply, mention, pins and typing hide the composer on short screens: ${JSON.stringify({composer,nav})}`);
+  assert.ok(composer.y>=0&&composer.y+composer.height<=(nav?.y??430),`Reply, mention, pins and typing hide the composer on short screens: ${JSON.stringify({composer,nav})}`);
   assert.equal(await page.evaluate(()=>scrollY),0);
   await page.setViewportSize({width:390,height:844});
   await input.fill('');await page.locator('#chatReplyCancel').click();

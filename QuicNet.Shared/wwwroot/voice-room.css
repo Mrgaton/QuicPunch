@@ -8,7 +8,7 @@ body[data-page=voice] > .topbar,body[data-page=voice] > .connection-notice,body[
 body[data-page=voice] #spaContainer,body[data-page=voice] #view-voice { display:flex; flex-direction:column; flex:1 1 0; min-height:0; overflow:hidden; }
 body[data-page=voice] .voice-workspace { display:flex; flex-direction:column; flex:1 1 0; min-height:0; margin:0; padding:0; overflow:hidden; }
 #view-voice .voice-layout { display:flex; flex:1 1 0; min-height:0; }
-#view-voice .voice-stage { position:relative; display:grid; flex:1 1 0; grid-template-columns:minmax(0,1fr) auto 76px; grid-template-rows:auto minmax(0,1fr); min-width:0; min-height:0; background:var(--surface); }
+#view-voice .voice-stage { position:relative; display:grid; flex:1 1 0; grid-template-columns:minmax(0,1fr) auto 76px; grid-template-rows:auto minmax(0,1fr) auto; min-width:0; min-height:0; background:var(--surface); }
 #view-voice .voice-stage-head { grid-column:1 / -1; }
 #view-voice .voice-room-media { grid-column:1; grid-row:2; }
 #view-voice .voice-stage-head { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:12px; min-height:48px; padding:6px 20px; border-bottom:1px solid var(--line); }
@@ -20,6 +20,21 @@ body[data-page=voice] .voice-workspace { display:flex; flex-direction:column; fl
 #view-voice .voice-invite-btn { display:flex; align-items:center; justify-content:center; gap:8px; min-height:36px; padding:6px 10px; border:0; border-radius:8px; background:transparent; color:var(--muted); font:inherit; font-size:12px; cursor:pointer; }
 #view-voice .voice-invite-btn:hover { background:var(--surface-2); color:var(--text-strong); }
 #view-voice .voice-invite-btn .voice-icon { width:18px; height:18px; }
+#view-voice .voice-call-action { grid-column:1; grid-row:3; display:flex; flex-wrap:wrap; justify-content:center; padding:12px 16px max(24px,env(safe-area-inset-bottom)); }
+#view-voice .voice-start-call-btn { display:inline-flex; align-items:center; justify-content:center; gap:12px; min-height:52px; padding:12px 24px; border:1px solid var(--accent-border); border-radius:28px; background:var(--accent); color:var(--on-accent,#102b25); box-shadow:0 6px 24px #0003; font:inherit; font-size:14px; font-weight:600; cursor:pointer; }
+#view-voice .voice-start-call-btn:hover { filter:brightness(1.08); }
+#view-voice .voice-call-picker { width:min(440px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); padding:20px; border:1px solid var(--line-strong); border-radius:20px; background:var(--surface); color:var(--text); box-shadow:var(--shadow-lg); }
+#view-voice .voice-call-picker[open] { display:flex; flex-direction:column; }
+#view-voice .voice-call-picker::backdrop { background:#0007; }
+#view-voice .voice-call-picker-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+#view-voice .voice-call-picker-head h2 { margin:0; font-size:20px; color:var(--text-strong); }
+#view-voice .voice-call-picker > p { margin:4px 0 20px; color:var(--muted); font-size:13px; line-height:1.6; }
+#view-voice .voice-call-picker .voice-contact-search { flex-shrink:0; margin:0 0 12px; }
+#view-voice .voice-call-picker-list { min-height:0; overflow:auto; overscroll-behavior:contain; }
+#view-voice .voice-call-picker .voice-contact-call { display:flex; justify-content:center; gap:7px; flex:0 0 auto; width:auto; min-width:44px; min-height:44px; padding:8px 12px; background:var(--accent-soft); font:inherit; font-size:12px; }
+#view-voice .voice-call-picker .voice-contact-call:disabled { background:transparent; }
+#view-voice .voice-call-picker .voice-contact-call .voice-icon { width:18px; height:18px; }
+
 #view-voice .voice-room-empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:180px; padding:24px 20px; text-align:center; }
 #view-voice .voice-empty-art { display:grid; place-items:center; width:92px; height:92px; margin-bottom:22px; border:1px solid var(--accent-border); border-radius:30px; background:var(--accent-soft); color:var(--accent); }
 #view-voice .voice-empty-art .voice-icon { width:40px; height:40px; stroke-width:1.4; }
@@ -59,13 +74,13 @@ body[data-page=voice] .voice-workspace { display:flex; flex-direction:column; fl
 #view-voice .voice-menu-action.is-danger { color:var(--danger); }
 #view-voice .voice-menu-action.is-danger:hover { background:var(--danger-soft); }
 #view-voice .voice-menu-divider { height:1px; background:var(--line); margin:6px; }
-#view-voice .voice-dock { grid-column:3; grid-row:2; display:flex; flex-direction:column; z-index:10; min-width:0; min-height:0; overflow:auto; margin:0; padding:8px 0; border-left:1px solid var(--line); background:var(--surface); scrollbar-width:thin; }
+#view-voice .voice-dock { grid-column:3; grid-row:2 / 4; display:flex; flex-direction:column; z-index:10; min-width:0; min-height:0; overflow:auto; margin:0; padding:8px 0; border-left:1px solid var(--line); background:var(--surface); scrollbar-width:thin; }
 #view-voice .voice-quick-controls { display:flex; flex-direction:column; align-items:center; gap:10px; padding:12px 4px; }
 #view-voice .voice-tray-toggle { position:relative; display:flex; flex-shrink:0; align-items:center; justify-content:center; width:100%; min-height:44px; padding:8px; border:0; background:var(--surface); color:var(--muted); font:inherit; font-size:11px; cursor:pointer; }
 #view-voice .voice-tray-toggle:hover { color:var(--accent); background:var(--surface-2); }
 #view-voice .voice-tray-toggle .voice-icon { width:20px; height:20px; transform:rotate(90deg); transition:transform .18s; }
 #view-voice .voice-tray-toggle[aria-expanded=true] .voice-icon { transform:rotate(-90deg); }
-#view-voice .voice-drawer { grid-column:2; grid-row:2; display:flex; flex-direction:column; width:360px; min-width:0; min-height:0; overflow:hidden; border-left:1px solid var(--line); background:var(--surface-2); }
+#view-voice .voice-drawer { grid-column:2; grid-row:2 / 4; display:flex; flex-direction:column; width:360px; min-width:0; min-height:0; overflow:hidden; border-left:1px solid var(--line); background:var(--surface-2); }
 #view-voice #voiceDrawerClose { margin-left:auto; }
 #view-voice [hidden] { display:none!important; }
 #view-voice .voice-drawer-tabs { display:flex; flex-shrink:0; gap:6px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--surface); }
@@ -120,8 +135,9 @@ body[data-page=voice] .voice-workspace { display:flex; flex-direction:column; fl
 #view-voice .voice-no-contacts { padding:12px; font-size:12px; color:var(--muted); line-height:1.6; }
 #view-voice .voice-device-note { display:flex; align-items:center; gap:8px; padding:16px 18px; border-top:1px solid var(--line); color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
 #view-voice .voice-device-note .voice-icon { width:15px; height:15px; }
-#view-voice .voice-camera-options { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:10px; padding:10px 20px; font-size:12px; }
-#view-voice .voice-camera-options select { width:auto; max-width:100%; min-width:0; min-height:36px; padding:6px 12px; color:var(--text); border:1px solid var(--line-strong); border-radius:8px; background:var(--surface-2); }
+#view-voice .voice-camera-options { display:flex; flex:1 0 100%; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px; padding:0 0 10px; font-size:12px; }
+#view-voice .voice-camera-options select { width:auto; max-width:100%; min-width:0; min-height:44px; padding:6px 12px; color:var(--text); border:1px solid var(--line-strong); border-radius:8px; background:var(--surface-2); }
+#view-voice .voice-camera-options button { min-height:44px; }
 #view-voice .voice-camera-picker { width:min(440px,calc(100vw - 24px)); max-height:85dvh; overflow:auto; padding:24px; border:1px solid var(--line); border-radius:16px; background:var(--surface); color:var(--text); }
 #view-voice .voice-camera-picker::backdrop { background:#10272e88; }
 #view-voice .voice-camera-picker p { font-size:12px; margin:12px 0 18px; }
@@ -204,3 +220,11 @@ body[data-page=voice] .voice-workspace { display:flex; flex-direction:column; fl
 }
 @media(max-height:620px) { #view-voice .voice-dock-hint { display:none; } #view-voice .voice-quick-controls { gap:6px; } #view-voice .voice-ctrl-btn { height:44px; } #view-voice .voice-control-label { display:none; } }
 @media(prefers-reduced-motion:reduce) { #view-voice .voice-participant,#view-voice .voice-tray-toggle .voice-icon { transition:none; } #view-voice .avatar.talking,#view-voice .voice-drawer { animation:none; } }
+
+/* Native HWND/SurfaceView video sits above the WebView. Keep controls outside
+   its rectangle, including fullscreen; native surfaces do not forward hover. */
+#view-voice .screen-tile-header { position:relative; inset:auto; flex:0 0 auto; display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-height:52px; padding:6px 8px; background:var(--surface); pointer-events:auto; }
+#view-voice .screen-tile .screen-tile-user { position:static; flex:1 1 100px; min-width:0; max-width:100%; padding:0; border:0; border-radius:0; background:transparent; backdrop-filter:none; }
+#view-voice .screen-tile .screen-tile-actions { position:static; flex:0 1 auto; max-width:100%; }
+#view-voice.is-media-idle .screen-tile .screen-tile-user,#view-voice.is-media-idle .screen-tile .screen-tile-actions { opacity:1; visibility:visible; pointer-events:auto; }
+#view-voice .screen-tile.is-tile-fullscreen .screen-tile-header { padding-top:calc(6px + env(safe-area-inset-top)); padding-left:calc(8px + env(safe-area-inset-left)); padding-right:calc(8px + env(safe-area-inset-right)); }

@@ -71,6 +71,12 @@
     $('selfPresenceButton').addEventListener('click', open);
     $('profilePresenceButton').addEventListener('click', open);
     $('presenceClose').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('click', event => {
+      if (event.target !== dialog) return;
+      const bounds = dialog.getBoundingClientRect();
+      if (event.clientX < bounds.left || event.clientX > bounds.right ||
+          event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+    });
     dialog.addEventListener('close', () => opener?.focus({ preventScroll: true }));
     $('presenceAvailable').addEventListener('click', () => save(false));
     $('presenceDnd').addEventListener('click', () => save(true));

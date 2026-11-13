@@ -8,6 +8,21 @@ public sealed class NotificationRule
     public NotificationRule Clone() => new() { Enabled = Enabled, Popup = Popup, Sound = Sound };
 }
 
+public sealed class ContactNotificationRule
+{
+    // Null follows the default; explicit true must survive a disabled default.
+    public bool? Enabled { get; set; }
+    public bool? Popup { get; set; }
+    public bool? Sound { get; set; }
+    public ContactNotificationRule Clone() => new() { Enabled = Enabled, Popup = Popup, Sound = Sound };
+    public NotificationRule Resolve(NotificationRule defaults) => new()
+    {
+        Enabled = Enabled ?? defaults.Enabled,
+        Popup = Popup ?? defaults.Popup,
+        Sound = Sound ?? defaults.Sound
+    };
+}
+
 public sealed class NotificationPreferences
 {
     public static readonly string[] Categories = ["messages", "calls", "files", "screen", "system"];
@@ -25,21 +40,23 @@ public sealed class NotificationPreferences
     public int Volume { get; set; } = 60;
     public string Tone { get; set; } = "soft";
     public Dictionary<string, NotificationRule> Features { get; set; } = new();
+    public NotificationRule ContactDefaults { get; set; } = new();
     // Certificate fingerprints survive reconnects and display-name changes.
-    public Dictionary<string, NotificationRule> Contacts { get; set; } = new();
+    public Dictionary<string, ContactNotificationRule> Contacts { get; set; } = new();
     public NotificationPreferences Clone() => new()
     {
         Enabled = Enabled, Desktop = Desktop, InApp = InApp, Sound = Sound, Preview = Preview,
         WhileFocused = WhileFocused, DoNotDisturb = DoNotDisturb, DoNotDisturbUntil = DoNotDisturbUntil,
         QuietHours = QuietHours, QuietStart = QuietStart, QuietEnd = QuietEnd, Volume = Volume, Tone = Tone,
         Features = Features.ToDictionary(p => p.Key, p => p.Value.Clone()),
+        ContactDefaults = ContactDefaults.Clone(),
         Contacts = Contacts.ToDictionary(p => p.Key, p => p.Value.Clone())
     };
     public void Validate()
     {
         if (Volume is < 0 or > 100 || QuietStart is < 0 or > 1439 || QuietEnd is < 0 or > 1439 ||
             Tone is not ("soft" or "bell" or "digital")) throw new InvalidDataException("Preferencias de notificación no válidas.");
-        Features ??= new(); Contacts ??= new();
+        Features ??= new(); Contacts ??= new(); ContactDefaults ??= new();
         if (Features.Count > Categories.Length || Features.Any(p => !Categories.Contains(p.Key) || p.Value == null) ||
             Contacts.Count > 1024 || Contacts.Any(p => p.Key.Length != 64 || !p.Key.All(Uri.IsHexDigit) || p.Value == null))
             throw new InvalidDataException("Reglas de notificación no válidas.");

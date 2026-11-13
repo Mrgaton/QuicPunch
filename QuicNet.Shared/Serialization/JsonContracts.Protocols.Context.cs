@@ -24,7 +24,9 @@ internal static class SharedJson
 internal partial class SharedJsonContext : JsonSerializerContext { }
 
 internal sealed record ScreenDecoderProbeMessage(Guid requestId, string codec, string? description, int width, int height);
-internal sealed record ScreenDecoderProbeReplyMessage(Guid requestId, bool supported);
+internal sealed record ScreenDecoderDiagnostic(string codec, int width, int height, string? mode, string reason);
+internal sealed record ScreenDecoderProbeReplyMessage(Guid requestId, bool supported, ScreenDecoderDiagnostic? diagnostic = null);
+[JsonSerializable(typeof(ScreenDecoderDiagnostic))]
 [JsonSerializable(typeof(ScreenDecoderProbeMessage))]
 [JsonSerializable(typeof(ScreenDecoderProbeReplyMessage))]
 internal partial class SharedJsonContext { }

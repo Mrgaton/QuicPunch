@@ -25,10 +25,11 @@ public static class NativeAudioServiceTests
         TestCaptureFailureAndRetry();
         TestMuteDeafenState();
         TestMasterAndPeerVolumeScaling();
-        TestOrderedAudioPackets();
+        AdaptiveAudioBufferTests.Run();
         await TestWindowsMixerClockAsync();
         await TestIncomingPeerAudioMixingAsync();
         TestLoopbackMode();
+        TestCapturePacketization();
         await TestDuplexAudioAsync();
         await TestWindowsPlaybackRingAsync();
         await TestPlaybackRecoversFromStallAsync();
@@ -56,33 +57,6 @@ public static class NativeAudioServiceTests
         Console.WriteLine("PASSED microphone failure reporting and retry");
     }
 
-    private static void TestOrderedAudioPackets()
-    {
-        using var codec = new OpusVoiceCodec();
-        using var context = new PeerAudioContext();
-        using var reference = new PeerAudioContext();
-        short[] tone = Enumerable.Range(0, 960).Select(i => (short)(Math.Sin(i * 2 * Math.PI * 440 / 48000) * 6000)).ToArray();
-        var packets = new List<byte[]>();
-        foreach (ushort sequence in new ushort[] { 65534, 65535, 0, 1, 3 }) packets.Add(codec.EncodeFramed(tone, sequence, 0));
-        var actual = new List<short[]>(); var expected = new List<short[]>();
-        foreach (var packet in packets) reference.ProcessIncomingPacket(packet, expected.Add);
-        context.ProcessIncomingPacket(packets[0], actual.Add);
-        context.ProcessIncomingPacket(packets[1], actual.Add);
-        context.ProcessIncomingPacket(packets[1], actual.Add); // Duplicate.
-        context.ProcessIncomingPacket(packets[0], actual.Add); // Late delivery.
-        foreach (var packet in packets.Skip(2)) context.ProcessIncomingPacket(packet, actual.Add);
-        if (actual.Count != expected.Count || actual.Where((samples, i) => !samples.SequenceEqual(expected[i])).Any() ||
-            context.DroppedFramesCount != 1 || context.IgnoredPacketsCount != 2)
-            throw new Exception("Late packets altered decoder continuity, loss accounting or sequence wraparound.");
-        typeof(PeerAudioContext).GetField("_lastPacketAt", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-            .SetValue(context, Environment.TickCount64 - 3000);
-        int before = actual.Count;
-        context.ProcessIncomingPacket(codec.EncodeFramed(tone, 60000, 0), actual.Add);
-        if (actual.Count != before + 1 || context.DroppedFramesCount != 1)
-            throw new Exception("A long interruption blocked resumed speech or synthesized a stale backlog.");
-        Console.WriteLine("PASSED Opus duplicate/late rejection, wraparound and contiguous decoder state without extra buffering");
-    }
-
     private static async Task TestWindowsMixerClockAsync()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -91,7 +65,7 @@ public static class NativeAudioServiceTests
             using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             using var clock = precise ? WindowsAudioClock.TryCreate(cancel.Token) : null;
             if (precise && clock == null) throw new Exception("Windows high-resolution clock unavailable on the test host.");
-            using var standard = precise ? null : new PeriodicTimer(TimeSpan.FromMilliseconds(20));
+            using var standard = precise ? null : new PeriodicTimer(TimeSpan.FromMilliseconds(OpusVoiceCodec.DefaultFrameDurationMs));
             var intervals = new List<double>();
             long previous = System.Diagnostics.Stopwatch.GetTimestamp();
             for (int i = 0; i < 40; i++)
@@ -114,7 +88,7 @@ public static class NativeAudioServiceTests
         }
         var baseline = await Task.Factory.StartNew(() => Measure(false), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         var precise = await Task.Factory.StartNew(() => Measure(true), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-        static string Describe(double[] values) => $"mean={values.Average():F2}ms, min={values.Min():F2}ms, max={values.Max():F2}ms, p95 error={values.Select(v => Math.Abs(v-20)).Order().ElementAt((int)(values.Length*.95)):F2}ms";
+        static string Describe(double[] values) => $"mean={values.Average():F2}ms, min={values.Min():F2}ms, max={values.Max():F2}ms, p95 error={values.Select(v => Math.Abs(v-OpusVoiceCodec.DefaultFrameDurationMs)).Order().ElementAt((int)(values.Length*.95)):F2}ms";
         Console.WriteLine("Mixer cadence, standard: " + Describe(baseline));
         Console.WriteLine("Mixer cadence, Windows precise: " + Describe(precise));
         Console.WriteLine("PASSED Windows deadline clock, stall recovery and cancellation (no added audio queue)");
@@ -228,7 +202,8 @@ public static class NativeAudioServiceTests
 
         service.RemovePeer(peerId);
         service.Stop();
-        Console.WriteLine($"PASSED (Audio level fired: {levelFired})");
+        if (!levelFired) throw new Exception("Playback did not meter decoded audio.");
+        Console.WriteLine("PASSED decoded audio and playback meter");
     }
 
     private static void TestLoopbackMode()
@@ -256,6 +231,37 @@ public static class NativeAudioServiceTests
             throw new Exception("Expected IsTestLoopback == false");
 
         Console.WriteLine("PASSED");
+    }
+
+    private static void TestCapturePacketization()
+    {
+        using var backend = new CaptureTestBackend();
+        using var service = new NativeAudioService(backend);
+        using var reference = new OpusVoiceCodec();
+        service.Start();
+        var packets = new List<byte[]>();
+        service.OnAudioPacketReady += packets.Add;
+        short[] signal = Enumerable.Range(0, 1440).Select(i => (short)(5000 * Math.Sin(i * 0.07))).ToArray();
+        backend.Capture(signal[..123]);
+        if (packets.Count != 0) throw new Exception("Encoded an incomplete microphone frame.");
+        backend.Capture(signal[123..1123]); backend.Capture(signal[1123..]);
+        if (packets.Count != 3) throw new Exception("Partial/batched capture lost 10ms frames.");
+        ushort previousTimestamp = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            OpusVoiceCodec.TryUnpackFramed(packets[i], out ushort seq, out ushort timestamp, out var payload);
+            if (seq != i + 1 || (i > 0 && unchecked((ushort)(timestamp - previousTimestamp)) != 10) ||
+                Concentus.Structs.OpusPacketInfo.GetNumSamples(payload, 48000) != 480 ||
+                !packets[i].SequenceEqual(reference.EncodeFramed(signal.AsSpan(i * 480, 480), seq, timestamp)))
+                throw new Exception("Capture packetization changed PCM, duration, sequence or media timestamps.");
+            previousTimestamp = timestamp;
+        }
+        service.IsMuted = true; backend.Capture(new short[240]);
+        service.IsMuted = false; backend.Capture(new short[240]);
+        if (packets.Count != 3) throw new Exception("Unmute transmitted buffered samples captured while muted.");
+        backend.Capture(new short[240]);
+        if (packets.Count != 4) throw new Exception("Unmute did not resume full frames.");
+        Console.WriteLine("PASSED 10ms packetization, sample-exact batched capture, timestamps and mute boundary");
     }
 
     private static async Task TestDuplexAudioAsync()
@@ -291,12 +297,12 @@ public static class NativeAudioServiceTests
             if (!backend.StartPlayback()) throw new Exception(backend.PlaybackError);
             // Silence exercises the real driver without playing a tone or opening the microphone.
             for (int i = 0; i < 3; i++) backend.PlaySamples(new short[960]);
-            if (backend.SubmittedPlaybackFrames != 3)
+            if (backend.SubmittedPlaybackFrames != 4)
                 throw new Exception("WinMM discarded its first frames before ever queueing audio.");
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-            while (backend.CompletedPlaybackFrames < 3) await Task.Delay(10, timeout.Token);
-            backend.PlaySamples(new short[480]);
             while (backend.CompletedPlaybackFrames < 4) await Task.Delay(10, timeout.Token);
+            backend.PlaySamples(new short[480]);
+            while (backend.CompletedPlaybackFrames < 6) await Task.Delay(10, timeout.Token);
             if (backend.PlaybackError != null) throw new Exception(backend.PlaybackError);
             backend.StopPlayback();
         }
@@ -304,6 +310,22 @@ public static class NativeAudioServiceTests
             throw new Exception("Invalid output device must surface a playback error.");
         if (!backend.StartPlayback() || backend.PlaybackError != null)
             throw new Exception("Selecting a working output must clear the playback error.");
+        using (var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        using (var clock = WindowsAudioClock.TryCreate(stop.Token))
+        {
+            if (clock != null)
+            {
+                var silence = new short[OpusVoiceCodec.DefaultFrameSize];
+                for (int tick = 0; tick < 150; tick++)
+                {
+                    if (!clock.WaitForNextTick()) throw new Exception("Continuous playback timed out.");
+                    backend.PlaySamples(silence);
+                }
+                if (backend.DroppedPlaybackFrames != 0 || backend.PlaybackError != null)
+                    throw new Exception("Continuous 10ms WinMM playback dropped audio.");
+                Console.WriteLine($"WinMM continuous 10ms: dropped={backend.DroppedPlaybackFrames}, refills after drain={backend.PlaybackRefills}");
+            }
+        }
         Console.WriteLine("PASSED real WinMM initial buffers, completion, reuse, restart and device failure/retry");
     }
 
@@ -325,13 +347,13 @@ public static class NativeAudioServiceTests
         {
             service.EnqueueIncomingAudio(peerId, PcmFrame(1000));
             if (!backend.Entered.Wait(TimeSpan.FromSeconds(2))) throw new Exception("Mixer did not start playback.");
-            for (short value = 1001; value <= 1010; value++) service.EnqueueIncomingAudio(peerId, PcmFrame(value));
-            if (service.GetPeerBufferedAudioMs(peerId) > 60) throw new Exception("Stalled playback accumulated more than 60ms of speech.");
+            for (short value = 1001; value <= 1050; value++) service.EnqueueIncomingAudio(peerId, PcmFrame(value));
+            if (service.GetPeerBufferedAudioMs(peerId) > PeerAudioContext.MaximumBufferedMs) throw new Exception("Stalled playback exceeded the bounded adaptive queue.");
             backend.Resume.Set();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             while (backend.Played.Count < 4) await Task.Delay(10, timeout.Token);
             short[] played = backend.Played.ToArray();
-            if (played[1] < 1008 || played[3] != 1010)
+            if (played[2] < 1035 || !backend.Played.Any(v => v >= 1035))
                 throw new Exception("Playback retained stale speech after the output recovered.");
         }
         finally { backend.Resume.Set(); service.Stop(); }
@@ -472,6 +494,15 @@ public static class NativeAudioServiceTests
                     QuicPunch.QuicConnection.CreateDummy(new MemoryStream(), QuicConnectionRole.Client));
                 using var secondSession = new VoiceCallHandler.VoiceCallSession(handler, secondPeer, new MemoryStream(),
                     QuicPunch.QuicConnection.CreateDummy(new MemoryStream(), QuicConnectionRole.Client));
+                for (int i = 0; i < 5; i++) handler.UpdateAudioBitrate(firstSession, 0, 150);
+                AssertCapturedPacket(64000); // Stable intercontinental RTT is not congestion.
+                handler.UpdateAudioTelemetry(firstSession, new() { RttMs = 150, SendTotalPackets = 1000, SendSuspectedLostPackets = 100 });
+                handler.UpdateAudioTelemetry(firstSession, new() { RttMs = 150, SendTotalPackets = 1100, SendSuspectedLostPackets = 110 });
+                AssertCapturedPacket(56000);
+                handler.UpdateAudioTelemetry(firstSession, new() { RttMs = 150, SendTotalPackets = 1200, SendSuspectedLostPackets = 110 });
+                AssertCapturedPacket(64000); // Historical loss does not prevent recovery.
+                handler.UpdateAudioTelemetry(firstSession, new() { RttMs = 150, SendTotalPackets = 10, SendSuspectedLostPackets = 0 });
+                AssertCapturedPacket(64000); // Reset counters must not underflow.
                 handler.UpdateAudioBitrate(firstSession, 0.1, 150);
                 AssertCapturedPacket(56000);
                 handler.UpdateAudioBitrate(secondSession, 0, 20);
@@ -558,7 +589,8 @@ public static class NativeAudioServiceTests
         public bool StartPlayback(string? deviceId = null) => true;
         public void PlaySamples(short[] samples)
         {
-            Played.Enqueue(samples[0]);
+            if (samples.All(v => v == 0)) return;
+            Played.Enqueue(samples[^1]);
             if (Played.Count == 1) { Entered.Set(); Resume.Wait(TimeSpan.FromSeconds(3)); }
         }
         public void StopPlayback() { }

@@ -123,6 +123,12 @@ namespace QuicPunch.Multiplexer
             _sessionStateChanged = sessionStateChanged;
             _transportOptions = transportOptions ?? new();
             _transportOptions.Validate();
+            if (physicalConnection.IsTor)
+                _transportOptions = _transportOptions with
+                {
+                    HeartbeatInterval = TimeSpan.FromSeconds(Math.Max(5, _transportOptions.HeartbeatInterval.TotalSeconds)),
+                    HeartbeatTimeout = TimeSpan.FromSeconds(Math.Max(20, _transportOptions.HeartbeatTimeout.TotalSeconds))
+                };
 
             if (initialControlStream != null)
             {
@@ -340,7 +346,9 @@ namespace QuicPunch.Multiplexer
                 if (!accepted || !_accessCheck(_peer))
                 {
                     _activeSessions.TryRemove(sessionId, out _);
-                    throw new SessionRejectedException($"Remote peer {_peer.Name} rejected session for protocol {protocolId}.");
+                    string? protocolName = transport.Handler?.ProtocolName;
+                    if (string.IsNullOrWhiteSpace(protocolName)) protocolName = "Application";
+                    throw new SessionRejectedException($"Remote peer {_peer.Name} rejected session for protocol {protocolName}.");
                 }
 
                 QuicPunchLog.Info($"[MULTIPLEXER] Virtual session {sessionId} for protocol {protocolId} established with {_peer.Name}.");

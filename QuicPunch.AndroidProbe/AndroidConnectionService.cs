@@ -4,6 +4,9 @@ using Android.Content.PM;
 using QuicNet.Protocols;
 using QuicNet.Settings;
 using QuicNet.WebUi;
+using QuicNet.Watch.Protocols;
+using QuicNet.Watch.Services;
+using QuicNet.Watch.Web;
 using QuicPunch.AndroidProbe.Shared;
 
 namespace QuicPunch.AndroidProbe;
@@ -23,6 +26,11 @@ public sealed class AndroidConnectionService : Service
     private ChatHandler? _chatHandler;
     private VoiceCallHandler? _voiceCallHandler;
     private SpeedTestHandler? _speedTestHandler;
+    private WatchControlHandler? _watchControl;
+    private MediaTransferHandler? _watchMedia;
+    private MediaLibrary? _watchLibrary;
+    private WatchWebServer? _watchWeb;
+    private AndroidWatchFilePicker? _watchPicker;
     private Android.Net.Wifi.WifiManager.MulticastLock? _multicastLock;
     private Android.Net.ConnectivityManager? _connectivity;
     private NetworkObserver? _networkObserver;
@@ -32,9 +40,11 @@ public sealed class AndroidConnectionService : Service
     {
         private readonly AndroidConnectionService _owner;
         private readonly NetworkPathTracker _path;
+        private readonly CancellationToken _lifetime;
         public NetworkObserver(AndroidConnectionService owner)
         {
             _owner = owner;
+            _lifetime = owner._cts!.Token;
             var network = owner._connectivity?.ActiveNetwork;
             var properties = network == null ? null : owner._connectivity?.GetLinkProperties(network);
             _path = new NetworkPathTracker(network?.ToString(), Fingerprint(properties));
@@ -52,21 +62,24 @@ public sealed class AndroidConnectionService : Service
         }
         private void Changed(Android.Net.Network network, Android.Net.LinkProperties? properties)
         {
-            if (_path.Update(network.ToString(), Fingerprint(properties))) _ = _owner.RefreshNetworkAsync();
+            if (!_lifetime.IsCancellationRequested && _path.Update(network.ToString(), Fingerprint(properties)))
+                _ = _owner.RefreshNetworkAsync(_lifetime);
         }
-        public override void OnAvailable(Android.Net.Network network) =>
-            Changed(network, _owner._connectivity?.GetLinkProperties(network));
+        // API 26+ delivers OnLinkPropertiesChanged immediately after OnAvailable.
+        // A synchronous GetLinkProperties in OnAvailable can return stale/null
+        // data and falsely cancel handshakes before the ordered callback arrives.
         public override void OnLost(Android.Net.Network network)
         {
-            if (_path.Lost(network.ToString())) _ = _owner.RefreshNetworkAsync();
+            if (!_lifetime.IsCancellationRequested && _path.Lost(network.ToString()))
+                _ = _owner.RefreshNetworkAsync(_lifetime);
         }
         public override void OnLinkPropertiesChanged(Android.Net.Network network, Android.Net.LinkProperties properties) =>
             Changed(network, properties);
     }
 
-    private async Task RefreshNetworkAsync()
+    private async Task RefreshNetworkAsync(CancellationToken lifetime)
     {
-        try { if (_qcc != null) await _qcc.NotifyNetworkChangedAsync(_cts?.Token ?? default).ConfigureAwait(false); }
+        try { if (!lifetime.IsCancellationRequested && _qcc != null) await _qcc.NotifyNetworkChangedAsync(lifetime).ConfigureAwait(false); }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Android.Util.Log.Warn("QuicPunch", $"[NETWORK CHANGE] {ex.Message}"); }
     }
@@ -78,16 +91,16 @@ public sealed class AndroidConnectionService : Service
         if (intent?.Action == StopAction) { StopSelf(); return StartCommandResult.NotSticky; }
         try
         {
-            _microphoneAllowed |= intent?.GetBooleanExtra("allowMicrophone", false) == true &&
-                CheckSelfPermission(Android.Manifest.Permission.RecordAudio) == Permission.Granted;
+            _microphoneAllowed = CheckSelfPermission(Android.Manifest.Permission.RecordAudio) == Permission.Granted &&
+                (_microphoneAllowed || intent?.GetBooleanExtra("allowMicrophone", false) == true);
             var manager = (NotificationManager)GetSystemService(NotificationService)!;
-            manager.CreateNotificationChannel(new NotificationChannel(ChannelId, "Conexiones de QuicPunch", NotificationImportance.Low));
+            manager.CreateNotificationChannel(new NotificationChannel(ChannelId, "Conexiones de QuicNet", NotificationImportance.Low));
             var open = PendingIntent.GetActivity(this, 0, new Intent(this, typeof(MainActivity)), PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
             var stop = PendingIntent.GetService(this, 1, new Intent(this, typeof(AndroidConnectionService)).SetAction(StopAction), PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
             var notification = new Notification.Builder(this, ChannelId)
-                .SetContentTitle("QuicPunch conectado")
+                .SetContentTitle("QuicNet activo")
                 .SetContentText("Conexiones y llamadas disponibles. Pulsa para abrir.")
-                .SetSmallIcon(Android.Resource.Drawable.IcDialogInfo)
+                .SetSmallIcon(Resource.Drawable.ic_stat_quicnet)
                 .SetContentIntent(open).SetOngoing(true)
                 .AddAction(new Notification.Action.Builder(Android.Graphics.Drawables.Icon.CreateWithResource(this, Android.Resource.Drawable.IcMenuCloseClearCancel), "Desconectar", stop).Build())
                 .Build();
@@ -162,6 +175,18 @@ public sealed class AndroidConnectionService : Service
         _qcc.RegisterProtocol(_voiceCallHandler);
         _qcc.RegisterProtocol(_speedTestHandler);
 
+        _watchControl = new WatchControlHandler();
+        _watchMedia = new MediaTransferHandler();
+        _qcc.RegisterProtocol(_watchControl);
+        _qcc.RegisterProtocol(_watchMedia);
+        _watchLibrary = new MediaLibrary(_watchMedia, Path.Combine(_qcc.NodeAppDataPath, "watch-media-cache"));
+        var watchRooms = new RoomCoordinator(_watchControl, _watchLibrary, _qcc.CurrentPeer?.Id
+            ?? throw new InvalidOperationException("La identidad local no está disponible."));
+        var watchConnector = new PeerConnector(_qcc, _watchControl, _watchMedia, _cts.Token);
+        _watchPicker = new AndroidWatchFilePicker(this, _cts.Token);
+        _watchWeb = new WatchWebServer(_qcc, _watchControl, _watchMedia, _watchLibrary, watchRooms, watchConnector, _cts);
+        _watchWeb.SetFilePicker(_watchPicker);
+
         _server = new WebUiServer(
             _qcc,
             _chatHandler,
@@ -170,13 +195,15 @@ public sealed class AndroidConnectionService : Service
             _speedTestHandler,
             preferencesStore,
             _cts,
-            watchWeb: null,
+            watchWeb: _watchWeb,
             port: 5071,
             capabilities: NodeCapabilities.CreateAndroid()
         )
         {
             ProbePingHandler = MainActivity.NativePing,
             AppPlatform = new AndroidAppPlatform(this),
+            ChatFiles = new AndroidChatFileOpener(),
+            DiskDocuments = new AndroidDiskDocuments(this),
             PlatformScreenCapture = new AndroidScreenCapture(this)
         };
         _updater = new QuicNet.Updates.AutoUpdateService(appDataDir, "android-arm64", (path, artifact, automatic) => {
@@ -185,7 +212,6 @@ public sealed class AndroidConnectionService : Service
         });
         _server.Updates = _updater;
         _server.Start();
-        _server.StartGeolocation();
         _updater.Start(_cts.Token);
 
         _ = Task.Run(async () =>
@@ -261,9 +287,14 @@ public sealed class AndroidConnectionService : Service
         }
         _voiceCallHandler?.Dispose();
         _speedTestHandler?.Dispose();
+        _server?.Stop();
+        if (_watchWeb != null) _ = _watchWeb.DisposeAsync();
+        _watchLibrary?.Dispose();
+        _watchControl?.Dispose();
+        _watchMedia?.Dispose();
+        _watchPicker?.Dispose();
         _qcc?.Dispose();
         _updater?.Dispose();
-        _server?.Stop();
         _cts?.Dispose();
         try { if (_multicastLock?.IsHeld == true) _multicastLock.Release(); } catch { }
         StopForeground(StopForegroundFlags.Remove);

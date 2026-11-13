@@ -3,7 +3,6 @@
   <Project Path="QuicPunch/QuicPunch.csproj" />
   <Project Path="QuicNet.Shared/QuicNet.Shared.csproj" />
   <Project Path="QuicNet.Geolocation/QuicNet.Geolocation.csproj" />
-  <Project Path="QuicNet.Geolocation.App/QuicNet.Geolocation.App.csproj" />
   <Project Path="QuicNet/QuicNet.csproj" />
   <Project Path="QuicPunch.AndroidProbe.Desktop/QuicPunch.AndroidProbe.Desktop.csproj" />
   <Project Path="QuicPunch.AndroidProbe/QuicPunch.AndroidProbe.csproj" />

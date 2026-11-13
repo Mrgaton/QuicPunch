@@ -39,7 +39,8 @@ try {
   await page.locator('#startWithSystem').check(); await page.locator('#runInBackground').check();
   await page.locator('#settings-tab-notifications').click();
   await page.getByLabel('Sonido: Mensajes', {exact:true}).uncheck();
-  await page.getByLabel('Sonido: Ana · Portátil', {exact:true}).uncheck();
+  await page.locator('#noticeContactRules summary').filter({hasText:'Ana · Portátil'}).click();
+  await page.getByLabel('Sonido: Ana · Portátil', {exact:true}).selectOption('false');
   await applied();
   assert.equal(settings.startWithSystem, true); assert.equal(settings.runInBackground, true);
   assert.equal(settings.notifications.features.messages.sound, false);

@@ -90,16 +90,7 @@ namespace QuicPunch.PacketHandler
                         }
                         else
                         {
-                            var sharedAddresses = (peer.Addresses ?? Array.Empty<IPAddress>())
-                                .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && Utilities.IsValidPeerAddress(a))
-                                .Distinct()
-                                .Take(32)
-                                .ToArray();
-                            w.Write((byte)sharedAddresses.Length);
-                            foreach (var e in sharedAddresses)
-                            {
-                                w.Write(e.GetAddressBytes());
-                            }
+                            EndpointAddressCodec.WriteList(w, peer.Addresses ?? []);
                         }
 
                         PortAdvertisementCodec.WriteDiscovery(w, portMode, peerPorts);
@@ -185,16 +176,7 @@ namespace QuicPunch.PacketHandler
                 };
                 w.Write(helloFlags.RawValue);
 
-                var addresses = (currentPeer.Addresses ?? Array.Empty<IPAddress>())
-                    .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && Utilities.IsValidPeerAddress(a))
-                    .Distinct()
-                    .Take(32)
-                    .ToArray();
-                w.Write((byte)addresses.Length);
-                foreach (var address in addresses)
-                {
-                    w.Write(address.GetAddressBytes());
-                }
+                EndpointAddressCodec.WriteList(w, currentPeer.Addresses ?? []);
 
                 PortAdvertisementCodec.WriteDiscovery(w, helloPortMode, advertisedPorts);
                 if (helloFlags.HasHostPort) w.Write(fallbackPort);
@@ -279,14 +261,15 @@ namespace QuicPunch.PacketHandler
                 w.Write(PreciseTime.GetCorrectTime().Ticks);
 
                 var cList = (candidates ?? Array.Empty<CandidateEndpoint>())
-                    .Where(c => c.EndPoint.Address.AddressFamily == AddressFamily.InterNetwork && c.EndPoint.Port > 0)
+                    .Where(c => EndpointAddressCodec.CanAdvertise(c.EndPoint.Address) && c.EndPoint.Port > 0)
                     .Take(32)
                     .ToArray();
-                w.Write((byte)cList.Length);
+                bool extended = cList.Any(c => c.EndPoint.Address.AddressFamily == AddressFamily.InterNetworkV6);
+                w.Write((byte)(cList.Length | (extended ? 128 : 0)));
                 foreach (var c in cList)
                 {
                     w.Write((byte)c.Type);
-                    w.Write(c.EndPoint.Address.GetAddressBytes());
+                    EndpointAddressCodec.Write(w, c.EndPoint.Address, extended);
                     w.Write((ushort)c.EndPoint.Port);
                     w.Write((uint)c.Priority);
                 }

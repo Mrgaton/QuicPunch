@@ -18,6 +18,12 @@ internal static class NotificationTests
         public string Description => "Test host";
         public bool Startup;
         public bool Reject;
+        public NotificationPlatformStatus? NotificationStatus;
+        public int SettingsOpened;
+        public bool OpenNotificationSettings() { SettingsOpened++; return true; }
+        public NotificationPlatformStatus? GetNotificationStatus(string category = "system") => NotificationStatus;
+        public readonly System.Collections.Concurrent.ConcurrentQueue<string> Dismissed = new();
+        public void DismissNotification(string id) => Dismissed.Enqueue(id);
         public TimeSpan? Idle;
         public TimeSpan? GetUserIdleTime() => Idle;
         public int RingCount, ActiveRings, MaxRings, RingVolume;
@@ -60,6 +66,27 @@ internal static class NotificationTests
         var now = new DateTimeOffset(2026, 10, 18, 12, 0, 0, TimeSpan.FromHours(2));
         AppNotice? Decide(bool focused = false) => AppNotificationService.Decide(prefs, "messages", "Alice", "Private", "/chat.html", hash, focused, now, "test");
         Check(Decide() is { Popup: true, Sound: true }, "Default delivery failed");
+        prefs.ContactDefaults = new() { Enabled = false, Popup = false, Sound = false };
+        Check(Decide() == null, "A new contact did not inherit disabled defaults");
+        prefs.Contacts[hash] = new() { Enabled = true };
+        Check(Decide() is { Popup: false, Sound: false }, "Partial override did not inherit the remaining defaults");
+        prefs.Contacts[hash] = new() { Enabled = true, Popup = true, Sound = true };
+        Check(Decide() is { Popup: true, Sound: true }, "An allowed contact could not override disabled defaults");
+        Check(AppNotificationService.Decide(prefs, "messages", "Other", "", "/", new string('B', 64), false, now, "other") == null,
+            "A contact exception enabled other contacts");
+        Check(AppNotificationService.Decide(prefs, "system", "QuicNet", "", "/", null, false, now, "system") is { Popup: true, Sound: true },
+            "Contact defaults silenced application notices without a contact");
+        prefs.DoNotDisturb = true; Check(Decide() == null, "Contact override bypassed DND"); prefs.DoNotDisturb = false;
+        prefs.Enabled = false; Check(Decide() == null, "Contact override bypassed global notifications"); prefs.Enabled = true;
+        prefs.Sound = false; Check(Decide() is { Sound: false }, "Contact override bypassed global sound"); prefs.Sound = true;
+        prefs.Features["messages"] = new() { Enabled = false }; Check(Decide() == null, "Contact override bypassed feature mute");
+        prefs.Features.Clear();
+        prefs.Contacts[hash].Popup = null;
+        Check(Decide() is { Popup: false, Sound: true }, "Returning one field to inheritance changed another override");
+        prefs.ContactDefaults.Popup = true;
+        Check(Decide() is { Popup: true, Sound: true }, "Inherited field did not follow a later default change");
+        prefs.Contacts.Clear(); Check(Decide() == null, "Resetting a contact did not restore inheritance");
+        prefs.ContactDefaults = new();
         prefs.DoNotDisturb = true; Check(Decide() == null, "DND did not block notifications");
         prefs.DoNotDisturbUntil = now.AddMinutes(-1); Check(Decide() != null, "Expired DND did not clear");
         prefs.DoNotDisturbUntil = now.AddHours(1); Check(Decide() == null, "Temporary DND ignored");
@@ -74,6 +101,17 @@ internal static class NotificationTests
         Check(Decide() is { Title: "QuicNet" } result && !result.Message.Contains("Private"), "Private preview leaked");
         prefs.Volume = 0; Check(Decide() is { Sound: false }, "Zero volume was not silent");
         Check(NotificationAudio.Wave("soft", 0).AsSpan(44).ToArray().All(b => b == 0), "Silent waveform contains audio");
+        var signals = new[] { "messages", "files", "screen", "system" }.Select(category => NotificationAudio.Wave("soft", 100, category)).ToArray();
+        Check(signals.Select(bytes => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))).Distinct().Count() == 4,
+            "Notification categories must have distinct audible signals");
+        foreach (string category in new[] { "messages", "files", "screen", "system", "calls" })
+        {
+            var resource = File.ReadAllBytes(Path.Combine("QuicPunch.AndroidProbe", "Resources", "raw", "notice_" + category + ".wav"));
+            var expected = category == "calls" ? NotificationAudio.Ringtone(100) : NotificationAudio.Wave("soft", 100, category);
+            Check(resource.Length == expected.Length && resource.AsSpan(0, 44).SequenceEqual(expected.AsSpan(0, 44)), "Android sound resource header differs: " + category);
+            for (int offset = 44; offset < expected.Length; offset += 2)
+                Check(Math.Abs(BitConverter.ToInt16(resource, offset) - BitConverter.ToInt16(expected, offset)) <= 1, "Android waveform differs: " + category);
+        }
         Check(NotificationAudio.Ringtone(0).AsSpan(44).ToArray().All(b => b == 0), "Zero-volume ringtone contains audio");
         var ring = NotificationAudio.Ringtone(100);
         Check(BitConverter.ToInt32(ring, 40) == ring.Length - 44 && ring.Length > NotificationAudio.Wave("soft", 100).Length * 3, "Ringtone WAV duration/header invalid");
@@ -108,7 +146,22 @@ internal static class NotificationTests
             store.Update(p => { p.Notifications.Contacts[hash] = new() { Sound = false }; p.RunInBackground = true; p.StartWithSystem = false; });
             Check(!new AppPreferencesStore(Path.Combine(directory, "ui-settings.json")).Snapshot().StartWithSystem, "Explicit startup opt-out was overwritten by defaults");
             var snapshot = store.Snapshot(); snapshot.Notifications.Contacts[hash].Sound = true;
-            Check(!store.Snapshot().Notifications.Contacts[hash].Sound, "Snapshot mutated stored rules");
+            Check(store.Snapshot().Notifications.Contacts[hash].Sound == false, "Snapshot mutated stored rules");
+            string inheritancePath = Path.Combine(directory, "contact-defaults.json");
+            var inheritanceStore = new AppPreferencesStore(inheritancePath);
+            inheritanceStore.Update(p => {
+                p.Notifications.ContactDefaults = new() { Enabled = false, Sound = false };
+                p.Notifications.Contacts[hash] = new() { Enabled = true, Sound = true };
+            });
+            var restoredRules = new AppPreferencesStore(inheritancePath).Snapshot().Notifications;
+            Check(!restoredRules.ContactDefaults.Enabled && restoredRules.Contacts[hash] is { Enabled: true, Sound: true, Popup: null },
+                "Persistence lost explicit true or inherited fields");
+            var isolatedRules = inheritanceStore.Snapshot().Notifications; isolatedRules.ContactDefaults.Enabled = true;
+            Check(!inheritanceStore.Snapshot().Notifications.ContactDefaults.Enabled, "Snapshot mutated stored contact defaults");
+            File.WriteAllText(inheritancePath, "{\"Notifications\":{\"Contacts\":{\"" + hash + "\":{\"Enabled\":true,\"Popup\":false,\"Sound\":true}}}}");
+            var legacyRules = new AppPreferencesStore(inheritancePath).Snapshot().Notifications;
+            Check(legacyRules.ContactDefaults is { Enabled: true, Popup: true, Sound: true } &&
+                legacyRules.Contacts[hash] is { Enabled: true, Popup: false, Sound: true }, "Legacy contact preferences changed during migration");
             try { store.Update(p => p.Notifications.Volume = 999); throw new Exception("Invalid settings accepted"); }
             catch (InvalidDataException) { }
             Check(store.Snapshot().Notifications.Volume == 60, "Failed update changed live settings");
@@ -168,6 +221,23 @@ internal static class NotificationTests
                 platform.Idle = null;
                 using var saved = await http.PostAsync("api/app/preferences", new StringContent(json, Encoding.UTF8, "application/json"));
                 Check(saved.IsSuccessStatusCode && platform.Startup && store.Snapshot().StartWithSystem, "Startup integration did not persist");
+                var contactConfig = new QuicNet.WebUi.Modules.AppBehaviorSettings(true, true, new()
+                {
+                    ContactDefaults = new() { Enabled = false, Sound = false },
+                    Contacts = new() { [hash] = new() { Enabled = true, Sound = true } }
+                });
+                string contactJson = JsonSerializer.Serialize(contactConfig, QuicNet.Serialization.SharedJson.WithOptions(new(JsonSerializerDefaults.Web)));
+                using (var contactSave = await http.PostAsync("api/app/preferences", new StringContent(contactJson, Encoding.UTF8, "application/json")))
+                    Check(contactSave.IsSuccessStatusCode, "API rejected inherited contact preferences");
+                using (var contactGet = JsonDocument.Parse(await http.GetStringAsync("api/app/preferences")))
+                {
+                    var actual = contactGet.RootElement.GetProperty("settings").GetProperty("notifications");
+                    Check(!actual.GetProperty("contactDefaults").GetProperty("enabled").GetBoolean() &&
+                        actual.GetProperty("contacts").GetProperty(hash).GetProperty("sound").GetBoolean(), "API lost contact defaults or explicit allow");
+                    Check(store.Snapshot().Notifications.Contacts[hash].Popup == null, "API materialized an inherited field");
+                }
+                using (var restoreConfig = await http.PostAsync("api/app/preferences", new StringContent(json, Encoding.UTF8, "application/json")))
+                    restoreConfig.EnsureSuccessStatusCode();
                 platform.Reject = true;
                 json = json.Replace("\"startWithSystem\":true", "\"startWithSystem\":false");
                 using var rejected = await http.PostAsync("api/app/preferences", new StringContent(json));
@@ -176,6 +246,18 @@ internal static class NotificationTests
                 Check(test.IsSuccessStatusCode && (await platform.Received.Task.WaitAsync(TimeSpan.FromSeconds(3))).Category == "system", "Native delivery did not run");
                 using (var testResult = JsonDocument.Parse(await test.Content.ReadAsStringAsync()))
                     Check(testResult.RootElement.GetProperty("sent").GetBoolean(), "Successful notification test did not report its result.");
+                platform.NotificationStatus = new(false, false, true, true, "Android tiene bloqueadas estas notificaciones.");
+                using (var state = JsonDocument.Parse(await http.GetStringAsync("api/notifications/status")))
+                    Check(!state.RootElement.GetProperty("enabled").GetBoolean() && state.RootElement.GetProperty("canOpenSettings").GetBoolean(), "Notification status must use the browser's camelCase contract");
+                using (var noToken = new HttpClient { BaseAddress = new(server.Url) })
+                using (var deniedSettings = await noToken.PostAsync("api/notifications/system-settings", null))
+                    Check(deniedSettings.StatusCode == HttpStatusCode.Forbidden && platform.SettingsOpened == 0, "System settings opened without CSRF");
+                using (var openSettings = await http.PostAsync("api/notifications/system-settings", null))
+                    Check(openSettings.StatusCode == HttpStatusCode.NoContent && platform.SettingsOpened == 1, "Native notification settings action failed");
+                using (var blocked = await http.PostAsync("api/notifications/test", null))
+                using (var blockedResult = JsonDocument.Parse(await blocked.Content.ReadAsStringAsync()))
+                    Check(!blockedResult.RootElement.GetProperty("sent").GetBoolean() && blockedResult.RootElement.GetProperty("reason").GetString() == "system_blocked", "System-denied notifications reported delivery");
+                platform.NotificationStatus = null;
                 store.Update(p => p.Notifications.DoNotDisturb = true);
                 platform.Received = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 using (var suppressed = await http.PostAsync("api/notifications/test", null))
@@ -251,10 +333,12 @@ internal static class NotificationTests
         using var notifications = new AppNotificationService(store, _ => { }) { Platform = platform };
         var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        notifications.RingIncomingCall(Guid.NewGuid(), hash, first.Task);
+        var firstId = Guid.NewGuid();
+        notifications.RingIncomingCall(firstId, hash, first.Task);
         await UntilAsync(() => Volatile.Read(ref platform.RingCount) >= 2, "Call did not ring repeatedly");
         platform.HoldRing = true;
-        notifications.RingIncomingCall(Guid.NewGuid(), new string('B', 64), second.Task);
+        var secondId = Guid.NewGuid();
+        notifications.RingIncomingCall(secondId, new string('B', 64), second.Task);
         await UntilAsync(() => Volatile.Read(ref platform.ActiveRings) == 1, "Second pending call did not preserve ringing");
         store.Update(p => p.Notifications.DoNotDisturb = true);
         await UntilAsync(() => Volatile.Read(ref platform.ActiveRings) == 0, "DND did not cancel playing ringtone");
@@ -276,6 +360,8 @@ internal static class NotificationTests
         await UntilAsync(() => Volatile.Read(ref platform.ActiveRings) == 0, "Cancelled/expired request kept ringing");
         count = platform.RingCount; await Task.Delay(150);
         Check(platform.RingCount == count, "Completed call restarted ringing");
+        Check(platform.Dismissed.Contains(firstId.ToString("N")) && platform.Dismissed.Contains(secondId.ToString("N")),
+            "Resolved calls left stale system notifications");
         store.Update(p => p.Notifications = new());
         Console.WriteLine("PASS recurring native ringtone: cadence, single playback, live DND/contact/focus/volume rules and cancellation");
     }

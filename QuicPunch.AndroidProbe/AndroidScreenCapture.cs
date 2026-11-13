@@ -2,6 +2,8 @@ using Android.App;
 using Android.Content;
 using Android.Content.PM;
 using Android.Hardware.Display;
+using Android.Hardware.Camera2;
+using Android.Hardware.Camera2.Params;
 using Android.Media;
 using Android.Media.Projection;
 using Android.OS;
@@ -24,6 +26,21 @@ internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCap
     internal CancellationTokenSource Lifetime = new();
     private readonly SemaphoreSlim _start = new(1);
 
+    public NativeCamera[] Cameras()
+    {
+        var manager = (CameraManager)context.GetSystemService(Context.CameraService)!;
+        return (manager.GetCameraIdList() ?? []).Select(id => {
+            using var info = manager.GetCameraCharacteristics(id);
+            var lens = (Java.Lang.Integer?)info.Get(CameraCharacteristics.LensFacing);
+            return new NativeCamera("camera:" + id, lens?.IntValue() == (int)LensFacing.Front ? "Cámara frontal" : "Cámara trasera " + id);
+        }).ToArray();
+    }
+    public ScreenEncoderCapability[] Encoders() => new[] { (1, "h264"), (5, "hevc"), (4, "av1") }.Select(c => {
+        string? component = AndroidVideoHost.FindComponent(c.Item1, 640, 360, true);
+        return new ScreenEncoderCapability(c.Item2 + "_mediacodec", c.Item2, component != null,
+            component == null ? "No hay codificador de hardware anunciado para 640×360." : "FFmpeg · " + component + ". El perfil final se valida al iniciar.");
+    }).ToArray();
+
     public async Task<NativeScreenProfile> StartAsync(ScreenEncoderOptions options, Func<byte[], Task> output, Action<string?> stopped)
     {
         if (!await _start.WaitAsync(0)) throw new InvalidOperationException("Ya se está solicitando la pantalla.");
@@ -36,7 +53,10 @@ internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCap
             ResumeSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Released = new(TaskCreationOptions.RunContinuationsAsynchronously);
             var activity = MainActivity.Foreground ?? throw new InvalidOperationException("Abre QuicNet para compartir la pantalla.");
-            var permission = await activity.RequestProjectionAsync().WaitAsync(Lifetime.Token);
+            bool camera = options.Source.StartsWith("camera:", StringComparison.Ordinal);
+            Intent? permission = null;
+            if (camera) await activity.RequestNativeCameraAsync().WaitAsync(Lifetime.Token);
+            else permission = await activity.RequestProjectionAsync().WaitAsync(Lifetime.Token);
             Lifetime.Token.ThrowIfCancellationRequested();
             Pending = this;
             context.StartForegroundService(new Intent(context, typeof(AndroidScreenCaptureService)).PutExtra("permission", permission));
@@ -58,7 +78,7 @@ internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCap
     }
 }
 
-[Service(Exported = false, ForegroundServiceType = ForegroundService.TypeMediaProjection)]
+[Service(Exported = false, ForegroundServiceType = ForegroundService.TypeMediaProjection | ForegroundService.TypeCamera)]
 public sealed class AndroidScreenCaptureService : Service
 {
     internal static bool IsCapturing { get; private set; }
@@ -66,7 +86,11 @@ public sealed class AndroidScreenCaptureService : Service
     private AndroidScreenCapture? _capture;
     private MediaProjection? _projection;
     private MediaProjection.Callback? _callback;
-    private MediaCodec? _codec;
+    private nint _encoder;
+    private CameraDevice? _camera;
+    private CameraCaptureSession? _cameraSession;
+    private HandlerThread? _cameraThread;
+    private readonly TaskCompletionSource _cameraReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Android.Views.Surface? _surface;
     private VirtualDisplay? _display;
     private Task? _pump;
@@ -92,40 +116,58 @@ public sealed class AndroidScreenCaptureService : Service
             manager.CreateNotificationChannel(new NotificationChannel(Channel, "Pantalla compartida", NotificationImportance.Low));
             var open = PendingIntent.GetActivity(this, 10, new Intent(this, typeof(MainActivity)).PutExtra("quicnetRoute", "/call.html"), PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent);
             var stop = PendingIntent.GetService(this, 11, new Intent(this, typeof(AndroidScreenCaptureService)).SetAction("stop"), PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent);
-            var notice = new Notification.Builder(this, Channel).SetContentTitle("Compartiendo tu pantalla")
+            bool camera = _capture.Options.Source.StartsWith("camera:", StringComparison.Ordinal);
+            var notice = new Notification.Builder(this, Channel).SetContentTitle(camera ? "Compartiendo tu cámara" : "Compartiendo tu pantalla")
                 .SetContentText("Los participantes de la llamada pueden verla.").SetSmallIcon(Android.Resource.Drawable.IcMenuView)
                 .SetContentIntent(open).SetOngoing(true)
                 .AddAction(new Notification.Action.Builder(null, "Dejar de compartir", stop).Build()).Build();
-            StartForeground(5072, notice, ForegroundService.TypeMediaProjection);
-#pragma warning disable CA1422, CS0618
-            var permission = (Intent?)intent!.GetParcelableExtra("permission") ?? throw new InvalidOperationException("Falta el permiso de captura.");
-#pragma warning restore CA1422, CS0618
-            var projectionManager = (MediaProjectionManager)GetSystemService(MediaProjectionService)!;
-            _projection = projectionManager.GetMediaProjection((int)Result.Ok, permission) ?? throw new InvalidOperationException("Android ha denegado la pantalla.");
-            _callback = new ProjectionCallback(this);
-            _projection.RegisterCallback(_callback, new Handler(Looper.MainLooper!));
+            StartForeground(5072, notice, camera ? (OperatingSystem.IsAndroidVersionAtLeast(30) ? ForegroundService.TypeCamera : (ForegroundService)0) : ForegroundService.TypeMediaProjection);
             var metrics = Resources!.DisplayMetrics!;
             var options = _capture.Options;
-            double scale = Math.Min(1, Math.Min((double)options.Width / metrics.WidthPixels, (double)options.Height / metrics.HeightPixels));
-            int width = Math.Max(128, (int)(metrics.WidthPixels * scale) / 2 * 2), height = Math.Max(128, (int)(metrics.HeightPixels * scale) / 2 * 2);
-            int fps = Math.Clamp(options.Fps, 15, 60);
-            using var format = MediaFormat.CreateVideoFormat("video/avc", width, height);
-            format.SetInteger(MediaFormat.KeyColorFormat, (int)MediaCodecCapabilities.Formatsurface);
-            format.SetInteger(MediaFormat.KeyBitRate, Math.Clamp(options.Bitrate, 500_000, 12_000_000));
-            format.SetInteger(MediaFormat.KeyFrameRate, fps);
-            format.SetInteger(MediaFormat.KeyIFrameInterval, 1);
-            format.SetInteger("max-bframes", 0);
-            format.SetInteger("repeat-previous-frame-after", 1_000_000 / fps);
-            _codec = MediaCodec.CreateEncoderByType("video/avc")!;
-            _codec.Configure(format, null, null, MediaCodecConfigFlags.Encode);
-            _surface = _codec.CreateInputSurface(); _codec.Start();
-            _display = _projection.CreateVirtualDisplay("QuicNet", width, height, (int)metrics.DensityDpi,
-                (Android.Views.DisplayFlags)(int)VirtualDisplayFlags.AutoMirror, _surface, null, null);
+            int width, height;
+            if (camera)
+            {
+                var managerCamera = (CameraManager)GetSystemService(CameraService)!;
+                using var info = managerCamera.GetCameraCharacteristics(options.Source[7..]);
+                var configurations = (StreamConfigurationMap?)info.Get(CameraCharacteristics.ScalerStreamConfigurationMap);
+                var sizes = configurations?.GetOutputSizes(Java.Lang.Class.FromType(typeof(MediaCodec))) ?? [];
+                var size = sizes.Where(s => s.Width <= options.Width && s.Height <= options.Height)
+                    .OrderByDescending(s => s.Width * s.Height).FirstOrDefault()
+                    ?? throw new InvalidOperationException("La cámara no ofrece una resolución dentro del límite seleccionado.");
+                width = size.Width; height = size.Height;
+            }
+            else
+            {
+#pragma warning disable CA1422, CS0618
+                var permission = (Intent?)intent!.GetParcelableExtra("permission") ?? throw new InvalidOperationException("Falta el permiso de captura.");
+#pragma warning restore CA1422, CS0618
+                var projectionManager = (MediaProjectionManager)GetSystemService(MediaProjectionService)!;
+                _projection = projectionManager.GetMediaProjection((int)Result.Ok, permission) ?? throw new InvalidOperationException("Android ha denegado la pantalla.");
+                _callback = new ProjectionCallback(this);
+                _projection.RegisterCallback(_callback, new Handler(Looper.MainLooper!));
+                double scale = Math.Min(1, Math.Min((double)options.Width / metrics.WidthPixels, (double)options.Height / metrics.HeightPixels));
+                width = Math.Max(128, (int)(metrics.WidthPixels * scale) / 2 * 2); height = Math.Max(128, (int)(metrics.HeightPixels * scale) / 2 * 2);
+            }
+            int fps = options.Fps;
+            string component = AndroidVideoHost.FindComponent(options.CodecId, width, height, true)
+                ?? throw new InvalidOperationException("No hay codificador FFmpeg/MediaCodec para este códec y resolución.");
+            _surface = MediaCodec.CreatePersistentInputSurface();
+            _encoder = NativeMedia.qpv_encoder_open(options.CodecId, width, height, fps, options.Bitrate,
+                options.KeyFrameIntervalMs, _surface!.Handle, component, options.RateControl == "vbr" ? 1 : 0, options.BufferMs);
+            if (_encoder == 0) throw new InvalidOperationException(NativeMedia.Error);
             _lifetime = CancellationTokenSource.CreateLinkedTokenSource(_capture.Lifetime.Token);
+            if (camera)
+            {
+                _cameraThread = new HandlerThread("QuicNet camera"); _cameraThread.Start();
+                var managerCamera = (CameraManager)GetSystemService(CameraService)!;
+                managerCamera.OpenCamera(options.Source[7..], new CameraState(this), new Handler(_cameraThread.Looper!));
+            }
+            else _display = _projection!.CreateVirtualDisplay("QuicNet", width, height, (int)metrics.DensityDpi,
+                (Android.Views.DisplayFlags)(int)VirtualDisplayFlags.AutoMirror, _surface, null, null);
             IsCapturing = true;
             long generation = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var packetizer = new AndroidAvcPacketizer(width, height, generation);
-            _profile = new NativeScreenProfile("Android MediaCodec", 1, width, height, fps, packetizer.Codec, null, generation, "android");
+            var packetizer = new NativeCapturePacketizer(options.CodecId, width, height, generation);
+            _profile = new NativeScreenProfile("FFmpeg · " + component, options.CodecId, width, height, fps, packetizer.Codec, null, generation, "android");
             _pump = Task.Run(() => PumpAsync(packetizer, _lifetime.Token));
         }
         catch (Exception ex)
@@ -136,7 +178,7 @@ public sealed class AndroidScreenCaptureService : Service
         return StartCommandResult.NotSticky;
     }
 
-    private async Task PumpAsync(AndroidAvcPacketizer packetizer, CancellationToken ct)
+    private async Task PumpAsync(NativeCapturePacketizer packetizer, CancellationToken ct)
     {
         var queue = new RealtimeScreenFrameQueue();
         var sender = Task.Run(async () =>
@@ -147,41 +189,20 @@ public sealed class AndroidScreenCaptureService : Service
         string? error = null;
         try
         {
-            using var info = new MediaCodec.BufferInfo();
-            long lastKey = Environment.TickCount64;
+            byte[] output = new byte[2 * 1024 * 1024];
+            if (_capture!.Options.Source.StartsWith("camera:", StringComparison.Ordinal))
+                await _cameraReady.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
             while (!ct.IsCancellationRequested)
             {
                 if (_capture!.ResumeSignal.Task.IsCompleted && (!VoiceCallHandler.IsLocalScreenSharing || VoiceCallHandler.ActiveCalls.IsEmpty)) break;
                 if (sender.IsFaulted) await sender;
-                if (Environment.TickCount64 - lastKey > 1000)
-                {
-                    using var request = new Bundle(); request.PutInt(MediaCodec.ParameterKeyRequestSyncFrame, 0); _codec!.SetParameters(request); lastKey = Environment.TickCount64;
-                }
-                int index = _codec!.DequeueOutputBuffer(info, 20_000);
-                if (index == (int)MediaCodecInfoState.OutputFormatChanged)
-                {
-                    using var outputFormat = _codec.OutputFormat;
-                    foreach (string key in new[] { "csd-0", "csd-1" })
-                    {
-                        using var csd = outputFormat.GetByteBuffer(key);
-                        if (csd == null) continue;
-                        byte[] config = new byte[csd.Remaining()]; csd.Get(config); packetizer.Packet(config, 0, false);
-                    }
-                    if (packetizer.Description != null) _capture.Ready.TrySetResult(_profile! with { Codec = packetizer.Codec, Description = packetizer.Description });
-                }
-                if (index < 0) continue;
-                try
-                {
-                    using var buffer = _codec.GetOutputBuffer(index);
-                    if (buffer == null || info.Size == 0) continue;
-                    buffer.Position(info.Offset); buffer.Limit(info.Offset + info.Size);
-                    byte[] bytes = new byte[info.Size]; buffer.Get(bytes);
-                    bool key = (info.Flags & MediaCodecBufferFlags.KeyFrame) != 0;
-                    byte[]? packet = packetizer.Packet(bytes, info.PresentationTimeUs, key);
-                    if (packetizer.Description != null) _capture.Ready.TrySetResult(_profile! with { Codec = packetizer.Codec, Description = packetizer.Description });
-                    if (packet != null && _capture.ResumeSignal.Task.IsCompleted) queue.Enqueue(new EncodedScreenFrame(packet, (packet[0] & 1) != 0, info.PresentationTimeUs));
-                }
-                finally { _codec.ReleaseOutputBuffer(index, false); }
+                int length = NativeMedia.qpv_encoder_read(_encoder, output, output.Length, out long timestamp, out int key);
+                if (length < 0) throw new InvalidOperationException(NativeMedia.Error);
+                if (length == 0) { await Task.Delay(3, ct); continue; }
+                byte[]? packet = packetizer.Packet(output.AsSpan(0, length).ToArray(), timestamp, key != 0);
+                if (packetizer.Description != null) _capture.Ready.TrySetResult(_profile! with { Codec = packetizer.Codec, Description = packetizer.Description });
+                if (packet != null && _capture.ResumeSignal.Task.IsCompleted)
+                    queue.Enqueue(new EncodedScreenFrame(packet, (packet[0] & 1) != 0, timestamp));
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -196,6 +217,37 @@ public sealed class AndroidScreenCaptureService : Service
         }
     }
 
+    private sealed class CameraState(AndroidScreenCaptureService owner) : CameraDevice.StateCallback
+    {
+        public override void OnOpened(CameraDevice camera)
+        {
+            if (owner._lifetime?.IsCancellationRequested != false) { camera.Close(); return; }
+            owner._camera = camera;
+#pragma warning disable CA1422, CS0618
+            camera.CreateCaptureSession(new[] { owner._surface! }, new CameraSessionState(owner), new Handler(owner._cameraThread!.Looper!));
+#pragma warning restore CA1422, CS0618
+        }
+        public override void OnDisconnected(CameraDevice camera) { owner._cameraReady.TrySetException(new IOException("Cámara desconectada.")); camera.Close(); owner.StopSelf(); }
+        public override void OnError(CameraDevice camera, CameraError error) { owner._cameraReady.TrySetException(new IOException("Error de cámara: " + error)); camera.Close(); owner.StopSelf(); }
+    }
+    private sealed class CameraSessionState(AndroidScreenCaptureService owner) : CameraCaptureSession.StateCallback
+    {
+        public override void OnConfigured(CameraCaptureSession session)
+        {
+            try
+            {
+                if (owner._lifetime?.IsCancellationRequested != false) { session.Close(); return; }
+                owner._cameraSession = session;
+                using var request = owner._camera!.CreateCaptureRequest(CameraTemplate.Record);
+                request.AddTarget(owner._surface!);
+                session.SetRepeatingRequest(request.Build(), null, new Handler(owner._cameraThread!.Looper!));
+                owner._cameraReady.TrySetResult();
+            }
+            catch (Exception ex) { owner._cameraReady.TrySetException(ex); owner.StopSelf(); }
+        }
+        public override void OnConfigureFailed(CameraCaptureSession session) { owner._cameraReady.TrySetException(new IOException("La cámara rechazó la superficie del codificador.")); owner.StopSelf(); }
+    }
+
     public override void OnDestroy()
     {
         IsCapturing = false; _lifetime?.Cancel();
@@ -205,7 +257,9 @@ public sealed class AndroidScreenCaptureService : Service
         {
             if (pump != null) try { await pump; } catch { }
             try { _display?.Release(); _display?.Dispose(); } catch { }
-            try { _codec?.Stop(); _codec?.Release(); _codec?.Dispose(); } catch { }
+            try { _cameraSession?.StopRepeating(); _cameraSession?.Close(); _cameraSession?.Dispose(); _camera?.Close(); _camera?.Dispose(); } catch { }
+            try { _cameraThread?.QuitSafely(); _cameraThread?.Join(1000); _cameraThread?.Dispose(); } catch { }
+            try { if (_encoder != 0) { NativeMedia.qpv_encoder_close(_encoder); _encoder = 0; } } catch { }
             try { _surface?.Release(); _surface?.Dispose(); } catch { }
             try { if (_callback != null) _projection?.UnregisterCallback(_callback); _projection?.Stop(); _projection?.Dispose(); _callback?.Dispose(); } catch { }
             _lifetime?.Dispose();

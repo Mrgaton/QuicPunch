@@ -10,8 +10,12 @@ using QuicPunch.Helpers;
 namespace QuicPunchTests.Tests;
     public static class SecurityDiscoveryTests
     {
+        private static QuicPunch.QuicPunch Isolate(QuicPunch.QuicPunch node)
+        { node.EnableUpnp = false; node.Discovery.LanDiscoveryPort = 0; return node; }
+
         public static async Task RunNostrTrustTestsAsync()
         {
+            Fixtures.LoopbackOnlyNetwork.Configure();
             await TestNostrDiscoveryUpdatesSavedPeerInPeerStoreAndTriggersReconnect();
             await TestNostrSpoofingRejectedForSavedPeer();
             await TestNostrCertificateVerificationAndValidation();
@@ -19,6 +23,7 @@ namespace QuicPunchTests.Tests;
 
         public static async Task RunAsync()
         {
+            Fixtures.LoopbackOnlyNetwork.Configure();
             Console.WriteLine("==================================================");
             Console.WriteLine("   SECURITY & DISCOVERY MODEL VERIFICATION TESTS  ");
             Console.WriteLine("==================================================");
@@ -99,8 +104,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -176,8 +181,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -223,7 +228,7 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qp.StartAsync();
 
                 long timestamp = PreciseTime.GetCorrectTime().Ticks;
@@ -259,8 +264,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -432,19 +437,18 @@ namespace QuicPunchTests.Tests;
             };
             badPeer.SetCertificateHash(fakeHash);
 
-            string badToken = Utilities.EncodeEndpointToken(badPeer);
             bool caught = false;
             try
             {
-                Utilities.DecodeEndpointToken(badToken);
+                Utilities.EncodeEndpointToken(badPeer);
             }
-            catch (InvalidDataException)
+            catch (InvalidOperationException)
             {
                 caught = true;
             }
 
             if (!caught)
-                throw new Exception("DecodeEndpointToken failed to throw InvalidDataException for dangerous broadcast IP.");
+                throw new Exception("EncodeEndpointToken failed to reject an address list containing only broadcast.");
 
             Console.WriteLine("PASSED");
             await Task.CompletedTask;
@@ -575,8 +579,8 @@ namespace QuicPunchTests.Tests;
             {
                 byte[] pwd = System.Text.Encoding.UTF8.GetBytes("SuperSecretPassword123!");
 
-                using var qpStandaloneA = new QuicPunch.QuicPunch(appDataPath: tempDirA, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpStandaloneB = new QuicPunch.QuicPunch(appDataPath: tempDirB, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpStandaloneA = new QuicPunch.QuicPunch(appDataPath: tempDirA, connectionPassword: pwd) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpStandaloneB = new QuicPunch.QuicPunch(appDataPath: tempDirB, connectionPassword: pwd) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 if (qpStandaloneA.PasswordHash == null || qpStandaloneB.PasswordHash == null)
                     throw new Exception("PasswordHash was null on standalone instances.");
@@ -584,13 +588,13 @@ namespace QuicPunchTests.Tests;
                 if (!CryptographicOperations.FixedTimeEquals(qpStandaloneA.PasswordHash, qpStandaloneB.PasswordHash))
                     throw new Exception("Standalone instances with the same password did not derive identical PasswordHash.");
 
-                using var qpWrongPwd = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirA, "wrong"), connectionPassword: System.Text.Encoding.UTF8.GetBytes("WrongPassword!")) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpWrongPwd = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirA, "wrong"), connectionPassword: System.Text.Encoding.UTF8.GetBytes("WrongPassword!")) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 if (CryptographicOperations.FixedTimeEquals(qpStandaloneA.PasswordHash, qpWrongPwd.PasswordHash))
                     throw new Exception("Different passwords derived identical PasswordHash!");
 
                 byte[] sharedPoolId = SHA1.HashData(System.Text.Encoding.UTF8.GetBytes("TestPool256"));
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirA, "nodeA"), discoveryId: sharedPoolId, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirB, "nodeB"), discoveryId: sharedPoolId, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirA, "nodeA"), discoveryId: sharedPoolId, connectionPassword: pwd) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: Path.Combine(tempDirB, "nodeB"), discoveryId: sharedPoolId, connectionPassword: pwd) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 var epB1 = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 4001);
                 var epAttacker = new IPEndPoint(IPAddress.Parse("198.51.100.1"), 9999);
@@ -657,8 +661,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -737,8 +741,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 41892) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 52713) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 41892) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 52713) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 // An installed node may already own the standard discovery port.
                 // Keep this test's shared beacon socket isolated from real contacts.
@@ -832,8 +836,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 42101) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 42102) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 42101) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 42102) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -898,8 +902,8 @@ namespace QuicPunchTests.Tests;
             try
             {
                 byte[] pwd = System.Text.Encoding.UTF8.GetBytes("ResilientPassword2026!");
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 43001, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 43002, connectionPassword: pwd) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 43001, connectionPassword: pwd) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 43002, connectionPassword: pwd) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -940,10 +944,13 @@ namespace QuicPunchTests.Tests;
 
             string customStunCache = Path.Combine(tempDir, "test_stun_cache.epl");
             string originalCachePath = QuicPunch.StunGatherer.StunEndpointsCachePath;
+            string[] originalSeeds = QuicPunch.StunGatherer.BuiltInStunHosts.ToArray();
 
             try
             {
                 QuicPunch.StunGatherer.StunEndpointsCachePath = customStunCache;
+                // Literal catalog fixtures need neither DNS nor a running external STUN server.
+                Array.Fill(QuicPunch.StunGatherer.BuiltInStunHosts, "8.8.8.8:3478");
 
                 File.WriteAllText(customStunCache, "");
                 var gathered = await QuicPunch.StunGatherer.GatherStunEndpoints(forceRefresh: false);
@@ -953,10 +960,9 @@ namespace QuicPunchTests.Tests;
                 if (new FileInfo(customStunCache).Length == 0)
                     throw new Exception("StunGatherer retained an empty cache file instead of writing valid seeds.");
 
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 43123) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                await qp.StartAsync();
-
-                bool refreshed = await qp.RefreshStunEndpointsAsync(force: false);
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 43123) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                bool refreshed = await qp.RefreshStunEndpointsAsync(force: false, cancellationToken: deadline.Token);
                 if (!refreshed || qp.StunServerEndpoints.Count == 0)
                     throw new Exception("QuicPunch dynamic STUN endpoint refresh failed to populate endpoints.");
 
@@ -964,11 +970,7 @@ namespace QuicPunchTests.Tests;
             }
             finally
             {
-                if (!File.Exists(originalCachePath) && File.Exists(customStunCache))
-                {
-                    try { File.Copy(customStunCache, originalCachePath); } catch { }
-                }
-
+                originalSeeds.CopyTo(QuicPunch.StunGatherer.BuiltInStunHosts, 0);
                 QuicPunch.StunGatherer.StunEndpointsCachePath = originalCachePath;
                 try { Directory.Delete(tempDir, true); } catch { }
             }
@@ -983,7 +985,7 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 43200) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 43200) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qp.CurrentPeer.Addresses = new[]
                 {
                     IPAddress.Parse("198.51.100.10"),
@@ -1097,8 +1099,8 @@ namespace QuicPunchTests.Tests;
                 SessionProbe s3_Probe;
 
                 // --- PHASE 1: Session 1 on initial start ---
-                using (var qpA = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirA).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build())
-                using (var qpB = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirB).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build())
+                using (var qpA = Isolate(new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirA).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build()))
+                using (var qpB = Isolate(new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirB).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build()))
                 {
                     await qpA.StartAsync();
                     await qpB.StartAsync();
@@ -1196,8 +1198,8 @@ namespace QuicPunchTests.Tests;
                 }
 
                 // --- PHASE 4: Cross-instance restarts also tested ---
-                using (var qpA4 = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirA).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build())
-                using (var qpB4 = new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirB).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build())
+                using (var qpA4 = Isolate(new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirA).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build()))
+                using (var qpB4 = Isolate(new QuicPunch.QuicPunchBuilder().WithAppDataPath(tempDirB).WithPort(0).WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build()))
                 {
                     await qpA4.StartAsync();
                     await qpB4.StartAsync();
@@ -1253,8 +1255,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -1313,7 +1315,7 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                var unstartedQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var unstartedQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 if (unstartedQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Created)
                     throw new Exception("Expected Created state for unstarted instance.");
                 if (unstartedQp.IsStarted)
@@ -1323,13 +1325,13 @@ namespace QuicPunchTests.Tests;
                 if (!unstartedQp.IsDisposed || unstartedQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Disposed)
                     throw new Exception("Expected Disposed state after calling Dispose on unstarted instance.");
 
-                var unstartedAsyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var unstartedAsyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await unstartedAsyncQp.DisposeAsync();
                 if (!unstartedAsyncQp.IsDisposed || unstartedAsyncQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Disposed)
                     throw new Exception("Expected Disposed state after calling DisposeAsync on unstarted instance.");
 
                 QuicPunch.QuicPunch? asyncQpRef = null;
-                await using (var asyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } })
+                await using (var asyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } })
                 {
                     asyncQpRef = asyncQp;
                     await asyncQp.StartAsync();
@@ -1360,7 +1362,7 @@ namespace QuicPunchTests.Tests;
                 if (!asyncCaughtDisposed)
                     throw new Exception("Expected ObjectDisposedException when calling StartAsync after DisposeAsync.");
 
-                var stoppedAsyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var stoppedAsyncQp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await stoppedAsyncQp.StartAsync();
                 await stoppedAsyncQp.StopAsync();
                 if (stoppedAsyncQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Stopped)
@@ -1369,7 +1371,7 @@ namespace QuicPunchTests.Tests;
                 if (!stoppedAsyncQp.IsDisposed || stoppedAsyncQp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Disposed)
                     throw new Exception("Expected Disposed state after DisposeAsync on stopped instance.");
 
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 47100) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 47100) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qp.StartAsync();
                 if (!qp.IsStarted || qp.LifecycleState != QuicPunch.QuicPunch.QuicPunchLifecycleState.Started)
@@ -1413,6 +1415,8 @@ namespace QuicPunchTests.Tests;
                     throw new Exception("Expected ObjectDisposedException when calling StartAsync on disposed instance.");
 
                 var builderInstance = await new QuicPunch.QuicPunchBuilder()
+                    .WithAppDataPath(Path.Combine(tempDir, "builder"))
+                    .WithUpnp(false).WithAutoDiscovery(false)
                     .WithPort(0)
                     .BuildAndStartAsync();
 
@@ -1442,8 +1446,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -1561,7 +1565,7 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDir);
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 var trustedHash = RandomNumberGenerator.GetBytes(32);
                 var trusted = new PeerInfo().SetCertificateHash(trustedHash);
                 qp.TrustPeer(trustedHash);
@@ -1678,9 +1682,9 @@ namespace QuicPunchTests.Tests;
                 var epB = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 49002);
                 var epC = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 49003);
 
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -1781,12 +1785,12 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(directory);
             try
             {
-                using var a = new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "a")).WithPort(0)
-                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build();
-                using var b = new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "b")).WithPort(0)
-                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build();
-                using var c = new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "c")).WithPort(0)
-                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build();
+                using var a = Isolate(new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "a")).WithPort(0)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build());
+                using var b = Isolate(new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "b")).WithPort(0)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build());
+                using var c = Isolate(new QuicPunch.QuicPunchBuilder().WithAppDataPath(Path.Combine(directory, "c")).WithPort(0)
+                    .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false }).Build());
                 await a.StartAsync();
                 await b.StartAsync();
                 await c.StartAsync();
@@ -1867,8 +1871,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -1930,9 +1934,9 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpC = new QuicPunch.QuicPunch(appDataPath: tempDirC, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpA.Discovery.WanNostrDiscoveryEnabled = false;
                 qpB.Discovery.WanNostrDiscoveryEnabled = false;
                 qpC.Discovery.WanNostrDiscoveryEnabled = false;
@@ -2042,8 +2046,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -2098,8 +2102,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 var dummyProtocolId = Guid.NewGuid();
                 var dummyHandlerB = new DummyProtocolHandler(dummyProtocolId, () => { });
@@ -2197,8 +2201,8 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDirB);
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -2240,18 +2244,18 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDirB);
             try
             {
-                using var qpA = new QuicPunch.QuicPunchBuilder()
+                using var qpA = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
                 qpA.Discovery.LanDiscoveryPort = 48511;
 
-                using var qpB = new QuicPunch.QuicPunchBuilder()
+                using var qpB = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
                 qpB.Discovery.LanDiscoveryPort = 48512;
 
                 // Exercise the parser without live Hello replies changing LastSeen concurrently.
@@ -2288,7 +2292,7 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDir);
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 var candidates = Enumerable.Range(0, 300)
                     .Select(i => new CandidateEndpoint(new IPEndPoint(IPAddress.Loopback, 10000 + i), CandidateType.Host, (uint)i))
                     .ToList();
@@ -2329,7 +2333,7 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 var peerId = Guid.NewGuid();
                 var protoId = Guid.NewGuid();
@@ -2435,12 +2439,12 @@ namespace QuicPunchTests.Tests;
             try
             {
                 var customRelays = new[] { "ws://127.0.0.1:9" };
-                using var qp = new QuicPunch.QuicPunchBuilder()
+                using var qp = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDir)
                     .UsePool("0123456789abcdef0123456789abcdef01234567")
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
                     .WithNostrRelays(customRelays)
-                    .Build();
+                    .Build());
 
                 if (qp.Discovery.NostrRelays == null || qp.Discovery.NostrRelays.Length != 1 || qp.Discovery.NostrRelays[0] != customRelays[0])
                     throw new Exception("QuicPunchBuilder.Build did not set Nostr relays.");
@@ -2475,11 +2479,11 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDir);
             try
             {
-                using var qp = new QuicPunch.QuicPunchBuilder()
+                using var qp = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDir)
                     .UsePool("minimal-discovery-pool")
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
                 if (qp.PoolId.Length != 20)
                     throw new Exception("PoolId should remain available when Nostr discovery is disabled.");
@@ -2500,7 +2504,7 @@ namespace QuicPunchTests.Tests;
             try
             {
                 byte[] pool = RandomNumberGenerator.GetBytes(20);
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, discoveryId: pool, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, discoveryId: pool, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qp.StartAsync();
 
                 int newPort;
@@ -2671,8 +2675,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 
@@ -2749,8 +2753,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpA.Discovery.WanNostrDiscoveryEnabled = false;
                 qpB.Discovery.WanNostrDiscoveryEnabled = false;
 
@@ -2876,8 +2880,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpA.Discovery.WanNostrDiscoveryEnabled = false;
                 qpB.Discovery.WanNostrDiscoveryEnabled = false;
 
@@ -3031,9 +3035,9 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDirB);
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpA.Discovery.LanDiscoveryPort = 48123;
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qpB.Discovery.LanDiscoveryPort = 48124;
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -3107,12 +3111,12 @@ namespace QuicPunchTests.Tests;
                     throw new Exception("Scoped Tor tag must be different from un-scoped tag.");
 
                 // 2. Token Separation and Leak Prevention
-                using var qp = new QuicPunch.QuicPunchBuilder()
+                using var qp = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDir)
                     .UsePool(poolBytes)
                     .WithWanNostrDiscovery(true)
                     .WithTorNostrDiscovery(true)
-                    .Build();
+                    .Build());
 
                 qp.CurrentPeer.Addresses = new[]
                 {
@@ -3164,12 +3168,12 @@ namespace QuicPunchTests.Tests;
                     throw new Exception("Tor discovery instance channel tag mismatch.");
 
                 // 4. Independent Controls and Lifecycle
-                using var customBuilderQp = new QuicPunch.QuicPunchBuilder()
+                using var customBuilderQp = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(Path.Combine(tempDir, "sub"))
                     .UsePool(poolBytes)
                     .WithWanNostrDiscovery(true)
                     .WithTorNostrDiscovery(false)
-                    .Build();
+                    .Build());
 
                 if (!customBuilderQp.Discovery.WanNostrDiscoveryEnabled)
                     throw new Exception("WanNostrDiscoveryEnabled should be true from builder.");
@@ -3204,7 +3208,7 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDir);
             try
             {
-                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qp = new QuicPunch.QuicPunch(appDataPath: tempDir, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qp.StartAsync();
 
                 // 1. WAN compact token
@@ -3316,17 +3320,17 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDirB);
             try
             {
-                using var qpA = new QuicPunch.QuicPunchBuilder()
+                using var qpA = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
-                using var qpB = new QuicPunch.QuicPunchBuilder()
+                using var qpB = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -3436,9 +3440,9 @@ namespace QuicPunchTests.Tests;
             Directory.CreateDirectory(tempDir);
             try
             {
-                using var qp = new QuicPunch.QuicPunchBuilder()
+                using var qp = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDir)
-                    .Build();
+                    .Build());
 
                 qp.CurrentPeer.Addresses = new[] { IPAddress.Parse("203.0.113.10") };
                 qp.CurrentPeer.PortArray = [30001];
@@ -3490,23 +3494,23 @@ namespace QuicPunchTests.Tests;
                 var poolBytes = new byte[20];
                 RandomNumberGenerator.Fill(poolBytes);
 
-                using var qpA = new QuicPunch.QuicPunchBuilder()
+                using var qpA = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .UsePool(poolBytes)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
-                using var qpB = new QuicPunch.QuicPunchBuilder()
+                using var qpB = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .UsePool(poolBytes)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
-                using var qpAttacker = new QuicPunch.QuicPunchBuilder()
+                using var qpAttacker = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirAttacker)
                     .UsePool(poolBytes)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -3594,23 +3598,23 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunchBuilder()
+                using var qpA = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
-                using var qpB = new QuicPunch.QuicPunchBuilder()
+                using var qpB = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
-                using var qpAttacker = new QuicPunch.QuicPunchBuilder()
+                using var qpAttacker = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirC)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -3738,17 +3742,17 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunchBuilder()
+                using var qpA = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
-                using var qpB = new QuicPunch.QuicPunchBuilder()
+                using var qpB = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -3847,17 +3851,17 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunchBuilder()
+                using var qpA = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirA)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
-                using var qpB = new QuicPunch.QuicPunchBuilder()
+                using var qpB = Isolate(new QuicPunch.QuicPunchBuilder()
                     .WithAppDataPath(tempDirB)
                     .WithPort(0)
                     .WithAutoDiscovery(false).WithPeerTransport(new() { AutoConnectDiscoveredPeers = false })
-                    .Build();
+                    .Build());
 
                 await qpA.StartAsync();
                 await qpB.StartAsync();
@@ -4013,7 +4017,7 @@ namespace QuicPunchTests.Tests;
             try
             {
                 using var cts = new CancellationTokenSource();
-                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 byte[] certHash = new byte[32];
                 Random.Shared.NextBytes(certHash);
@@ -4054,7 +4058,7 @@ namespace QuicPunchTests.Tests;
             try
             {
                 using var cts = new CancellationTokenSource();
-                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 string wanName = qp.CurrentPeer.Name ?? "";
                 string torName = qp.TorCurrentPeer.Name ?? "";
@@ -4101,7 +4105,7 @@ namespace QuicPunchTests.Tests;
                 }
 
                 // Test persistence: create a new instance with the same directory and ensure names remain stable
-                var qp2 = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qp2 = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 if (qp2.CurrentPeer.Name != wanName)
                     throw new Exception($"WAN name did not persist across reloads: expected '{wanName}', got '{qp2.CurrentPeer.Name}'.");
                 if (qp2.TorCurrentPeer.Name != torName)
@@ -4122,7 +4126,7 @@ namespace QuicPunchTests.Tests;
             try
             {
                 using var cts = new CancellationTokenSource();
-                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                var qp = new QuicPunch.QuicPunch(cts, null, null, 0, appDataPath: tempDir) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 qp.SharePeers = true;
 
                 // Create a WAN peer
@@ -4219,8 +4223,8 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 0) { Discovery = { LanDiscoveryPort = 0 }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await qpA.StartAsync();
                 await qpB.StartAsync();
 

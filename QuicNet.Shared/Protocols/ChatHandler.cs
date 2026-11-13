@@ -366,11 +366,11 @@ namespace QuicNet.Protocols
             catch { return false; }
         }
 
-        public static async Task<(bool Success, string MsgId)> SendFileOfferAsync(Guid peerId, string senderName, Guid fileId, string fileName, long fileSize, string mime, string sha256, CancellationToken ct = default)
+        public static async Task<(bool Success, string MsgId)> SendFileOfferAsync(Guid peerId, string senderName, Guid fileId, string fileName, long fileSize, string mime, string sha256, CancellationToken ct = default, string? existingMessageId = null)
         {
             if (fileId == Guid.Empty || fileSize < 0 || fileName.Length is 0 or > 255 || !IsValidFileHash(sha256))
                 throw new InvalidDataException("File offers require a valid ID, name, size and SHA-256 digest.");
-            string msgId = Guid.NewGuid().ToString();
+            string msgId = existingMessageId ?? Guid.NewGuid().ToString();
             if (!ActiveChats.TryGetValue(peerId, out var chat)) return (false, msgId);
             try
             {

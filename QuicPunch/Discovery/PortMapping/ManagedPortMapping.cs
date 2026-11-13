@@ -12,6 +12,7 @@ internal sealed class ManagedPortMapping : IAsyncDisposable
     private int _stopDisposed;
     public PortMappingCoordinator Mapper => _mapper;
     public PortMappingResult? Result { get; private set; }
+    public bool IsDisposed => Volatile.Read(ref _disposeStarted) != 0;
 
     private ManagedPortMapping(int port, Action<PortMappingResult?> changed, CancellationToken token)
     {
@@ -20,12 +21,12 @@ internal sealed class ManagedPortMapping : IAsyncDisposable
         _stop = CancellationTokenSource.CreateLinkedTokenSource(token);
     }
 
-    public static async Task<ManagedPortMapping> StartAsync(int port, Action<PortMappingResult?> changed, CancellationToken token)
+    public static async Task<ManagedPortMapping> StartAsync(int port, Action<PortMappingResult?> changed, CancellationToken token, CancellationToken initialAttempt = default)
     {
         var lease = new ManagedPortMapping(port, changed, token);
         try
         {
-            await lease.RenewAsync().ConfigureAwait(false);
+            await lease.RenewAsync(initialAttempt).ConfigureAwait(false);
             lease._worker = lease.RunAsync();
             return lease;
         }
@@ -38,13 +39,13 @@ internal sealed class ManagedPortMapping : IAsyncDisposable
         }
     }
 
-    private async Task RenewAsync()
+    private async Task RenewAsync(CancellationToken attempt = default)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token, attempt);
         timeout.CancelAfter(TimeSpan.FromSeconds(4));
         PortMappingResult? result = null;
         try { result = await _mapper.TryMapPortAsync(_port, Result?.ExternalPort ?? _port, lifetime: TimeSpan.FromMinutes(2), ct: timeout.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (!_stop.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (!_stop.IsCancellationRequested && !attempt.IsCancellationRequested) { }
         if (result is { Success: false })
             global::QuicPunch.QuicPunchLog.Info($"[PORT-MAP] {result.ProtocolName}: {result.ErrorMessage}");
         Result = result is { Success: true } ? result : null;

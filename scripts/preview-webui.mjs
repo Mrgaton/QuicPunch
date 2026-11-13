@@ -1,5 +1,5 @@
 // Isolated design preview. All identities and responses are fixtures; no P2P, VPN or microphone is started.
-// Run: node scripts/preview-webui.mjs [--empty] [--port=5099]
+// Run: node scripts/preview-webui.mjs [--empty] [--interactive] [--port=5099]
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 const root = fileURLToPath(new URL('../QuicNet.Shared/wwwroot/', import.meta.url));
 const watchRoot = fileURLToPath(new URL('../QuicNet.Shared/Watch/wwwroot/', import.meta.url));
 const port = Number(process.argv.find(a => a.startsWith('--port='))?.split('=')[1] ?? 5099);
+const interactive = process.argv.includes('--interactive');
 const caps = { platform: 'desktop', capabilities: Object.fromEntries(['peers','chat','voice','vpn','speedtest','watch'].map(k => [k,{available:true}])) };
 const people = ['Ana · Portátil', 'Mi ordenador', 'Dispositivo nuevo'].map((name,i) => ({id:`00000000-0000-0000-0000-00000000000${i+1}`,name,certHash:Buffer.alloc(32,i+1).toString('base64'),canonicalId:`aabbccdd0000000${i}`,isTrusted:i<2,isSaved:i<2,isQuicConnected:i===0,connectionState:i===0?'connected':'available',networkType:'Wan',addresses:['192.0.2.'+(i+1)],ports:[5000],endpoint:'192.0.2.1:5000',lastSeenSecondsAgo:1,unresponsiveSeconds:1,ping:i===0?24:null,hasCipher:true,automaticPermissions:[]}));
 let state={node:{name:'Mi portátil · Vista de prueba',wanToken:'PREVIEW-INVITATION-NOT-A-REAL-TOKEN',torToken:'',listenerPort:5000,networkType:'Cone'},wan:{isStarted:true,running:true,enabled:true,desiredEnabled:true},tor:{running:false,enabled:false},discovery:{running:true,enabled:true,desiredEnabled:true,connectedRelays:2,relayCount:2},preferences:{WanEnabled:true},lan:{enabled:false,isActive:false,localIp:'10.203.24.8',subnetMask:'255.255.255.0',mtu:1420,autoAssign:true,peers:[],canStartWithoutElevation:true},peers:process.argv.includes('--empty')?[]:people,savedPeers:process.argv.includes('--empty')?[]:people.slice(0,2),discoveredPeers:[],activeInterrogations:[],pendingPetitions:[],activeChats:[],activeVoiceCalls:[],notifications:[],logs:[],quicTelemetry:[],chatMessages:[],disappearingMessages:{},apps:{chat:{active:0},voice:{active:0},lan:{active:0}},stun:{publicAddresses:[],localAddresses:[],ports:[],exactMappings:[],serverCount:0}};
@@ -24,6 +25,15 @@ function vpnResponse() {
     peerDefaults:people.slice(0,2).map(p=>({certHash:Buffer.from(p.certHash,'base64').toString('hex').toUpperCase(),autoAccept:false,accessibleDestinations:['10.0.0.8/32']})),path:'Configuración de prueba'};
 }
 const sockets=new Set();
+let previewProfile={customName:'',displayName:state.node.name,deviceName:'Mi portátil'};
+let previewPreferences={startWithSystem:false,runInBackground:true,notifications:{enabled:true,desktop:true,inApp:true,sound:true,preview:true,whileFocused:false,doNotDisturb:false,quietHours:false,tone:'soft',volume:50,quietStart:1320,quietEnd:480,doNotDisturbUntil:null,features:{},contacts:{}}};
+if(interactive){
+  state.presence={isAfk:false,acceptsNotifications:true,doNotDisturb:false,idleAfterMinutes:5,activitySource:'app'};
+  state.peerPresence=Object.fromEntries(people.map(p=>[p.id,{isAfk:false,acceptsNotifications:true}]));
+}
+const watchState={local:{peerId:'preview-local',name:state.node.name,token:state.node.wanToken},
+  peers:people.slice(0,2).map(p=>({peerId:p.id,name:p.name,connected:p.isQuicConnected,inRoom:false,role:'Viewer'})),
+  room:null,canPickMedia:false,canSelectPath:true};
 const socialActions=[];
 function socialSnapshot(peerId){
   const messages=state.chatMessages.filter(m=>m.peerId===peerId&&(!m.deliveryState||m.deliveryState==='sent'));
@@ -40,7 +50,53 @@ const server=http.createServer(async(req,res)=>{
   let body={};if(req.method==='POST'){let raw='';for await(const part of req)raw+=part;body=JSON.parse(raw||'{}');}
   const json=(data,code=200)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
   if(path==='/api/status')return json(state);
+  if(path==='/api/voice/native-video')return json({local:{available:false,engine:'Vista de prueba',decoderMask:0,hardwareMask:0,decoders:[]},peers:[],streams:[]});
   if(path==='/api/capabilities')return json(caps);
+  if(interactive&&path==='/api/profile'){
+    if(req.method==='POST'){previewProfile.customName=body.displayName||'';previewProfile.displayName=previewProfile.customName||previewProfile.deviceName;state.node.name=previewProfile.displayName;broadcast();}
+    return json(previewProfile);
+  }
+  if(interactive&&path==='/api/app/preferences'){
+    if(req.method==='POST'){
+      previewPreferences=body;
+      Object.assign(state.presence,{doNotDisturb:body.notifications.doNotDisturb,acceptsNotifications:body.notifications.enabled&&!body.notifications.doNotDisturb});
+      broadcast();
+    }
+    return json({settings:previewPreferences,startupSupported:true,platformHelp:'Vista de demostración: estos cambios solo se guardan en memoria.'});
+  }
+  if(interactive&&path==='/api/profile/presence'){
+    if(req.method==='POST'){
+      Object.assign(state.presence,body,{acceptsNotifications:previewPreferences.notifications.enabled&&!body.doNotDisturb});
+      previewPreferences.notifications.doNotDisturb=body.doNotDisturb;broadcast();
+    }
+    return json(state.presence);
+  }
+  if(interactive&&path==='/api/notifications/test')return json({sent:false,message:'Vista de demostración: no se envían notificaciones al sistema.',reason:'preview'});
+  if(interactive&&path==='/api/virtual-disk/operation'){
+    const request=body.request||{};
+    if(request.operation==='shares')return json({success:true,canExplore:false,shares:[{id:'preview-documents',name:'Documentos de ejemplo',root:'Carpeta de demostración',recipient:people[0].certHash,writable:true,allowDelete:false}]});
+    if(request.operation==='audit')return json({success:true,entries:[]});
+    if(request.operation==='list'){
+      if(request.path==='No disponible')return json({success:false,error:'Esta carpeta ya no está disponible. Puedes seguir usando la ubicación anterior.',code:'NotFound'});
+      return json({success:true,entries:request.path?[]:[{name:'Notas',path:'Notas',directory:true},{name:'No disponible',path:'No disponible',directory:true}],more:false});
+    }
+    return json({success:false,error:'Esta vista solo utiliza carpetas de ejemplo.'},400);
+  }
+  if(interactive&&path==='/api/virtual-disk/mount')return json({success:false,error:'No se puede montar esta carpeta de ejemplo. Puedes explorar sus archivos en esta vista.'},409);
+  if(interactive&&path.startsWith('/watch/api/')){
+    if(path.endsWith('/status'))return json(watchState);
+    if(path.endsWith('/room/create')){
+      const peers=watchState.peers.filter(p=>(body.peerIds||[]).includes(p.peerId));
+      watchState.room={roomId:'preview-room',name:body.name,isOwner:true,myRole:'Owner',media:null,participants:[{peerId:watchState.local.peerId},...peers]};
+      watchState.peers.forEach(p=>p.inRoom=peers.includes(p));return json(watchState);
+    }
+    if(path.endsWith('/room/leave')){watchState.room=null;watchState.peers.forEach(p=>p.inRoom=false);return json(watchState);}
+    if(path.endsWith('/permission')){const peer=watchState.peers.find(p=>p.peerId===body.peerId);if(peer)peer.role=body.role;return json({success:true});}
+    if(path.endsWith('/media/select-path'))return json({success:false,error:'No se encuentra el vídeo. Revisa la ruta y elige un archivo disponible en este dispositivo.'},404);
+    if(path.endsWith('/token/connect'))return json({success:false,error:'Este código de invitación no es válido. Pide un código nuevo al contacto y vuelve a intentarlo.'},400);
+    if(path.endsWith('/peer/connect')){const peer=watchState.peers.find(p=>p.peerId===body.peerId);if(peer)peer.connected=true;return json({success:true});}
+    return json({success:true});
+  }
   if(path==='/api/connection-mode') {
     if(!['wan','tor','both'].includes(body.mode)) return json({success:false,error:'Modo no válido'},400);
     const wan=body.mode!=='tor',tor=body.mode!=='wan';
@@ -131,7 +187,7 @@ server.on('upgrade',(req,socket)=>{
  const key=req.headers['sec-websocket-key'];if(!key)return socket.end();
  const accept=createHash('sha1').update(key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n');
- if(req.url.startsWith('/watch/'))send(socket,{type:'status',data:{local:{name:state.node.name,token:state.node.wanToken},peers:[],room:null}});
+ if(req.url.startsWith('/watch/'))send(socket,{type:'status',data:interactive?watchState:{local:{name:state.node.name,token:state.node.wanToken},peers:[],room:null}});
  else{sockets.add(socket);send(socket,{type:'status_updated',data:state});}
  let pending=Buffer.alloc(0);
  socket.on('data',chunk=>{

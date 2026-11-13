@@ -125,35 +125,7 @@ namespace QuicPunch
 
             try
             {
-                if (OperatingSystem.IsAndroid())
-                {
-                    // Pin the same identity as desktop: peers known only by hash
-                    // (PeerStore, shared peers) have no certificate yet.
-                    byte[] peerCertHash = remotePeer.CertHash;
-                    if (peerCertHash.Length != 32)
-                        throw new InvalidOperationException("The peer identity hash is required for Android QUIC pinning.");
-                    if (isServer)
-                    {
-                        (connection, stream) = await TryRunAndroidServer(localPort, ownCertificate, peerCertHash,
-                            nudp, linkedCts.Token, async () =>
-                            {
-                                if (qc != null)
-                                    await qc.SendQuicReadyAsync(remotePeer, connectionGuid, (ushort)localPort).ConfigureAwait(false);
-                            }).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        if (qc != null)
-                        {
-                            try { await qc.WaitForQuicReadyAsync(connectionGuid, remotePeer.Id, TimeSpan.FromSeconds(2), linkedCts.Token).ConfigureAwait(false); }
-                            catch (OperationCanceledException) when (!mainCt.IsCancellationRequested) { }
-                            finally { qc.UnregisterPendingQuicReady(connectionGuid); }
-                        }
-                        (connection, stream) = await TryRunAndroidClient(udpResult.remoteEndpoint, ownCertificate,
-                            peerCertHash, localPort, nudp, linkedCts.Token).ConfigureAwait(false);
-                    }
-                }
-                else if (isServer)
+                if (isServer)
                 {
                     (connection, stream) = await TryRunServer(localPort, ownCertificate, remotePeer.CertHash, nudp, linkedCts.Token, async () =>
                     {
@@ -278,7 +250,7 @@ namespace QuicPunch
                             ownPeer, remotePeer, passwordHash, out var challenge, out var echo))
                             continue;
 
-                        var senderEp = (IPEndPoint)result.RemoteEndPoint;
+                        var senderEp = EndpointAddressCodec.Normalize((IPEndPoint)result.RemoteEndPoint);
                         if (!challenges.TryGetValue(senderEp, out var expectedEcho))
                         {
                             // Bound memory even if an authenticated peer advertises many paths.
@@ -392,7 +364,7 @@ namespace QuicPunch
 
             void Add(IPAddress? address, int port)
             {
-                if (targets.Count >= maxEndpoints || address == null || port is < 1 or > 65535 || !Utilities.IsValidPeerAddress(address))
+                if (targets.Count >= maxEndpoints || address == null || port is < 1 or > 65535 || !EndpointAddressCodec.CanAdvertise(address))
                     return;
 
                 var endpoint = new IPEndPoint(address, port);
@@ -425,6 +397,7 @@ namespace QuicPunch
             if (peer.ActiveEndPoint is { } observed && !Utilities.IsPrivateLanAddress(observed.Address) && !IPAddress.IsLoopback(observed.Address) &&
                 remoteCandidates != null)
                 foreach (var candidate in remoteCandidates.Where(c => c.Type == CandidateType.ServerReflexive &&
+                    c.EndPoint.Address.AddressFamily == observed.Address.AddressFamily &&
                     !Utilities.IsPrivateLanAddress(c.EndPoint.Address) && !IPAddress.IsLoopback(c.EndPoint.Address)))
                     Add(observed.Address, candidate.EndPoint.Port);
 
@@ -438,7 +411,7 @@ namespace QuicPunch
 
             // Host candidates belong to their IP. A NAT's observed public ports
             // must not be sprayed across a LAN IP with a known local port.
-            bool HasScopedHostPort(IPAddress address) => Utilities.IsPrivateLanAddress(address) &&
+            bool HasScopedHostPort(IPAddress address) => (Utilities.IsPrivateLanAddress(address) || address.AddressFamily == AddressFamily.InterNetworkV6) &&
                 (askedPort == 0 && peer.PreferredPort > 0 || HasHostCandidate(address));
 
             foreach (IPAddress address in addresses)
@@ -533,7 +506,8 @@ namespace QuicPunch
                         .All(index => (local.Address[index] & local.Mask[index]) == (bytes[index] & local.Mask[index])));
                 }
 
-                return targets.OrderByDescending(target => SameSubnet(target.Address)).ToArray();
+                return targets.OrderByDescending(target => IPAddress.IsLoopback(target.Address))
+                    .ThenByDescending(target => SameSubnet(target.Address)).ToArray();
             }
             catch (Exception) { return targets; }
         }
@@ -612,23 +586,18 @@ namespace QuicPunch
             new SslApplicationProtocol("h3")           // RFC 9114 HTTP/3 standard ALPN (looks like normal web traffic to DPI)
         };
 
-        private static async Task<(QuicConnection?, QuicStream?)> TryRunAndroidServer(
+        private static async Task<(QuicConnection?, QuicStream?)> TryRunBridgeServer(
             int localPort, X509Certificate2 ownCertificate, byte[] peerCertHash,
             UdpClient? holePunchUdp, CancellationToken token, Func<Task>? onListening)
         {
-            AndroidMsQuicTransport? native = null;
+            MsQuicBridgeTransport? native = null;
             try
             {
-                native = AndroidMsQuicTransport.Create(ownCertificate, peerCertHash);
-                try { native.Listen((ushort)localPort); }
-                catch (IOException)
-                {
-                    holePunchUdp?.Dispose();
-                    holePunchUdp = null;
-                    native.Listen((ushort)localPort);
-                }
+                native = MsQuicBridgeTransport.Create(ownCertificate, peerCertHash);
+                // A probe socket must release the port before MsQuic owns it.
                 holePunchUdp?.Dispose();
                 holePunchUdp = null;
+                native.Listen((ushort)localPort);
                 if (onListening != null) await onListening().ConfigureAwait(false);
                 await native.WaitConnectedAsync(token).ConfigureAwait(false);
                 var connection = QuicConnection.FromTransport(native);
@@ -644,18 +613,18 @@ namespace QuicPunch
             finally { holePunchUdp?.Dispose(); }
         }
 
-        private static async Task<(QuicConnection?, QuicStream?)> TryRunAndroidClient(
+        private static async Task<(QuicConnection?, QuicStream?)> TryRunBridgeClient(
             IPEndPoint targetPeer, X509Certificate2 ownCertificate, byte[] peerCertHash,
-            int localPort, UdpClient? holePunchUdp, CancellationToken token)
+            int localPort, UdpClient? holePunchUdp, CancellationToken token, string targetHost = DefaultDisguiseHost)
         {
             int delayMs = 50;
             holePunchUdp?.Dispose();
             while (!token.IsCancellationRequested)
             {
-                AndroidMsQuicTransport? native = null;
+                MsQuicBridgeTransport? native = null;
                 try
                 {
-                    native = AndroidMsQuicTransport.Create(ownCertificate, peerCertHash, targetPeer);
+                    native = MsQuicBridgeTransport.Create(ownCertificate, peerCertHash, targetPeer, targetHost);
                     native.Connect(targetPeer, (ushort)localPort);
                     await native.WaitConnectedAsync(token).ConfigureAwait(false);
                     var connection = QuicConnection.FromTransport(native);
@@ -672,192 +641,20 @@ namespace QuicPunch
                 catch (Exception ex)
                 {
                     if (native != null) await native.DisposeAsync().ConfigureAwait(false);
-                    QuicPunchLog.Info($"[ANDROID QUIC] Connect to {targetPeer}: {ex.Message}; retrying in {delayMs}ms.");
+                    QuicPunchLog.Info($"[QUIC] Connect to {targetPeer}: {ex.Message}; retrying in {delayMs}ms.");
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
                     delayMs = Math.Min(delayMs * 2, 400);
                 }
             }
             return (null, null);
         }
-        public static async Task<(QuicConnection? Connection, QuicStream? Stream)> TryRunServer(
-            int localPort, X509Certificate2 ownCertificate, byte[] peerCertificate, UdpClient? holePunchUdp, CancellationToken token, Func<Task>? onListening = null)
-        {
-            var options = new QuicListenerOptions
-            {
-                ListenEndPoint = new IPEndPoint(IPAddress.Any, localPort),
-                ApplicationProtocols = SupportedProtocols,
-                ConnectionOptionsCallback = (_, _, _) =>
-                {
-                    var serverConnOpts = new QuicServerConnectionOptions
-                    {
-                        DefaultStreamErrorCode = 0,
-                        DefaultCloseErrorCode = 0,
-                        ServerAuthenticationOptions = new SslServerAuthenticationOptions
-                        {
-                            ApplicationProtocols = SupportedProtocols,
-                            ServerCertificate = ownCertificate,
-                            ClientCertificateRequired = true,
+        public static Task<(QuicConnection? Connection, QuicStream? Stream)> TryRunServer(
+            int localPort, X509Certificate2 ownCertificate, byte[] peerCertificate, UdpClient? holePunchUdp, CancellationToken token, Func<Task>? onListening = null) =>
+            TryRunBridgeServer(localPort, ownCertificate, peerCertificate, holePunchUdp, token, onListening);
 
-                            RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
-                                ValidateRemotePeerCertificate(certificate, peerCertificate, "SERVER")
-                        },
-
-                        MaxInboundBidirectionalStreams = 512,
-                        MaxInboundUnidirectionalStreams = 512,
-                        IdleTimeout = TimeSpan.FromMinutes(10),
-                        KeepAliveInterval = TimeSpan.FromSeconds(19)
-                    };
-
-                    if (MsQuicDatagramChannel.IsSupported)
-                    {
-                        MsQuicDatagramChannel.EnsureServerConfigurationPatched(serverConnOpts);
-                    }
-
-                    return ValueTask.FromResult(serverConnOpts);
-                },
-            };
-
-            QuicListener? listener = null;
-            int bindTries = 0;
-            // Preserve the nominated port but release its probe socket before MsQuic
-            // binds it. Overlapping UDP owners can steal packets or fail with WSAEADDRINUSE.
-            holePunchUdp?.Dispose();
-            holePunchUdp = null;
-            while (!token.IsCancellationRequested && bindTries < 10)
-            {
-                try
-                {
-                    if (MsQuicDatagramChannel.IsSupported)
-                    {
-                        MsQuicDatagramChannel.EnableDatagramsOnConfigurationCache();
-                    }
-                    listener = await QuicListener.ListenAsync(options, token);
-                    MsQuicTuner.EnsureOptimalConfiguration();
-                    break;
-                }
-                catch when (bindTries < 9 && !token.IsCancellationRequested)
-                {
-                    bindTries++;
-                    await Task.Delay(20, token);
-                }
-            }
-
-            if (listener == null)
-                return (null, null);
-
-            await using (listener)
-            {
-                QuicPunchLog.Info("[SERVER] Bound to port. Waiting for peer...");
-                if (onListening != null)
-                {
-                    try { await onListening().ConfigureAwait(false); } catch { }
-                }
-
-                var nativeConn = await listener.AcceptConnectionAsync(token);
-
-                try
-                {
-                    QuicConnection connection = QuicConnection.Wrap(nativeConn);
-                    var stream = await connection.AcceptInboundStreamAsync(token);
-                    byte[] headerByte = new byte[1];
-                    await stream.ReadExactlyAsync(headerByte, token);
-
-                    return (connection, stream);
-                }
-                catch
-                {
-                    await nativeConn.DisposeAsync();
-                    throw;
-                }
-            }
-        }
-
-        public static async Task<(QuicConnection? Connection, QuicStream? Stream)> TryRunClient(
-            IPEndPoint targetPeer, X509Certificate2 ownCertificate, byte[] peerCertificate, int localPort, UdpClient? holePunchUdp, CancellationToken token, string targetHost = DefaultDisguiseHost)
-        {
-            var options = new QuicClientConnectionOptions
-            {
-                RemoteEndPoint = targetPeer,
-                LocalEndPoint = localPort > 0 ? new IPEndPoint(IPAddress.Any, localPort) : null,
-                DefaultStreamErrorCode = 0,
-                DefaultCloseErrorCode = 0,
-                ClientAuthenticationOptions = new SslClientAuthenticationOptions
-                {
-                    TargetHost = string.IsNullOrWhiteSpace(targetHost) ? DefaultDisguiseHost : targetHost,
-                    ApplicationProtocols = SupportedProtocols,
-                    ClientCertificates = new X509Certificate2Collection(ownCertificate),
-                    LocalCertificateSelectionCallback = (sender, targetHost, localCertificates, remoteCertificate, acceptableIssuers) =>
-                    {
-                        return ownCertificate;
-                    },
-                    RemoteCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
-                        ValidateRemotePeerCertificate(certificate, peerCertificate, "CLIENT")
-                },
-
-                MaxInboundBidirectionalStreams = 512,
-                MaxInboundUnidirectionalStreams = 512,
-                IdleTimeout = TimeSpan.FromMinutes(10),
-                KeepAliveInterval = TimeSpan.FromSeconds(19),
-
-                HandshakeTimeout = TimeSpan.FromSeconds(12),
-            };
-
-            QuicConnection? connection = null;
-            int backoffMs = 50;
-
-            if (MsQuicDatagramChannel.IsSupported)
-            {
-                MsQuicDatagramChannel.EnsureClientConfigurationPatched(options);
-            }
-
-            holePunchUdp?.Dispose();
-            holePunchUdp = null;
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    connection = await QuicConnection.ConnectAsync(options, token).ConfigureAwait(false);
-                    if (connection.NativeConnection != null)
-                        MsQuicPqcHandshake.LogNegotiatedGroup(connection.NativeConnection, "client");
-                    QuicPunchLog.Info("[CLIENT] Connected successfully. Native transport diagnostics report the configured controller and current path.");
-                    break;
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    QuicPunchLog.Info($"[QUIC CLIENT ATTEMPT] Connect to {targetPeer} failed ({ex.GetType().Name}: {ex.Message}). Retrying in {backoffMs}ms...");
-                    try
-                    {
-                        await Task.Delay(backoffMs, token).ConfigureAwait(false);
-                        backoffMs = Math.Min(backoffMs * 2, 400);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break;
-                    }
-                }
-            }
-
-            if (connection == null)
-                return (null, null);
-
-            try
-            {
-                var stream = await connection.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, token).ConfigureAwait(false);
-                await stream.WriteAsync(new byte[] { 0x00 }, token).ConfigureAwait(false);
-                await stream.FlushAsync(token).ConfigureAwait(false);
-
-                return (connection, stream);
-            }
-            catch
-            {
-                try { await connection.DisposeAsync().ConfigureAwait(false); } catch { }
-                throw;
-            }
-        }
+        public static Task<(QuicConnection? Connection, QuicStream? Stream)> TryRunClient(
+            IPEndPoint targetPeer, X509Certificate2 ownCertificate, byte[] peerCertificate, int localPort, UdpClient? holePunchUdp, CancellationToken token, string targetHost = DefaultDisguiseHost) =>
+            TryRunBridgeClient(targetPeer, ownCertificate, peerCertificate, localPort, holePunchUdp, token, targetHost);
 
         private static bool ValidateRemotePeerCertificate(X509Certificate? certificate, byte[]? peerCertificate, string role)
         {
@@ -882,9 +679,9 @@ namespace QuicPunch
             timeout.CancelAfter(TimeSpan.FromSeconds(20));
             int port = Random.Shared.Next(40000, 50000);
             byte[] identityHash = Sha3Crypto.Hash256(identity.GetPublicKey());
-            await using var server = AndroidMsQuicTransport.Create(identity, identityHash);
+            await using var server = MsQuicBridgeTransport.Create(identity, identityHash);
             server.Listen((ushort)port);
-            await using var client = AndroidMsQuicTransport.Create(identity, identityHash,
+            await using var client = MsQuicBridgeTransport.Create(identity, identityHash,
                 new IPEndPoint(IPAddress.Loopback, port));
             client.Connect(new IPEndPoint(IPAddress.Loopback, port), 0);
             await Task.WhenAll(server.WaitConnectedAsync(timeout.Token), client.WaitConnectedAsync(timeout.Token)).ConfigureAwait(false);

@@ -16,7 +16,7 @@ internal sealed record ChatApiModuleMessage11(string peerId, string fileId, long
 internal sealed record ChatApiModuleMessage12(string peerId, string fileId);
 internal sealed record ChatApiModuleMessage13(string peerId, string fileId, string name, string path);
 internal sealed record ChatApiModuleMessage14(string peerId, string fileId, string error);
-internal sealed record ChatApiModuleMessage15(global::System.Collections.Generic.IEnumerable<global::QuicNet.Serialization.ChatApiModuleMessage16> messages, string? nextBefore) { public ChatDownloadStatus[] downloads { get; init; } = []; }
+internal sealed record ChatApiModuleMessage15(global::System.Collections.Generic.IEnumerable<global::QuicNet.Serialization.ChatApiModuleMessage16> messages, string? nextBefore) { public ChatDownloadStatus[] downloads { get; init; } = []; public ChatApiModuleMessage11[] uploads { get; init; } = []; }
 internal sealed record ChatApiModuleMessage16(string peerId, string msgId, string sender, string message, long timestampMs, string time, bool isMe, bool isConfirmed, bool isGlobal, global::System.Nullable<long> expiresAtUnixMs) { public string deliveryState { get; init; } = "sent"; }
 internal sealed record ChatApiModuleMessage17(bool success, string peerId, int seconds);
 internal sealed record ChatApiModuleMessage18(bool success, string error);

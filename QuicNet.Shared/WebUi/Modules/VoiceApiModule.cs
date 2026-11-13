@@ -27,7 +27,9 @@ internal sealed class VoiceApiModule
         _voiceHandler.SystemAudioCaptureFailed += (shareId, message) => _hub.Broadcast("screen_audio_error", new global::QuicNet.Serialization.VoiceApiModuleMessage21(message) { audioSessionId = shareId });
         _voiceHandler.OnBrowserScreenSettingsRequested += (peerId, requestId, settings) =>
             _hub.Broadcast("screen_settings_request", new global::QuicNet.Serialization.VoiceApiModuleMessage1(peerId, requestId, settings));
-        _voiceHandler.OnLocalNativeScreenFrame += (codec, packet) => _hub.BroadcastBinaryVideoAsync(Guid.Empty, codec, packet);
+        _voiceHandler.OnLocalNativeScreenFrame += (codec, packet) => { NativeVideoRuntime.Instance.Enqueue(Guid.Empty, codec, packet); return Task.CompletedTask; };
+        NativeVideoRuntime.Instance.CapabilitiesChanged += capabilities => { _ = _voiceHandler.PublishNativeVideoCapabilitiesAsync(); _hub.Broadcast("native_video_capabilities", capabilities); };
+        NativeVideoRuntime.Instance.StateChanged += state => _hub.Broadcast("native_video_state", state);
         _voiceHandler.OnLocalScreenControlChanged += () =>
         {
             if (_voiceHandler.ScreenEncoder.Profile is { } profile)
@@ -36,7 +38,8 @@ internal sealed class VoiceApiModule
                 _hub.Broadcast("screen_share_stopped", new global::QuicNet.Serialization.VoiceApiModuleMessage3("local", "You"));
             BroadcastVoiceState();
         };
-        _voiceHandler.OnScreenDecoderProbe += (peer, config) => _hub.Broadcast("screen_decoder_probe", new global::QuicNet.Serialization.VoiceApiModuleMessage4(peer.Id, config));
+        _voiceHandler.OnScreenDecoderProbe += (peer, config) => { _ = _voiceHandler.ReplyNativeDecoderProbeAsync(peer, config); };
+        _voiceHandler.OnScreenDecoderDiagnostic += (peer, config) => _hub.Broadcast("screen_decoder_diagnostic", new global::QuicNet.Serialization.VoiceApiModuleMessage4(peer.Id, config));
         _voiceHandler.ScreenEncoder.Failed += reason =>
         {
             _ = HandleEncoderFailureAsync(reason);
@@ -54,6 +57,7 @@ internal sealed class VoiceApiModule
 
         _voiceHandler.OnCallEnded += peer =>
         {
+            _ = NativeVideoRuntime.Instance.StopAsync(peer.Id.ToString());
             if (!VoiceCallHandler.IsLocalScreenSharing)
                 _hub.Broadcast("screen_share_stopped", new global::QuicNet.Serialization.VoiceApiModuleMessage3("local", "You"));
             string peerId = peer.Id.ToString();
@@ -95,6 +99,7 @@ internal sealed class VoiceApiModule
 
         _voiceHandler.OnScreenShareStopped += peer =>
         {
+            _ = NativeVideoRuntime.Instance.StopAsync(peer.Id.ToString());
             WebUiServer.LogEvent($"[VOICE] {peer.Name} stopped screen sharing");
             _hub.Broadcast("screen_share_stopped", new global::QuicNet.Serialization.VoiceApiModuleMessage3(peer.Id.ToString(), peer.Name));
         };
@@ -108,8 +113,8 @@ internal sealed class VoiceApiModule
 
         _voiceHandler.OnScreenFrameReceivedAsync += (peer, codecId, frameData) =>
         {
-            // Binary video chunk forwarding directly to UI clients: Tag 0x02, PeerId, CodecId, FrameData
-            return _hub.BroadcastBinaryVideoAsync(peer.Id, codecId, frameData);
+            NativeVideoRuntime.Instance.Enqueue(peer.Id, codecId, frameData);
+            return Task.CompletedTask;
         };
 
         _voiceHandler.OnScreenAudioReceived += (peer, audioData) =>
@@ -120,7 +125,7 @@ internal sealed class VoiceApiModule
 
         _voiceHandler.OnScreenCodecCapabilitiesReceived += (peer, encoderCodecMask, decoderCodecMask) =>
         {
-            _hub.Broadcast("screen_codec_capabilities", new global::QuicNet.Serialization.VoiceApiModuleMessage9(peer.Id.ToString(), peer.Name, encoderCodecMask, decoderCodecMask));
+            _hub.Broadcast("screen_codec_capabilities", new global::QuicNet.Serialization.VoiceApiModuleMessage9(peer.Id.ToString(), peer.Name, encoderCodecMask, decoderCodecMask) { decoderHardwarePreferenceMask = VoiceCallHandler.ActiveCalls.TryGetValue(peer.Id, out var session) ? session.RemoteScreenDecoderHardwarePreferenceMask : null, capabilitiesReceived = session?.RemoteScreenCapabilitiesReceived == true });
             BroadcastVoiceState();
         };
     }
@@ -128,7 +133,7 @@ internal sealed class VoiceApiModule
     private void BroadcastVoiceState()
     {
         var audio = _voiceHandler.AudioService;
-        var activeCalls = VoiceCallHandler.ActiveCalls.Values.Select(c => new global::QuicNet.Serialization.VoiceApiModuleMessage10(c.Peer.Id.ToString(), c.Peer.Name ?? "Peer", audio.GetPeerVolume(c.Peer.Id), audio.GetPeerMuted(c.Peer.Id), c.IsOutboundMuted, c.IsScreenShareAllowed, c.RemoteScreenEncoderCodecMask, c.RemoteScreenDecoderCodecMask) { startedAtUnixMs = new DateTimeOffset(c.StartedAtUtc).ToUnixTimeMilliseconds() }).ToList();
+        var activeCalls = VoiceCallHandler.ActiveCalls.Values.Select(c => new global::QuicNet.Serialization.VoiceApiModuleMessage10(c.Peer.Id.ToString(), c.Peer.Name ?? "Peer", audio.GetPeerVolume(c.Peer.Id), audio.GetPeerMuted(c.Peer.Id), c.IsOutboundMuted, c.IsScreenShareAllowed, c.RemoteScreenEncoderCodecMask, c.RemoteScreenDecoderCodecMask) { startedAtUnixMs = new DateTimeOffset(c.StartedAtUtc).ToUnixTimeMilliseconds(), screenDecoderHardwarePreferenceMask = c.RemoteScreenDecoderHardwarePreferenceMask, screenCapabilitiesReceived = c.RemoteScreenCapabilitiesReceived }).ToList();
 
         _hub.Broadcast("voice_state", new global::QuicNet.Serialization.VoiceApiModuleMessage11(audio.IsMuted, audio.IsDeafened, audio.MasterVolume, audio.IsTestLoopback, audio.CurrentInputDeviceId ?? "default", audio.CurrentOutputDeviceId ?? "default", audio.BackendName, audio.IsCaptureRunning && audio.CaptureError == null, audio.IsPlaybackRunning && audio.PlaybackError == null, audio.CaptureError, audio.PlaybackError, _voiceHandler.AudioService.Bitrate, _voiceHandler.RequestedBitrate, VoiceCallHandler.IsLocalScreenSharing, _voiceHandler.ScreenEncoder.Profile != null, VoiceCallHandler.LocalScreenTargetPeerId, _voiceHandler.ScreenEncoder.Profile, _voiceHandler.NativeScreenSettings, activeCalls));
     }
@@ -146,6 +151,7 @@ internal sealed class VoiceApiModule
         try
         {
             if (generation != Interlocked.Read(ref _platformGeneration)) return;
+            await NativeVideoRuntime.Instance.StopAsync("local").ConfigureAwait(false);
             await VoiceCallHandler.StopScreenShareAsync().ConfigureAwait(false);
             if (generation != Interlocked.Read(ref _platformGeneration)) return;
             _hub.Broadcast("screen_share_stopped", new global::QuicNet.Serialization.VoiceApiModuleMessage3("local", "Tú"));
@@ -159,9 +165,38 @@ internal sealed class VoiceApiModule
     {
         var audio = _voiceHandler.AudioService;
 
+        if (path == "/api/voice/cameras" && req.HttpMethod == "GET")
+        {
+            var cameras = WebUiServer.Instance?.PlatformScreenCapture?.Cameras() ?? await FfmpegScreenEncoder.CamerasAsync().ConfigureAwait(false);
+            await WebUiContext.WriteJsonAsync(resp,cameras).ConfigureAwait(false);return true;
+        }
+        if (path == "/api/voice/native-video" && req.HttpMethod == "GET")
+        {
+            if (req.QueryString["refresh"] == "1") await NativeVideoRuntime.Instance.DetectAsync().ConfigureAwait(false);
+            else await NativeVideoRuntime.Instance.EnsureCapabilitiesAsync().ConfigureAwait(false);
+            await WebUiContext.WriteJsonAsync(resp, new QuicNet.Serialization.NativeVideoSnapshot(NativeVideoRuntime.Instance.Capabilities,
+                VoiceCallHandler.ActiveCalls.Values.Select(s => new QuicNet.Serialization.NativeVideoPeerCapabilities(s.Peer.Id.ToString(), s.Peer.Name, s.NativeVideoCapabilities)).ToArray(), NativeVideoRuntime.Instance.States)).ConfigureAwait(false);
+            return true;
+        }
+        if (path == "/api/voice/native-video/playback" && req.HttpMethod == "POST")
+        {
+            using var doc=await WebUiContext.ReadJsonAsync(req,path).ConfigureAwait(false);
+            var options=doc.RootElement.Deserialize(NativeVideoJsonContext.Default.NativePlaybackOptions) ?? throw new ArgumentException("Missing playback options.");
+            NativeVideoRuntime.Instance.Configure(options);
+            await WebUiContext.WriteJsonAsync(resp,new QuicNet.Serialization.VoiceApiModuleMessage20(true)).ConfigureAwait(false);return true;
+        }
+        if (path == "/api/voice/native-video/layout" && req.HttpMethod == "POST")
+        {
+            using var doc = await WebUiContext.ReadJsonAsync(req,path).ConfigureAwait(false);
+            var layout = doc.RootElement.Deserialize<NativeVideoLayout>(NativeVideoJsonContext.Default.NativeVideoLayout) ?? throw new ArgumentException("Missing layout.");
+            if (layout.peerId != "local" && (!Guid.TryParse(layout.peerId,out var videoPeer) || !VoiceCallHandler.ActiveCalls.ContainsKey(videoPeer))) throw new ArgumentException("No active video peer.");
+            await NativeVideoRuntime.Instance.LayoutAsync(layout).ConfigureAwait(false);
+            await WebUiContext.WriteJsonAsync(resp,new QuicNet.Serialization.VoiceApiModuleMessage20(true)).ConfigureAwait(false);return true;
+        }
+
         if (path == "/api/voice/state" && req.HttpMethod == "GET")
         {
-            var activeCalls = VoiceCallHandler.ActiveCalls.Values.Select(c => new global::QuicNet.Serialization.VoiceApiModuleMessage13(c.Peer.Id.ToString(), c.Peer.Name ?? "Peer", _voiceHandler.AudioService.GetPeerBufferedAudioMs(c.Peer.Id), audio.GetPeerVolume(c.Peer.Id), audio.GetPeerMuted(c.Peer.Id), c.IsOutboundMuted, c.IsRemoteScreenSharing, c.IsScreenShareAllowed, c.RemoteScreenEncoderCodecMask, c.RemoteScreenDecoderCodecMask) { startedAtUnixMs = new DateTimeOffset(c.StartedAtUtc).ToUnixTimeMilliseconds() }).ToList();
+            var activeCalls = VoiceCallHandler.ActiveCalls.Values.Select(c => new global::QuicNet.Serialization.VoiceApiModuleMessage13(c.Peer.Id.ToString(), c.Peer.Name ?? "Peer", _voiceHandler.AudioService.GetPeerBufferedAudioMs(c.Peer.Id), audio.GetPeerVolume(c.Peer.Id), audio.GetPeerMuted(c.Peer.Id), c.IsOutboundMuted, c.IsRemoteScreenSharing, c.IsScreenShareAllowed, c.RemoteScreenEncoderCodecMask, c.RemoteScreenDecoderCodecMask) { startedAtUnixMs = new DateTimeOffset(c.StartedAtUtc).ToUnixTimeMilliseconds(), screenDecoderHardwarePreferenceMask = c.RemoteScreenDecoderHardwarePreferenceMask, screenCapabilitiesReceived = c.RemoteScreenCapabilitiesReceived }).ToList();
 
             await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage14(audio.IsMuted, audio.IsDeafened, audio.MasterVolume, audio.IsTestLoopback, audio.CurrentInputDeviceId ?? "default", audio.CurrentOutputDeviceId ?? "default", audio.BackendName, audio.IsCaptureRunning && audio.CaptureError == null, audio.IsPlaybackRunning && audio.PlaybackError == null, audio.CaptureError, audio.PlaybackError, _voiceHandler.AudioService.Bitrate, _voiceHandler.RequestedBitrate, VoiceCallHandler.IsLocalScreenSharing, _voiceHandler.ScreenEncoder.Profile != null, VoiceCallHandler.LocalScreenTargetPeerId, _voiceHandler.ScreenEncoder.Profile, _voiceHandler.NativeScreenSettings, activeCalls)).ConfigureAwait(false);
             return true;
@@ -179,17 +214,18 @@ internal sealed class VoiceApiModule
         if (path is "/api/voice/media-capabilities" or "/api/voice/screen-share/gpu-codecs" && req.HttpMethod == "GET")
         {
             var ffmpeg = await FfmpegInstallation.GetStatusAsync(req.QueryString["refresh"] == "1", CancellationToken.None).ConfigureAwait(false);
-            var nativeEncoders = await _voiceHandler.ScreenEncoder.CapabilitiesAsync(CancellationToken.None, req.QueryString["refresh"] == "1").ConfigureAwait(false);
+            var platformCapture = WebUiServer.Instance?.PlatformScreenCapture;
+            var nativeEncoders = platformCapture?.Encoders() ?? await _voiceHandler.ScreenEncoder.CapabilitiesAsync(CancellationToken.None, req.QueryString["refresh"] == "1").ConfigureAwait(false);
             var displays = ScreenCaptureInventory.Displays();
             var encoders = new List<object>
             {
-                new global::QuicNet.Serialization.VoiceApiModuleMessage17("h264", "H.264 / AVC", (bool?)null, (int?)null, "4-12 Mbps", "Availability is probed in the local WebCodecs runtime and on connected viewers."),
-                new global::QuicNet.Serialization.VoiceApiModuleMessage17("hevc", "H.265 / HEVC", (bool?)null, (int?)null, "4-12 Mbps", "Availability is probed in the local WebCodecs runtime and on connected viewers."),
-                new global::QuicNet.Serialization.VoiceApiModuleMessage17("vp9", "VP9", (bool?)null, (int?)null, "4-12 Mbps", "Availability is probed in the local WebCodecs runtime and on connected viewers."),
-                new global::QuicNet.Serialization.VoiceApiModuleMessage17("av1", "AV1", (bool?)null, (int?)null, "3-10 Mbps", "Availability is probed in the local WebCodecs runtime and on connected viewers.")
+                new global::QuicNet.Serialization.VoiceApiModuleMessage17("h264", "H.264 / AVC", (bool?)null, (int?)null, "4-12 Mbps", "FFmpeg verifica la recepción con vídeo de muestra y anuncia el resultado a los participantes."),
+                new global::QuicNet.Serialization.VoiceApiModuleMessage17("hevc", "H.265 / HEVC", (bool?)null, (int?)null, "4-12 Mbps", "FFmpeg verifica la recepción con vídeo de muestra y anuncia el resultado a los participantes."),
+                new global::QuicNet.Serialization.VoiceApiModuleMessage17("vp9", "VP9", (bool?)null, (int?)null, "4-12 Mbps", "FFmpeg verifica la recepción con vídeo de muestra y anuncia el resultado a los participantes."),
+                new global::QuicNet.Serialization.VoiceApiModuleMessage17("av1", "AV1", (bool?)null, (int?)null, "3-10 Mbps", "FFmpeg verifica la recepción con vídeo de muestra y anuncia el resultado a los participantes.")
             };
 
-            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage18("FFmpeg GPU / CPU + WebCodecs", FfmpegScreenEncoder.CaptureAvailable && nativeEncoders.Any(e => e.Available), nativeEncoders, FfmpegScreenEncoder.Sources(displays), displays, new[] { 15, 24, 30, 60, 90, 120, 144 }, new[] { 360, 480, 720, 1080, 1440, 2160 }, 7680, 4320, audio.BackendName, (bool?)null, (int?)null, 30000000, encoders, ffmpeg)).ConfigureAwait(false);
+            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage18("FFmpeg nativo · GPU / CPU", (platformCapture != null || FfmpegScreenEncoder.CaptureAvailable) && nativeEncoders.Any(e => e.Available), nativeEncoders, FfmpegScreenEncoder.Sources(displays), displays, new[] { 15, 24, 30, 60, 90, 120, 144 }, new[] { 360, 480, 720, 1080, 1440, 2160 }, 7680, 4320, audio.BackendName, (bool?)null, (int?)null, 30000000, encoders, ffmpeg)).ConfigureAwait(false);
             return true;
         }
 
@@ -203,17 +239,9 @@ internal sealed class VoiceApiModule
                 ? decEl.GetUInt32()
                 : 0u;
 
-            await VoiceCallHandler.SetLocalScreenCodecCapabilitiesAsync(encoderCodecMask, decoderCodecMask).ConfigureAwait(false);
-            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage19(true, VoiceCallHandler.LocalScreenEncoderCodecMask, VoiceCallHandler.LocalScreenDecoderCodecMask)).ConfigureAwait(false);
-            return true;
-        }
-
-        if (path == "/api/voice/screen-share/decoder-probe" && req.HttpMethod == "POST")
-        {
-            using var doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
-            await _voiceHandler.ReplyScreenDecoderProbeAsync(WebUiContext.ParseGuid(doc.RootElement, "peerId"),
-                WebUiContext.ParseGuid(doc.RootElement, "requestId"), doc.RootElement.GetProperty("supported").GetBoolean()).ConfigureAwait(false);
-            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage20(true)).ConfigureAwait(false);
+            var native = NativeVideoRuntime.Instance.Capabilities;
+            await VoiceCallHandler.SetLocalScreenCodecCapabilitiesAsync(encoderCodecMask, native.decoderMask, native.hardwareMask).ConfigureAwait(false);
+            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage19(true, VoiceCallHandler.LocalScreenEncoderCodecMask, VoiceCallHandler.LocalScreenDecoderCodecMask) { decoderHardwarePreferenceMask = VoiceCallHandler.LocalScreenDecoderHardwarePreferenceMask }).ConfigureAwait(false);
             return true;
         }
 
@@ -254,8 +282,15 @@ internal sealed class VoiceApiModule
             int width = json.GetProperty("width").GetInt32();
             int height = json.GetProperty("height").GetInt32();
             if (codec.Length > 128 || width < 1 || width > 7680 || height < 1 || height > 4320) throw new InvalidDataException("Invalid decoder configuration.");
+            string? description = json.TryGetProperty("description", out var descriptionJson) && descriptionJson.ValueKind == JsonValueKind.String
+                ? descriptionJson.GetString() : null;
+            if (description != null)
+            {
+                if (description.Length > 65536) throw new InvalidDataException("Oversized decoder description.");
+                _ = Convert.FromBase64String(description);
+            }
             Guid? target = json.TryGetProperty("targetPeerId", out var t) && t.ValueKind == JsonValueKind.String ? t.GetGuid() : null;
-            bool supported = await _voiceHandler.ProbeScreenDecodersAsync(new("web", 0, width, height, 0, codec, null, 0), target, CancellationToken.None).ConfigureAwait(false);
+            bool supported = await _voiceHandler.ProbeScreenDecodersAsync(new("web", 0, width, height, 0, codec, description, 0), target, CancellationToken.None).ConfigureAwait(false);
             await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage23(true, supported)).ConfigureAwait(false);
             return true;
         }
@@ -276,12 +311,11 @@ internal sealed class VoiceApiModule
                 var profile = await capture.StartAsync(options, async packet =>
                 {
                     await VoiceCallHandler.SendScreenFrameAsync(packet).ConfigureAwait(false);
-                    await _hub.BroadcastBinaryVideoAsync(Guid.Empty, 1, packet).ConfigureAwait(false);
+                    NativeVideoRuntime.Instance.Enqueue(Guid.Empty, options.CodecId, packet);
                 }, reason => { _ = PlatformStoppedAsync(reason, generation); }).ConfigureAwait(false);
-                if (!await _voiceHandler.ProbeScreenDecodersAsync(profile, options.TargetPeerId, CancellationToken.None).ConfigureAwait(false))
-                    throw new InvalidOperationException("Un participante no puede decodificar el vídeo H264 de Android.");
+                await _voiceHandler.ProbeScreenDecodersAsync(profile, options.TargetPeerId, CancellationToken.None).ConfigureAwait(false);
                 if (generation != Interlocked.Read(ref _platformGeneration)) throw new OperationCanceledException("Captura cancelada.");
-                await VoiceCallHandler.StartScreenShareAsync(profile.Width, profile.Height, 1, (byte)profile.Fps, options.TargetPeerId).ConfigureAwait(false);
+                await VoiceCallHandler.StartScreenShareAsync(profile.Width, profile.Height, profile.CodecId, (byte)profile.Fps, options.TargetPeerId, options.Source.StartsWith("camera:", StringComparison.Ordinal) ? "camera" : "screen").ConfigureAwait(false);
                 _hub.Broadcast("screen_share_started", new global::QuicNet.Serialization.VoiceApiModuleMessage2("local", "Tú · Pantalla", profile.Width, profile.Height, 1, profile.Fps));
                 BroadcastVoiceState(); capture.Resume();
                 await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage24(true, profile)).ConfigureAwait(false);
@@ -455,7 +489,6 @@ internal sealed class VoiceApiModule
             Interlocked.Increment(ref _platformGeneration);
             if (WebUiServer.Instance?.PlatformScreenCapture is { } platformCapture) await platformCapture.StopAsync().ConfigureAwait(false);
             await _voiceHandler.ScreenEncoder.StopAsync().ConfigureAwait(false);
-            foreach (var call in VoiceCallHandler.ActiveCalls.Values) call.IsScreenDecoderApproved = true;
             using JsonDocument doc = await WebUiContext.ReadJsonAsync(req, path, allowEmpty: true).ConfigureAwait(false);
             int width = doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("width", out var wEl) ? wEl.GetInt32() : 1280;
             int height = doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("height", out var hEl) ? hEl.GetInt32() : 720;
@@ -495,6 +528,7 @@ internal sealed class VoiceApiModule
 
         if (path == "/api/voice/screen-share/stop" && req.HttpMethod == "POST")
         {
+            await NativeVideoRuntime.Instance.StopAsync("local").ConfigureAwait(false);
             using var stopBody = await WebUiContext.ReadJsonAsync(req, path, allowEmpty: true).ConfigureAwait(false);
             string? requestId = stopBody.RootElement.ValueKind == JsonValueKind.Object && stopBody.RootElement.TryGetProperty("requestId", out var request) &&
                 request.ValueKind == JsonValueKind.String && Guid.TryParse(request.GetString(), out _) ? request.GetString() : null;

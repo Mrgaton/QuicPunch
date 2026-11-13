@@ -57,7 +57,7 @@ static void Fixtures(string directory)
     Check(data.Lookup(IPAddress.Parse("2001:218::")) is { Country: "JP", City: "", Region: "" }, "Country-only resolution lost");
     Check(data.LookupAsn(IPAddress.Parse("2001:4860:4860::8888")) == 15169, "Embedded IPv6 ASN");
     using var sources = JsonDocument.Parse(data.Manifest);
-    foreach (string name in new[] { "city", "asn", "routers" })
+    foreach (string name in new[] { "city", "asn" })
         Check(sources.RootElement.GetProperty("tables").GetProperty(name).GetProperty("format").GetString() == "GLP2", "Embedded legacy resource");
     Console.WriteLine("PASS cross-language fixtures, 8/16-bit palettes, float bits, UTF-8, gaps, both IP families, overflow/corruption rejection, concurrent and embedded lookups");
 }
@@ -65,7 +65,7 @@ static void Fixtures(string directory)
 static void Verify(string legacy, string compact)
 {
     long total = 0, queries = 0;
-    foreach (string name in new[] { "city", "asn", "routers" })
+    foreach (string name in new[] { "city", "asn" })
     {
         bool asn = name == "asn";
         var table = Open(Path.Combine(compact, name + ".bin"), asn);

@@ -1,8 +1,9 @@
 import {readVoiceSource} from '../Fixtures/VoiceSource.mjs';
-import {launchBrowser, startPreviewServer, closeBrowserFixture} from '../Fixtures/BrowserFixture.mjs';
+import {launchBrowser, startPreviewServer, closeBrowserFixture, findFfmpeg} from '../Fixtures/BrowserFixture.mjs';
 // Isolated UX regression coverage: fixture identities only; no P2P or audio capture.
 
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 const server = startPreviewServer([]);
 let browser;
 try {
@@ -54,7 +55,7 @@ try {
   await page.locator('#chatListResizer').focus();await page.keyboard.press('End');
   assert.equal(await page.locator('.dm-pane').evaluate(node=>Math.round(node.getBoundingClientRect().width)),420);
   await page.locator('#navCollapseBtn').click();
-  assert.equal(await page.locator('.nav-wrap').evaluate(node=>Math.round(node.getBoundingClientRect().width)),64);
+  assert.equal(await page.locator('.nav-wrap').evaluate(node=>Math.round(node.getBoundingClientRect().width)),78);
   await page.reload();await page.waitForFunction(()=>!document.getElementById('messageInput').disabled);
   assert.equal(await page.locator('#chatListResizer').getAttribute('aria-valuenow'),'420');
   assert.equal(await page.locator('#navCollapseBtn').getAttribute('aria-expanded'),'false');
@@ -96,7 +97,8 @@ try {
   const geometry=()=>page.evaluate(()=>{
     const box=id=>document.getElementById(id).getBoundingClientRect();
     const input=box('messageInput'), history=box('messages');
-    const limit=innerWidth<=680?document.querySelector('.nav-wrap').getBoundingClientRect().top:innerHeight;
+    const nav=document.querySelector('.nav-wrap');
+    const limit=innerWidth<=680&&nav.checkVisibility()?nav.getBoundingClientRect().top:innerHeight;
     return {inputTop:input.top,inputBottom:input.bottom,historyHeight:history.height,historyBottom:history.bottom,limit,overflow:document.documentElement.scrollWidth-innerWidth,rootHeight:document.scrollingElement.scrollHeight,height:innerHeight};
   });
   for(const viewport of [{width:2560,height:1440},{width:1280,height:720},{width:920,height:844},{width:390,height:844},{width:320,height:568},{width:844,height:390},{width:640,height:450}]){
@@ -126,15 +128,7 @@ try {
   const audioBounds=await page.locator('.chat-audio-player').boundingBox();
   assert.ok(audioBounds.width>=200&&audioBounds.x+audioBounds.width<=390,'Audio controls clipped on mobile');
   // A portrait clip is constrained without changing its aspect ratio.
-  const clip=await page.evaluate(async()=>{
-    const canvas=document.createElement('canvas');canvas.width=240;canvas.height=480;
-    const context=canvas.getContext('2d');context.fillStyle='#176b5b';context.fillRect(0,0,240,480);
-    const stream=canvas.captureStream(5),chunks=[];const recorder=new MediaRecorder(stream,{mimeType:'video/webm'});
-    const stopped=new Promise(resolve=>recorder.addEventListener('stop',resolve,{once:true}));
-    recorder.addEventListener('dataavailable',event=>chunks.push(event.data));recorder.start();
-    await new Promise(resolve=>setTimeout(resolve,300));recorder.stop();await stopped;stream.getTracks().forEach(track=>track.stop());
-    const reader=new FileReader(),loaded=new Promise(resolve=>reader.addEventListener('load',()=>resolve(reader.result),{once:true}));reader.readAsDataURL(new Blob(chunks,{type:'video/webm'}));return loaded;
-  });
+  const clip='data:video/webm;base64,'+execFileSync(findFfmpeg(),['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=0x176b5b:s=240x480:r=5','-frames:v','2','-c:v','libvpx','-deadline','realtime','-f','webm','pipe:1'],{windowsHide:true}).toString('base64');
   await page.evaluate(data=>onRealtimeMessage({peerId:'00000000-0000-0000-0000-000000000001',msgId:'ux-video',message:JSON.stringify({type:'video',data,name:'Clip vertical.webm'}),timestampMs:Date.now(),isMe:true,sender:'Tú',isConfirmed:true}),clip);
   await page.waitForFunction(()=>document.querySelector('.chat-media-video')?.videoHeight===480);
   const videoBounds=await page.locator('.chat-media-video').boundingBox();

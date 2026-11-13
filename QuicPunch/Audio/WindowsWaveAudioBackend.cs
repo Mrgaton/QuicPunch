@@ -16,7 +16,7 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
 
     private const int SampleRate = OpusVoiceCodec.DefaultSampleRate; // 48000
     private const int Channels = OpusVoiceCodec.DefaultChannels;     // 1 (mono)
-    private const int FrameSize = OpusVoiceCodec.DefaultFrameSize;   // 960 samples (20 ms)
+    private const int FrameSize = OpusVoiceCodec.DefaultFrameSize;   // 480 samples (10 ms)
     private const int FrameBytes = FrameSize * sizeof(short);
     private const int BufferCount = 4;
 
@@ -128,8 +128,12 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
 
     public string? PlaybackError { get; private set; }
     private long _submittedPlaybackFrames, _completedPlaybackFrames;
+    private long _playbackRefills, _droppedPlaybackFrames;
+    private readonly short[] _playbackLead = new short[FrameSize];
     internal long SubmittedPlaybackFrames => Interlocked.Read(ref _submittedPlaybackFrames);
     internal long CompletedPlaybackFrames => Interlocked.Read(ref _completedPlaybackFrames);
+    internal long PlaybackRefills => Interlocked.Read(ref _playbackRefills);
+    internal long DroppedPlaybackFrames => Interlocked.Read(ref _droppedPlaybackFrames);
 
     public string Name => "Windows Multimedia (waveIn/waveOut)";
     public bool IsSupported => OperatingSystem.IsWindows();
@@ -145,7 +149,7 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
 
     private IntPtr _waveOutHandle = IntPtr.Zero;
     private WaveOutProc? _waveOutProc;
-    private const int PlaybackBufferCount = 3;
+    private const int PlaybackBufferCount = 6; // 60ms capacity, not a fixed playout delay.
     private const int MaxPlaybackFrameBytes = 5760 * 2; // Headroom for up to 60ms stereo / 120ms mono frames
     private readonly IntPtr[] _outHeaders = new IntPtr[PlaybackBufferCount];
     private readonly IntPtr[] _outBuffers = new IntPtr[PlaybackBufferCount];
@@ -247,7 +251,7 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
         }
 
         _captureCts = new CancellationTokenSource();
-        _captureChannel = System.Threading.Channels.Channel.CreateBounded<short[]>(new System.Threading.Channels.BoundedChannelOptions(3)
+        _captureChannel = System.Threading.Channels.Channel.CreateBounded<short[]>(new System.Threading.Channels.BoundedChannelOptions(6)
         {
             FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
             SingleReader = true,
@@ -360,6 +364,8 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
             PlaybackError = null;
             Interlocked.Exchange(ref _submittedPlaybackFrames, 0);
             Interlocked.Exchange(ref _completedPlaybackFrames, 0);
+            Interlocked.Exchange(ref _playbackRefills, 0);
+            Interlocked.Exchange(ref _droppedPlaybackFrames, 0);
             _waveOutProc = OnWaveOutMessage;
             int res = WaveOutOpen(out _waveOutHandle, devIndex, ref wfx, _waveOutProc, IntPtr.Zero, CALLBACK_FUNCTION);
             if (res != MMSYSERR_NOERROR)
@@ -409,6 +415,23 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
         if (!IsSupported || pcmSamples == null || pcmSamples.Length == 0) return;
         lock (_outLock)
         {
+            if (_waveOutHandle == IntPtr.Zero && !StartPlayback()) return;
+            // Keep one 10ms scheduling guard in the device. Network buffering
+            // cannot protect waveOut from a late mixer tick. Refill only if drained.
+            if (SubmittedPlaybackFrames == CompletedPlaybackFrames)
+            {
+                if (SubmittedPlaybackFrames > 0) Interlocked.Increment(ref _playbackRefills);
+                SubmitSamples(_playbackLead);
+            }
+            SubmitSamples(pcmSamples);
+        }
+    }
+
+    private void SubmitSamples(short[] pcmSamples)
+    {
+        if (!IsSupported || pcmSamples == null || pcmSamples.Length == 0) return;
+        lock (_outLock)
+        {
             if (_waveOutHandle == IntPtr.Zero)
             {
                 if (!StartPlayback()) return;
@@ -434,9 +457,10 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
             }
 
             // An in-flight WinMM buffer must never be overwritten. Bound backlog
-            // to three frames and discard the new frame if the driver is behind.
+            // to 60ms of 10ms frames; never overwrite an in-flight buffer.
             if (chosenIndex == -1)
             {
+                Interlocked.Increment(ref _droppedPlaybackFrames);
                 return;
             }
             _nextOutIndex = (chosenIndex + 1) % PlaybackBufferCount;

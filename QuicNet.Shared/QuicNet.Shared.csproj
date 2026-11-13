@@ -14,14 +14,15 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="../QuicNet.Geolocation/Data/NOTICE.txt" Link="GEOLOCATION-NOTICE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <None Include="../QuicNet.Geolocation/Map/NOTICE.txt" Link="MAP-NOTICE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="wwwroot\**" />
-    <EmbeddedResource Include="../QuicNet.Geolocation/Map/map.js" LogicalName="QuicNet.wwwroot.geolocation.map.js" />
-    <EmbeddedResource Include="../QuicNet.Geolocation/Map/map.json.gz" LogicalName="QuicNet.Geolocation.WorldMap.gz" />
     <EmbeddedResource Include="Watch\wwwroot\**" />
+    <EmbeddedResource Include="../native/media/NOTICE.txt" LogicalName="QuicNet.NativeVideo.NOTICE.txt" />
+    <EmbeddedResource Include="../native/media/licenses/*.txt" Link="NativeVideoLicenses/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Video/Probes.json" LogicalName="QuicNet.NativeVideo.Probes.json" />
+    <None Include="runtimes/win-x64/native/*.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64' or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows')))" />
   </ItemGroup>
 
   <ItemGroup>

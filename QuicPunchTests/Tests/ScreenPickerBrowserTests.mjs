@@ -41,10 +41,11 @@ try {
   await page.keyboard.press('ArrowLeft');assert.equal(await selected(),'desktop');
   await page.keyboard.press('ArrowUp');await page.keyboard.press('ArrowLeft');assert.equal(await selected(),'desktop','Navigation escaped the grid boundary');
   await page.keyboard.type('Terminal');
+  await page.waitForFunction(()=>document.querySelectorAll('#screenCaptureGallery [role=option]').length===2);
   assert.equal(await search.inputValue(),'Terminal');assert.equal(await options.count(),2);assert.equal(await selected(),'source:4');
   await page.keyboard.press('Enter');await modal.waitFor({state:'hidden'});assert.equal(await page.evaluate(()=>window.pickerChoice),'source:4');
   await open();await page.locator('#screenCaptureWindows').click();
-  await page.keyboard.type('Navegador');assert.equal(await options.count(),1);assert.equal(await selected(),'source:3');
+  await page.keyboard.type('Navegador');await page.waitForFunction(()=>document.querySelectorAll('#screenCaptureGallery [role=option]').length===1);assert.equal(await options.count(),1);assert.equal(await selected(),'source:3');
   await page.locator('#screenCaptureDisplays').click();assert.equal(await options.count(),0);
   assert.equal(await page.locator('#screenNativeCaptureStart').isDisabled(),true);
   await search.focus();await page.keyboard.press('Enter');assert.equal(await modal.isVisible(),true,'Enter selected a hidden source with no matches');

@@ -88,8 +88,8 @@ internal static class FfmpegInstallation
     internal static async Task<FfmpegInstallationStatus> DetectAsync(string platform, string osRelease,
         IEnumerable<string> candidates, Func<string, CancellationToken, Task<string?>> probe, CancellationToken ct)
     {
-        if (platform == "android") return new(platform, "Android", false, false, null, null,
-            "Android utiliza los códecs del dispositivo; no necesita instalar FFmpeg.", []);
+        if (platform == "android") return new(platform, "Android", true, true, null, "FFmpeg n8.1.3",
+            "FFmpeg está integrado. Utiliza los componentes MediaCodec disponibles en este dispositivo.", []);
         var values = ParseOsRelease(osRelease);
         string system = platform == "windows" ? "Windows" : values.GetValueOrDefault("PRETTY_NAME", platform == "linux" ? "Linux" : "Este sistema");
         foreach (string candidate in candidates)
@@ -97,7 +97,7 @@ internal static class FfmpegInstallation
             string? version = await probe(candidate, ct).ConfigureAwait(false);
             if (version != null) return new(platform, system, true, platform == "windows", candidate, version,
                 platform == "windows" ? "FFmpeg instalado. Los codificadores se comprueban por separado." :
-                "FFmpeg instalado. La captura nativa de esta aplicación está disponible actualmente en Windows; aquí puedes usar la captura del navegador.", []);
+                "FFmpeg instalado. La captura nativa de esta aplicación está disponible actualmente en Windows; la captura nativa no está disponible aquí.", []);
         }
         return new(platform, system, false, platform == "windows", null, null,
             platform == "windows" ? "No se ha encontrado un FFmpeg que funcione. Instálalo para habilitar la captura nativa de pantalla y sus vistas previas. Puedes seguir usando la captura del navegador." :

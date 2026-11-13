@@ -172,7 +172,7 @@ namespace QuicPunch.Multiplexer
                     // Android and TCP lanes may report EOF before their physical
                     // connection callback. A verified control reply distinguishes
                     // normal application EOF from a failed transport.
-                    if (!Recoverable || Volatile.Read(ref _remoteClosing) != 0 || Volatile.Read(ref _closed) != 0) return;
+                    if (stream.Type == QuicStreamType.Unidirectional || !Recoverable || Volatile.Read(ref _remoteClosing) != 0 || Volatile.Read(ref _closed) != 0) return;
                     if (_multiplexer.PhysicalConnection.IsTransportClosed || !await _multiplexer.ProbeLivenessAsync(ct).ConfigureAwait(false))
                         await _multiplexer.DisposeAsync().ConfigureAwait(false);
                 };

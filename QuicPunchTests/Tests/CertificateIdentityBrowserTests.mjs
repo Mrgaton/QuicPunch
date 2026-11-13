@@ -32,7 +32,7 @@ try {
   const card = index => page.locator(`[data-contact-key="${hashes[index]}"]`);
   const waitMarks = () => page.waitForFunction(() => document.querySelectorAll('#homeContacts .identity-mark[data-identity-state=ready]').length === 6);
   await waitMarks();
-  const capsuleSignature = locator => locator.evaluate(node => JSON.stringify([node.dataset.identityVersion,node.dataset.edge,node.dataset.pattern,node.style.getPropertyValue('--ci-hue'),node.style.getPropertyValue('--ci-saturation')]));
+  const capsuleSignature = locator => locator.evaluate(node => JSON.stringify([node.dataset.identityVersion,node.dataset.edge,node.dataset.pattern,node.getAttribute('style')]));
   const signature = index => capsuleSignature(card(index).locator('.ci'));
   const original = await signature(0);
   assert.notEqual(original, await signature(5), 'Copied names and initials must not copy the certificate mark');

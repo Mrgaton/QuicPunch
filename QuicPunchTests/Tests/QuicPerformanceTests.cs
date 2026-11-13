@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Sockets;
 using System.Net.Quic;
 using System.Net.Security;
@@ -6,12 +6,11 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Diagnostics;
 using System.Threading.Channels;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Buffers.Binary;
 using QuicPunch.Helpers;
 using QuicNet.Protocols;
-using Q = System.Net.Quic.QuicConnection;
+using Q = QuicPunch.QuicConnection;
 
 using QuicPunch.Multiplexer;
 
@@ -34,61 +33,32 @@ public static class QuicPerformanceTests
         Console.WriteLine($"CASE prepared={prepared} multiplexed={multiplexed} cubic_control={cubicControl} loss_every=500 configured_rtt_ms=80; artificial loopback path, not NIC capacity");
         foreach (int delay in new[] { 40 })
         {
-            var serverOptions = new QuicServerConnectionOptions
-            {
-                DefaultStreamErrorCode = 1,
-                DefaultCloseErrorCode = 1,
-                MaxInboundBidirectionalStreams = 20,
-                IdleTimeout = TimeSpan.FromSeconds(60),
-                ServerAuthenticationOptions = new() { ApplicationProtocols = [alpn], ServerCertificate = cert }
-            };
-            await using var listener = await QuicListener.ListenAsync(new()
-            {
-                ListenEndPoint = new(IPAddress.Loopback, 0),
-                ApplicationProtocols = [alpn],
-                ConnectionOptionsCallback = (_, _, _) =>
-                {
-                    if (prepared && !MsQuicDatagramChannel.EnsureServerConfigurationPatched(serverOptions))
-                        throw new InvalidOperationException("Cannot prepare server configuration before handshake.");
-                    if (cubicControl) SetCubicBeforeHandshake(serverOptions);
-                return ValueTask.FromResult(serverOptions);
-                }
-            });
-            await using var proxy = new DelayProxy(listener.LocalEndPoint, delay);
-            var clientOptions = new QuicClientConnectionOptions
-            {
-                RemoteEndPoint = proxy.EndPoint,
-                DefaultStreamErrorCode = 1,
-                DefaultCloseErrorCode = 1,
-                MaxInboundBidirectionalStreams = 20,
-                IdleTimeout = TimeSpan.FromSeconds(60),
-                ClientAuthenticationOptions = new() { ApplicationProtocols = [alpn], TargetHost = "localhost", RemoteCertificateValidationCallback = (_, _, _, _) => true }
-            };
-            var accept = listener.AcceptConnectionAsync();
-            if (cubicControl)
-            {
-                if (!MsQuicDatagramChannel.EnsureClientConfigurationPatched(clientOptions))
-                    throw new InvalidOperationException("Cannot prepare CUBIC control configuration.");
-                SetCubicBeforeHandshake(clientOptions);
-            }
-            QuicPunch.IQuicConnectionTransport? clientTransport = prepared && !cubicControl
-                ? await QuicPunch.NativeQuicConnectionFactory.Instance.ConnectAsync(clientOptions) : null;
-            await using var client = clientTransport is QuicPunch.NativeConnectionTransport native
-                ? native.InnerConnection : await Q.ConnectAsync(clientOptions);
-            await using var server = await accept;
+            MsQuicTuner.EnsureOptimalConfiguration(minMtu: 1248, congestionAlgorithm: cubicControl || !prepared ? QuicCongestionAlgorithm.Cubic : QuicCongestionAlgorithm.Bbr);
+            using var clientKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var clientRequest = new CertificateRequest("CN=perf-audit-client", clientKey, HashAlgorithmName.SHA256);
+            using var clientCert = clientRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            using var reservation = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+            ushort port = (ushort)((IPEndPoint)reservation.Client.LocalEndPoint!).Port;
+            reservation.Dispose();
+            await using var serverTransport = QuicPunch.MsQuicBridgeTransport.Create(cert, Sha3Crypto.Hash256(clientCert.GetPublicKey()));
+            serverTransport.Listen(port);
+            await using var proxy = new DelayProxy(new IPEndPoint(IPAddress.Loopback, port), delay);
+            await using var clientTransport = QuicPunch.MsQuicBridgeTransport.Create(clientCert, Sha3Crypto.Hash256(cert.GetPublicKey()), proxy.EndPoint);
+            clientTransport.Connect(proxy.EndPoint, 0);
+            using var setup = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await Task.WhenAll(serverTransport.WaitConnectedAsync(setup.Token), clientTransport.WaitConnectedAsync(setup.Token));
+            await using var client = Q.FromTransport(clientTransport);
+            await using var server = Q.FromTransport(serverTransport);
             Console.WriteLine($"Server {Snapshot(server)}");
             Console.WriteLine($"Connection delay {delay * 2}ms configured RTT; {Snapshot(client)}");
             using (var serverHandler = new SpeedTestHandler())
             using (var clientHandler = new SpeedTestHandler())
             using (var stop = new CancellationTokenSource(TimeSpan.FromSeconds(40)))
             {
-                using var clientKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-                var clientRequest = new CertificateRequest("CN=perf-audit-client", clientKey, HashAlgorithmName.SHA256);
-                using var clientCert = clientRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
                 var sp = new QuicPunch.PeerInfo(cert, null) { Name = "Audit server" };
                 var cp = new QuicPunch.PeerInfo(clientCert, null) { Name = "Audit client" };
-                await using var cw = clientTransport == null ? QuicPunch.QuicConnection.Wrap(client) : QuicPunch.QuicConnection.FromTransport(clientTransport);
-                await using var swrap = QuicPunch.QuicConnection.Wrap(server);
+                var cw = client;
+                var swrap = server;
                 await using var serverMux = multiplexed ? new QuicPeerMultiplexer(swrap, cp, true, id => id == serverHandler.ProtocolId ? serverHandler : null, _ => true) : null;
                 await using var clientMux = multiplexed ? new QuicPeerMultiplexer(cw, sp, false, id => id == clientHandler.ProtocolId ? clientHandler : null, _ => true) : null;
                 if (multiplexed) await Task.WhenAll(serverMux!.StartAsync(), clientMux!.StartAsync());
@@ -111,33 +81,9 @@ public static class QuicPerformanceTests
 
     // Control case: identical prepared flow-control windows, pacing and datagrams,
     // with CUBIC selected on the configuration BEFORE either endpoint starts.
-    private static unsafe void SetCubicBeforeHandshake(QuicConnectionOptions options)
-    {
-        var type = typeof(Q).Assembly.GetType("System.Net.Quic.MsQuicConfiguration")!;
-        var create = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-            .Single(m => m.Name == "Create" && m.GetParameters()[0].ParameterType == options.GetType());
-        var arguments = options is QuicServerConnectionOptions ? new object[] { options, "localhost" } : new object[] { options };
-        var configuration = (SafeHandle)create.Invoke(null, arguments)!;
-        using var lease = new NativeHandleLease(configuration);
-        var del = (Delegate)typeof(MsQuicTuner).GetField("SetParam", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
-        var set = (delegate* unmanaged<IntPtr, uint, uint, IntPtr, int>)Marshal.GetFunctionPointerForDelegate(del);
-        byte[] settings = new byte[MsQuicTuner.QuicSettingsSize];
-        BinaryPrimitives.WriteUInt64LittleEndian(settings, MsQuicTuner.CongestionAlgorithmIsSetBit);
-        fixed (byte* bytes = settings)
-            if (set(lease.Handle, MsQuicTuner.QuicParamConfigSettings, (uint)settings.Length, (IntPtr)bytes) != 0)
-                throw new InvalidOperationException("Cannot set CUBIC on the unstarted configuration.");
-    }
-
-    static unsafe string Snapshot(Q connection)
-    {
-        var t = typeof(MsQuicTuner); var field = t.GetField("GetParam", BindingFlags.Static | BindingFlags.NonPublic)!;
-        var del = (Delegate)field.GetValue(null)!;
-        var get = (delegate* unmanaged<IntPtr, uint, uint*, IntPtr, int>)Marshal.GetFunctionPointerForDelegate(del);
-        var handle = (SafeHandle)typeof(Q).GetField("_handle", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(connection)!;
-        byte[] bytes = new byte[512]; uint n = 512; int status;
-        fixed (byte* p = bytes) status = get(handle.DangerousGetHandle(), MsQuicTuner.QuicParamConnSettings, &n, (IntPtr)p);
-        return $"settings_status={status} length={n} send_buffer={(bytes[106] & 1) != 0} connFC={BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(56))} bidiFC={BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(128))} cc={BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(92))}";
-    }
+    static string Snapshot(Q connection) => connection.TryGetTelemetry(out var t)
+        ? $"cc={t.CongestionAlgorithm} rtt={t.RttMs:F1} mtu={t.PathMtu} tls={t.NegotiatedTlsGroupName}"
+        : "telemetry unavailable";
 
     sealed class DelayProxy : IAsyncDisposable
     {
@@ -157,7 +103,13 @@ public static class QuicPerformanceTests
                 {
                     while (true)
                     {
-                        var packet = await socket.ReceiveAsync(stop.Token); if (fromClient) Interlocked.Increment(ref UpPackets); else Interlocked.Increment(ref DownPackets);
+                        UdpReceiveResult packet;
+                        try { packet = await socket.ReceiveAsync(stop.Token); }
+                        // Windows reports ICMP port-unreachable as ConnectionReset when
+                        // the QUIC endpoint closes before this UDP delay proxy.
+                        catch (SocketException e) when (e.SocketErrorCode == SocketError.ConnectionReset)
+                        { stop.Token.ThrowIfCancellationRequested(); continue; }
+                        if (fromClient) Interlocked.Increment(ref UpPackets); else Interlocked.Increment(ref DownPackets);
                         if (++packetCount % 500 == 0) { if (fromClient) Interlocked.Increment(ref UpDropped); else Interlocked.Increment(ref DownDropped); continue; }
                         if (fromClient) client = packet.RemoteEndPoint; await queue.WriteAsync((packet.Buffer, Stopwatch.GetTimestamp() + (long)(delay / 1000.0 * Stopwatch.Frequency)), stop.Token);
                     }

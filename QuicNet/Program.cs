@@ -141,7 +141,6 @@ internal static class Program
         using var updater = new QuicNet.Updates.AutoUpdateService(qcc.NodeAppDataPath, OperatingSystem.IsLinux() ? "linux-x64" : "win-x64", WindowsAutoUpdate.InstallAsync);
         webUi.Updates = updater;
         webUi.Start();
-        webUi.StartGeolocation();
         File.WriteAllText(instanceUrl, webUi.Url);
         using var appPlatform = new DesktopAppPlatform(webUi.Url, qcc.NodeAppDataPath, cts);
         webUi.AppPlatform = appPlatform;

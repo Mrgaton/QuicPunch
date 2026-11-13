@@ -135,7 +135,7 @@ internal sealed class AndroidAudioBackend : INativeAudioBackend
                 .SetTransferMode(AudioTrackMode.Stream)!.SetPerformanceMode(AudioTrackPerformanceMode.LowLatency)!.Build();
             if (player.State != AudioTrackState.Initialized) { player.Release(); player.Dispose(); return false; }
             // GetMinBufferSize describes allocation capacity; the active playback
-            // buffer can be smaller. Keep capacity for the driver but request 40ms.
+            // buffer can be smaller. Keep capacity for the driver but request 20ms.
             player.SetBufferSizeInFrames(FrameSamples * 2);
             player.Play();
             Android.Util.Log.Info("QuicPunch", $"[ANDROID AUDIO] Playback buffer: {player.BufferSizeInFrames * 1000.0 / SampleRate:F1}ms; mode: {player.PerformanceMode}");

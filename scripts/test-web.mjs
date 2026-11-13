@@ -36,18 +36,6 @@ function execute(command, args) {
     child.once('close', code => resolveResult({code, output}));
   });
 }
-async function prepareManagedFixtures() {
-  const needsVideo = files.includes('CameraBrowserTests.mjs');
-  if (!needsVideo && !files.includes('GeolocationWorkbenchBrowserTests.mjs')) return;
-  const configuration = process.env.QUICNET_TEST_CONFIGURATION || 'Test';
-  const commands = noBuild ? [] : [['build', 'QuicPunchTests', '-c', configuration, '--nologo', '--verbosity', 'quiet']];
-  if (needsVideo) commands.push(['run', '--project', 'QuicPunchTests', '-c', configuration, '--no-build', '--', '--test-platform-video']);
-  for (const command of commands) {
-    const result = await execute('dotnet', command);
-    if (result.code !== 0) throw new Error('Managed browser fixture failed:\n' + result.output);
-  }
-}
-await prepareManagedFixtures();
 for (const file of files) {
   const start = performance.now();
   const result = await execute(process.execPath, [resolve(directory, file)]);

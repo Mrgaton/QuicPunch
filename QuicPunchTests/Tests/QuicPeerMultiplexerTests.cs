@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Net;
 using System.Net.Quic;
@@ -60,6 +60,7 @@ namespace QuicPunchTests.Tests
 
         public static async Task RunAsync()
         {
+            Fixtures.LoopbackOnlyNetwork.Configure();
             System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(QuicPunchConnection).TypeHandle);
             Console.WriteLine("==================================================");
             Console.WriteLine("     QUIC PEER MULTIPLEXER END-TO-END TESTS       ");
@@ -90,49 +91,10 @@ namespace QuicPunchTests.Tests
             using var serverCert = GenerateTestCert();
             using var clientCert = GenerateTestCert();
 
-            var alpn = new SslApplicationProtocol("qpmux");
-            var serverEndPoint = new IPEndPoint(IPAddress.Loopback, 0);
-
-            var serverOptions = new QuicServerConnectionOptions
-            {
-                DefaultStreamErrorCode = 0,
-                DefaultCloseErrorCode = 0,
-                ServerAuthenticationOptions = new SslServerAuthenticationOptions
-            {
-                ApplicationProtocols = new() { alpn },
-                ServerCertificate = serverCert,
-                RemoteCertificateValidationCallback = delegate { return true; }
-            }
-            };
-
-            await using var listener = await System.Net.Quic.QuicListener.ListenAsync(new QuicListenerOptions
-            {
-                ListenEndPoint = serverEndPoint,
-                ApplicationProtocols = new() { alpn },
-                ConnectionOptionsCallback = (_, _, _) => ValueTask.FromResult(serverOptions)
-            });
-
-            var clientOptions = new QuicClientConnectionOptions
-            {
-                RemoteEndPoint = listener.LocalEndPoint,
-                DefaultStreamErrorCode = 0,
-                DefaultCloseErrorCode = 0,
-                MaxInboundBidirectionalStreams = 512,
-                MaxInboundUnidirectionalStreams = 512,
-                ClientAuthenticationOptions = new SslClientAuthenticationOptions
-                {
-                    TargetHost = "localhost",
-                    ApplicationProtocols = new() { alpn },
-                    RemoteCertificateValidationCallback = delegate { return true; }
-                }
-            };
-
-            var acceptTask = listener.AcceptConnectionAsync();
-            var clientNativeConn = await NativeQuicConnection.ConnectAsync(clientOptions);
-            var serverNativeConn = await acceptTask;
-
-            var serverQuicConn = QuicConnection.Wrap(serverNativeConn);
-            var clientQuicConn = QuicConnection.Wrap(clientNativeConn);
+            using var setupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await using var nativePair = await Fixtures.NativeBridgePair.CreateAsync(serverCert, clientCert, setupDeadline.Token);
+            var serverQuicConn = nativePair.Server;
+            var clientQuicConn = nativePair.Client;
 
             var serverPeer = new PeerInfo(serverCert, null) { Name = "ServerPeer" };
             var clientPeer = new PeerInfo(clientCert, null) { Name = "ClientPeer" };
@@ -239,7 +201,12 @@ namespace QuicPunchTests.Tests
                 await clientMux.OpenVirtualSessionAsync(ChatProtocolId);
                 throw new Exception("The server accepted a session rejected by the per-protocol permission gate.");
             }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("rejected session", StringComparison.Ordinal)) { }
+            catch (SessionRejectedException ex)
+            {
+                if (!ex.Message.Contains(mockChatHandler.ProtocolName, StringComparison.Ordinal) ||
+                    ex.Message.Contains(ChatProtocolId.ToString(), StringComparison.OrdinalIgnoreCase))
+                    throw new Exception("Session rejection must identify the protocol by its registered name, not its GUID.", ex);
+            }
 
             // Hanging up before the recipient accepts must cancel its consent
             // workflow, so a native ringtone cannot continue until the timeout.
@@ -400,8 +367,8 @@ namespace QuicPunchTests.Tests
 
             try
             {
-                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 42311) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
-                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 42312) { PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpA = new QuicPunch.QuicPunch(appDataPath: tempDirA, listeningPort: 42311) { Discovery = { LanDiscoveryPort = 0, WanNostrDiscoveryEnabled = false }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
+                using var qpB = new QuicPunch.QuicPunch(appDataPath: tempDirB, listeningPort: 42312) { Discovery = { LanDiscoveryPort = 0, WanNostrDiscoveryEnabled = false }, EnableUpnp = false, PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
 
                 qpB.RegisterProtocol(handlerChatB);
                 qpB.RegisterProtocol(handlerFileB);
@@ -474,6 +441,7 @@ namespace QuicPunchTests.Tests
                     throw new Exception("Node B does not have an active QuicPeerMultiplexer!");
 
                 int udpHandshakeSessionsAfterChat = qpB.IncomingHandshakeSessions.Count;
+                var originalHandshakeIds = qpB.IncomingHandshakeSessions.Keys.ToHashSet();
                 var presencePreferencesA = new QuicNet.Settings.AppPreferencesStore(Path.Combine(tempDirA, "presence.json"));
                 var presencePreferencesB = new QuicNet.Settings.AppPreferencesStore(Path.Combine(tempDirB, "presence.json"));
                 presencePreferencesA.Update(p => { p.Notifications.DoNotDisturb = true; p.PresenceIdleMinutes = 1; });
@@ -493,7 +461,7 @@ namespace QuicPunchTests.Tests
                 activityA.Idle = TimeSpan.Zero;
                 presencePreferencesA.Update(p => p.Notifications.DoNotDisturb = false);
                 await WaitForPresence(false, true);
-                if (qpB.IncomingHandshakeSessions.Count != udpHandshakeSessionsAfterChat)
+                if (qpB.IncomingHandshakeSessions.Keys.Any(id => !originalHandshakeIds.Contains(id)))
                     throw new Exception("Presence caused an additional UDP handshake.");
 
                 // Step 2: Subprotocol 2 (File Transfer with 32KB binary data).
@@ -519,7 +487,7 @@ namespace QuicPunchTests.Tests
                     throw new Exception("File data mismatch over multiplexer!");
 
                 // Assert that ZERO additional UDP handshakes occurred!
-                if (qpB.IncomingHandshakeSessions.Count != udpHandshakeSessionsAfterChat)
+                if (qpB.IncomingHandshakeSessions.Keys.Any(id => !originalHandshakeIds.Contains(id)))
                     throw new Exception($"Expected zero additional UDP handshakes for second subprotocol, found {qpB.IncomingHandshakeSessions.Count - udpHandshakeSessionsAfterChat}");
 
                 // Step 3: Subprotocol 3 (Voice control signaling frame).
@@ -542,7 +510,7 @@ namespace QuicPunchTests.Tests
                     throw new Exception($"Voice datagram mismatch: {receivedVoice}");
 
                 // Assert that still ZERO additional UDP handshakes occurred!
-                if (qpB.IncomingHandshakeSessions.Count != udpHandshakeSessionsAfterChat)
+                if (qpB.IncomingHandshakeSessions.Keys.Any(id => !originalHandshakeIds.Contains(id)))
                     throw new Exception("Additional UDP handshakes detected for third subprotocol!");
 
                 // Step 4: Simultaneous concurrent execution of two subprotocols in parallel (Chat + 64KB File Transfer)
@@ -584,7 +552,7 @@ namespace QuicPunchTests.Tests
                     throw new Exception("Concurrent file data mismatch!");
 
                 // Assert that still ZERO additional UDP handshakes occurred throughout all 4 steps!
-                if (qpB.IncomingHandshakeSessions.Count != udpHandshakeSessionsAfterChat)
+                if (qpB.IncomingHandshakeSessions.Keys.Any(id => !originalHandshakeIds.Contains(id)))
                     throw new Exception("Additional UDP handshakes detected during concurrent subprotocol execution!");
 
                 // Verify telemetry on the multiplexer

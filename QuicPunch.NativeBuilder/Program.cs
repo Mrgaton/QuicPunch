@@ -28,6 +28,9 @@ internal static partial class NativeBuilder
             ValidateHost(rid);
             Toolchain tools = DiscoverToolchain(rid);
             Directory.CreateDirectory(artifactsRoot);
+            // Desktop/Android managed builds can invoke this project concurrently.
+            // Serialize checkout, linking and artifact copies in the shared cache.
+            await using FileStream buildLease = await AcquireBuildLeaseAsync(Path.Combine(artifactsRoot, "builder.lock"));
 
             await CheckoutSourcesAsync(tools, buildLock, sourceDirectory);
             RemoveRelocatedBuildCache(sourceDirectory);
@@ -43,6 +46,7 @@ internal static partial class NativeBuilder
             VerifyNativeDependencies(tools, builtLibrary, rid);
             VerifyOpenSslCapabilities(tools, sourceDirectory, buildLock.TlsGroups);
             string destination = CopyArtifact(repositoryRoot, builtLibrary, rid);
+            BuildTransportBridge(tools, repositoryRoot, sourceDirectory, rid);
 
             await using FileStream libraryStream = File.OpenRead(destination);
             string hash = Convert.ToHexString(await SHA256.HashDataAsync(libraryStream));
@@ -55,6 +59,40 @@ internal static partial class NativeBuilder
             Console.Error.WriteLine(exception);
             return 1;
         }
+    }
+
+    private static async Task<FileStream> AcquireBuildLeaseAsync(string path)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        bool announced = false;
+        while (true)
+        {
+            deadline.Token.ThrowIfCancellationRequested();
+            try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException)
+            {
+                if (!announced) { Console.WriteLine("Waiting for the other native build to release the shared cache..."); announced = true; }
+                await Task.Delay(250, deadline.Token);
+            }
+        }
+    }
+
+    private static void BuildTransportBridge(Toolchain tools, string root, string source, string rid)
+    {
+        string platform = rid == WindowsRid ? "windows" : "linux";
+        string openssl = Path.Combine(source, "build", platform, "x64_openssl", "_deps", "opensslquic-build", "openssl");
+        if (rid == WindowsRid) openssl = Path.Combine(openssl, "release");
+        string output = Path.Combine(root, "QuicPunch.NativeBuilder", "obj", "bridge", rid);
+        string library = FindBuiltLibrary(source, rid);
+        if (rid == WindowsRid) library = Path.ChangeExtension(library, ".lib");
+        var arguments = new List<string> { "-S", Path.Combine(root, "QuicPunch.AndroidProbe", "native"), "-B", output,
+            "-DMSQUIC_ROOT=" + source, "-DMSQUIC_LIBRARY=" + library, "-DOPENSSL_ROOT=" + openssl };
+        if (rid == WindowsRid) arguments.AddRange(["-A", "x64"]);
+        Run(tools.CMake, arguments, root, tools.Path);
+        Run(tools.CMake, ["--build", output, "--config", "Release"], root, tools.Path);
+        string name = rid == WindowsRid ? "qp_transport.dll" : "libqp_transport.so";
+        string artifact = Path.Combine(output, rid == WindowsRid ? "Release" : "", name);
+        File.Copy(artifact, Path.Combine(root, "QuicPunch", "runtimes", rid, "native", name), true);
     }
 
     private static string ParseRid(string[] args)

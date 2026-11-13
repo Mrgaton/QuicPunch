@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">QuicPunch.AndroidProbe</string>
+    <string name="app_name">QuicNet</string>
     <string name="app_text">Hello, Android!</string>
 </resources>

@@ -314,42 +314,53 @@ namespace QuicPunchTests.Tests;
             if (!StunGatherer.TryParseStunEndpoint("[2001:db8::1]:3478", out var host4, out var port4) || host4 != "2001:db8::1" || port4 != 3478)
                 throw new Exception("Failed to parse IPv6 bracketed endpoint.");
 
-            var initialEndpoints = await StunGatherer.GatherInitialEndpointsAsync();
-            if (initialEndpoints.IsEmpty)
-                throw new Exception("GatherInitialEndpointsAsync returned empty collection.");
-
-            // Verify background fetch fast-path streams raw IPs
-            var streamedBatches = new List<IReadOnlyList<IPEndPoint>>();
-            using var bgCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-            var bgTask = StunGatherer.StartBackgroundCatalogFetchAsync(batch =>
+            // Serve a deterministic mixed-family catalog; never rely on public catalog uptime.
+            var socket = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            socket.Start(); int port = ((IPEndPoint)socket.LocalEndpoint).Port; socket.Stop();
+            using var catalog = new HttpListener();
+            string url = $"http://127.0.0.1:{port}/";
+            catalog.Prefixes.Add(url); catalog.Start();
+            using var catalogStop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            Task serving = Task.Run(async () =>
             {
-                lock (streamedBatches)
+                try
                 {
-                    streamedBatches.Add(batch);
+                    while (!catalogStop.IsCancellationRequested)
+                    {
+                        var request = await catalog.GetContextAsync().WaitAsync(catalogStop.Token);
+                        byte[] body = System.Text.Encoding.UTF8.GetBytes("8.8.8.8:3478\n1.1.1.1:3478\n[2001:4860:4860::8888]:3478\n");
+                        request.Response.ContentLength64 = body.Length;
+                        await request.Response.OutputStream.WriteAsync(body, catalogStop.Token);
+                        request.Response.Close();
+                    }
                 }
-            }, bgCts.Token);
-
-            // Give background task a moment to download and yield STUN batches
-            for (int i = 0; i < 60; i++)
+                catch (OperationCanceledException) when (catalogStop.IsCancellationRequested) { }
+            });
+            string[] urls = StunGatherer.RemoteStunUrls.ToArray(), seeds = StunGatherer.BuiltInStunHosts.ToArray();
+            string originalCache = StunGatherer.StunEndpointsCachePath;
+            string fixtureCache = Path.Combine(Path.GetTempPath(), "qp-stun-catalog-" + Guid.NewGuid().ToString("N"));
+            try
             {
-                await Task.Delay(100);
-                lock (streamedBatches)
-                {
-                    if (streamedBatches.Count > 0 && streamedBatches.Sum(b => b.Count) >= 5)
-                        break;
-                }
+                Array.Fill(StunGatherer.RemoteStunUrls, url);
+                Array.Fill(StunGatherer.BuiltInStunHosts, "8.8.8.8:3478");
+                StunGatherer.StunEndpointsCachePath = fixtureCache;
+                var initialEndpoints = await StunGatherer.GatherInitialEndpointsAsync(ct: catalogStop.Token);
+                if (initialEndpoints.IsEmpty) throw new Exception("Initial seed catalog was empty.");
+                var batches = new System.Collections.Concurrent.ConcurrentBag<IPEndPoint>();
+                await StunGatherer.StartBackgroundCatalogFetchAsync(batch =>
+                { foreach (var endpoint in batch) batches.Add(endpoint); }, catalogStop.Token);
+                if (!batches.Any(e => e.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork) ||
+                    !batches.Any(e => e.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6))
+                    throw new Exception("The streamed STUN catalog lost an address family.");
+                Console.WriteLine($"PASSED (streamed {batches.Count} fixture endpoints)");
             }
-
-            int streamedCount = 0;
-            lock (streamedBatches)
+            finally
             {
-                streamedCount = streamedBatches.Sum(b => b.Count);
+                catalogStop.Cancel(); await serving;
+                urls.CopyTo(StunGatherer.RemoteStunUrls, 0); seeds.CopyTo(StunGatherer.BuiltInStunHosts, 0);
+                StunGatherer.StunEndpointsCachePath = originalCache;
+                File.Delete(fixtureCache);
             }
-
-            if (streamedCount == 0)
-                throw new Exception("Background catalog gathering failed to yield any streamed STUN batches.");
-
-            Console.WriteLine($"PASSED (streamed {streamedCount} endpoints in background)");
 
             Console.WriteLine("==================================================");
             Console.WriteLine("   ALL NAT PIN COORDINATOR TESTS PASSED!          ");

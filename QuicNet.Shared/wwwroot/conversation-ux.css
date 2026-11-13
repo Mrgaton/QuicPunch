@@ -16,7 +16,7 @@
 }
 @media(max-width:920px) { .nav-collapse-toggle { display:none; } }
 
-.direct-chat { grid-template-columns:var(--chat-list-width,320px) 6px minmax(0,1fr); }
+.direct-chat { grid-template-columns:var(--chat-list-width,360px) 6px minmax(0,1fr); }
 .dm-pane { min-width:0; border-right:0; }
 .dm-head { padding:20px 18px 14px; }
 .dm-head .chat-eyebrow { display:none; }
@@ -86,6 +86,7 @@
 .message-grouped .msg-avatar { visibility:hidden; }
 .chat-date-separator { align-self:center; margin:12px 0; padding:4px 12px; border-radius:99px; background:var(--surface-2); color:var(--muted); font-size:12px; }
 .direct-composer { padding:12px 24px 6px; }
+.chat-composer-region { flex:0 0 auto; min-width:0; }
 .direct-composer .btn { min-height:44px; }
 .direct-composer .textarea { font-size:15px; line-height:1.5; border-radius:9px; }
 .chat-composer-hint { margin:0; padding:0 24px 10px; flex-shrink:0; font-size:12px; color:var(--muted); background:var(--surface); }
@@ -145,11 +146,45 @@ dialog.chat-lightbox:not([open]) { display:none; }
 .toast-host, body[data-page=chat] .toast-host { position:fixed; inset:auto 16px 120px auto; display:flex; flex-direction:column; width:min(380px,calc(100vw - 32px)); max-height:40dvh; min-height:0; margin:0; gap:8px; overflow:auto; z-index:500; pointer-events:none; }
 .toast-host .toast { pointer-events:none; padding:12px 14px; min-height:48px; font-size:13px; flex-shrink:0; }
 .toast-host .toast button { pointer-events:auto; min-width:32px; min-height:32px; }
+.toast-host .toast > span { min-width:0; overflow-wrap:anywhere; }
+.toast-host .toast button { flex-shrink:0; }
+.toast-host .toast-with-action { display:grid; grid-template-columns:minmax(0,1fr) 44px; gap:4px 8px; }
+.toast-host .toast-with-action > span { grid-column:1; grid-row:1; }
+.toast-host .toast-with-action > .toast-action { grid-column:1; grid-row:2; justify-self:start; margin:0; padding:6px 0; font-size:13px; font-weight:600; color:var(--accent); min-height:44px; text-align:left; }
+.toast-host .toast-with-action > button:last-child { grid-column:2; grid-row:1 / span 2; align-self:start; }
+@media (max-width:680px), (any-pointer:coarse) {
+ .toast-host .toast button { min-width:44px; min-height:44px; }
+ .mobile-brand { display:inline-flex; align-items:center; min-width:44px; min-height:44px; }
+ #view-vpn details > summary { min-height:44px; display:flex; align-items:center; }
+}
+/* Keep reading space when the phone keyboard leaves a short chat viewport.
+   Navigation returns as soon as the editor loses focus or the keyboard closes. */
+@media (max-width:680px) and (max-height:520px) {
+ body[data-page=chat]:has(#messageInput:focus) { --mobile-nav-height:0px; padding-bottom:0; }
+ body[data-page=chat]:has(#messageInput:focus) > .nav-wrap { display:none; }
+ body[data-page=chat]:has(#messageInput:focus) .chat-history-settings:not([open]) { display:none; }
+ body[data-page=chat]:has(#messageInput:focus) .direct-composer .textarea { max-height:88px; }
+}
 
 @media(min-width:681px) and (max-width:1100px) {
- .direct-chat { grid-template-columns:min(var(--chat-list-width,320px),280px) minmax(0,1fr); }
+ .direct-chat { grid-template-columns:min(var(--chat-list-width,360px),280px) minmax(0,1fr); }
  .chat-list-resizer { display:none; }
  .call-state-label { display:none; }
+}
+/* A split view can leave less writing space than a phone. Give the editor its
+   own row when the conversation itself is narrow, not when the viewport is. */
+@media(min-width:681px) {
+ .chat-composer-region { container:conversation / inline-size; }
+ @container conversation (max-width:440px) {
+  .direct-composer { display:grid; grid-template-columns:44px 44px minmax(0,1fr) 44px max-content; gap:6px; padding:12px 12px 6px; }
+  .direct-composer .textarea { grid-row:1; grid-column:1 / -1; width:100%; min-width:0; }
+  .direct-composer #attachBtn { grid-row:2; grid-column:1; }
+  .direct-composer #emojiBtn { grid-row:2; grid-column:2; }
+  .direct-composer #voiceRecordBtn { grid-row:2; grid-column:4; }
+  .direct-composer #sendBtn { grid-row:2; grid-column:5; min-width:0; }
+  .direct-composer .composer-btn { width:44px; height:44px; }
+  .chat-composer-hint { padding-inline:12px; }
+ }
 }
 @media(max-width:680px) {
  .chat-list-resizer { display:none; }
@@ -187,7 +222,7 @@ dialog.chat-lightbox:not([open]) { display:none; }
  .global-call-bar .call-bar-left .avatar { display:none; }
  .global-call-bar .call-bar-controls { width:100%; justify-content:flex-end; }
  .call-state-label { display:none; }
- .toast-host, body[data-page=chat] .toast-host { inset:auto 8px calc(210px + env(safe-area-inset-bottom)) auto; width:calc(100vw - 16px); max-height:30dvh; }
+ .toast-host, body[data-page=chat] .toast-host { inset:calc(12px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) auto max(8px, env(safe-area-inset-left)); width:auto; max-height:30dvh; pointer-events:none; z-index:10000; }
 }
 @media(max-height:520px) {
  .chat-privacy-copy { display:none; }

@@ -18,6 +18,7 @@ internal static class VpnPolicyTests
     }
     public static Task RunAsync()
     {
+        TestMtuFeedback();
         for (int i = 0; i < 1000; i++)
         {
             byte[] identity = System.Security.Cryptography.SHA256.HashData(BitConverter.GetBytes(i));
@@ -93,6 +94,34 @@ internal static class VpnPolicyTests
         Check(VpnBrokerHost.ValidatePacket(Packet("10.203.0.2", "10.203.0.1"), new("10.203.0.1", "255.255.255.255", 1420, [], Broadcast: false)), "manual /32 address is unicast, not a directed broadcast");
         Check(VpnBrokerHost.ValidatePacket(Packet("10.203.0.2", "10.203.0.1"), new("10.203.0.1", "255.255.255.254", 1420, [], Broadcast: false)), "point-to-point /31 has no directed broadcast");
         return Task.CompletedTask;
+    }
+
+    private static void TestMtuFeedback()
+    {
+        byte[] packet = Packet("10.0.0.2", "10.0.0.3");
+        Array.Resize(ref packet, 1420);
+        packet[6] = 0x40;
+        BinaryPrimitives.WriteUInt16BigEndian(packet.AsSpan(2), (ushort)packet.Length);
+        packet[10] = packet[11] = 0;
+        BinaryPrimitives.WriteUInt16BigEndian(packet.AsSpan(10), Checksum(packet.AsSpan(0, 20)));
+        byte[] reply = QuicNet.Protocols.VirtualLanHandler.CreateMtuFeedback(packet, Ipv4Prefix.Address("10.0.0.1"), 1200)
+            ?? throw new Exception("Oversized legacy DF packet received no MTU feedback.");
+        Check(reply[20] == 3 && reply[21] == 4 && BinaryPrimitives.ReadUInt16BigEndian(reply.AsSpan(26)) == 1200 &&
+            Checksum(reply.AsSpan(0, 20)) == 0 && Checksum(reply.AsSpan(20)) == 0 && reply.AsSpan(28).SequenceEqual(packet.AsSpan(0, 28)),
+            "legacy VPN MTU feedback has correct ICMP code, next-hop MTU, checksums and original packet quote");
+        Check(QuicNet.Protocols.VirtualLanHandler.CreateMtuFeedback(packet, 0, 1500) == null,
+            "normal-sized packets do not generate MTU errors");
+        packet[6] = 0; packet[10] = packet[11] = 0;
+        BinaryPrimitives.WriteUInt16BigEndian(packet.AsSpan(10), Checksum(packet.AsSpan(0, 20)));
+        Check(QuicNet.Protocols.VirtualLanHandler.CreateMtuFeedback(packet, 0, 1200) == null,
+            "MTU error generation requires DF and a validated packet");
+
+        static ushort Checksum(ReadOnlySpan<byte> data)
+        {
+            uint sum = 0; for (int i = 0; i < data.Length; i += 2) sum += BinaryPrimitives.ReadUInt16BigEndian(data.Slice(i, 2));
+            while (sum >> 16 != 0) sum = (sum & 65535) + (sum >> 16);
+            return (ushort)~sum;
+        }
     }
 
     private static void TestStore()

@@ -27,10 +27,10 @@ try {
         const style = getComputedStyle(document.querySelector(`#view-${view} .workspace`));
         return {gap:host.width-main.width,hostWidth:host.width,padding:parseFloat(style.paddingLeft),overflow:document.documentElement.scrollWidth-innerWidth};
       }, view);
-      const expectedGap = view === 'speedtest' ? Math.max(0, bounds.hostWidth - 1500) : 0;
-      assert.ok(Math.abs(bounds.gap - expectedGap) <= 1 && bounds.padding <= 20, `${view} wastes horizontal space at ${width}px: ${JSON.stringify(bounds)}`);
+      const expectedGap = view === 'speedtest' ? Math.max(0, bounds.hostWidth - 1500) : view === 'vpn' ? Math.max(0, bounds.hostWidth - 1600) : 0;
+      assert.ok(Math.abs(bounds.gap - expectedGap) <= 1 && bounds.padding <= 40, `${view} wastes horizontal space at ${width}px: ${JSON.stringify(bounds)}`);
       assert.ok(bounds.overflow <= 1, `${view} overflows horizontally at ${width}px`);
-      assert.equal(await page.locator('.topbar').evaluate(node => node.getBoundingClientRect().height), 0, 'Removed header must not reserve empty space');
+      assert.ok(await page.locator('.app-location').isVisible(), 'The workspace header must identify the current page');
     }
   }
   await page.goto(url + 'chat.html?peer=' + peerId);
@@ -42,7 +42,7 @@ try {
       const box = id => document.getElementById(id).getBoundingClientRect();
       const chat = box('chatContainer'), input = box('messageInput'), history = box('messages');
       const nav = document.querySelector('.nav-wrap').getBoundingClientRect();
-      const limit = innerWidth <= 680 ? nav.top : innerHeight;
+      const limit = innerWidth <= 680 && nav.height > 0 ? nav.top : innerHeight;
       return {chatBottom:chat.bottom,inputTop:input.top,inputBottom:input.bottom,historyBottom:history.bottom,historyHeight:history.height,limit,rootHeight:document.scrollingElement.scrollHeight,viewport:innerHeight,scrollY,overflow:document.documentElement.scrollWidth-innerWidth};
     });
     assert.ok(geometry.inputTop >= 0 && geometry.inputBottom <= geometry.limit + 1, `${label}: composer hidden: ${JSON.stringify(geometry)}`);

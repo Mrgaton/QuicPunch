@@ -26,15 +26,33 @@ try {
   await page.locator('#view-speedtest:not(.hidden)').waitFor();
   await page.locator('#speedTestPeerSelect option[value="'+peerId+'"]').waitFor({state:'attached'});
   assert.equal(await page.locator('#speedTestActiveBadge').textContent(),'Sin iniciar');
+  assert.equal(await page.locator('#startSpeedTestBtn').isDisabled(),true);
+  assert.equal(await page.locator('#clearSpeedTestHistoryBtn').isDisabled(),true);
+  assert.equal(await page.locator('.speed-history thead').isVisible(),false);
+  await mkdir('.artifacts',{recursive:true});
+  for (const viewport of [{width:1920,height:1080},{width:390,height:844},{width:320,height:568}]) {
+    await page.setViewportSize(viewport);
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Idle layout must not overflow');
+    const setup = await page.locator('.speed-setup').boundingBox();
+    const result = await page.locator('.speed-results').boundingBox();
+    if (viewport.width<=390) assert.ok(setup.y<result.y,'Configuration comes first before a run');
+    await page.screenshot({path:`.artifacts/speedtest-idle-${viewport.width}.png`,fullPage:true});
+  }
+  await page.setViewportSize({width:1440,height:1000});
   await page.locator('#speedTestMode').selectOption('upload');
   assert.ok((await page.locator('#speedTestEstimate').textContent()).includes('10 segundos'));
+  assert.equal(await page.locator('#speedTestMetricDownload').textContent(),'No incluida');
   await page.locator('#speedTestMode').selectOption('all');
   await page.locator('#speedTestPeerSelect').selectOption(peerId);
-  await page.locator('#startSpeedTestBtn').click();
+  assert.equal(await page.locator('#startSpeedTestBtn').isEnabled(),true);
+  await page.locator('#startSpeedTestBtn').focus();
+  await page.keyboard.press('Enter');
   await page.waitForFunction(()=>document.getElementById('speedTestResults').dataset.state==='connecting');
+  assert.equal(await page.evaluate(()=>document.activeElement.id),'cancelSpeedTestBtn','Keyboard focus follows the active action');
   assert.deepEqual(startBody,{peerId,duration:10,mode:'all'});
   const emit = (name,data) => page.evaluate(({name,data})=>QP.emit(name,data),{name,data});
   await emit('speedtest_phase',{peerId,phase:'Download',baseline:quality});
+  assert.equal(await page.locator('.speed-phase[aria-current="step"]').count(),1);
   await emit('speedtest_progress',{peerId,direction:'Download',currentMbps:228.1,bytesTransferred:1000000,elapsedSeconds:5,totalSeconds:10,rttMs:35.63});
   assert.equal(await page.locator('#speedTestMetricUpload').textContent(),'Pendiente');
   assert.equal(await page.locator('#speedTestProgressBar').getAttribute('aria-valuenow'),'50');
@@ -50,6 +68,8 @@ try {
   assert.equal(await page.locator('#speedTestError').isVisible(),true);
   assert.equal(await page.locator('#speedTestErrorTechnical').isVisible(),false);
   assert.equal(await page.locator('#speedTestHistoryBody > tr').count(),1);
+  assert.equal(await page.locator('.speed-history thead').isVisible(),true);
+  assert.equal(await page.evaluate(()=>document.activeElement.id),'startSpeedTestBtn','Focus returns to retry after interruption');
   await page.locator('#speedTestErrorDetails > summary').click();
   assert.ok((await page.locator('#speedTestErrorTechnical').textContent()).includes('QUIC_STATUS_INTERNAL_ERROR'));
   await page.locator('#speedTestErrorDetails > summary').click();
@@ -106,6 +126,21 @@ try {
   await page.locator('#cancelSpeedTestBtn').click();
   await page.waitForFunction(()=>document.getElementById('speedTestResults').dataset.state==='cancelled');
   assert.equal(await page.locator('#speedTestError').isVisible(),false);
+  await page.locator('#startSpeedTestBtn').click();
+  await page.waitForFunction(()=>document.getElementById('speedTestResults').dataset.state==='connecting');
+  await emit('speedtest_phase',{peerId,phase:'Both'});
+  for (const [direction,elapsedSeconds,expected] of [
+    ['Download',6,60],['Upload',3.5,60],['Download',6.2,62],['Upload',4,62],['Download',10.2,100],['Upload',9,100]
+  ]) {
+    await emit('speedtest_progress',{peerId,direction,elapsedSeconds,totalSeconds:10,currentMbps:direction==='Upload'?1400:6});
+    assert.equal(await page.locator('#speedTestBarFill').evaluate(node=>node.style.width),expected+'%');
+    assert.equal(await page.locator('#speedTestProgressBar').getAttribute('aria-valuenow'),String(expected));
+    assert.ok((await page.locator('#speedTestGaugeHelp').textContent()).includes((expected/10).toFixed(1)+' / 10 s'));
+  }
+  assert.equal(await page.locator('#speedTestMetricUpload').textContent(),'1400.0 Mbps');
+  assert.equal(await page.locator('#speedTestMetricDownload').textContent(),'6.0 Mbps');
+  await page.locator('#cancelSpeedTestBtn').click();
+  await page.waitForFunction(()=>document.getElementById('speedTestResults').dataset.state==='cancelled');
   startFailure=true;
   await page.locator('#startSpeedTestBtn').click();
   await page.waitForFunction(()=>document.getElementById('speedTestResults').dataset.state==='error');

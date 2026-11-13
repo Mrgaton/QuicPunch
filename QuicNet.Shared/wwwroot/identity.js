@@ -1,11 +1,15 @@
-/* Certificate capsules v2. Freeze the domain, byte mapping and pattern/edge order.
+/* Certificate capsules v3. Freeze the domain, byte mapping and palette/pattern/edge order.
    Presentation sizes and avatar/name changes must never change this descriptor. */
 (() => {
-  const domain = new TextEncoder().encode('QuicNet visual identity v2\0');
+  const domain = new TextEncoder().encode('QuicNet visual identity v3\0');
   const cache = new Map();
   const capsules = new WeakMap();
-  const edges = ['round', 'soft', 'cut'];
-  const patterns = ['seda', 'orbita', 'trama', 'pulso', 'estrato', 'mosaico'];
+  const hues = [8, 28, 45, 62, 86, 116, 146, 170, 190, 210, 232, 254, 278, 302, 326, 346];
+  const edges = ['round', 'soft', 'cut', 'leaf', 'arch', 'bevel', 'ticket', 'square'];
+  const patterns = ['seda', 'orbita', 'trama', 'pulso', 'estrato', 'mosaico',
+    'confeti', 'escamas', 'cruces', 'ladrillo', 'petalos', 'zigzag'];
+  const visualProperties = ['--ci-hue', '--ci-secondary-hue', '--ci-saturation', '--ci-pitch',
+    '--ci-angle', '--ci-phase-x', '--ci-phase-y'];
 
   function normalize(peer) {
     const value = typeof peer?.certHash === 'string' ? peer.certHash.trim() : '';
@@ -26,9 +30,13 @@
     input.set(hex.match(/../g).map(byte => parseInt(byte, 16)), domain.length);
     const result = crypto.subtle.digest('SHA-256', input).then(hash => {
       const bytes = new Uint8Array(hash);
-      return {hex, version: 2, hue: ((bytes[0] << 8) | bytes[1]) % 360,
-        saturation: 24 + bytes[2] % 9, edge: edges[bytes[3] % edges.length],
-        pattern: patterns[bytes[4] % patterns.length]};
+      const hue = hues[bytes[0] % hues.length];
+      return {hex, version: 3, hue,
+        secondaryHue: (hue + [40, 75, 150, 190][bytes[1] % 4]) % 360,
+        saturation: 62 + bytes[2] % 19, edge: edges[bytes[3] % edges.length],
+        pattern: patterns[bytes[4] % patterns.length], pitch: 18 + bytes[5] % 17,
+        angle: [30, 60, 120, 150][bytes[6] % 4],
+        phaseX: bytes[7] % 24, phaseY: bytes[8] % 24};
     }).catch(() => {cache.delete(hex); return null;});
     cache.set(hex, result);
     if (cache.size > 512) cache.delete(cache.keys().next().value);
@@ -74,7 +82,7 @@
     if (state.hex === hex) return;
     state.hex = hex;
     delete mark.dataset.identityVersion; delete mark.dataset.pattern; delete mark.dataset.edge;
-    mark.style.removeProperty('--ci-hue'); mark.style.removeProperty('--ci-saturation');
+    for (const property of visualProperties) mark.style.removeProperty(property);
     mark.dataset.identityState = 'pending';
     mark.removeAttribute('aria-busy');
     if (!hex) return;
@@ -84,7 +92,12 @@
       if (state.hex !== hex) return;
       if (identity) {
         mark.style.setProperty('--ci-hue', identity.hue);
+        mark.style.setProperty('--ci-secondary-hue', identity.secondaryHue);
         mark.style.setProperty('--ci-saturation', identity.saturation + '%');
+        mark.style.setProperty('--ci-pitch', identity.pitch + 'px');
+        mark.style.setProperty('--ci-angle', identity.angle + 'deg');
+        mark.style.setProperty('--ci-phase-x', identity.phaseX + 'px');
+        mark.style.setProperty('--ci-phase-y', identity.phaseY + 'px');
         mark.dataset.edge = identity.edge; mark.dataset.pattern = identity.pattern;
         mark.dataset.identityVersion = String(identity.version); mark.dataset.identityState = 'ready';
       }
@@ -118,10 +131,17 @@
     const fingerprint = QP.el('code', 'identity-fingerprint', hex ? hex.toUpperCase().match(/.{1,4}/g).join(' ') : 'Certificado no disponible');
     host.append(label, fingerprint);
     if (hex) {
+      const manual = QP.el('label', 'field identity-manual-copy', 'Copia esta huella manualmente');
+      const value = QP.el('textarea', 'textarea mono');
+      value.readOnly = true; value.rows = 2; value.value = hex.toUpperCase();
+      value.spellcheck = false;
+      manual.append(value); manual.hidden = true;
       const copy = QP.button('Copiar huella', '', async () => {
-        if (await QP.copy(hex.toUpperCase())) QP.toast('Huella copiada');
+        if (!await QP.copy(hex.toUpperCase()) && manual.isConnected) {
+          manual.hidden = false; value.focus(); value.select();
+        }
       });
-      copy.classList.add('identity-copy'); host.append(copy);
+      copy.classList.add('identity-copy'); host.append(copy, manual);
     }
   }
 

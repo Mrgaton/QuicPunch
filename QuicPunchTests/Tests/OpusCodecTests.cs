@@ -88,7 +88,7 @@ public static class OpusCodecTests
             codec.Bitrate = bitrate;
             if (codec.Bitrate != bitrate)
                 throw new Exception($"Expected bitrate {bitrate}, got {codec.Bitrate}");
-            byte[] packet = codec.EncodeFramed(GenerateSineWave(440, 48000, 960), 1, 20);
+            byte[] packet = codec.EncodeFramed(GenerateSineWave(440, 48000, 960), 1, 20, 960);
             if (codec.Decode(packet, 960).Length != 960)
                 throw new Exception($"High-bitrate round trip failed at {bitrate}");
         }
@@ -145,10 +145,10 @@ public static class OpusCodecTests
 
     private static void TestFramedOpusWithSequenceAndPLC()
     {
-        Console.Write("[TEST 6] Sequenced 20ms framed Opus and loss gap PLC... ");
+        Console.Write("[TEST 6] Sequenced 10ms framed Opus and loss gap PLC... ");
         using var codec = new OpusVoiceCodec(48000, 1, 64000);
 
-        const int frameSize = OpusVoiceCodec.DefaultFrameSize; // 960 samples = 20ms
+        const int frameSize = OpusVoiceCodec.DefaultFrameSize; // 480 samples = 10ms
         short[] pcm1 = GenerateSineWave(440, 48000, frameSize);
         short[] pcm2 = GenerateSineWave(440, 48000, frameSize);
 

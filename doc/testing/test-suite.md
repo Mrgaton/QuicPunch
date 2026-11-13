@@ -88,6 +88,16 @@ For agents and repeated verification, use the PowerShell runner. It builds once,
 
 `-Tests` accepts short names or existing `--test-*` flags. `-Web` runs every `*WebTests.mjs` suite with Node.js and one result line per file. The default `Test` build configuration keeps test binaries separate from a running Debug/Release app. `-NoBuild` uses the existing binaries; omit it after changing C# source. `-Configuration Release` selects a different build configuration. `--test-output` verifies compact reporting, failure exit codes, skips, full diagnostic logs and verbose mode.
 
+### Maintaining web tests
+
+`QuicNet.Shared/wwwroot/ui-values.js` contains pure byte/duration formatting and port parsing/formatting. Test these functions in an empty VM context without DOM mocks. The application exposes them through `QP`; `index.html` loads this file before `app.js`.
+
+For view tests that need the application API, use `attachApp(context)` from `QuicPunchTests/Fixtures/WebAppRuntime.mjs`. It loads the real dependencies and preserves live getters such as `isWsConnected`; supply only the IO/DOM doubles needed by the test in `context.QP`. Use `loadApp(context)` for an application runtime without overrides. Do not copy formatting or connection-policy implementations into test doubles.
+
+Port display summaries can span gaps in a large list. Editors must keep the exact port list and validate it with `QP.parsePorts`; never submit a display summary as the original set of ports. `PortValuesWebTests` checks the pure rules and `SavedPeerEditorWebTests` checks that saving an existing sparse list preserves its ports.
+
+Validate cleanup-rule changes with `./scripts/test-clean-project.ps1`. It exercises the real cleaner in an isolated disposable repository, including preview mode and preservation of archives, nested repositories, tracked files and the recovered-key guard. Add directory names to the rule lists in `clean-project.ps1`; keep path validation and deletion separate from selection.
+
 ### Real browser suites
 
 Install the pinned development dependency and its Chromium build once, from the repository root:
@@ -100,7 +110,7 @@ npm run test:browser
 node scripts/test-web.mjs --browser --filter=Voice --list
 ```
 
-`-Browser` (or `npm run test:browser`) runs every `*BrowserTests.mjs` suite explicitly. `-BrowserFilter` selects browser names without filtering `-Web`. These tests use isolated HTTP fixtures and synthetic media, never the user's camera or screen. Camera tests generate their synthetic AVC fixture through `--test-platform-video`; camera and geolocation workbench suites build the managed harness when needed. `-NoBuild` reuses that harness but still regenerates the video fixture. FFmpeg must be installed separately for the synthetic video cases; `QUICNET_FFMPEG_PATH` overrides its location. On Windows, the viewer fixture also finds WinGet installations when the shell's PATH is stale.
+`-Browser` (or `npm run test:browser`) runs every `*BrowserTests.mjs` suite explicitly. `-BrowserFilter` selects browser names without filtering `-Web`. These tests use isolated HTTP fixtures and synthetic media, never the user's camera or screen. Camera tests generate their synthetic AVC fixture through `--test-platform-video`; camera and FFmpeg decode suites build the managed harness when needed. `-NoBuild` reuses that harness but still regenerates the video fixture. FFmpeg must be installed separately for the synthetic video cases; `QUICNET_FFMPEG_PATH` overrides its location. On Windows, the viewer fixture also finds WinGet installations when the shell's PATH is stale.
 
 `BrowserFixture.mjs` owns preview startup, browser creation and shutdown. It defaults to the Chromium version installed for the locked Playwright dependency, with loopback permission for intercepted local test pages. `QUICNET_PLAYWRIGHT_MODULE`, `QUICNET_TEST_BROWSER` and `QUICNET_TEST_BROWSER_PATH` remain optional overrides. Neither microphone/camera permission nor application CSP is relaxed. The Node runner and PowerShell wrapper share discovery, output and failure logs in `.artifacts/test-output/`. No matching suites or invalid arguments return 2; a failing suite returns 1 and does not prevent the remaining selected suites from running.
 

@@ -1,0 +1,22 @@
+[
+  "16: Guardados aparece primero",
+  "03: permisos conservan apertura y foco al actualizar datos",
+  "14: alcance previo, cancelar y conceder",
+  "11: confirmación de eliminación en español",
+  "09: reintentar perfil sin recargar",
+  "10: error abre categoría y pestaña de registro por teclado",
+  "01: ruta conserva borrador tras sondeo y pérdida de foco",
+  "02: ambos selectores de archivos se abren con teclado",
+  "05: colgar visible y sin obstáculos en tres ventanas",
+  "18: volumen con objetivo táctil de 44 px",
+  "19: calidad primero, formato avanzado desplegable",
+  "06: comandos completos a 320 px",
+  "15: primera acción de contacto visible sin desplazamiento",
+  "17: herramientas accesibles desde navegación móvil",
+  "12: textarea sin estado ARIA incompatible",
+  "13: encabezado, regiones, tablas y listas con semántica válida",
+  "04: rol rechazado vuelve al valor confirmado",
+  "08: texto de error con contraste corregido",
+  "07: error 503 y consulta parcial recuperables",
+  "20: instrucciones de instalación por plataforma"
+]

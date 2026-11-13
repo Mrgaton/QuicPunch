@@ -24,6 +24,7 @@ public static class VirtualDiskTests
         {
             Console.WriteLine("Testing disk host permissions and transactions...");
             await ServiceTests(directory).WaitAsync(TimeSpan.FromSeconds(15));
+            VirtualDiskDocumentsTests.Run(directory);
             Console.WriteLine("Testing duplex disk protocol...");
             await WireTests(directory).WaitAsync(TimeSpan.FromSeconds(15));
             Console.WriteLine("Testing local HTTP and WebDAV bridge...");
@@ -213,6 +214,16 @@ public static class VirtualDiskTests
             }
             using (var foreign = new HttpRequestMessage(HttpMethod.Get, dav + "MixedCase.txt"))
             { foreign.Headers.Add("Origin", "https://example.invalid"); using var result = await http.SendAsync(foreign); Check(result.StatusCode == HttpStatusCode.Forbidden, "Native bridge bypassed origin check"); }
+            var documents = new VirtualDiskDocumentsTests.Documents();
+            ui.DiskDocuments = documents;
+            Check(Ok(await Post("pick-folder", new { })).NativePath == VirtualDiskDocumentsTests.Documents.Root, "Native picker result lost");
+            Ok(await Post("save", new { shareId = share, path = "MixedCase.txt" }));
+            Check(SpinWait.SpinUntil(() => documents.LastDownload?.Disposed == true, 1000), "Successful save did not dispose its destination");
+            Check(documents.LastDownload is { Completed: true, Disposed: true } && Encoding.UTF8.GetString(documents.LastDownload.Buffer.ToArray()) == "updated", "Native save did not verify and finish download");
+            Check(!(await Post("save", new { shareId = Guid.NewGuid(), path = "missing" })).Success, "Missing file was reported as saved");
+            Check(SpinWait.SpinUntil(() => documents.LastDownload?.Disposed == true, 1000) && documents.LastDownload is { Completed: false }, "Failed native save kept partial destination");
+            documents.CancelDownload = true;
+            Check((await Post("save", new { shareId = share, path = "MixedCase.txt" })).Code == "Cancelled", "Cancelled picker started download");
             Ok(await Post("operation", new { request = new DiskRequest("revoke", ShareId: share) }));
             using var revoked = await http.GetAsync(dav + "MixedCase.txt"); Check(revoked.StatusCode == HttpStatusCode.Forbidden, "Mounted share retained revoked access");
             Check((await http.GetStringAsync("virtual-disk.html")).Contains("id=\"view-virtual-disk\""), "Virtual disk route was not served");

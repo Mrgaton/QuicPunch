@@ -48,10 +48,42 @@ public static class PlatformVideoTests
         byte[] realPacket = new AndroidAvcPacketizer(320, 180, 73).Packet(encoded.ToArray(), 1000, true)!;
         if (realPacket == null || realPacket.Length < 50) throw new Exception("Real Annex B frame was not packetized.");
         await VerifyDecodeAsync(realPacket);
+        if (OperatingSystem.IsWindows()) await VerifyNativePacketizerAsync();
         var fixture = new AndroidVideoFixture(Convert.ToBase64String(realPacket));
         Directory.CreateDirectory(".artifacts");
         await File.WriteAllTextAsync(".artifacts/android-video-fixture.json", JsonSerializer.Serialize(fixture));
         Console.WriteLine("PASS Android AVC: SPS/PPS, AVCC config, NAL framing, keyframes, timestamps, malformed input and real H264 encode/packetize/decode roundtrip.");
+    }
+
+    private static async Task VerifyNativePacketizerAsync()
+    {
+        foreach (var (id, encoder, format) in new[] { (1, "libx264", "h264"), (5, "libx265", "hevc"), (4, "libaom-av1", "obu") })
+        {
+            var start = new ProcessStartInfo(FfmpegScreenEncoder.Executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=green:s=320x180:r=30", "-frames:v", "1", "-c:v", encoder, "-threads", "2" };
+            if (id == 4) arguments.AddRange(["-cpu-used", "8"]);
+            else arguments.AddRange(["-preset", "ultrafast", "-tune", "zerolatency"]);
+            arguments.AddRange(["-f", format, "pipe:1"]);
+            foreach (string arg in arguments) start.ArgumentList.Add(arg);
+            using var process = Process.Start(start)!;
+            var error = process.StandardError.ReadToEndAsync();
+            using var encoded = new MemoryStream();
+            await Task.WhenAll(process.StandardOutput.BaseStream.CopyToAsync(encoded), process.WaitForExitAsync()).WaitAsync(TimeSpan.FromSeconds(20));
+            if (process.ExitCode != 0) throw new Exception(await error);
+            var packetizer = new NativeCapturePacketizer((byte)id, 320, 180, 74);
+            byte[] packet = packetizer.Packet(encoded.ToArray(), 1000, true) ?? throw new Exception("Native sequence configuration missing: " + format);
+            var parsed = NativeVideoRuntime.Parse(packet);
+            nint decoder = NativeMedia.qpv_open(id, 0, 320, 180, parsed.Extra, parsed.Extra!.Length, 0, null);
+            if (decoder == 0) throw new Exception(NativeMedia.Error);
+            try
+            {
+                if (NativeMedia.Decode(decoder, packet.AsSpan(parsed.Offset), parsed.Timestamp, parsed.Key, false) < 0) throw new Exception(NativeMedia.Error);
+                NativeMedia.qpv_stats(decoder, out var stats);
+                if (stats.Decoded != 1 || stats.Width != 320 || stats.Height != 180) throw new Exception("Native capture roundtrip failed: " + format);
+            }
+            finally { NativeMedia.qpv_close(decoder); }
+        }
+        Console.WriteLine("PASS native capture packetizer: real H264/HEVC/AV1 sequence configuration and bundled FFmpeg decode roundtrip.");
     }
 
     private static async Task VerifyDecodeAsync(byte[] packet)

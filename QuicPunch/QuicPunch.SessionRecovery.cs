@@ -30,15 +30,50 @@ public partial class QuicPunch
         if (!IsStarted || !IsTrustedPeer(peer) || !ProtocolHandlers.TryGetValue(protocol, out var handler) ||
             !handler.SupportsSessionRecovery || !handler.CanStartSession || handler.IncomingSessionPolicy(peer) == false) return false;
         long generation = LifecycleGeneration;
+        if (_sessionRecovery.WasDenied(peer.Id, protocol, session, PeerTransport.SessionRecoveryWindow)) return false;
+        // The acceptance response may have been lost with the transport. The same
+        // authenticated logical request can reclaim its grant after cleanup, without
+        // repeating consent or ever running two handlers for that grant.
+        resume |= _sessionRecovery.HasGrant(peer.Id, protocol, session);
         if (resume)
         {
             try { await _sessionRecovery.WaitForCleanup(peer.Id, protocol, session).WaitAsync(ct).ConfigureAwait(false); }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
         }
-        if (!resume && !await AuthorizeIncomingSessionAsync(peer, protocol, peer.ActiveTransport, ct).WaitAsync(ct).ConfigureAwait(false)) return false;
+        if (!resume && !await _sessionRecovery.GetDecisionAsync(peer.Id, protocol, session,
+                PeerTransport.SessionRecoveryWindow, DecideAsync).WaitAsync(ct).ConfigureAwait(false))
+        {
+            _sessionRecovery.RememberDenied(peer.Id, protocol, session);
+            return false;
+        }
         ct.ThrowIfCancellationRequested();
+        if (_sessionRecovery.WasDenied(peer.Id, protocol, session, PeerTransport.SessionRecoveryWindow)) return false;
         if (!IsStarted || generation != LifecycleGeneration || !IsTrustedPeer(peer) || handler.IncomingSessionPolicy(peer) == false) return false;
-        return _sessionRecovery.TryStart(peer.Id, protocol, session, owner, resume, PeerTransport.SessionRecoveryWindow);
+        if (_sessionRecovery.TryStart(peer.Id, protocol, session, owner, resume, PeerTransport.SessionRecoveryWindow)) return true;
+        if (!resume && _sessionRecovery.HasGrant(peer.Id, protocol, session))
+        {
+            // The first transport may have committed the grant while this retry
+            // awaited their shared consent task. Reclaim only after its handler exits.
+            try { await _sessionRecovery.WaitForCleanup(peer.Id, protocol, session).WaitAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
+            ct.ThrowIfCancellationRequested();
+            return IsStarted && generation == LifecycleGeneration && IsTrustedPeer(peer) &&
+                handler.IncomingSessionPolicy(peer) != false &&
+                _sessionRecovery.TryStart(peer.Id, protocol, session, owner, true, PeerTransport.SessionRecoveryWindow);
+        }
+        return false;
+
+        async Task<bool> DecideAsync()
+        {
+            // Consent belongs to the logical request. Losing its transport must not
+            // open a second prompt, or forget an answer that arrives during reconnection.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(LifecycleToken);
+            deadline.CancelAfter(PeerTransport.SessionRecoveryWindow);
+            try { return await AuthorizeIncomingSessionAsync(peer, protocol, peer.ActiveTransport, deadline.Token)
+                .WaitAsync(deadline.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested) { return false; }
+            catch (Exception ex) { QuicPunchLog.Info($"[SESSION] Consent failed: {ex.Message}"); return false; }
+        }
     }
 
     internal void FinishRecoverableSession(PeerInfo peer, Guid protocol, Guid session, Guid owner, bool lost)
@@ -69,6 +104,30 @@ public partial class QuicPunch
         foreach (var entry in _sessionIntents.Where(x => x.Key.Peer == peerId)) entry.Value.Cancel();
     }
 
+    private async Task<Multiplexer.QuicPeerMultiplexer> EnsureResponsiveSessionTransportAsync(
+        PeerInfo peer, ushort port, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(PeerTransport.AttemptTimeout);
+        try
+        {
+            while (true)
+            {
+                deadline.Token.ThrowIfCancellationRequested();
+                var mux = await EnsureMultiplexerConnectedAsync(peer, port, deadline.Token).ConfigureAwait(false);
+                // A locally open QUIC connection may already be dead remotely.
+                // Check before sending SessionRequest: replacement is then safe
+                // without replaying consent or resuming an unaccepted session.
+                if (await mux.ProbeLivenessAsync(deadline.Token).ConfigureAwait(false)) return mux;
+                QuicPunchLog.Info($"[SESSION CONNECT] {peer.Name}: transport did not respond; replacing it before requesting the application session.");
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new TimeoutException($"No responsive connection with {peer.Name} within {PeerTransport.AttemptTimeout.TotalSeconds:F0}s.");
+        }
+    }
+
     private async Task RunProtocolSessionAsync(IProtocolHandler handler, PeerInfo peer, ushort port,
         TaskCompletionSource<object?> connected, CancellationToken callerToken)
     {
@@ -87,6 +146,7 @@ public partial class QuicPunch
                 if (!IsTrustedPeer(peer) || handler.IncomingSessionPolicy(peer) == false)
                     throw new UnauthorizedAccessException("Session authority was revoked.");
                 QuicConnection? connection = null;
+                Multiplexer.QuicPeerMultiplexer? openingMux = null;
                 bool lost = false;
                 try
                 {
@@ -94,7 +154,7 @@ public partial class QuicPunch
                         ? CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token)
                         : CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, recoveryDeadline.Token);
                     if (recovering) attempt.CancelAfter(PeerTransport.AttemptTimeout);
-                    var mux = await EnsureMultiplexerConnectedAsync(peer, port, attempt.Token).ConfigureAwait(false);
+                    var mux = openingMux = await EnsureResponsiveSessionTransportAsync(peer, port, attempt.Token).ConfigureAwait(false);
                     peer = mux.Peer;
                     connection = await mux.OpenVirtualSessionAsync(handler.ProtocolId, intent.Id, recovering, attempt.Token).ConfigureAwait(false);
                     await using var stream = await connection.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, attempt.Token).ConfigureAwait(false);
@@ -117,7 +177,8 @@ public partial class QuicPunch
                 }
                 catch (Exception ex) when (!lifetime.IsCancellationRequested &&
                     ex is not SessionRejectedException and not UnauthorizedAccessException &&
-                    ((recovering && connection == null) || (handler.SupportsSessionRecovery && connection?.TransportLost == true)))
+                    ((recovering && connection == null) || (handler.SupportsSessionRecovery &&
+                        (connection?.TransportLost == true || (connection == null && openingMux?.IsDisposed == true)))))
                 {
                     lost = true;
                     QuicPunchLog.Info($"[SESSION RECOVERY] {peer.Name}/{handler.ProtocolName}: {ex.Message}");
@@ -128,7 +189,9 @@ public partial class QuicPunch
                 }
                 if (!lost || !handler.SupportsSessionRecovery) return;
                 if (!recovering) RaiseSessionState(new(peer.Id, handler.ProtocolId, intent.Id, SessionState.Reconnecting));
-                recovering = true;
+                // Until the first successful registration this is the same initial
+                // request, not a claim to a grant the remote may never have created.
+                recovering = connected.Task.IsCompletedSuccessfully;
                 intent.Recovering = true;
                 recoveryDeadline ??= new CancellationTokenSource(PeerTransport.SessionRecoveryWindow);
                 using var retry = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, recoveryDeadline.Token);
@@ -182,7 +245,8 @@ public partial class QuicPunch
                 _advertisedMapping = null;
                 IsUpnpMapped = false;
                 ActivePortMappingProtocol = null;
-                await NatCoordinator.RefreshForNetworkChangeAsync(lifetime.Token).ConfigureAwait(false);
+                await Task.WhenAll(NatCoordinator.RefreshForNetworkChangeAsync(lifetime.Token),
+                    RefreshPortMappingsForNetworkChangeAsync(lifetime.Token)).ConfigureAwait(false);
             } while (observed != Volatile.Read(ref _networkGeneration) && !lifetime.IsCancellationRequested);
             lifetime.Token.ThrowIfCancellationRequested();
             // Recreate stale relay TCP sockets rather than waiting for TCP's old

@@ -7,6 +7,7 @@ namespace QuicNet.Notifications;
 public sealed record AppNotice(string Id, string Category, string Title, string Message, string Url,
     bool Popup, bool Sound, int Volume, string Tone);
 internal sealed record NotificationTestResult(bool success, bool sent, string? reason, string message);
+public sealed record NotificationPlatformStatus(bool Enabled, bool SoundEnabled, bool CanOpenSettings, bool SystemControlsSound, string Message);
 
 public interface IAppPlatform
 {
@@ -16,6 +17,9 @@ public interface IAppPlatform
     Task NotifyAsync(AppNotice notice, bool desktop, CancellationToken ct);
     Task PlayRingtoneAsync(int volume, CancellationToken ct);
     TimeSpan? GetUserIdleTime() => null;
+    NotificationPlatformStatus? GetNotificationStatus(string category = "system") => null;
+    bool OpenNotificationSettings() => false;
+    void DismissNotification(string id) { }
 }
 
 internal sealed class AppNotificationService : IDisposable
@@ -47,7 +51,11 @@ internal sealed class AppNotificationService : IDisposable
     {
         _ringingCalls[request] = hash;
         RingChanged();
-        _ = decision.ContinueWith(completed => { _ringingCalls.TryRemove(request, out _); RingChanged(); },
+        _ = decision.ContinueWith(completed => {
+            _ringingCalls.TryRemove(request, out _); RingChanged();
+            try { Platform?.DismissNotification(request.ToString("N")); }
+            catch (Exception ex) { WebUi.WebUiServer.LogEvent("[NOTIFICATIONS] " + ex.Message); }
+        },
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
@@ -110,6 +118,8 @@ internal sealed class AppNotificationService : IDisposable
         if (!settings.Enabled) return Blocked("disabled", "Las notificaciones están desactivadas. Actívalas para enviar la prueba.");
         if (settings.IsQuiet(now)) return Blocked("quiet_hours", "Estás dentro del horario silencioso. Desactívalo para probar una notificación.");
         if (focused && !settings.WhileFocused) return Blocked("focused", "Los avisos están silenciados mientras usas QuicNet. Activa «Avisar mientras uso la aplicación» para probarlos aquí.");
+        if (Platform?.GetNotificationStatus() is { Enabled: false } blocked && (settings.Desktop || settings.Sound))
+            return Blocked("system_blocked", blocked.Message);
         var notice = Decide(settings, "system", "QuicNet", "Así recibirás tus notificaciones.", "/settings.html", null, focused, now, "test");
         if (notice == null) return Blocked("feature_disabled", "Los avisos de la aplicación están desactivados en «Por función».");
         if (!(settings.InApp && notice.Popup) && !(Platform != null && ((settings.Desktop && notice.Popup) || notice.Sound)))
@@ -122,7 +132,8 @@ internal sealed class AppNotificationService : IDisposable
     {
         if (!NotificationPreferences.Categories.Contains(category) || settings.IsQuiet(now, focused)) return null;
         var feature = settings.Features.GetValueOrDefault(category) ?? new();
-        var contact = certHash == null ? new NotificationRule() : settings.Contacts.GetValueOrDefault(certHash.ToUpperInvariant()) ?? new();
+        var contact = certHash == null ? new NotificationRule() :
+            settings.Contacts.GetValueOrDefault(certHash.ToUpperInvariant())?.Resolve(settings.ContactDefaults) ?? settings.ContactDefaults;
         if (!feature.Enabled || !contact.Enabled) return null;
         return new(id, category, settings.Preview ? title : "QuicNet", settings.Preview ? message : "Tienes una nueva notificación.", url,
             feature.Popup && contact.Popup, settings.Sound && feature.Sound && contact.Sound && settings.Volume > 0, settings.Volume, settings.Tone);

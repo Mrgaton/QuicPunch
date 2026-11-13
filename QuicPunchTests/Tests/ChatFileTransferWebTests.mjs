@@ -1,6 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {Script, createContext} from 'node:vm';
 import assert from 'node:assert/strict';
+import {attachApp} from '../Fixtures/WebAppRuntime.mjs';
 
 const source = readFileSync(new URL('../../QuicNet.Shared/wwwroot/chat.js', import.meta.url), 'utf8');
 let resolveRequest;
@@ -10,6 +11,7 @@ const context = createContext({
   document: {addEventListener() {}, querySelectorAll() {return []; }},
   QP: {toast() {}, api() {return new Promise(resolve => {resolveRequest = resolve; });}}
 });
+attachApp(context);
 new Script(source + `
 renderChat = () => {};
 globalThis.fileTest = {
@@ -72,8 +74,8 @@ api.peer('alice');
 api.onRealtimeFilePaused({peerId: 'alice', fileId: 'card', received: 10, total: 20, percent: 50});
 const card = api.createFileCardDom({fileId: 'card', name: 'large.bin', size: 20}, {isMe: false});
 const actions = card.children[0].children[2];
-assert.equal(actions.children[0].textContent, '▶ Resume');
-assert.equal(actions.children[1].title, 'Discard download');
+assert.equal(actions.children[0].textContent, '▶ Reanudar');
+assert.equal(actions.children[1].title, 'Descartar descarga');
 const loading = api.loadConversation('alice');
 resolveRequest({messages: [], downloads: [{peerId: 'alice', fileId: 'saved', name: 'large.bin', received: 237 * 1024 ** 3, total: 300 * 1024 ** 3, percent: 79, status: 'paused'}]});
 // Rendering is separate from restoring the durable transfer state.

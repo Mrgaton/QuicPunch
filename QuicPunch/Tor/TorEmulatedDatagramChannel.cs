@@ -18,10 +18,10 @@ namespace QuicPunch;
 /// </summary>
 internal sealed class TorEmulatedDatagramChannel : IQuicDatagramChannel
 {
-    private const int QueueCapacity = 1024;
+    private const int QueueCapacity = 64;
 
     private readonly Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> _sendAsync;
-    private readonly Channel<byte[]> _outgoing;
+    private readonly Channel<(byte[] Data, long At)> _outgoing;
     private readonly Channel<byte[]> _incoming;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _sendPump;
@@ -39,11 +39,11 @@ internal sealed class TorEmulatedDatagramChannel : IQuicDatagramChannel
         _sendAsync = sendAsync ?? throw new ArgumentNullException(nameof(sendAsync));
         MaxSendDatagramLength = maxSendDatagramLength;
 
-        _outgoing = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(QueueCapacity)
+        _outgoing = Channel.CreateBounded<(byte[] Data, long At)>(new BoundedChannelOptions(QueueCapacity)
         {
             SingleReader = true,
             SingleWriter = false,
-            FullMode = BoundedChannelFullMode.Wait,
+            FullMode = BoundedChannelFullMode.DropOldest,
             AllowSynchronousContinuations = false
         });
 
@@ -78,19 +78,19 @@ internal sealed class TorEmulatedDatagramChannel : IQuicDatagramChannel
 
     public bool Send(ReadOnlySpan<byte> datagram)
     {
-        if (!IsSendEnabled || datagram.Length > MaxSendDatagramLength)
+        if (!IsSendEnabled || datagram.Length == 0 || datagram.Length > MaxSendDatagramLength)
             return false;
 
         // IQuicDatagramChannel.Send is synchronous.  Queue the immutable copy and
-        // report backpressure as a dropped datagram instead of blocking the caller.
-        return _outgoing.Writer.TryWrite(datagram.ToArray());
+        // discard the oldest queued unit under pressure instead of blocking the caller.
+        return _outgoing.Writer.TryWrite((datagram.ToArray(), Environment.TickCount64));
     }
 
     internal void Dispatch(byte[] datagram)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return;
-        if (datagram.Length > MaxSendDatagramLength)
+        if (datagram.Length == 0 || datagram.Length > MaxSendDatagramLength)
             return;
 
         _incoming.Writer.TryWrite(datagram);
@@ -110,9 +110,10 @@ internal sealed class TorEmulatedDatagramChannel : IQuicDatagramChannel
     {
         try
         {
-            await foreach (byte[] datagram in _outgoing.Reader.ReadAllAsync(_shutdown.Token).ConfigureAwait(false))
+            await foreach (var datagram in _outgoing.Reader.ReadAllAsync(_shutdown.Token).ConfigureAwait(false))
             {
-                await _sendAsync(datagram, _shutdown.Token).ConfigureAwait(false);
+                if (Environment.TickCount64 - datagram.At >= 250) continue;
+                await _sendAsync(datagram.Data, _shutdown.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)

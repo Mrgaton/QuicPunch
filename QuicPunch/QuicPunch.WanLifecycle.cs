@@ -64,11 +64,11 @@ namespace QuicPunch
                 long generation = _lifecycleGeneration;
                 CancellationToken token = _wanLoopCts?.Token ?? CancellationSource.Token;
                 var oldUdp = udp;
-                var newUdp = new UdpClient();
+                var newUdp = EndpointAddressCodec.CreateUdpClient();
                 ConfigureUdpSocket(newUdp);
                 newUdp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                newUdp.Client.Bind(new IPEndPoint(IPAddress.Any, newPort));
-                newUdp.Client.DontFragment = true;
+                newUdp.Client.Bind(new IPEndPoint(EndpointAddressCodec.BindAddress(newUdp), newPort));
+                if (newUdp.Client.AddressFamily == AddressFamily.InterNetwork) newUdp.Client.DontFragment = true;
 
                 udp = newUdp;
                 LocalDiscoveryPort = ((IPEndPoint)newUdp.Client.LocalEndPoint!).Port;
@@ -164,7 +164,7 @@ namespace QuicPunch
             _wanLoopCts = CancellationTokenSource.CreateLinkedTokenSource(LifecycleToken, cancellationToken);
             CancellationToken wanToken = _wanLoopCts.Token;
 
-            var newUdp = new UdpClient();
+            var newUdp = EndpointAddressCodec.CreateUdpClient();
             ConfigureUdpSocket(newUdp);
             int bindPort = port > 0 ? port : (LocalPort > 0 ? LocalPort : 0);
             if (bindPort > 0)
@@ -174,22 +174,22 @@ namespace QuicPunch
 
             try
             {
-                newUdp.Client.Bind(new IPEndPoint(IPAddress.Any, bindPort));
+                newUdp.Client.Bind(new IPEndPoint(EndpointAddressCodec.BindAddress(newUdp), bindPort));
             }
             catch (SocketException) when (bindPort > 0)
             {
                 newUdp.Dispose();
-                newUdp = new UdpClient();
+                newUdp = EndpointAddressCodec.CreateUdpClient();
                 ConfigureUdpSocket(newUdp);
-                newUdp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+                newUdp.Client.Bind(new IPEndPoint(EndpointAddressCodec.BindAddress(newUdp), 0));
             }
-            newUdp.Client.DontFragment = true;
+            if (newUdp.Client.AddressFamily == AddressFamily.InterNetwork) newUdp.Client.DontFragment = true;
 
             udp = newUdp;
             LocalDiscoveryPort = ((IPEndPoint)newUdp.Client.LocalEndPoint!).Port;
             LocalPort = LocalDiscoveryPort;
             ResetNatMapping();
-            CurrentPeer.Addresses = Utilities.GetValidLocalIPAddresses().OrderBy(Utilities.IpToUint).ToArray();
+            CurrentPeer.Addresses = Utilities.GetValidLocalIPAddresses().OrderBy(a => a.AddressFamily).ThenBy(a => a.ToString(), StringComparer.Ordinal).ToArray();
 
             _upnpMappingTask = StartControlMappingAsync(newUdp, wanToken);
 
@@ -248,7 +248,7 @@ namespace QuicPunch
                 var localIps = Utilities.GetValidLocalIPAddresses();
                 if (localIps.Count > 0)
                 {
-                    CurrentPeer.Addresses = localIps.OrderBy(Utilities.IpToUint).ToArray();
+                    CurrentPeer.Addresses = localIps.OrderBy(a => a.AddressFamily).ThenBy(a => a.ToString(), StringComparer.Ordinal).ToArray();
                 }
             }
 

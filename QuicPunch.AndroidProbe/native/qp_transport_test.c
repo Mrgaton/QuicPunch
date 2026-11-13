@@ -22,6 +22,9 @@ extern uint64_t qp_stream_id(qp_stream*);
 extern int qp_stream_set_priority(qp_stream*, unsigned short);
 extern unsigned short qp_stream_get_priority(qp_stream*);
 extern int qp_stream_flush(qp_stream*, int);
+extern void qp_stream_complete(qp_stream*);
+extern int qp_stream_writes_closed(qp_stream*);
+extern void qp_stream_abort(qp_stream*, uint64_t);
 extern void qp_stream_close(qp_stream*);
 extern void qp_close(qp_context*);
 extern int qp_send_datagram(qp_context*, const unsigned char*, int);
@@ -50,6 +53,7 @@ static unsigned char* load(const char* path, unsigned* length) {
 // session must still be established on the same listener.
 int main(int argc, char** argv) {
     if (argc != 3 && argc != 4) return 2;
+    const char* loopback = getenv("QP_TEST_IPV6") ? "::1" : "127.0.0.1";
     unsigned pfx_length = 0, der_length = 0;
     unsigned char* pfx = load(argv[1], &pfx_length);
     unsigned char* der = load(argv[2], &der_length);
@@ -66,7 +70,7 @@ int main(int argc, char** argv) {
         unsigned intruder_length = 0;
         unsigned char* intruder_pfx = load(argv[3], &intruder_length);
         qp_context* intruder = intruder_pfx ? qp_create(intruder_pfx, intruder_length, hash, sizeof(hash), 0) : NULL;
-        if (!intruder || qp_connect(intruder, "127.0.0.1", 44777, 44889, "cloudflare-quic.com") != 0) return 25;
+        if (!intruder || qp_connect(intruder, loopback, 44777, 44889, "cloudflare-quic.com") != 0) return 25;
         // In TLS 1.3 the client finishes before the server checks its certificate,
         // so the intruder may see CONNECTED; the server must still reject and close it.
         for (int i = 0; i < 100 && !qp_is_stopped(intruder); ++i) usleep(100 * 1000);
@@ -77,7 +81,7 @@ int main(int argc, char** argv) {
         if (qp_is_stopped(server)) return 27;
         puts("PASS intruder rejected without blocking the listener");
     }
-    status = qp_connect(client, "127.0.0.1", 44777, 44888, "cloudflare-quic.com");
+    status = qp_connect(client, loopback, 44777, 44888, "cloudflare-quic.com");
     fprintf(stderr, "connect start: 0x%x\n", status);
     if (status != 0) return 6;
     int server_status = -3, client_status = -3;
@@ -90,7 +94,7 @@ int main(int argc, char** argv) {
     if (server_status != 0 || client_status != 0) return 7;
     char address[64] = {0}; unsigned short endpoint_port = 0;
     if (!qp_get_address(client, 1, address, sizeof(address), &endpoint_port) ||
-        strcmp(address, "127.0.0.1") != 0 || endpoint_port != 44777) return 14;
+        strcmp(address, loopback) != 0 || endpoint_port != 44777) return 14;
     char alpn[32] = {0}; unsigned short cipher = 0;
     if (!qp_get_tls(client, alpn, sizeof(alpn), &cipher) || strcmp(alpn, "h3") != 0 || cipher == 0) return 20;
     uint32_t client_group = qp_get_tls_group(client), server_group = qp_get_tls_group(server);
@@ -127,6 +131,10 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 100 && count == -3; ++i)
         count = qp_stream_read(outbound, received, 2, 100);
     if (count != 2 || memcmp(received, response, 2) != 0) return 16;
+    qp_stream_complete(outbound);
+    int closed = 0;
+    for (int i = 0; i < 100 && closed == 0; ++i) { closed = qp_stream_writes_closed(outbound); usleep(10000); }
+    if (closed != 1) return 30;
     qp_stream* server_outbound = qp_open_stream(server, 1);
     if (!server_outbound || qp_stream_write(server_outbound, payload, 2) != 2) return 17;
     qp_stream* client_inbound = NULL;
@@ -146,6 +154,7 @@ int main(int argc, char** argv) {
     if (count != 2 || memcmp(received, payload, 2) != 0) return 13;
     qp_stream_close(inbound);
     qp_stream_close(outbound);
+    qp_stream_abort(server_outbound, 0x4D454449);
     qp_stream_close(server_outbound);
     qp_stream_close(client_inbound);
     qp_close(client);

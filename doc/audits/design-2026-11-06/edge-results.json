@@ -1,0 +1,145 @@
+[
+  {
+    "name": "empty-home",
+    "buttons": [
+      {
+        "label": "WAN",
+        "y": 163.4375
+      },
+      {
+        "label": "Solo Tor",
+        "y": 163.4375
+      },
+      {
+        "label": "Ambas",
+        "y": 163.4375
+      },
+      {
+        "label": "Mi código",
+        "y": 214.828125
+      },
+      {
+        "label": "Conectar por código",
+        "y": 214.828125
+      },
+      {
+        "label": "Todos\n0",
+        "y": 386.21875
+      },
+      {
+        "label": "Guardados\n0",
+        "y": 386.21875
+      },
+      {
+        "label": "Por revisar\n0",
+        "y": 386.21875
+      },
+      {
+        "label": "Añadir un contacto",
+        "y": 751.765625
+      }
+    ],
+    "nav": [
+      "Inicio",
+      "Mensajes",
+      "Llamadas",
+      "Ver juntos",
+      "Disco virtual",
+      "Ajustes"
+    ]
+  },
+  {
+    "name": "empty-chat.html",
+    "width": 390,
+    "scrollWidth": 390,
+    "scrollHeight": 844
+  },
+  {
+    "name": "empty-call.html",
+    "width": 390,
+    "scrollWidth": 390,
+    "scrollHeight": 844
+  },
+  {
+    "name": "empty-vpn.html",
+    "width": 390,
+    "scrollWidth": 390,
+    "scrollHeight": 2030
+  },
+  {
+    "name": "empty-speedtest.html",
+    "width": 390,
+    "scrollWidth": 390,
+    "scrollHeight": 2357
+  },
+  {
+    "name": "empty-updates-help.html",
+    "width": 390,
+    "scrollWidth": 390,
+    "scrollHeight": 1671
+  },
+  {
+    "name": "help-320",
+    "width": 320,
+    "scrollWidth": 320,
+    "pre": [
+      {
+        "width": 194,
+        "scrollWidth": 616,
+        "overflow": "visible"
+      },
+      {
+        "width": 194,
+        "scrollWidth": 816,
+        "overflow": "visible"
+      }
+    ]
+  },
+  {
+    "name": "profile-retry",
+    "calls": 2,
+    "disabled": true,
+    "message": "No se pudo consultar tu perfil: El servicio de perfil no responde"
+  },
+  {
+    "name": "service-error-navigation",
+    "section": "connection",
+    "logsVisible": false
+  },
+  {
+    "name": "mobile-tools-location",
+    "panel": "settings-connection",
+    "top": 881.984375,
+    "text": "Herramientas\n\nConecta tus equipos y comprueba su rendimiento.\n\nRed privada\nPrueba de velocidad"
+  },
+  {
+    "name": "avatar-load",
+    "message": "",
+    "open": 1
+  },
+  {
+    "name": "avatar-crop",
+    "scrollWidth": 320,
+    "width": 320,
+    "canvas": {
+      "x": 30,
+      "y": 169.5625,
+      "width": 260,
+      "height": 260,
+      "top": 169.5625,
+      "right": 290,
+      "bottom": 429.5625,
+      "left": 30
+    },
+    "confirm": {
+      "x": 11,
+      "y": 476,
+      "width": 298,
+      "height": 81,
+      "top": 476,
+      "right": 309,
+      "bottom": 557,
+      "left": 11
+    }
+  }
+]

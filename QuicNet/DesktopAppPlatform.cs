@@ -83,8 +83,8 @@ internal sealed class DesktopAppPlatform : IAppPlatform, IDisposable
         }
         if (!notice.Sound || Volatile.Read(ref _ringtonePlaying) != 0) return;
         Directory.CreateDirectory(_sounds);
-        string audio = Path.Combine(_sounds, $"{notice.Tone}-{notice.Volume}.wav");
-        if (!File.Exists(audio)) await File.WriteAllBytesAsync(audio, NotificationAudio.Wave(notice.Tone, notice.Volume), ct);
+        string audio = Path.Combine(_sounds, $"v2-{notice.Category}-{notice.Tone}-{notice.Volume}.wav");
+        if (!File.Exists(audio)) await File.WriteAllBytesAsync(audio, NotificationAudio.Wave(notice.Tone, notice.Volume, notice.Category), ct);
         if (OperatingSystem.IsWindows()) PlaySound(audio, 0, 0x00020001);
         else if (OperatingSystem.IsLinux() && !await RunAsync("paplay", [audio], ct)) await RunAsync("aplay", ["-q", audio], ct);
     }

@@ -14,6 +14,7 @@ public sealed record DiskReply(bool Success, string? Error = null, string? Code 
     DiskEntry[]? Entries = null, DiskShare[]? Shares = null, Guid TransferId = default, byte[]? Data = null,
     string? Version = null, long Length = 0, bool More = false, DiskAudit[]? Audit = null, string? MountUrl = null, string? NativePath = null, Guid LeaseId = default);
 public sealed record DiskAudit(DateTime Utc, string Actor, string Operation, Guid ShareId, string Path, bool Success);
+public sealed record DiskReceipt(string Actor, Guid ShareId, string Path, long Length);
 internal sealed record DiskWire(Guid Id, bool Response, DiskRequest? Request = null, DiskReply? Reply = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

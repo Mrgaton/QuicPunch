@@ -68,7 +68,7 @@ namespace QuicPunch.Helpers
                     bool hasGateway = props.GatewayAddresses.Any(g => g.Address != null &&
                         !IPAddress.Any.Equals(g.Address) &&
                         !IPAddress.IPv6Any.Equals(g.Address) &&
-                        g.Address.AddressFamily == AddressFamily.InterNetwork);
+                        g.Address.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6);
 
                     bool isPhysical = ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
                                      ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ||
@@ -82,7 +82,7 @@ namespace QuicPunch.Helpers
                         var ip = unicast.Address;
                         if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
 
-                        if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
+                        if (EndpointAddressCodec.CanAdvertise(ip) && !IPAddress.IsLoopback(ip))
                         {
                             if (hasGateway || isPhysical)
                             {
@@ -112,7 +112,7 @@ namespace QuicPunch.Helpers
                         {
                             IPAddress ip = unicast.Address;
                             if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
-                            if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip) &&
+                            if (EndpointAddressCodec.CanAdvertise(ip) && !IPAddress.IsLoopback(ip) &&
                                 !list.Contains(ip))
                                 list.Add(ip);
                         }
@@ -262,6 +262,9 @@ namespace QuicPunch.Helpers
             if (string.IsNullOrWhiteSpace(line))
                 return false;
 
+            if (IPAddress.TryParse(line, out var literal) && literal.AddressFamily == AddressFamily.InterNetworkV6)
+            { host = line; return true; }
+
             if (line.StartsWith('['))
             {
                 int closing = line.IndexOf(']');
@@ -311,15 +314,16 @@ namespace QuicPunch.Helpers
 
             if (IPAddress.TryParse(host, out var ip))
             {
-                if (ip.AddressFamily == AddressFamily.InterNetwork)
+                if (EndpointAddressCodec.CanAdvertise(ip))
                     return [new IPEndPoint(ip, port)];
+                return null;
             }
 
             try
             {
                 var addresses = Dns.GetHostAddresses(host);
 
-                return addresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork)
+                return addresses.Where(EndpointAddressCodec.CanAdvertise)
                     .Select(a => new IPEndPoint(a, port)).ToArray();
             }
             catch
@@ -506,11 +510,11 @@ namespace QuicPunch.Helpers
 
             var rawAddresses = p.Addresses ?? Array.Empty<IPAddress>();
             var addresses = rawAddresses.Length > 0
-                ? rawAddresses.Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork || a.IsIPv4MappedToIPv6).Select(a => a.IsIPv4MappedToIPv6 ? a.MapToIPv4() : a).Take(MaxEndpointTokenAddresses).ToList()
+                ? rawAddresses.Select(EndpointAddressCodec.Normalize).Where(EndpointAddressCodec.CanAdvertise).Distinct().Take(MaxEndpointTokenAddresses).ToList()
                 : GetValidLocalIPAddresses().Take(MaxEndpointTokenAddresses).ToList();
 
             if (addresses.Count == 0)
-                throw new InvalidOperationException("Peer has no valid IPv4 address to publish in an endpoint token.");
+                throw new InvalidOperationException("Peer has no valid IP address to publish in an endpoint token.");
 
             ushort[] portArray = PortAdvertisementCodec.Normalize(p.PortArray);
 
@@ -520,7 +524,8 @@ namespace QuicPunch.Helpers
             PortMode normalizedMode = PortAdvertisementCodec.ResolveMode(portArray, p.ConnectionFlags.PortMode);
             portArray = PortAdvertisementCodec.NormalizeForMode(portArray, normalizedMode);
             p.PortArray = portArray;
-            bool multipleAddresses = addresses.Count > 1;
+            bool extended = addresses.Any(a => a.AddressFamily == AddressFamily.InterNetworkV6);
+            bool multipleAddresses = addresses.Count > 1 || extended;
             p.ConnectionFlags.MultipleIps = multipleAddresses;
             p.ConnectionFlags.PortMode = normalizedMode;
 
@@ -537,9 +542,9 @@ namespace QuicPunch.Helpers
 
             if (multipleAddresses)
             {
-                w.Write((byte)addresses.Count);
+                w.Write((byte)(addresses.Count | (extended ? 128 : 0)));
                 foreach (IPAddress address in addresses)
-                    w.Write(address.GetAddressBytes());
+                    EndpointAddressCodec.Write(w, address, extended);
             }
             else
             {
@@ -648,7 +653,7 @@ namespace QuicPunch.Helpers
             {
                 return DecodeModernWanEndpointToken(rawToken, flags);
             }
-            catch (Exception) when (!flags.HasHostPort && TryDecodeLegacyWanToken(rawToken, out var legacyPeer) && legacyPeer != null)
+            catch (Exception) when (!flags.HasHostPort && !(flags.MultipleIps && rawToken.Length > 1 && (rawToken[1] & 128) != 0) && TryDecodeLegacyWanToken(rawToken, out var legacyPeer) && legacyPeer != null)
             {
                 return legacyPeer;
             }
@@ -671,18 +676,21 @@ namespace QuicPunch.Helpers
                 int offset = 1;
 
                 var allAddresses = new List<IPAddress>();
-                int addressCount = flags.MultipleIps ? span[offset++] : 1;
+                int header = flags.MultipleIps ? span[offset++] : 1;
+                bool extended = (header & 128) != 0;
+                int addressCount = header & 127;
 
                 if (addressCount is < 1 or > MaxEndpointTokenAddresses)
                     throw new InvalidDataException($"Token address count exceeds maximum allowed ({addressCount}).");
 
                 for (int i = 0; i < addressCount; i++)
                 {
-                    if (offset + 4 > span.Length)
-                        throw new InvalidDataException("Truncated peer address in endpoint token.");
-
-                    var ip = new IPAddress(span.Slice(offset, 4));
-                    offset += 4;
+                    if (offset >= span.Length) throw new InvalidDataException("Truncated address length.");
+                    int length = extended ? span[offset++] : 4;
+                    if (length is not (4 or 16) || offset + length > span.Length)
+                        throw new InvalidDataException("Truncated or invalid peer address in endpoint token.");
+                    var ip = EndpointAddressCodec.Normalize(new IPAddress(span.Slice(offset, length)));
+                    offset += length;
 
                     if (!IsValidPeerAddress(ip))
                         throw new InvalidDataException($"Invalid, reserved or dangerous peer address '{ip}'.");

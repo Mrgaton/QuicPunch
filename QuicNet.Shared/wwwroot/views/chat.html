@@ -1,22 +1,24 @@
   <!-- 2. DIRECT CHAT VIEW -->
   <div id="view-chat" class="spa-view hidden">
-    <main class="workspace chat-workspace">
-      <div class="direct-chat" id="chatContainer">
-        <aside class="dm-pane">
+    <main class="workspace chat-workspace"><h1 class="sr-only">Conversaciones</h1>
+      <div class="direct-chat has-no-conversation" id="chatContainer">
+        <aside class="dm-pane" aria-label="Conversaciones">
           <div class="dm-head">
             <div>
               <span class="chat-eyebrow">TU ESPACIO PRIVADO</span>
-              <strong>Conversaciones</strong>
-              <span>Mensajes privados entre dispositivos</span>
+              <h2>Conversaciones</h2><button class="btn mobile-tools-trigger" data-open-tools type="button" aria-haspopup="dialog" aria-controls="mobileToolsDialog">Herramientas</button>
+              <span>Un espacio para estar en contacto.</span>
             </div>
           </div>
-          <button class="btn primary dm-new-chat" id="chatNewBtn" type="button">Nueva conversación</button>
+          <button class="btn primary dm-new-chat" id="chatNewBtn" type="button" aria-haspopup="dialog" aria-controls="chatNewDialog"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Nueva conversación</button>
           <div class="dm-search">
-            <input class="input" aria-label="Buscar conversaciones" id="chatPeerSearch" placeholder="Buscar un contacto…">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input class="input" type="search" aria-label="Buscar conversaciones" id="chatPeerSearch" placeholder="Buscar conversaciones…" autocomplete="off">
           </div>
+          <div class="dm-list-heading"><span>CONVERSACIONES</span><span id="chatConversationCount" aria-label="Número de conversaciones">0</span></div>
           <div id="chatPeers" class="dm-list" aria-label="Conversaciones"></div>
         </aside>
-        <div class="chat-list-resizer" id="chatListResizer" role="separator" tabindex="0" aria-label="Anchura de la lista de conversaciones" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="420" aria-valuenow="320" aria-controls="chatPeers"></div>
+        <div class="chat-list-resizer" id="chatListResizer" role="separator" tabindex="0" aria-label="Anchura de la lista de conversaciones" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="420" aria-valuenow="360" aria-controls="chatPeers"></div>
         
         <section class="conversation-pane">
           <header class="conversation-head">
@@ -28,10 +30,11 @@
               </div>
             </div>
             <div class="chat-header-actions">
-              <button class="btn icon-btn" id="chatSearchToggleBtn" aria-label="Buscar en la conversación" title="Buscar en la conversación" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></button>
+              <button class="btn icon-btn" id="chatSearchToggleBtn" aria-label="Buscar en la conversación" title="Buscar en la conversación" aria-controls="chatSearchBar" aria-expanded="false" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></button>
               <details class="conversation-menu" id="chatOptionsMenu">
                 <summary class="btn icon-btn" aria-label="Opciones de la conversación" title="Opciones de la conversación"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></summary>
                 <div class="conversation-menu-panel">
+                  <button class="btn" data-open-tools type="button" aria-haspopup="dialog" aria-controls="mobileToolsDialog">Herramientas de QuicNet</button>
                   <button class="btn" id="chatCloseBtn" type="button" title="Oculta esta conversación y conserva el historial. Puedes recuperarla en Nueva conversación." disabled>Cerrar conversación</button>
                   <button class="btn" id="chatAliasBtn" type="button" disabled>Nombre en este dispositivo…</button>
                   <button class="btn danger" id="chatClearBtn" type="button" disabled>Borrar historial de este dispositivo…</button>
@@ -60,7 +63,7 @@
           <!-- In-chat search bar -->
           <div id="chatSearchBar" class="chat-search-bar hidden">
             <input class="input sm" id="chatSearchInput" placeholder="Filtrar mensajes en este chat..." aria-label="Buscar en los mensajes">
-            <span id="chatSearchCount" class="chat-search-badge"></span>
+            <span id="chatSearchCount" class="chat-search-badge" role="status" aria-live="polite"></span>
             <button class="btn sm" id="chatSearchCloseBtn" aria-label="Cerrar búsqueda">✕</button>
           </div>
 
@@ -101,17 +104,21 @@
           </div>
 
           <!-- Composer -->
+          <div id="chatAttachmentUploads" class="chat-attachment-uploads" role="region" aria-label="Archivos que estás preparando para compartir" hidden></div>
           <div id="chatReplyBar" class="chat-reply-bar hidden"><div><strong id="chatReplyAuthor"></strong><span id="chatReplyExcerpt"></span></div><button id="chatReplyCancel" class="btn ghost sm" type="button" aria-label="Cancelar respuesta">×</button></div>
           <div id="chatMentionSuggestions" class="chat-mention-suggestions hidden" role="listbox" aria-label="Mencionar a una persona"></div>
+          <div class="chat-composer-region">
           <div class="composer direct-composer">
             <button class="btn composer-btn" id="attachBtn" aria-label="Adjuntar archivo o imagen" title="Adjuntar archivo o imagen" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m21 11-9 9a6 6 0 0 1-8-8L14 2a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3L16 6"/></svg></button>
             <button class="btn composer-btn" id="emojiBtn" type="button" aria-label="Insertar emoji" aria-controls="emojiPopover" aria-expanded="false" aria-haspopup="dialog" title="Insertar emoji" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 14a4 4 0 0 0 8 0M8 9h1m6 0h1"/></svg></button>
-            <textarea rows="1" aria-label="Escribe un mensaje" aria-describedby="chatComposerHint" aria-autocomplete="list" aria-controls="chatMentionSuggestions" aria-expanded="false" id="messageInput" class="textarea" placeholder="Escribe un mensaje…" disabled></textarea>
+            <textarea rows="1" aria-label="Escribe un mensaje" aria-describedby="chatComposerHint" aria-autocomplete="list" aria-controls="chatMentionSuggestions" id="messageInput" class="textarea" placeholder="Escribe un mensaje…" disabled></textarea>
             <button class="btn composer-btn" id="voiceRecordBtn" aria-label="Grabar mensaje de voz" title="Grabar mensaje de voz" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg></button>
             <button class="btn primary" id="sendBtn" disabled>Enviar</button>
             <input id="fileInput" type="file" hidden multiple>
           </div>
           <p id="chatComposerHint" class="chat-composer-hint" role="status">Elige una conversación para escribir.</p>
+          </div>
+          <p class="chat-idle-note"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Tu espacio para conversar y compartir en privado</p>
 
           <!-- Emoji Popover -->
           <div id="emojiPopover" class="emoji-popover hidden" role="dialog" aria-label="Elegir emoji">

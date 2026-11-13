@@ -4,11 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#151c21">
+  <meta name="theme-color" content="#101116">
   <title>Inicio · QuicNet</title>
   <script>(function(){if(/Android/i.test(navigator.userAgent)||window.__qp_is_android){document.documentElement.classList.add('platform-android');}})();</script>
   <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/media-studio.css">
   <script defer src="/diagnostics.js"></script>
+  <script defer src="/ui-values.js"></script>
   <script defer src="/app.js"></script>
   <script defer src="/presence.js"></script>
   <script defer src="/identity.js"></script>
@@ -20,7 +22,7 @@
   <script defer src="/chat-social.js"></script>
   <script defer src="/screen-audio-capture.js"></script>
   <script defer src="/screen-audio-playback.js"></script>
-  <script defer src="/screen-video-decoder.js"></script>
+  <script defer src="/native-video.js"></script>
   <script defer src="/voice.js"></script>
   <script defer src="/vpn.js"></script>
   <script defer src="/vpn-traffic.js"></script>
@@ -33,12 +35,16 @@
   <script defer src="/profile.js"></script>
   <script defer src="/app-settings.js"></script>
   <script defer src="/settings-navigation.js"></script>
+  <script defer src="/design-usability.js"></script>
   <script defer src="/geolocation.js"></script>
   <script type="module" src="/profile-photo.js"></script>
+  <link rel="stylesheet" href="/workspace.css">
 </head>
 <body data-page="dashboard">
 <a class="skip-link" href="#spaContainer">Saltar al contenido</a>
 <header class="topbar">
+  <div class="app-location"><a href="/">QuicNet</a><span aria-hidden="true">/</span><strong id="currentWorkspace">Inicio</strong></div>
+  <button class="btn mobile-tools-trigger" id="openMobileTools" type="button" aria-haspopup="dialog" aria-controls="mobileToolsDialog">Herramientas</button><span class="app-local-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/></svg>Tu espacio. Tus conexiones.</span>
   <div class="update-notice update-notice-mobile" id="mobileUpdateNotice" hidden>
     <span class="update-notice-dot" aria-hidden="true"></span>
     <div class="update-notice-copy"><div role="status" aria-live="polite" aria-atomic="true"><strong id="mobileUpdateTitle">Actualización disponible</strong><span id="mobileUpdateDetail"></span></div>
@@ -79,7 +85,7 @@
   </div>
 </div>
 
-<aside class="nav-wrap"><a class="brand" href="/" aria-label="QuicNet, inicio"><span class="brand-mark">q</span><span>QuicNet<span class="brand-period">.</span><small>Conecta. Comparte. Disfruta.</small></span></a><span class="nav-caption">TU ESPACIO</span><nav class="nav" aria-label="Navegación principal"><a class="nav-link" data-page="dashboard" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span class="nav-label">Inicio</span><span class="peer-attention-count hidden" id="untrustedNavCount"></span></a><a class="nav-link" data-page="chat" href="/chat.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg><span class="nav-label">Mensajes</span></a><a class="nav-link" data-page="voice" href="/call.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-4l-5-2-2 2a15 15 0 0 1-6-6l2-2-2-5z"/></svg><span class="nav-label">Llamadas</span></a><a class="nav-link" data-page="watch" href="/watch.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m10 8 6 4-6 4z"/></svg><span class="nav-label">Ver juntos</span></a><span class="nav-caption nav-tools">HERRAMIENTAS</span><a class="nav-link" data-page="vpn" href="/vpn.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="6" rx="1"/><rect x="2" y="16" width="8" height="5" rx="1"/><rect x="14" y="16" width="8" height="5" rx="1"/><path d="M12 9v4M6 16v-3h12v3"/></svg><span class="nav-label">Red privada</span></a><a class="nav-link" data-page="speedtest" href="/speedtest.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a9 9 0 1 1 16 0M12 13l5-5M4 12h2M12 3v2M18 12h2"/><circle cx="12" cy="13" r="1"/></svg><span class="nav-label">Velocidad</span></a><a class="nav-link" data-page="settings" href="/settings.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg><span class="nav-label">Ajustes</span></a></nav><div class="update-notice update-notice-menu" id="menuUpdateNotice" hidden>
+<aside class="nav-wrap" aria-label="Navegación de QuicNet"><a class="brand" href="/" aria-label="QuicNet, inicio"><span class="brand-mark">q</span><span>QuicNet<span class="brand-period">.</span><small>Conecta. Comparte. Disfruta.</small></span></a><span class="nav-caption">TU ESPACIO</span><nav class="nav" aria-label="Navegación principal"><a class="nav-link" data-page="dashboard" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span class="nav-label">Inicio</span><span class="peer-attention-count hidden" id="untrustedNavCount"></span></a><a class="nav-link" data-page="chat" href="/chat.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg><span class="nav-label">Mensajes</span></a><a class="nav-link" data-page="voice" href="/call.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-4l-5-2-2 2a15 15 0 0 1-6-6l2-2-2-5z"/></svg><span class="nav-label">Llamadas</span></a><a class="nav-link" data-page="watch" href="/watch.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m10 8 6 4-6 4z"/></svg><span class="nav-label">Ver juntos</span></a><span class="nav-caption nav-tools">HERRAMIENTAS</span><a class="nav-link" data-page="vpn" href="/vpn.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="6" rx="1"/><rect x="2" y="16" width="8" height="5" rx="1"/><rect x="14" y="16" width="8" height="5" rx="1"/><path d="M12 9v4M6 16v-3h12v3"/></svg><span class="nav-label">Red privada</span></a><a class="nav-link" data-page="speedtest" href="/speedtest.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a9 9 0 1 1 16 0M12 13l5-5M4 12h2M12 3v2M18 12h2"/><circle cx="12" cy="13" r="1"/></svg><span class="nav-label">Velocidad</span></a><a class="nav-link" data-page="settings" href="/settings.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg><span class="nav-label">Ajustes</span></a></nav><div class="update-notice update-notice-menu" id="menuUpdateNotice" hidden>
   <span class="update-notice-dot" aria-hidden="true"></span>
   <div class="update-notice-copy"><div role="status" aria-live="polite" aria-atomic="true"><strong id="menuUpdateTitle">Actualización disponible</strong><span id="menuUpdateDetail"></span></div>
     <progress id="menuUpdateProgress" max="1" value="0" hidden aria-label="Descarga de actualización"></progress>
@@ -133,15 +139,15 @@
     <div class="modal-head"><div><h2 id="savedPeerModalTitle">Editar contacto</h2><p>Los cambios se guardan en este dispositivo.</p></div><button class="btn sm ghost" id="closeSavedPeerModalBtn">Cerrar</button></div>
     <div class="modal-body">
       <div class="form-grid two-col">
-        <div class="field"><label>Nombre</label><input class="input" id="savedName" maxlength="128"></div>
-        <div class="field"><label>Transporte</label><select class="select" id="savedNetworkType"><option>Wan</option><option>Tor</option></select></div>
+        <div class="field"><label for="savedName">Nombre</label><input class="input" id="savedName" maxlength="128"></div>
+        <div class="field"><label for="savedNetworkType">Transporte</label><select class="select" id="savedNetworkType"><option>Wan</option><option>Tor</option></select></div>
       </div>
-      <div class="field space-top"><label>Huella del certificado (Base64)</label><input class="input mono" id="savedCertHash" autocomplete="off"></div>
-      <div class="field space-top"><label>Direcciones IP <span class="muted">separadas por comas, espacios o saltos de línea</span></label><textarea class="textarea mono compact-area" id="savedAddresses" placeholder="203.0.113.10&#10;198.51.100.20"></textarea></div>
-      <div class="field space-top"><label>Dirección Onion</label><input class="input mono" id="savedOnion" placeholder="example.onion"></div>
-      <div class="field space-top"><label>Puertos <span class="muted">uno (443), varios (5000, 5002) o un rango (5000-5010)</span></label><input class="input mono" id="savedPorts" placeholder="443, 5000-5010"></div>
+      <div class="field space-top"><label for="savedCertHash">Huella del certificado (Base64)</label><input class="input mono" id="savedCertHash" autocomplete="off" spellcheck="false" autocapitalize="none" aria-required="true"></div>
+      <div class="field space-top"><label for="savedAddresses">Direcciones IP</label><p class="inline-help" id="savedAddressesHelp">Separadas por comas, espacios o saltos de línea.</p><textarea class="textarea mono compact-area" id="savedAddresses" aria-describedby="savedAddressesHelp" spellcheck="false" autocapitalize="none" placeholder="203.0.113.10&#10;198.51.100.20"></textarea></div>
+      <div class="field space-top"><label for="savedOnion">Dirección Onion</label><input class="input mono" id="savedOnion" spellcheck="false" autocapitalize="none" placeholder="example.onion"></div>
+      <div class="field space-top"><label for="savedPorts">Puertos</label><p class="inline-help" id="savedPortsHelp">Uno (443), varios (5000, 5002) o un rango (5000-5010).</p><input class="input mono" id="savedPorts" aria-describedby="savedPortsHelp" aria-required="true" placeholder="443, 5000-5010"></div>
       <label class="check-line space-top"><input id="savedAutoConnect" type="checkbox"><span>Reconectar al iniciar</span></label>
-      <div class="modal-error hidden" id="savedPeerModalError"></div>
+      <div class="modal-error hidden" id="savedPeerModalError" role="alert" aria-atomic="true"></div>
     </div>
     <div class="modal-foot"><button class="btn" id="cancelSavedPeerBtn">Cancelar</button><button class="btn primary" id="saveSavedPeerBtn">Guardar cambios</button></div>
   </div>
@@ -165,7 +171,7 @@
               <th style="width:50px">#</th>
               <th>Endpoint</th>
               <th style="width:130px">STUN Hits</th>
-              <th style="width:70px"></th>
+              <th style="width:70px">Acciones</th>
             </tr>
           </thead>
           <tbody id="stunModalList"></tbody>
@@ -184,8 +190,8 @@
   <div class="modal-card media-studio">
     <div class="modal-head">
       <div>
-        <span class="eyebrow">ESTUDIO DE LLAMADAS</span><h2 id="mediaSettingsTitle">Audio y vídeo</h2>
-        <p>Explora lo que puede hacer tu equipo y ajusta cada transmisión.</p>
+        <span class="eyebrow">ESTUDIO DE LLAMADAS</span><h2 id="mediaSettingsTitle">Ajustes de la llamada</h2>
+        <p>Controla cómo compartes y cómo recibes. Todos los detalles, en un solo lugar.</p>
       </div>
       <button class="btn sm ghost" id="closeScreenModalBtn" aria-label="Cerrar ajustes">&times;</button>
     </div>
@@ -254,28 +260,12 @@
 <button class="btn primary" id="saveOpusModalBtn">Aplicar calidad de audio</button></section><p class="inline-help">Los cambios de dispositivo y volumen se aplican al instante.</p></section>
       <section id="mediaVideoPanel" role="tabpanel" aria-labelledby="mediaVideoTab">
       <div class="media-detection"><span id="mediaDetectionStatus" role="status" aria-live="polite">Consultando el equipo…</span><button class="btn sm" id="refreshMediaCapabilitiesBtn">Volver a detectar</button></div>
+      <details class="media-block" open><summary>Quién puede recibir cada códec</summary><p class="inline-help">Hardware ★ · Software ✓ · No compatible × · Pendiente ·. Se prepara una vez en cada dispositivo y se comparte desde caché. El detalle indica el tamaño probado; el perfil final se valida al recibir vídeo.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Participante</th><th>H.264</th><th>HEVC</th><th>VP9</th><th>AV1</th></tr></thead><tbody id="nativeDecoderMatrix"></tbody></table></div></details>
 
       <section id="ffmpegInstallationGuide" class="ffmpeg-install-guide hidden" aria-label="Instalación de FFmpeg" aria-live="polite"></section>
-      <div class="field">
-        <label for="screenBackendSelect">1 · Motor de captura y vídeo</label>
-        <select class="select" id="screenBackendSelect">
-          <option value="ffmpeg">Este equipo · FFmpeg (GPU o CPU)</option>
-          <option value="web">Este navegador · WebCodecs</option>
-        </select>
-        <p class="inline-help" id="screenNativeStatus">Probando los codificadores disponibles…</p>
-      </div>
-      <div class="field space-top">
-        <label for="screenCodecSelect">2 · Formato y procesamiento</label>
-        <select class="select" id="screenCodecSelect"><option value="h264:gpu">H.264 / AVC · GPU · comprobando</option></select>
-        <p class="inline-help">El formato es lo que recibe el contacto. H.264 es la primera opción por compatibilidad. Las opciones de GPU aparecen arriba; las de CPU, debajo.</p>
-        <p class="inline-help" id="screenCodecCompatibility" role="status">Comprobando compatibilidad con los participantes…</p>
-      </div>
-      <div class="field space-top"><label for="screenEncoderSelect" id="screenEncoderLabel">Codificador que produce ese formato</label>
-          <select class="select" id="screenEncoderSelect"></select>
-          <p class="inline-help" id="screenEncoderHelp">Se preselecciona un codificador comprobado con el motor elegido.</p>
-      </div>
-      <div class="field space-top">
-        <label for="screenResolutionSelect">3 · Resolución máxima, sin ampliar</label>
+      <section class="studio-section"><div class="studio-section-heading"><span class="studio-step">01</span><div><h3>Calidad de la transmisión</h3><p>Equilibra detalle, fluidez y uso de red.</p></div></div>
+      <p class="inline-help">Empieza con la resolución y la fluidez que necesitas. Elige el códec debajo y abre «Afinar la codificación» para cambiar sus presets.</p><div class="field space-top">
+        <label for="screenResolutionSelect">Resolución máxima</label>
         <select class="select" id="screenResolutionSelect"><option value="native">Original · pendiente de detectar la fuente</option></select>
       </div>
 
@@ -288,18 +278,31 @@
         <div class="field">
           <label for="screenBitrateSelect">Uso máximo de datos</label>
           <select class="select" id="screenBitrateSelect">
-            <option value="2000000">2.0 Mbps · Conexiones lentas</option>
-            <option value="4000000">4.0 Mbps · Calidad estándar</option>
-            <option value="8000000">8.0 Mbps · Alta calidad</option>
-            <option value="12000000" selected>12.0 Mbps · Más detalle y movimiento</option>
-            <option value="18000000">18.0 Mbps · Muy alta calidad</option>
-            <option value="25000000">25.0 Mbps · Para conexiones rápidas</option>
-            <option value="30000000">30.0 Mbps · Máximo consumo</option>
+            <option value="2000000">2 Mbps</option>
+            <option value="4000000">4 Mbps</option>
+            <option value="8000000">8 Mbps</option>
+            <option value="12000000" selected>12 Mbps</option>
+            <option value="18000000">18 Mbps</option>
+            <option value="25000000">25 Mbps</option>
+            <option value="30000000">30 Mbps</option>
           </select>
         </div>
       </div>
 
-      <details class="advanced-settings space-top"><summary>Afinar la codificación</summary>
+      </section>
+<section class="studio-section space-top" id="videoFormatDetails" aria-labelledby="videoFormatHeading">
+        <div class="studio-section-heading"><span class="studio-step">02</span><div><h3 id="videoFormatHeading">Códec de vídeo</h3><p>Elige el formato y si quieres codificar con GPU o CPU.</p></div></div>
+        <select id="screenCodecSelect" hidden aria-hidden="true" tabindex="-1"><option value="h264:gpu">H.264 · GPU</option></select>
+        <div id="screenCodecPicker"><div class="codec-choice-grid" id="screenCodecOptions" role="group" aria-label="Códec y procesamiento"></div></div>
+        <p class="inline-help" id="screenNativeStatus">Consultando los codificadores disponibles…</p>
+        <p class="inline-help" id="screenCodecCompatibility" role="status">La compatibilidad de los participantes está en la tabla de estos ajustes.</p>
+      </section>
+      <details class="advanced-settings space-top" id="videoEncodingDetails"><summary>Afinar la codificación</summary><p class="inline-help">Escoge un preset y revisa sus valores antes de aplicar los cambios.</p>
+      <div class="field space-top" id="screenEncoderField" hidden><label for="screenEncoderSelect" id="screenEncoderLabel">Codificador que produce ese formato</label>
+          <select class="select" id="screenEncoderSelect"></select>
+          <p class="inline-help" id="screenEncoderHelp">Se preselecciona un codificador comprobado con el motor elegido.</p>
+      </div>
+
       <div class="field space-top" id="screenEncoderPresetField"><label for="screenEncoderPresetSelect">Preset del codificador FFmpeg</label>
         <select class="select" id="screenEncoderPresetSelect"><option value="">Automático según la prioridad</option></select>
         <p class="inline-help" id="screenEncoderPresetHelp" role="status"></p>
@@ -310,6 +313,7 @@
         <div class="field"><label for="screenRateControlSelect">Control de bitrate</label>
           <select class="select" id="screenRateControlSelect"><option value="cbr">CBR · bitrate estable</option><option value="vbr">VBR · consumo variable</option></select></div>
       </div>
+      <output id="screenTuningSummary" class="tuning-summary" aria-live="polite"></output>
       <div class="split-2 space-top">
         <div class="field"><label for="screenGopInput">Intervalo de fotogramas clave (ms)</label>
           <input class="input" id="screenGopInput" type="number" min="250" max="5000" step="50" value="1000"></div>
@@ -318,18 +322,24 @@
       </div>
       <div class="field space-top"><label for="screenQualityInput">Calidad VBR para NVENC y CPU (menor = más calidad)</label>
         <input class="input" id="screenQualityInput" type="number" min="0" max="51" value="23">
-        <p class="inline-help">Los controles desactivados no se aplican al motor seleccionado. El intervalo de fotogramas clave también se utiliza en WebCodecs.</p>
+        <p class="inline-help">Los controles desactivados no se aplican al motor seleccionado. Los ajustes se validan con el codificador FFmpeg seleccionado.</p>
       </div>
       </details>
 
       <details class="advanced-settings space-top"><summary>Decodificación en este dispositivo</summary>
         <div class="field space-top"><label for="screenDecoderAccelerationSelect">Procesamiento de los vídeos que ves</label>
-          <select class="select" id="screenDecoderAccelerationSelect"><option value="no-preference">Automático · recomendado</option><option value="prefer-hardware">Preferir GPU</option><option value="prefer-software">Preferir CPU</option></select>
-          <p class="inline-help" id="screenDecoderHelp" role="status">Se aplica al instante a la vista previa y a los vídeos recibidos. Cada participante controla su propia decodificación.</p>
+          <select class="select" id="screenDecoderAccelerationSelect"><option value="auto">Automático · hardware → software</option><option value="hardware">Solo hardware</option><option value="software">Solo software FFmpeg</option></select>
+          <p class="inline-help" id="screenDecoderHelp" role="status">El modo real se confirma con los fotogramas recibidos. «Solo hardware» muestra un error si el dispositivo no puede decodificar el perfil.</p>
         </div>
       </details>
 
-      <details class="media-block"><summary>Diagnóstico del motor seleccionado</summary><p class="inline-help">FFmpeg prueba sus propios codificadores con vídeo de muestra a 320×180. WebCodecs prueba una imagen al tamaño y FPS solicitados, también sin preferencia forzada si el navegador rechaza GPU y CPU. Solo se muestra el diagnóstico del motor elegido. El perfil final se comprueba al iniciar.</p><div class="table-wrap"><table class="data-table media-capabilities"><thead><tr><th>Códec</th><th id="mediaGpuColumn">GPU</th><th id="mediaCpuColumn">CPU</th><th id="mediaBrowserColumn">Preferencia del navegador</th><th>Recibir en este navegador</th></tr></thead><tbody id="mediaCodecMatrix"></tbody></table></div><p class="inline-help">H.264 prioriza interoperabilidad. HEVC, VP9 y AV1 ofrecen alternativas de compresión; compara su rendimiento con tu contenido. El perfil exacto se negocia con los receptores al iniciar.</p></details>
+
+      <details class="media-block" open><summary>Latencia de recepción</summary><div class="form-grid">
+        <div class="field"><label for="nativePlaybackPreset">Uso</label><select class="select" id="nativePlaybackPreset"><option value="0">Juego / conversación · inmediato</option><option value="80">Película · 80 ms</option><option value="custom">Personalizado</option></select></div>
+        <div class="field"><label for="nativePlaybackBuffer">Buffer de reproducción (ms)</label><input class="input" id="nativePlaybackBuffer" type="number" min="0" max="250" value="0"></div>
+        <div class="field"><label for="nativePlaybackFrames">Máximo de paquetes en espera</label><input class="input" id="nativePlaybackFrames" type="number" min="2" max="32" value="4"></div>
+      </div><p class="inline-help">0 ms presenta lo recibido inmediatamente. Un buffer mayor programa la presentación usando las marcas de tiempo del vídeo. La cola tiene un límite adicional de 16 MiB; al saturarse espera un fotograma clave para recuperarse.</p></details>
+      <details class="media-block"><summary>Diagnóstico del motor seleccionado</summary><p class="inline-help">Windows prueba los codificadores con vídeo sintético. Android consulta los componentes MediaCodec y valida su apertura al compartir. La recepción se comprueba decodificando muestras reales a 640×360. Estas pruebas no garantizan el rendimiento del perfil final.</p><div class="table-wrap"><table class="data-table media-capabilities"><thead><tr><th>Códec</th><th id="mediaGpuColumn">GPU</th><th id="mediaCpuColumn">CPU</th><th id="mediaBrowserColumn">Motor nativo</th><th>Recibir en este dispositivo</th></tr></thead><tbody id="mediaCodecMatrix"></tbody></table></div><p class="inline-help">H.264 prioriza interoperabilidad. HEVC, VP9 y AV1 ofrecen alternativas de compresión; compara su rendimiento con tu contenido. El perfil exacto se negocia con los receptores al iniciar.</p></details>
       <div class="opus-specs-grid space-top">
         <div class="opus-spec-item">
           <label>Formatos disponibles</label>
@@ -349,6 +359,7 @@
         La calidad disponible depende de tu equipo, de la conexión y de los participantes. Si una opción no es compatible, te indicaremos el motivo.
       </p>
           </section>
+
     </div>
     <div class="modal-foot">
       <button class="btn primary" id="saveScreenModalBtn">Aplicar ajustes de vídeo</button>
@@ -358,7 +369,7 @@
 
 <div id="screenNativeCaptureModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="screenNativeCaptureTitle">
   <div class="modal-card capture-picker">
-    <div class="modal-head"><div><h2 id="screenNativeCaptureTitle">Elige qué quieres compartir</h2><p>Busca una pantalla o ventana y comprueba su imagen antes de transmitir.</p></div>
+    <div class="modal-head"><div><span class="eyebrow">COMPARTIR PANTALLA</span><h2 id="screenNativeCaptureTitle">Elige qué quieres compartir</h2><p>Busca una pantalla o ventana y comprueba su imagen antes de transmitir.</p></div>
       <button class="btn ghost" id="screenNativeCaptureCancel">Cancelar</button></div>
     <div class="modal-body">
       <div class="capture-picker-toolbar">
@@ -372,9 +383,10 @@
       <p class="capture-keyboard-help"><span id="screenCaptureResults" role="status"></span><span>Escribe para buscar · ↑ ↓ ← → moverse · Enter elegir · Esc cancelar</span></p>
       <div class="capture-picker-layout space-top">
         <div class="capture-gallery" id="screenCaptureGallery" role="listbox" aria-label="Fuentes de captura"></div>
-        <aside class="capture-selected">
+        <aside class="capture-selected" aria-label="Fuente seleccionada">
           <h3>Fuente seleccionada</h3><img id="screenCapturePreview" alt="Vista previa de la fuente seleccionada">
           <p id="screenCaptureSelection" role="status">Selecciona una pantalla o ventana.</p>
+          <div class="capture-encoding"><span class="eyebrow">CONFIGURACIÓN DE ENVÍO</span><strong id="screenCaptureEncodingSummary"></strong><button class="btn" id="screenCaptureEncodingBtn" type="button">Configurar codificación</button></div>
           <p class="inline-help">La vista previa se actualiza mientras eliges. Las ventanas minimizadas o protegidas pueden no estar disponibles. El navegador ofrece su propio selector para capturar también audio del sistema.</p>
         </aside>
       </div>
@@ -402,5 +414,14 @@
 </div>
 <div class="modal-foot"><button class="btn" id="avatarCropCancel" type="button">Cancelar</button><button class="btn accent" id="avatarCropSave" type="button">Guardar foto</button></div>
 </div></div>
+<dialog id="mobileToolsDialog" class="permission-dialog mobile-tools-dialog" aria-labelledby="mobileToolsTitle">
+  <header class="mobile-tools-heading"><h2 id="mobileToolsTitle">Herramientas</h2><button type="button" class="btn" id="closeMobileTools" autofocus>Cerrar</button></header>
+  <nav class="mobile-tools-list" aria-label="Herramientas de QuicNet">
+    <a href="/vpn.html" data-page="vpn"><strong>Red privada</strong><span>Conecta tus dispositivos en una misma red.</span></a>
+    <a href="/speedtest.html" data-page="speedtest"><strong>Prueba de velocidad</strong><span>Comprueba la conexión con tus contactos.</span></a>
+    <a href="/virtual-disk.html" data-page="virtual-disk"><strong>Disco virtual</strong><span>Explora y comparte archivos y carpetas.</span></a>
+    <a href="/settings.html" data-page="settings"><strong>Ajustes</strong><span>Gestiona tu perfil, contactos y preferencias.</span></a>
+  </nav>
+</dialog>
 </body>
 </html>

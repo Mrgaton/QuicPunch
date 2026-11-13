@@ -43,24 +43,22 @@ namespace QuicPunch.PacketHandler
                 return;
 
             var remoteCandidates = new List<CandidateEndpoint>();
-            const int CandidateWireSize = 1 + 4 + 2 + 4;
             int remainingBytes = (int)(r.BaseStream.Length - r.BaseStream.Position);
             if (remainingBytes > CertManager.SignatureLength)
             {
                 if (remainingBytes < 1 + CertManager.SignatureLength)
                     return;
 
-                byte cCount = r.ReadByte();
-                long requiredBytes = (long)cCount * CandidateWireSize + CertManager.SignatureLength;
-                if (r.BaseStream.Length - r.BaseStream.Position != requiredBytes)
-                    return;
+                byte header = r.ReadByte();
+                int cCount = header & 127;
+                bool extended = (header & 128) != 0;
+                if (cCount > 32) return;
 
                 for (int i = 0; i < cCount; i++)
                 {
                     var cType = (CandidateType)r.ReadByte();
-                    byte[] ipBytes = r.ReadBytes(4);
-                    if (ipBytes.Length != 4) return;
-                    var ip = new IPAddress(ipBytes);
+                    if (!Enum.IsDefined(cType)) return;
+                    var ip = EndpointAddressCodec.Read(r, extended);
                     var port = r.ReadUInt16();
                     var prio = r.ReadUInt32();
                     if (port > 0 && Utilities.IsValidPeerAddress(ip))
@@ -70,6 +68,7 @@ namespace QuicPunch.PacketHandler
                 }
             }
 
+            if (r.BaseStream.Length - r.BaseStream.Position != CertManager.SignatureLength) return;
             var signatureHandshake = r.ReadBytes(CertManager.SignatureLength);
             if (signatureHandshake.Length != CertManager.SignatureLength)
                 return;

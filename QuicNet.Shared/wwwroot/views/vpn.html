@@ -106,18 +106,18 @@
             <div class="form-row space-top">
               <div class="field">
                 <label for="lanIp">Dirección IPv4</label>
-                <input class="input mono" id="lanIp" placeholder="10.0.0.x" disabled>
+                <input class="input mono" id="lanIp" placeholder="10.0.0.8" aria-describedby="lanApplyStatus" disabled>
               </div>
               <div class="field">
                 <label for="lanMask">Máscara de subred</label>
-                <input class="input mono" id="lanMask" value="255.255.255.0" disabled>
+                <input class="input mono" id="lanMask" value="255.255.255.0" aria-describedby="lanApplyStatus" disabled>
               </div>
             </div>
 
             <div class="field space-top">
               <label for="lanMtu">Tamaño máximo de paquete (MTU)</label>
               <div class="vpn-mtu-row">
-                <input class="input mono" id="lanMtu" type="number" min="1200" max="9000" value="1420" placeholder="1420">
+                <input class="input mono" id="lanMtu" type="number" min="1200" max="9000" value="1420" placeholder="1420" aria-describedby="lanApplyStatus">
                 <button type="button" class="btn sm" id="resetMtuBtn" title="Restablecer a 1420">Restablecer</button>
               </div>
               <small class="muted">Recomendado: 1420 bytes. Rango permitido: 1200–9000.</small>

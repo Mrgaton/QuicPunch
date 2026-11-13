@@ -29,6 +29,9 @@ namespace QuicPunchTests.Tests;
             Console.WriteLine("   WEBUI & WEBSOCKET SECURITY INTEGRATION TESTS   ");
             Console.WriteLine("==================================================");
 
+            await TestProbeAndStaticResourceBoundariesAsync();
+            await TestWatchSocketBackpressureAsync();
+            await TestWebSocketAdmissionIsolationAsync();
             await TestWebUiOriginAndCsrfAsync();
             await TestChatNostrPausedAsync();
             await TestChatOutboxAsync();
@@ -43,6 +46,272 @@ namespace QuicPunchTests.Tests;
             Console.WriteLine("==================================================");
             Console.WriteLine("   ALL WEBUI & SECURITY CHECKS PASSED!            ");
             Console.WriteLine("==================================================");
+        }
+
+        private static async Task TestProbeAndStaticResourceBoundariesAsync()
+        {
+            Console.Write("[TEST] Probe writes and static resource boundaries... ");
+            using var cts = new CancellationTokenSource();
+            var reservation = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            reservation.Start();
+            int port = ((IPEndPoint)reservation.LocalEndpoint).Port;
+            reservation.Stop();
+            int calls = 0;
+            var server = new WebUiServer(NodeCapabilities.CreateAndroid(), cts, port)
+            {
+                ProbePingHandler = (_, _, _) => { calls++; return "fixture-pong"; }
+            };
+            try
+            {
+                server.Start();
+                using var client = new HttpClient { BaseAddress = new Uri(server.Url) };
+                string body = "{\"host\":\"127.0.0.1\",\"port\":5000,\"fingerprint\":\"" + new string('a', 64) + "\"}";
+                foreach (string route in new[] { "api/probe/ping", "api/mobile/ping" })
+                {
+                    foreach (string? token in new string?[] { null, "incorrect" })
+                    {
+                        using var request = new HttpRequestMessage(HttpMethod.Post, route);
+                        if (token != null) request.Headers.Add("X-QuicPunch-CSRF", token);
+                        request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                        using var response = await client.SendAsync(request);
+                        if (response.StatusCode != HttpStatusCode.Forbidden || calls != 0)
+                            throw new Exception("Probe performed network activity without a valid CSRF token: " + route);
+                    }
+                    using (var oversized = new HttpRequestMessage(HttpMethod.Post, route))
+                    {
+                        oversized.Headers.Add("X-QuicPunch-CSRF", server.CsrfToken);
+                        oversized.Content = new StringContent(new string(' ', WebUiContext.MaxJsonBodyBytes + 1), Encoding.UTF8, "application/json");
+                        using var response = await client.SendAsync(oversized);
+                        if (response.StatusCode != HttpStatusCode.RequestEntityTooLarge || calls != 0)
+                            throw new Exception("Probe bypassed the shared request-body limit: " + route);
+                    }
+                    using (var request = new HttpRequestMessage(HttpMethod.Post, route))
+                    {
+                        request.Headers.Add("X-QuicPunch-CSRF", server.CsrfToken);
+                        request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                        using var response = await client.SendAsync(request);
+                        if (!response.IsSuccessStatusCode || calls != 1 || !(await response.Content.ReadAsStringAsync()).Contains("fixture-pong"))
+                            throw new Exception("Authorized probe no longer works: " + route);
+                    }
+                    calls = 0;
+                }
+                foreach (string path in new[] { "release-public.pem", "Updates/release-public.pem", "QuicNet.Updates.release-public.pem", "Watch/wwwroot/index.html", "dashboard.html" })
+                {
+                    using var response = await client.GetAsync(path);
+                    if (response.StatusCode != HttpStatusCode.NotFound)
+                        throw new Exception("A non-public resource or suffix alias was served: " + path);
+                }
+                using (var response = await client.GetAsync("views/dashboard.html"))
+                    if (!response.IsSuccessStatusCode) throw new Exception("A legitimate nested web resource was blocked.");
+
+                // Invoke the shared reader directly so URI canonicalization in an
+                // HTTP client cannot hide a traversal before it reaches the server.
+                var read = typeof(WebUiServer).GetMethod("ReadRawBytes", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var devRoot = (string?)typeof(WebUiServer).GetField("DevWwwRoot", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null);
+                if (devRoot != null)
+                {
+                    string fileName = "qp-static-boundary-" + Guid.NewGuid().ToString("N") + ".txt";
+                    string outside = Path.Combine(Path.GetDirectoryName(devRoot)!, fileName);
+                    bool created = false;
+                    try
+                    {
+                        using (var file = new FileStream(outside, FileMode.CreateNew, FileAccess.Write))
+                        {
+                            created = true;
+                            file.Write(Encoding.UTF8.GetBytes("not a public asset"));
+                        }
+                        foreach (string path in new[] { "../" + fileName, "..\\" + fileName, "../wwwroot/../" + fileName, ".. /" + fileName })
+                            if (read.Invoke(server, [path]) != null)
+                                throw new Exception("Static reader escaped wwwroot: " + path);
+                    }
+                    finally { if (created) File.Delete(outside); }
+                }
+                Console.WriteLine("PASSED");
+            }
+            finally { server.Stop(); cts.Cancel(); }
+        }
+
+        private static async Task TestWatchSocketBackpressureAsync()
+        {
+            Console.Write("[TEST] Watch socket serialization, slow-client isolation and deadlines... ");
+            using var cts = new CancellationTokenSource();
+            await using var hub = new QuicNet.Watch.Web.WebSocketHub(new System.Text.Json.JsonSerializerOptions());
+            using var slow = new ControlledWatchSocket(blockSend: true);
+            using var healthy = new ControlledWatchSocket(blockSend: false);
+            Task slowReader = hub.AddAsync(slow, cts.Token);
+            Task healthyReader = hub.AddAsync(healthy, cts.Token);
+            try
+            {
+                Task first = hub.BroadcastAsync("fixture", 0);
+                await slow.FirstSend.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                await healthy.FirstSend.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                Task[] following = Enumerable.Range(1, 12).Select(i => hub.BroadcastAsync("fixture", i)).ToArray();
+                // The healthy client receives the complete burst while the first
+                // send to the slow client is still blocked.
+                using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                    while (healthy.Messages.Count != 13) await Task.Delay(10, deadline.Token);
+                if (slow.ConcurrentSend || healthy.ConcurrentSend || slow.Messages.Count != 0)
+                    throw new Exception("Watch started overlapping writes or bypassed the blocked socket.");
+                slow.ReleaseSend.TrySetResult(true);
+                await Task.WhenAll(following.Prepend(first)).WaitAsync(TimeSpan.FromSeconds(2));
+                int[] expected = Enumerable.Range(0, 13).ToArray();
+                foreach (var socket in new[] { slow, healthy })
+                    if (!socket.Messages.ToArray().SequenceEqual(expected))
+                        throw new Exception("Watch broadcasts were lost, duplicated or reordered.");
+
+                using var stalled = new ControlledWatchSocket(blockSend: true);
+                Task stalledReader = hub.AddAsync(stalled, cts.Token);
+                await hub.BroadcastAsync("fixture", 13).WaitAsync(TimeSpan.FromSeconds(8));
+                await stalledReader.WaitAsync(TimeSpan.FromSeconds(2));
+                if (!stalled.Aborted || healthy.State != WebSocketState.Open || healthy.Messages.Last() != 13)
+                    throw new Exception("A stalled Watch client was not isolated and aborted at its send deadline.");
+
+                using var saturated = new ControlledWatchSocket(blockSend: true);
+                Task saturatedReader = hub.AddAsync(saturated, cts.Token);
+                var burst = new System.Collections.Generic.List<Task>();
+                using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                    for (int i = 14; i < 54; i++)
+                    {
+                        burst.Add(hub.BroadcastAsync("fixture", i));
+                        // Let the healthy socket drain while the other accumulates
+                        // enough writes to hit the per-client admission limit.
+                        while (healthy.Messages.Last() != i) await Task.Delay(1, deadline.Token);
+                    }
+                await Task.WhenAll(burst).WaitAsync(TimeSpan.FromSeconds(2));
+                await saturatedReader.WaitAsync(TimeSpan.FromSeconds(2));
+                if (!saturated.Aborted || healthy.State != WebSocketState.Open || healthy.ConcurrentSend || healthy.Messages.Count != 54)
+                    throw new Exception("Watch did not bound queued sends independently for each client.");
+                await hub.DisposeAsync();
+                await Task.WhenAll(slowReader, healthyReader).WaitAsync(TimeSpan.FromSeconds(3));
+                if (slow.FullCloseCalls != 0 || healthy.FullCloseCalls != 0)
+                    throw new Exception("Watch close competed with the active socket receive loop.");
+
+                foreach (bool blockSend in new[] { true, false })
+                {
+                    await using var closingHub = new QuicNet.Watch.Web.WebSocketHub(new System.Text.Json.JsonSerializerOptions());
+                    using var closingSocket = new ControlledWatchSocket(blockSend, blockClose: !blockSend);
+                    Task reader = closingHub.AddAsync(closingSocket, cts.Token);
+                    Task write = closingHub.BroadcastAsync("fixture", 0);
+                    await closingSocket.FirstSend.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                    await closingHub.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(4));
+                    await Task.WhenAll(reader, write).WaitAsync(TimeSpan.FromSeconds(2));
+                    if (!closingSocket.Aborted || closingSocket.ConcurrentSend || closingSocket.FullCloseCalls != 0)
+                        throw new Exception("Watch shutdown did not bound a blocked send/close or raced a socket writer.");
+                }
+                Console.WriteLine("PASSED");
+            }
+            finally { cts.Cancel(); }
+        }
+
+        private sealed class ControlledWatchSocket(bool blockSend, bool blockClose = false) : WebSocket
+        {
+            private readonly TaskCompletionSource<WebSocketReceiveResult> _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private WebSocketState _state = WebSocketState.Open;
+            private int _sending;
+            public TaskCompletionSource<bool> FirstSend { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public TaskCompletionSource<bool> ReleaseSend { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public System.Collections.Concurrent.ConcurrentQueue<int> Messages { get; } = new();
+            public bool ConcurrentSend { get; private set; }
+            public bool Aborted { get; private set; }
+            public int FullCloseCalls { get; private set; }
+            public override WebSocketCloseStatus? CloseStatus => null;
+            public override string? CloseStatusDescription => null;
+            public override string? SubProtocol => null;
+            public override WebSocketState State => _state;
+            public override void Abort() { Aborted = true; Finish(WebSocketState.Aborted); }
+            public override void Dispose() => Finish(WebSocketState.Closed);
+            private void Finish(WebSocketState state)
+            {
+                _state = state;
+                _closed.TrySetResult(new WebSocketReceiveResult(0, WebSocketMessageType.Close, true));
+            }
+            public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+            {
+                FullCloseCalls++;
+                return CloseOutputAsync(closeStatus, statusDescription, cancellationToken);
+            }
+            public override async Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+            {
+                if (Volatile.Read(ref _sending) != 0) ConcurrentSend = true;
+                if (blockClose) await Task.Delay(Timeout.Infinite, cancellationToken);
+                Finish(WebSocketState.Closed);
+            }
+            public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) => _closed.Task.WaitAsync(cancellationToken);
+            public override async Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken)
+            {
+                if (Interlocked.Increment(ref _sending) != 1) ConcurrentSend = true;
+                try
+                {
+                    FirstSend.TrySetResult(true);
+                    if (blockSend) await ReleaseSend.Task.WaitAsync(cancellationToken);
+                    else await Task.Yield();
+                    using var message = System.Text.Json.JsonDocument.Parse(buffer.AsMemory());
+                    Messages.Enqueue(message.RootElement.GetProperty("data").GetInt32());
+                }
+                finally { Interlocked.Decrement(ref _sending); }
+            }
+        }
+
+        private static async Task TestWebSocketAdmissionIsolationAsync()
+        {
+            Console.Write("[TEST] Persistent socket admission preserves HTTP capacity... ");
+            using var cts = new CancellationTokenSource();
+            var reservation = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            reservation.Start();
+            int port = ((IPEndPoint)reservation.LocalEndpoint).Port;
+            reservation.Stop();
+            var server = new WebUiServer(NodeCapabilities.CreateAndroid(), cts, port)
+            {
+                ProbePingHandler = (_, _, _) => "admission-pong"
+            };
+            var sockets = new System.Collections.Generic.List<ClientWebSocket>();
+            try
+            {
+                server.Start();
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var endpoint = new Uri($"ws://127.0.0.1:{server.Port}/ws?csrf={server.CsrfToken}");
+                for (int i = 0; i < WebUiContext.MaxConcurrentWebSocketRequests; i++)
+                {
+                    var socket = new ClientWebSocket();
+                    sockets.Add(socket);
+                    await socket.ConnectAsync(endpoint, deadline.Token);
+                }
+                using var client = new HttpClient { BaseAddress = new Uri(server.Url), Timeout = TimeSpan.FromSeconds(3) };
+                using (var overflow = new HttpRequestMessage(HttpMethod.Get, $"ws?csrf={server.CsrfToken}"))
+                {
+                    overflow.Headers.TryAddWithoutValidation("Connection", "Upgrade");
+                    overflow.Headers.TryAddWithoutValidation("Upgrade", "websocket");
+                    overflow.Headers.TryAddWithoutValidation("Sec-WebSocket-Version", "13");
+                    overflow.Headers.TryAddWithoutValidation("Sec-WebSocket-Key", Convert.ToBase64String(RandomNumberGenerator.GetBytes(16)));
+                    using var rejected = await client.SendAsync(overflow, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+                    if (rejected.StatusCode != HttpStatusCode.ServiceUnavailable || rejected.Headers.RetryAfter?.Delta != TimeSpan.FromSeconds(1))
+                        throw new Exception("Excess WebSockets were not rejected promptly with a retry hint.");
+                }
+                using (var status = await client.GetAsync("api/status", deadline.Token))
+                    if (!status.IsSuccessStatusCode) throw new Exception("Open WebSockets exhausted the HTTP read capacity.");
+                using (var probe = new HttpRequestMessage(HttpMethod.Post, "api/probe/ping"))
+                {
+                    probe.Headers.Add("X-QuicPunch-CSRF", server.CsrfToken);
+                    probe.Content = new StringContent("{\"host\":\"127.0.0.1\",\"port\":5000,\"fingerprint\":\"" + new string('a', 64) + "\"}", Encoding.UTF8, "application/json");
+                    using var response = await client.SendAsync(probe, deadline.Token);
+                    if (!response.IsSuccessStatusCode || !(await response.Content.ReadAsStringAsync()).Contains("admission-pong"))
+                        throw new Exception("Open WebSockets blocked an authenticated HTTP write.");
+                }
+                await sockets[0].CloseAsync(WebSocketCloseStatus.NormalClosure, "release-slot", deadline.Token);
+                var slots = (SemaphoreSlim)typeof(WebUiServer).GetField("_webSocketSlots", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(server)!;
+                while (slots.CurrentCount == 0) await Task.Delay(10, deadline.Token);
+                var replacement = new ClientWebSocket();
+                sockets.Add(replacement);
+                await replacement.ConnectAsync(endpoint, deadline.Token);
+                if (replacement.State != WebSocketState.Open || slots.CurrentCount != 0)
+                    throw new Exception("Closing a WebSocket did not make its reserved slot reusable.");
+                Console.WriteLine("PASSED");
+            }
+            finally
+            {
+                foreach (var socket in sockets) { socket.Abort(); socket.Dispose(); }
+                server.Stop(); cts.Cancel();
+            }
         }
 
         private static async Task TestChatOutboxAsync()
@@ -235,7 +504,7 @@ namespace QuicPunchTests.Tests;
                 if (!response.IsSuccessStatusCode || !html.Contains("id=\"view-settings\"") || !html.Contains("lang=\"es\"") || html.Contains("user-scalable=no") || html.Contains("id=\"themeSelect\"") || !html.Contains("name=\"color-scheme\" content=\"dark\""))
                     throw new Exception("Redesigned SPA route or accessible viewport missing: " + route);
             }
-            foreach (string asset in new[] { "/components.css", "/design.css", "/experience.js", "/screen-audio-capture.js", "/screen-audio-playback.js", "/screen-video-decoder.js", "/voice.js", "/watch/app.css", "/watch/watch-design.css" })
+            foreach (string asset in new[] { "/components.css", "/design.css", "/experience.js", "/screen-audio-capture.js", "/screen-audio-playback.js", "/native-video.js", "/voice.js", "/watch/app.css", "/watch/watch-design.css" })
             {
                 using var response = await client.GetAsync($"http://127.0.0.1:{port}{asset}");
                 string content = await response.Content.ReadAsStringAsync();
@@ -688,9 +957,9 @@ namespace QuicPunchTests.Tests;
                         html.Contains("protocol-launcher") || html.Contains("id=\"tokenConflictModal\"") ||
                         html.Contains("Llamadas rápidas") || html.Contains("mobile.js") || html.Contains("mobile.html"))
                         throw new Exception("The dashboard still exposes obsolete status, protocol controls, or mobile call remnants.");
-                    if (!html.Contains("class=\"subtab-btn active\" data-group=\"peerdir\" data-subtab=\"tab-discovered-peers\"") &&
-                        !html.Contains("class=\"subtab-btn active\" data-group=\"peerdir\" data-subtab=\"tab-discovered-contactos\""))
-                        throw new Exception("Nostr discovery is not the default peer directory tab.");
+                    if (!html.Contains("data-contact-filter=\"all\" aria-pressed=\"true\"") ||
+                        !html.Contains("id=\"homeContacts\"") || !html.Contains("id=\"homeDiscoveryStatus\""))
+                        throw new Exception("The unified contact directory or its default all-contacts filter is missing.");
                     if (!html.Contains("id=\"untrustedAlert\"") || !html.Contains("id=\"untrustedNavCount\""))
                         throw new Exception("Untrusted peer attention controls are missing.");
                 }

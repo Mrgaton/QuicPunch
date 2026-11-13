@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Version>1.2.0</Version>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Deterministic>true</Deterministic>
+    <Description>Offline-catalog, on-device hierarchical latency geolocation with explainable tunnel assessment.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="QuicNet.CatalogTests" />
+    <Compile Remove="Cli/**/*.cs;tests/**/*.cs" />
+    <EmbeddedResource Include="Data/*.bin;Data/*.gz;Data/*.json;Data/*.txt" LogicalName="GeoData.%(Filename)%(Extension)" WithCulture="false" />
+    <None Update="README.md" Pack="true" PackagePath="/" />
+    <None Update="Data/NOTICE.txt" Pack="true" PackagePath="/" />
+    <None Update="tools/**;tests/**" Pack="false" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+  <Target Name="RequireBundledMeasurementsCatalog" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/Data/anchors.json.gz') Or !Exists('$(MSBuildProjectDirectory)/Data/localities.bin')"
+      Text="Missing bundled catalog. Run tools/build_catalogs.py using the bundled seed snapshot or a downloaded release snapshot." />
+  </Target>
+  <UsingTask TaskName="CheckIpCatalogFormats" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <DataDirectory ParameterType="System.String" Required="true" />
+      <NeedsPreparation ParameterType="System.Boolean" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        foreach (string table in new[] { "city", "asn", "routers" })
+        {
+            string path = System.IO.Path.Combine(DataDirectory, table + ".bin");
+            if (!System.IO.File.Exists(path)) continue;
+            byte[] header = new byte[4];
+            using (var input = System.IO.File.OpenRead(path))
+            {
+                if (input.Read(header, 0, 4) != 4) { Log.LogError("Truncated IP catalogue: " + path); continue; }
+            }
+            string format = System.Text.Encoding.ASCII.GetString(header);
+            if (format == "GLP1") NeedsPreparation = true;
+            else if (format != "GLP2") Log.LogError("Unknown IP catalogue format: " + path);
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="PrepareIpCatalogs" BeforeTargets="BeforeBuild">
+    <PropertyGroup>
+      <CatalogDataDirectory Condition="'$(CatalogDataDirectory)' == ''">$(MSBuildProjectDirectory)/Data</CatalogDataDirectory>
+      <CatalogPython Condition="'$(CatalogPython)' == '' and '$(OS)' == 'Windows_NT'">python</CatalogPython>
+      <CatalogPython Condition="'$(CatalogPython)' == ''">python3</CatalogPython>
+    </PropertyGroup>
+    <CheckIpCatalogFormats DataDirectory="$(CatalogDataDirectory)">
+      <Output TaskParameter="NeedsPreparation" PropertyName="CatalogNeedsPreparation" />
+    </CheckIpCatalogFormats>
+    <Exec Condition="'$(CatalogNeedsPreparation)' == 'true' or '$(PrepareGeolocationCatalogs)' == 'true'"
+      Command="&quot;$(CatalogPython)&quot; &quot;$(MSBuildProjectDirectory)/../scripts/prepare-geolocation.py&quot; --data &quot;$(CatalogDataDirectory)&quot;" />
+  </Target>
+</Project>

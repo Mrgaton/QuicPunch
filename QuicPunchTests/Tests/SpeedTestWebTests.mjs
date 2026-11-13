@@ -36,6 +36,23 @@ async function fixture(status = {}) {
     async start() { get('speedTestPeerSelect').value = 'a'; return get('startSpeedTestBtn').listeners.click(); } };
 }
 const f = await fixture();
+assert.equal(f.get('startSpeedTestBtn').disabled, true, 'A contact is required before starting');
+assert.equal(f.get('clearSpeedTestHistoryBtn').disabled, true, 'Empty history cannot be cleared');
+assert.equal(f.text('speedTestMetricDownload'), '—', 'Idle values must not look like measurements');
+f.get('speedTestMode').value = 'upload';
+f.get('speedTestMode').listeners.change();
+assert.equal(f.text('speedTestMetricDownload'), 'No incluida', 'Changing the idle plan updates the metrics');
+assert.equal(f.get('speedTestPhaseList').children.length, 2);
+f.get('speedTestMode').value = 'all';
+f.get('speedTestMode').listeners.change();
+f.get('speedTestPeerSelect').value = 'a';
+f.get('speedTestPeerSelect').listeners.change();
+assert.equal(f.get('startSpeedTestBtn').disabled, false);
+assert.ok(f.text('speedTestResultContext').includes('Ana'));
+f.emit('status_updated', {peers:[]});
+assert.equal(f.get('startSpeedTestBtn').disabled, true, 'A removed contact must not leave start enabled');
+assert.ok(f.text('speedTestStartHelp').includes('Inicio'));
+f.emit('status_updated', {peers:[{id:'a',name:'Ana',isTrusted:true}]});
 await f.start();
 assert.equal(f.state(), 'connecting');
 assert.equal(f.get('speedTestMode').disabled, true);
@@ -62,6 +79,21 @@ f.emit('speedtest_progress', {peerId:'a',direction:'Download',currentMbps:400,by
 assert.equal(f.text('speedTestMetricUpload'), '2.0 Mbps');
 assert.equal(f.text('speedTestMetricDownload'), '400.0 Mbps', 'Asymmetric rates must never collapse into an average');
 assert.equal(f.text('speedTestMetricBytes'), '440 B', 'Completed phases and both live directions contribute to transfer total');
+// The local receiver and remote receiver report on independent clocks. Remote
+// progress can arrive late behind data while both directions saturate the link.
+for (const [direction, elapsedSeconds, expected] of [
+  ['Download', 6, 60], ['Upload', 3.5, 60], ['Download', 6.2, 62],
+  ['Upload', 4, 62], ['Upload', NaN, 62], ['Download', Infinity, 62],
+  ['Upload', -1, 62], ['Download', 10.2, 100], ['Upload', 9, 100]
+]) {
+  f.emit('speedtest_progress', {peerId:'a',direction,currentMbps:direction === 'Upload' ? 1400 : 6,
+    elapsedSeconds,totalSeconds:10});
+  assert.equal(f.get('speedTestBarFill').style.width, expected + '%', 'Interleaved progress must never move the bar backwards');
+  assert.equal(f.get('speedTestProgressBar').attributes['aria-valuenow'], String(expected));
+  assert.ok(f.text('speedTestGaugeHelp').includes((expected / 10).toFixed(1) + ' / 10 s'), 'Elapsed label must agree with the bar');
+}
+assert.equal(f.text('speedTestMetricUpload'), '1400.0 Mbps');
+assert.equal(f.text('speedTestMetricDownload'), '6.0 Mbps', 'Stable progress must preserve independent measured rates');
 f.emit('speedtest_completed', {testId:'one',peerId:'a',peerName:'<img src=x onerror=alert(1)>',mode:'All',stages,baseline:quality,totalBytes:530});
 assert.equal(f.state(), 'completed');
 assert.equal(f.text('speedTestMetricDownload'), '100.0 Mbps', 'Summary uses labelled isolated measurement; simultaneous result remains in details');
@@ -74,6 +106,12 @@ for (const cell of f.get('speedTestHistoryBody').children[0].children) assert.ok
 assert.ok(f.text('speedTestBaseline').includes('Pérdida: 0.00%'));
 assert.ok(f.text('speedTestBaseline').includes('Jitter: 0.00 ms'));
 assert.equal(f.get('speedTestProgress').classList.contains('hidden'), true);
+assert.equal(f.get('speedTestHistory').attributes['data-empty'], 'false');
+assert.equal(f.text('speedTestHistoryCount'), '1');
+f.QP.api = async () => ({success:false});
+await f.get('clearSpeedTestHistoryBtn').listeners.click();
+assert.equal(f.text('speedTestHistoryCount'), '1', 'A failed clear must preserve history');
+assert.equal(f.get('clearSpeedTestHistoryBtn').disabled, false);
 
 const reliable = {...quality,method:'Stream fiable',lossPercent:null};
 const partial = {testId:'partial',peerId:'a',peerName:'Ana',mode:'All',state:'interrupted',error:'QUIC_STATUS_INTERNAL_ERROR',
@@ -99,6 +137,26 @@ assert.equal(p.state(), 'interrupted');
 assert.equal(p.text('speedTestMetricUpload'), 'Sin resultado', 'Incomplete live measurements cannot become final results');
 assert.equal(p.get('speedTestPhaseResults').children.length, 1, 'Errors without a result still preserve completed phases');
 assert.equal(p.get('speedTestHistoryBody').children.length, 2);
+
+const progress = await fixture();
+await progress.start();
+for (const phase of ['Download', 'Upload', 'Both']) {
+  progress.emit('speedtest_phase', {peerId:'a',phase});
+  assert.equal(progress.get('speedTestBarFill').style.width, '0%', 'Each new phase resets progress');
+  progress.emit('speedtest_progress', {peerId:'a',direction:phase === 'Both' ? 'Download' : phase,elapsedSeconds:1,totalSeconds:10});
+  assert.equal(progress.get('speedTestBarFill').style.width, '10%');
+  progress.emit('speedtest_progress', {peerId:'a',direction:phase === 'Both' ? 'Download' : phase,elapsedSeconds:10,totalSeconds:10});
+}
+await progress.get('cancelSpeedTestBtn').listeners.click();
+await progress.start();
+progress.emit('speedtest_phase', {peerId:'a',phase:'Both'});
+progress.emit('speedtest_progress', {peerId:'a',direction:'Upload',elapsedSeconds:0.5,totalSeconds:10});
+assert.equal(progress.get('speedTestBarFill').style.width, '5%', 'Repeating a test must reset the phase clock');
+
+const hydrated = await fixture({isRunning:true,active:{peerId:'a',mode:'Both',phase:'Both',
+  durationSeconds:10,elapsedSeconds:6,lastUploadMbps:1400,lastDownloadMbps:6}});
+hydrated.emit('speedtest_progress', {peerId:'a',direction:'Upload',currentMbps:1400,elapsedSeconds:4,totalSeconds:10});
+assert.equal(hydrated.get('speedTestBarFill').style.width, '60%', 'A delayed event must not roll back hydrated progress');
 
 const e = await fixture();
 e.QP.api = async () => ({success:false,error:'Internal error: test failure'});

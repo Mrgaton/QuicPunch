@@ -10,7 +10,7 @@ Elimina archivos regenerables del proyecto y muestra el espacio recuperado.
 Cierra Visual Studio y las aplicaciones del proyecto antes de limpiar.
 Elimina .artifacts y carpetas .codex-* que solo contienen bin/obj.
 Estas carpetas solo deben contener archivos temporales o regenerables.
-Conserva artifacts, backups,
+Conserva artifacts, backups, precached,
 bibliotecas nativas, datos de la aplicacion y caches globales de NuGet/SDK.
 La siguiente compilacion regenerara bin/obj y puede necesitar Internet.
 #>
@@ -23,6 +23,33 @@ $rootPrefix = $root + [IO.Path]::DirectorySeparatorChar
 $targets = New-Object 'System.Collections.Generic.List[string]'
 $pending = New-Object 'System.Collections.Generic.Stack[string]'
 $pending.Push($root)
+
+# Las reglas de seleccion se mantienen aqui; las validaciones de borrado van aparte.
+$preservedDirectories = @('.git', '.codex', 'artifacts', 'backups', 'precached',
+    'NativeBuild', 'node_modules', 'runtimes', 'native')
+$buildDirectories = @('bin', 'obj')
+$cacheDirectories = @('.vs', '.codex-build', '.artifacts', 'TestResults',
+    'BenchmarkDotNet.Artifacts', '__pycache__', '.pytest_cache', '.ruff_cache')
+
+function Get-CleanupAction([IO.DirectoryInfo] $Directory) {
+    if (($Directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $Directory.Name -in $preservedDirectories -or
+        $Directory.Name -like '*.backup' -or
+        (Test-Path -LiteralPath (Join-Path $Directory.FullName '.git'))) { return 'Preserve' }
+
+    if ($Directory.Name -in $buildDirectories -or $Directory.Name -in $cacheDirectories) {
+        return 'Remove'
+    }
+    if ($Directory.Name -like '.codex-*') {
+        $unknown = @(Get-ChildItem -LiteralPath $Directory.FullName -Force | Where-Object {
+            -not $_.PSIsContainer -or $_.Name -notin $buildDirectories
+        })
+        if ($unknown.Count -eq 0) { return 'Remove' }
+        Write-Warning "Se conserva la carpeta con contenido no reconocido: $($Directory.FullName)"
+        return 'Preserve'
+    }
+    return 'Inspect'
+}
 
 function Assert-LocalPath([string] $Path) {
     $fullPath = [IO.Path]::GetFullPath($Path)
@@ -68,33 +95,11 @@ while ($pending.Count -gt 0) {
     $directory = $pending.Pop()
     $children = @(Get-ChildItem -LiteralPath $directory -Force)
     foreach ($child in $children) {
-        if (-not $child.PSIsContainer -or
-            ($child.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
-
-        $isBuild = $child.Name -in @('bin', 'obj')
-        $isCache = $child.Name -in @('.vs', '.codex-build', '.artifacts', 'TestResults', 'BenchmarkDotNet.Artifacts')
-        $isCodexBuild = $false
-        if ($child.Name -like '.codex-*' -and -not $isCache) {
-            $codexChildren = @(Get-ChildItem -LiteralPath $child.FullName -Force)
-            $isCodexBuild = @($codexChildren | Where-Object {
-                -not $_.PSIsContainer -or $_.Name -notin @('bin', 'obj')
-            }).Count -eq 0
-            if (-not $isCodexBuild) {
-                Write-Warning "Se conserva la carpeta con contenido no reconocido: $($child.FullName)"
-                continue
-            }
+        if (-not $child.PSIsContainer) { continue }
+        switch (Get-CleanupAction $child) {
+            'Remove' { $targets.Add($child.FullName) }
+            'Inspect' { $pending.Push($child.FullName) }
         }
-        if ($isBuild -or $isCache -or $isCodexBuild) {
-            $targets.Add($child.FullName)
-            continue
-        }
-
-        # Tampoco inspeccionar dependencias, copias ni repositorios anidados.
-        if ($child.Name -in @('.git', '.codex', 'artifacts', 'backups', 'NativeBuild',
-                'node_modules', 'bin', 'obj', '.codex-updates', 'runtimes', 'native') -or
-            $child.Name -like '*.backup' -or
-            (Test-Path -LiteralPath (Join-Path $child.FullName '.git'))) { continue }
-        $pending.Push($child.FullName)
     }
 }
 

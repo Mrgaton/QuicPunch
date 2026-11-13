@@ -5,21 +5,21 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Deterministic>true</Deterministic>
-    <Description>Offline-catalog, on-device hierarchical latency geolocation with explainable tunnel assessment.</Description>
+    <Description>Offline IP geolocation using embedded compressed catalogues; no network measurements.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="QuicNet.CatalogTests" />
-    <Compile Remove="Cli/**/*.cs;tests/**/*.cs" />
-    <EmbeddedResource Include="Data/*.bin;Data/*.gz;Data/*.json;Data/*.txt" LogicalName="GeoData.%(Filename)%(Extension)" WithCulture="false" />
+    <Compile Remove="tests/**/*.cs" />
+    <EmbeddedResource Include="Data/city.bin;Data/asn.bin;Data/localities.bin;Data/manifest.json;Data/localities-manifest.json;Data/NOTICE.txt" LogicalName="GeoData.%(Filename)%(Extension)" WithCulture="false" />
     <None Update="README.md" Pack="true" PackagePath="/" />
     <None Update="Data/NOTICE.txt" Pack="true" PackagePath="/" />
     <None Update="tools/**;tests/**" Pack="false" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
   </ItemGroup>
-  <Target Name="RequireBundledMeasurementsCatalog" BeforeTargets="BeforeBuild">
-    <Error Condition="!Exists('$(MSBuildProjectDirectory)/Data/anchors.json.gz') Or !Exists('$(MSBuildProjectDirectory)/Data/localities.bin')"
-      Text="Missing bundled catalog. Run tools/build_catalogs.py using the bundled seed snapshot or a downloaded release snapshot." />
+  <Target Name="RequireBundledIpCatalog" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/Data/city.bin') Or !Exists('$(MSBuildProjectDirectory)/Data/localities.bin')"
+      Text="Missing bundled IP catalogue. Restore the prepared resources before building." />
   </Target>
   <UsingTask TaskName="CheckIpCatalogFormats" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
@@ -28,7 +28,7 @@
     </ParameterGroup>
     <Task>
       <Code Type="Fragment" Language="cs"><![CDATA[
-        foreach (string table in new[] { "city", "asn", "routers" })
+        foreach (string table in new[] { "city", "asn" })
         {
             string path = System.IO.Path.Combine(DataDirectory, table + ".bin");
             if (!System.IO.File.Exists(path)) continue;

@@ -29,6 +29,12 @@ try {
   await page.locator('#profileSave').click();
   await page.locator('#profileSaveStatus').filter({hasText:'Nombre guardado'}).waitFor();
   assert.equal(customName,'Mi nuevo nombre');
+  await page.locator('#settings-tab-contacts').click();
+  await page.locator('[data-subtab="tab-saved-peers"]').click();
+  const savedRows = page.locator('#savedPeersBody tr');
+  assert.equal(await savedRows.nth(0).locator('td').nth(5).innerText(), 'Conectado');
+  assert.equal(await savedRows.nth(1).locator('td').nth(5).innerText(), 'Desconectado',
+    'A discovered contact without a QUIC tunnel must not be labelled connected');
   const sections=await page.locator('[data-settings-section]').evaluateAll(tabs=>tabs.map(tab=>tab.dataset.settingsSection));
   assert.deepEqual(sections,['profile','notifications','startup','updates','connection','geolocation','contacts','diagnostics']);
   for(const section of sections) {
@@ -44,6 +50,12 @@ try {
   assert.equal(await page.locator('#settings-tab-notifications').evaluate(tab=>tab===document.activeElement),true);
   await page.keyboard.press('End');await page.locator('#settings-diagnostics').waitFor();
   await page.keyboard.press('Home');await page.locator('#settings-profile').waitFor();
+  await page.locator('#settings-tab-notifications').click();
+  await page.locator('#noticeVolume').focus();
+  const savedVolume = page.waitForResponse(response => response.url().endsWith('/api/app/preferences') && response.request().method() === 'POST');
+  await page.keyboard.press('ArrowRight');
+  await savedVolume;
+  assert.equal(settings.notifications.volume, 61, 'Volume changed by keyboard was not saved');
   for(const theme of ['dark']) {
     await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
     for(const width of [2048,1280,844,390,320]) {
@@ -54,6 +66,27 @@ try {
         await page.locator('#settings-'+section).waitFor();
         assert.equal(await page.locator('[data-settings-panel]:visible').count(),1);
         assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${section} overflows at ${width}`);
+        if (section === 'contacts' || section === 'diagnostics') {
+          const group = section === 'contacts' ? 'peerdir' : 'diagtabs';
+          assert.ok(await page.locator(`#settings-${section} .subtabs-bar`).evaluate(bar => bar.scrollWidth <= bar.clientWidth),
+            `${section} hides category buttons in a horizontal scroller at ${width}`);
+          for (const tab of await page.locator(`[data-group="${group}"]`).all()) {
+            await tab.click();
+            assert.ok(await page.locator('#' + await tab.getAttribute('data-subtab')).isVisible());
+            if (await tab.getAttribute('data-subtab') === 'tab-saved-peers') {
+              const permissions = page.locator('#savedPeersBody .peer-permissions > summary').first();
+              await permissions.click();
+              assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                `Expanded contact permissions overflow at ${width}`);
+              await permissions.click();
+            }
+          }
+        }
+        if (section === 'diagnostics' && width <= 680) {
+          await page.locator('[data-subtab="tab-stun-mapping"]').click();
+          assert.ok((await page.locator('#stunMappings').boundingBox()).width > 100,
+            'Mobile STUN mapping text is clipped inside a zero-width table cell');
+        }
         if(['profile','notifications'].includes(section)&&[1280,390].includes(width))
           await page.screenshot({path:`.artifacts/settings-${section}-${theme}-${width}.png`});
       }

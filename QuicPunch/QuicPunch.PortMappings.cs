@@ -18,13 +18,15 @@ public partial class QuicPunch
         await _mappingGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
+            long networkGeneration = Volatile.Read(ref _networkGeneration);
             if (_controlMapping != null) await _controlMapping.DisposeAsync().ConfigureAwait(false);
             _controlMapping = null;
             if (!EnableUpnp || !ReferenceEquals(udp, expectedSocket)) return;
             int port = ((IPEndPoint)expectedSocket.Client.LocalEndPoint!).Port;
             _controlMapping = await ManagedPortMapping.StartAsync(port, result =>
             {
-                if (!ReferenceEquals(udp, expectedSocket) || token.IsCancellationRequested) return;
+                if (!ReferenceEquals(udp, expectedSocket) || token.IsCancellationRequested ||
+                    networkGeneration != Volatile.Read(ref _networkGeneration)) return;
                 _advertisedMapping = result;
                 IsUpnpMapped = result != null;
                 ActivePortMappingProtocol = result?.ProtocolName;
@@ -47,7 +49,7 @@ public partial class QuicPunch
         try
         {
             if (_tunnelMappings.TryGetValue(port, out var existing)) return existing.Result;
-            var lease = await ManagedPortMapping.StartAsync(port, _ => { }, LifecycleToken).ConfigureAwait(false);
+            var lease = await ManagedPortMapping.StartAsync(port, _ => { }, LifecycleToken, token).ConfigureAwait(false);
             _tunnelMappings[port] = lease;
             _mappingMonitors[port] = MonitorTunnelMappingAsync(port, lease, LifecycleToken);
             return lease.Result;
@@ -61,7 +63,7 @@ public partial class QuicPunch
         bool connected = false;
         try
         {
-            while (!token.IsCancellationRequested)
+            while (!token.IsCancellationRequested && !lease.IsDisposed)
             {
                 bool active = _peerMultiplexers.Values.Any(m => !m.IsDisposed && m.LocalEndPoint is IPEndPoint ep && ep.Port == port);
                 if (active) connected = true;
@@ -76,6 +78,16 @@ public partial class QuicPunch
             await lease.DisposeAsync().ConfigureAwait(false);
             _mappingMonitors.TryRemove(port, out _);
         }
+    }
+
+    private async Task RefreshPortMappingsForNetworkChangeAsync(CancellationToken token)
+    {
+        await StopPortMappingsAsync().ConfigureAwait(false);
+        foreach (var entry in _tunnelMappings.ToArray())
+            if (_tunnelMappings.TryRemove(entry)) await entry.Value.DisposeAsync().ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        if (udp is { } socket && IsWanStarted)
+            await StartControlMappingAsync(socket, _wanLoopCts?.Token ?? LifecycleToken).WaitAsync(token).ConfigureAwait(false);
     }
 
     private async Task StopPortMappingsAsync()

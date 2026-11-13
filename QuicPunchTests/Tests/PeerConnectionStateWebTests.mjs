@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {attachApp,assertConnectionModes} from '../Fixtures/WebAppRuntime.mjs';
 const elements = new Map();
 function element() {
-  return { children: [], style: {}, classList: { toggle() {} }, append(...items) { this.children.push(...items); }, appendChild(item) { this.children.push(item); }, removeAttribute() {}, setAttribute() {} };
+  return { children: [], style: {}, dataset: {}, classList: { toggle() {} }, append(...items) { this.children.push(...items); }, appendChild(item) { this.children.push(item); }, removeAttribute() {}, setAttribute() {} };
 }
 const document = { addEventListener() {}, createElement: element, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } };
 const QP = { el(tag, cls, text) { return { ...element(), tag, cls, text }; }, clear(el) { el.children = []; }, setText() {}, peerMeta(p) { return p.endpoint || ''; }, canonicalId(id) { return id; }, button(text, cls, action) { return { ...element(), text, action }; } };

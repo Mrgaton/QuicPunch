@@ -16,6 +16,10 @@ public sealed class NativeAudioService : IDisposable
     private Task? _mixerTask;
 
     private ushort _outgoingSeqNum;
+    private readonly object _captureLock = new();
+    private readonly short[] _captureFrame = new short[OpusVoiceCodec.DefaultFrameSize];
+    private int _capturedSamples;
+    private long _captureTimestamp, _lastCaptureAt;
     private volatile bool _isMuted;
     private volatile bool _isDeafened;
     private volatile float _masterVolume = 1.0f;
@@ -27,7 +31,15 @@ public sealed class NativeAudioService : IDisposable
     public bool IsMuted
     {
         get => _isMuted;
-        set => _isMuted = value;
+        set
+        {
+            lock (_captureLock)
+            {
+                if (_isMuted == value) return;
+                _isMuted = value;
+                _capturedSamples = 0; _lastCaptureAt = 0;
+            }
+        }
     }
 
     public bool IsDeafened
@@ -62,6 +74,7 @@ public sealed class NativeAudioService : IDisposable
     {
         try
         {
+            lock (_captureLock) { _capturedSamples = 0; _lastCaptureAt = 0; }
             IsCaptureRunning = _backend.StartCapture(OnMicrophoneCaptured, deviceId);
             _captureError = IsCaptureRunning ? null : _backend.CaptureError ?? "No se pudo abrir el micrófono. Comprueba los permisos y el dispositivo.";
         }
@@ -127,8 +140,11 @@ public sealed class NativeAudioService : IDisposable
 
     public double GetPeerBufferedAudioMs(Guid peerId) =>
         _peerAudioContexts.TryGetValue(peerId, out var context)
-            ? context.JitterQueue.Sum(frame => frame.Length) * 1000.0 / OpusVoiceCodec.DefaultSampleRate
+            ? context.Statistics.BufferedMs
             : 0;
+
+    public AudioBufferStatistics? GetPeerAudioStatistics(Guid peerId) =>
+        _peerAudioContexts.TryGetValue(peerId, out var context) ? context.Statistics : null;
 
     public void SetPeerMuted(Guid peerId, bool muted)
     {
@@ -159,7 +175,7 @@ public sealed class NativeAudioService : IDisposable
                 ? Task.Factory.StartNew(() => MixerLoop(ct), ct, TaskCreationOptions.LongRunning, TaskScheduler.Default)
                 : Task.Run(() => MixerLoop(ct), ct);
 
-            QuicPunchLog.Info($"[NATIVE AUDIO] Native audio service started on {_backend.Name} (20ms frames)");
+            QuicPunchLog.Info($"[NATIVE AUDIO] Native audio service started on {_backend.Name} (10ms frames, adaptive playout)");
         }
     }
 
@@ -203,6 +219,32 @@ public sealed class NativeAudioService : IDisposable
 
     private void OnMicrophoneCaptured(short[] pcmSamples)
     {
+        // Driver callbacks can be partial or batched. Packetize by sample count,
+        // never truncate a callback to the first 10ms or encode an incomplete frame.
+        lock (_captureLock)
+        {
+            long now = Environment.TickCount64;
+            if (_lastCaptureAt == 0 || now - _lastCaptureAt > 100)
+            { _capturedSamples = 0; _captureTimestamp = now; }
+            _lastCaptureAt = now;
+            int offset = 0;
+            while (offset < pcmSamples.Length)
+            {
+                int count = Math.Min(pcmSamples.Length - offset, _captureFrame.Length - _capturedSamples);
+                pcmSamples.AsSpan(offset, count).CopyTo(_captureFrame.AsSpan(_capturedSamples));
+                offset += count; _capturedSamples += count;
+                if (_capturedSamples == _captureFrame.Length)
+                {
+                    EncodeMicrophoneFrame(_captureFrame, unchecked((ushort)_captureTimestamp));
+                    _captureTimestamp += OpusVoiceCodec.DefaultFrameDurationMs;
+                    _capturedSamples = 0;
+                }
+            }
+        }
+    }
+
+    private void EncodeMicrophoneFrame(short[] pcmSamples, ushort timestamp)
+    {
         if (pcmSamples == null || pcmSamples.Length == 0) return;
 
         // Calculate RMS audio level for VAD / meter
@@ -232,8 +274,7 @@ public sealed class NativeAudioService : IDisposable
         try
         {
             ushort seq = unchecked(++_outgoingSeqNum);
-            ushort ts = unchecked((ushort)(Environment.TickCount64 & 0xFFFF));
-            byte[] opusPacket = _opusCodec.EncodeFramed(outputSamples, seq, ts, OpusVoiceCodec.DefaultFrameSize);
+            byte[] opusPacket = _opusCodec.EncodeFramed(outputSamples, seq, timestamp, OpusVoiceCodec.DefaultFrameSize);
             OnAudioPacketReady?.Invoke(opusPacket);
         }
         catch (Exception ex)
@@ -249,23 +290,7 @@ public sealed class NativeAudioService : IDisposable
         try
         {
             var ctx = _peerAudioContexts.GetOrAdd(peerId, _ => new PeerAudioContext());
-            ctx.ProcessIncomingPacket(audioData, pcmSamples =>
-            {
-                if (pcmSamples == null || pcmSamples.Length == 0) return;
-
-                // Calculate RMS for VAD per peer
-                double sum = 0;
-                for (int i = 0; i < pcmSamples.Length; i++) sum += pcmSamples[i] * pcmSamples[i];
-                double rms = Math.Sqrt(sum / pcmSamples.Length) / 32768.0;
-                float level = Math.Clamp((float)(rms * 3.5), 0.0f, 1.0f);
-                OnPeerAudioLevel?.Invoke(peerId, level);
-
-                ctx.JitterQueue.Enqueue(pcmSamples);
-
-                // Keep up to 60ms for short bursts; a stalled mixer should catch
-                // up to live audio instead of retaining an extra 120ms of speech.
-                while (ctx.JitterQueue.Count > 3) ctx.JitterQueue.TryDequeue(out _);
-            });
+            ctx.Enqueue(audioData);
         }
         catch (Exception ex)
         {
@@ -285,13 +310,13 @@ public sealed class NativeAudioService : IDisposable
 
     private void MixerLoop(CancellationToken ct)
     {
-        const int frameSize = OpusVoiceCodec.DefaultFrameSize; // 960 samples = 20ms
+        const int frameSize = OpusVoiceCodec.DefaultFrameSize; // 480 samples = 10ms
         int[] accumulator = new int[frameSize];
         short[] mixedOutput = new short[frameSize];
 
         using var windowsClock = WindowsAudioClock.TryCreate(ct);
         using var timer = windowsClock == null ? new PeriodicTimer(TimeSpan.FromMilliseconds(OpusVoiceCodec.DefaultFrameDurationMs)) : null;
-        QuicPunchLog.Info(windowsClock != null ? "[NATIVE AUDIO] Windows high-resolution mixer clock; 20ms frames, no extra prebuffer."
+        QuicPunchLog.Info(windowsClock != null ? "[NATIVE AUDIO] Windows high-resolution mixer clock; 10ms frames, adaptive playout."
             : "[NATIVE AUDIO] Standard mixer clock.");
 
         while (!ct.IsCancellationRequested)
@@ -306,50 +331,25 @@ public sealed class NativeAudioService : IDisposable
                 break;
             }
 
-            Array.Clear(accumulator, 0, accumulator.Length);
-            bool hasAudio = false;
-
-            if (!_isDeafened)
+            Array.Clear(accumulator);
+            bool hasPeers = false;
+            foreach (var pair in _peerAudioContexts)
             {
-                float master = _masterVolume;
-
-                foreach (var pair in _peerAudioContexts)
-                {
-                    Guid peerId = pair.Key;
-                    var ctx = pair.Value;
-                    if (GetPeerMuted(peerId))
-                    {
-                        ctx.JitterQueue.TryDequeue(out _);
-                        continue;
-                    }
-
-                    if (ctx.JitterQueue.TryDequeue(out short[]? samples) && samples != null)
-                    {
-                        hasAudio = true;
-                        float peerVol = GetPeerVolume(peerId) * master;
-                        int count = Math.Min(samples.Length, frameSize);
-                        for (int i = 0; i < count; i++)
-                        {
-                            accumulator[i] += (int)(samples[i] * peerVol);
-                        }
-                    }
-                }
+                hasPeers = true;
+                // Drain muted/deafened peers too, so unmuting never replays old speech.
+                short[] samples = pair.Value.ReadFrame();
+                double sum = 0;
+                foreach (short sample in samples) sum += (double)sample * sample;
+                OnPeerAudioLevel?.Invoke(pair.Key, Math.Clamp((float)(Math.Sqrt(sum / samples.Length) / 32768 * 3.5), 0, 1));
+                if (_isDeafened || GetPeerMuted(pair.Key)) continue;
+                float volume = GetPeerVolume(pair.Key) * _masterVolume;
+                for (int i = 0; i < frameSize; i++) accumulator[i] += (int)(samples[i] * volume);
             }
-            else
+            // During a call write a continuous stream, including startup, PLC and
+            // silence. Stopping writes on an empty network queue starves the device.
+            if (hasPeers && !_isTestLoopback)
             {
-                // Discard frames if deafened
-                foreach (var ctx in _peerAudioContexts.Values)
-                {
-                    ctx.JitterQueue.TryDequeue(out _);
-                }
-            }
-
-            if (hasAudio && !_isDeafened)
-            {
-                for (int i = 0; i < frameSize; i++)
-                {
-                    mixedOutput[i] = (short)Math.Clamp(accumulator[i], short.MinValue, short.MaxValue);
-                }
+                for (int i = 0; i < frameSize; i++) mixedOutput[i] = (short)Math.Clamp(accumulator[i], short.MinValue, short.MaxValue);
                 _backend.PlaySamples(mixedOutput);
             }
         }
@@ -361,133 +361,6 @@ public sealed class NativeAudioService : IDisposable
         Stop();
         _backend.Dispose();
         _opusCodec.Dispose();
-    }
-}
-
-/// <summary>
-/// Dedicated Opus decoding context and jitter buffer per peer.
-/// Maintains internal codec LPC state, gap detection, and Packet Loss Concealment (PLC).
-/// </summary>
-internal sealed class PeerAudioContext : IDisposable
-{
-    private readonly Concentus.IOpusDecoder _decoder;
-    private readonly object _lock = new();
-    private ushort? _lastSeq;
-    private long _lastPacketAt;
-    private int _disposed;
-
-    public ConcurrentQueue<short[]> JitterQueue { get; } = new();
-    public int DroppedFramesCount { get; private set; }
-    internal int IgnoredPacketsCount { get; private set; }
-
-    public PeerAudioContext(int sampleRate = OpusVoiceCodec.DefaultSampleRate, int channels = OpusVoiceCodec.DefaultChannels)
-    {
-        _decoder = Concentus.OpusCodecFactory.CreateDecoder(sampleRate, channels);
-    }
-
-    public short[] DecodeLoss(int frameSize = OpusVoiceCodec.DefaultFrameSize)
-    {
-        lock (_lock)
-        {
-            short[] pcmOut = new short[frameSize];
-            int decoded = _decoder.Decode(ReadOnlySpan<byte>.Empty, pcmOut.AsSpan(), frameSize, false);
-            if (decoded < frameSize)
-            {
-                Array.Resize(ref pcmOut, decoded);
-            }
-            return pcmOut;
-        }
-    }
-
-    public short[] DecodePacket(ReadOnlySpan<byte> opusPayload, int frameSize = OpusVoiceCodec.DefaultFrameSize, bool decodeFec = false)
-    {
-        lock (_lock)
-        {
-            int bufferSize = Math.Max(frameSize, 2880);
-            short[] pcmOut = new short[bufferSize];
-            int decoded = _decoder.Decode(opusPayload, pcmOut.AsSpan(), bufferSize, decodeFec);
-            if (decoded < bufferSize)
-            {
-                Array.Resize(ref pcmOut, decoded);
-            }
-            return pcmOut;
-        }
-    }
-
-    public void ProcessIncomingPacket(ReadOnlySpan<byte> audioData, Action<short[]> onDecoded)
-    {
-        if (audioData.Length <= 1) return;
-
-        int frameSize = OpusVoiceCodec.DefaultFrameSize;
-
-        if (OpusVoiceCodec.IsFramedOpusPacket(audioData))
-        {
-            if (!OpusVoiceCodec.TryUnpackFramed(audioData, out ushort seq, out _, out var payload))
-                return;
-
-            lock (_lock)
-            {
-                long now = Environment.TickCount64;
-                // After a long interruption the sequence may have restarted or
-                // crossed half the 16-bit range. Resume immediately, without PLC backlog.
-                if (_lastSeq.HasValue && now - _lastPacketAt > 2000)
-                {
-                    _lastSeq = null;
-                    _decoder.ResetState();
-                }
-                if (_lastSeq.HasValue)
-                {
-                    int distance = unchecked((ushort)(seq - _lastSeq.Value));
-                    // Datagram duplication/reordering must not rewind the decoder's
-                    // predictive state or create false losses on the next packet.
-                    if (distance == 0 || distance >= 0x8000) { IgnoredPacketsCount++; return; }
-                    int gap = distance - 1;
-
-                    // If gap is reasonable (1 to 5 lost frames), run PLC (Packet Loss Concealment)
-                    if (gap > 0 && gap <= 5)
-                    {
-                        for (int i = 0; i < gap; i++)
-                        {
-                            DroppedFramesCount++;
-                            short[] plcSamples = DecodeLoss(frameSize);
-                            onDecoded(plcSamples);
-                        }
-                    }
-                }
-                // Sequence checks and decoder state changes form one operation,
-                // even if datagram callbacks arrive on different threads.
-                short[] decoded = DecodePacket(payload, frameSize);
-                _lastSeq = seq; _lastPacketAt = now;
-                onDecoded(decoded);
-            }
-        }
-        else if (OpusVoiceCodec.IsOpusPacket(audioData))
-        {
-            // Legacy 0x01 packet
-            ReadOnlySpan<byte> payload = audioData.Slice(1);
-            short[] decoded = DecodePacket(payload, frameSize);
-            onDecoded(decoded);
-        }
-        else if (OpusVoiceCodec.IsPcmPacket(audioData))
-        {
-            // Raw PCM fallback
-            int sampleCount = (audioData.Length - 1) / sizeof(short);
-            short[] samples = new short[sampleCount];
-            for (int i = 0; i < sampleCount; i++)
-            {
-                samples[i] = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(audioData.Slice(1 + i * 2, 2));
-            }
-            onDecoded(samples);
-        }
-    }
-
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        lock (_lock)
-        {
-            _decoder.ResetState();
-        }
     }
 }
 

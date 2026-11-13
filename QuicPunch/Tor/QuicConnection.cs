@@ -66,6 +66,7 @@ public sealed class QuicConnection : IAsyncDisposable
 
     public NativeQuicConnection? NativeConnection =>
         (_transport as NativeConnectionTransport)?.InnerConnection;
+    internal MsQuicBridgeTransport? BridgeTransport => _transport as MsQuicBridgeTransport;
 
 
     /// <summary>
@@ -199,7 +200,7 @@ public sealed class QuicConnection : IAsyncDisposable
     /// <summary>
     /// Configures Path MTU Discovery bounds and timing parameters on this connection.
     /// </summary>
-    public bool TrySetPathMtuDiscovery(ushort minMtu = 1280, ushort maxMtu = 1500, ulong timeoutUs = 600_000_000UL, byte missingProbeCount = 3) =>
+    public bool TrySetPathMtuDiscovery(ushort minMtu = 1248, ushort maxMtu = 1500, ulong timeoutUs = 600_000_000UL, byte missingProbeCount = 3) =>
         Helpers.MsQuicTuner.TrySetPathMtuDiscovery(this, minMtu, maxMtu, timeoutUs, missingProbeCount);
 
     /// <summary>
@@ -267,10 +268,10 @@ public sealed class QuicConnection : IAsyncDisposable
     }
 
     /// <summary>
-    /// Atomically applies optimal native MsQuic tunings (BBR, Pacing, HyStart, PMTUD, 16MB/4MB flow control, and 5s keepalive) to this connection.
+    /// Applies runtime-safe native tuning and 19s keepalive to this connection; immutable BBR/ECN settings belong to the initial configuration.
     /// </summary>
     public bool ApplyOptimalTuning(Helpers.QuicDscpPriority? dscp = null) =>
-        NativeConnection != null && Helpers.MsQuicTuner.TryApplyOptimalTuning(NativeConnection, dscp: dscp);
+        Helpers.MsQuicTuner.TryApplyOptimalTuning(this, dscp: dscp);
 
     /// <summary>
     /// Queries real-time network and congestion control statistics from this connection.

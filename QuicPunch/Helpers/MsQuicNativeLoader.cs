@@ -81,24 +81,13 @@ public static class MsQuicNativeLoader
 
         try
         {
-            if (OperatingSystem.IsWindows())
-                AppContext.SetSwitch("System.Net.Quic.AppLocalMsQuic", true);
-
             _libraryHandle = NativeLibrary.Load(localPath);
             LoadedPath = localPath;
-            if (bundledDirectory != null)
-            {
-                // System.Net.Quic loads an absolute BaseDirectory/msquic.dll path and ignores
-                // DLL search directories. Initialize its singleton against the private bundle,
-                // then immediately restore the application's original base directory.
-                string originalBase = AppContext.BaseDirectory;
-                try
-                {
-                    AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", bundledDirectory);
-                    _ = System.Net.Quic.QuicConnection.IsSupported;
-                }
-                finally { AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", originalBase); }
-            }
+            // Resolve our own ABI from the same verified bundle. No .NET runtime
+            // singleton initialization or temporary process-wide base-directory changes.
+            NativeLibrary.SetDllImportResolver(typeof(MsQuicNativeLoader).Assembly, (name, assembly, searchPath) =>
+                name == "qp_transport" ? NativeLibrary.Load(Path.Combine(Path.GetDirectoryName(localPath)!,
+                    OperatingSystem.IsWindows() ? "qp_transport.dll" : "libqp_transport.so")) : IntPtr.Zero);
             QuicPunchLog.Info($"[MsQuic] Loaded application-local native library: {localPath}");
             // Set global XDP policy before the first listener reserves its binding.
             if (OperatingSystem.IsWindows()) _ = MsQuicTuner.IsSupported;

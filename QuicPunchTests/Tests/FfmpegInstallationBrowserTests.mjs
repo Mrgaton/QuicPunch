@@ -29,7 +29,7 @@ try {
   const panel = page.locator('#ffmpegInstallationGuide');
   await panel.getByText('Instalar FFmpeg · Windows', { exact: true }).waitFor();
   assert.equal(await panel.locator('textarea').inputValue(), 'winget install --id yt-dlp.FFmpeg --exact --source winget');
-  assert.equal(await page.locator('#screenBackendSelect option[value=ffmpeg]').isDisabled(), true);
+  assert.equal(await page.locator('#screenBackendSelect').count(),0);
   await panel.getByRole('button', { name: 'Copiar comando' }).click();
   await panel.getByRole('button', { name: /Copiado|Seleccionado/ }).waitFor();
   if (process.env.QUICNET_FFMPEG_SCREENSHOT) await page.screenshot({ path: process.env.QUICNET_FFMPEG_SCREENSHOT });
@@ -41,7 +41,7 @@ try {
   assert.equal(await panel.textContent(), '', 'Installed FFmpeg must not leave a detected banner behind.');
   assert.ok(refreshes > 0, 'The install button must request a fresh backend detection.');
   assert.equal(await panel.locator('textarea').count(), 0);
-  assert.equal(await page.locator('#screenBackendSelect option[value=ffmpeg]').isDisabled(), false);
+  assert.equal(await page.locator('#screenBackendSelect').count(),0);
   installed = false; platform = 'linux';
   await page.evaluate(() => window.testFfmpeg.load(true));
   assert.equal(await panel.locator('textarea').inputValue(), 'sudo dnf install ffmpeg-free');

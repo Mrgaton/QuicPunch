@@ -19,8 +19,19 @@ internal static class ReleaseSmokeTest
         {
             _ = UpdateManifest.ReadPublicKey();
             PeerStore.VerifyAotJsonContract();
+            if (OperatingSystem.IsWindows())
+            {
+                using var probes=typeof(QuicNet.Video.NativeVideoRuntime).Assembly.GetManifestResourceStream("QuicNet.NativeVideo.Probes.json")!;
+                var fixtures=JsonSerializer.Deserialize(probes,QuicNet.Video.NativeVideoJsonContext.Default.NativeVideoFixtureArray)!;
+                foreach(var fixture in fixtures)
+                {
+                    var result=QuicNet.Video.NativeVideoRuntime.Probe(fixture,false,0,null);
+                    if(!result.Success)throw new InvalidOperationException("Native FFmpeg "+fixture.codec+": "+result.Error);
+                }
+                Console.WriteLine("Verified native FFmpeg H.264, HEVC, VP9 and AV1 decoding from the isolated release.");
+            }
             Console.WriteLine($"Verified {QuicNet.Serialization.AotContractValidation.Run()} generated JSON contracts.");
-            if (!System.Net.Quic.QuicConnection.IsSupported) throw new InvalidOperationException("QUIC no disponible.");
+            if (!MsQuicNativeLoader.IsCustomLibraryLoaded) throw new InvalidOperationException("QUIC no disponible.");
             await VerifyQuicConfigurationAsync();
             // Prove that the actual AOT binary can sanitize a legacy Tor certificate
             // without replacing the signing identity pinned by existing contacts.
@@ -49,14 +60,18 @@ internal static class ReleaseSmokeTest
             node.ReputationFilter?.Dispose(); node.ReputationFilter = null;
             if (OperatingSystem.IsWindows()) using (var output = new QuicPunch.Audio.WindowsWaveAudioBackend())
             {
-                if (output.GetOutputDevices().Any(d => !d.IsDefault))
+                // Never route release tests to VR headsets or their virtual endpoints.
+                var device = output.GetOutputDevices().FirstOrDefault(d => !d.IsDefault &&
+                    !new[] { "Quest", "Oculus", "Virtual", "Headset" }.Any(name => d.Name.Contains(name, StringComparison.OrdinalIgnoreCase)));
+                if (device != null)
                 {
-                    if (!output.StartPlayback()) throw new InvalidOperationException(output.PlaybackError);
+                    if (!output.StartPlayback(device.Id)) throw new InvalidOperationException(output.PlaybackError);
                     for (int i = 0; i < 3; i++) output.PlaySamples(new short[960]);
-                    if (output.SubmittedPlaybackFrames != 3)
+                    // The backend adds its initial 10 ms scheduling guard before the three buffers.
+                    if (output.SubmittedPlaybackFrames != 4)
                         throw new InvalidOperationException("La salida WinMM descarta los primeros buffers de audio.");
                     using var audioTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                    while (output.CompletedPlaybackFrames < 3) await Task.Delay(10, audioTimeout.Token);
+                    while (output.CompletedPlaybackFrames < 4) await Task.Delay(10, audioTimeout.Token);
                     Console.WriteLine("Verified native audio output: first buffers queued and completed (silence).");
                 }
             }
@@ -119,7 +134,7 @@ internal static class ReleaseSmokeTest
                 if (avatarWasm.Length < 8 || !avatarWasm.AsSpan(0, 4).SequenceEqual(new byte[] { 0, 97, 115, 109 }))
                     throw new InvalidDataException("The single-file app does not contain the AVIF encoder WASM.");
                 string avatarWorker = await http.GetStringAsync(server.Url + "avatar-encode-worker.js", cts.Token);
-                if (!avatarWorker.Contains("speed: 2", StringComparison.Ordinal)) throw new InvalidDataException("AVIF must retain the configured encoding speed (2).");
+                if (!avatarWorker.Contains("speed: animated ? 6 : 5", StringComparison.Ordinal)) throw new InvalidDataException("AVIF must retain the configured encoding speeds (6 for animations, 5 for stills).");
                 Console.WriteLine("Verified AOT profile API and offline AVIF encoder assets.");
                 using var socket = new System.Net.WebSockets.ClientWebSocket();
                 await socket.ConnectAsync(new Uri(server.Url.Replace("http://", "ws://") + "ws?csrf=" + csrf), cts.Token);
@@ -138,7 +153,7 @@ internal static class ReleaseSmokeTest
         }
         finally { try { Directory.Delete(data, true); } catch { } }
     }
-    private static async Task VerifyQuicConfigurationAsync()
+    internal static async Task VerifyQuicConfigurationAsync()
     {
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var key = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
@@ -148,33 +163,19 @@ internal static class ReleaseSmokeTest
         using var certificate = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12(
             original.Export(System.Security.Cryptography.X509Certificates.X509ContentType.Pfx), null,
             System.Security.Cryptography.X509Certificates.X509KeyStorageFlags.Exportable);
-        var alpn = new System.Net.Security.SslApplicationProtocol("quicnet-release-test");
-        var serverOptions = new System.Net.Quic.QuicServerConnectionOptions
-        {
-            DefaultCloseErrorCode = 1, DefaultStreamErrorCode = 1,
-            ServerAuthenticationOptions = new() { ApplicationProtocols = [alpn], ServerCertificate = certificate }
-        };
-        await using var listener = await System.Net.Quic.QuicListener.ListenAsync(new()
-        {
-            ListenEndPoint = new(IPAddress.Loopback, 0), ApplicationProtocols = [alpn],
-            ConnectionOptionsCallback = (_, _, _) =>
-            {
-                if (!MsQuicDatagramChannel.EnsureServerConfigurationPatched(serverOptions))
-                    throw new InvalidOperationException("Cannot prepare AOT server QUIC configuration.");
-                return ValueTask.FromResult(serverOptions);
-            }
-        }, stop.Token);
-        var accept = listener.AcceptConnectionAsync(stop.Token);
-        await using var client = await QuicPunch.QuicConnection.ConnectAsync(new()
-        {
-            RemoteEndPoint = listener.LocalEndPoint, DefaultCloseErrorCode = 1, DefaultStreamErrorCode = 1,
-            ClientAuthenticationOptions = new()
-            {
-                ApplicationProtocols = [alpn], TargetHost = "localhost",
-                RemoteCertificateValidationCallback = (_, _, _, _) => true
-            }
-        }, stop.Token);
-        await using var server = await accept;
+        byte[] pin = Sha3Crypto.Hash256(certificate.GetPublicKey());
+        using var reservation = new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        ushort port = (ushort)((IPEndPoint)reservation.Client.LocalEndPoint!).Port;
+        reservation.Dispose();
+        await using var serverNative = QuicPunch.MsQuicBridgeTransport.Create(certificate, pin);
+        serverNative.Listen(port);
+        await using var clientNative = QuicPunch.MsQuicBridgeTransport.Create(certificate, pin, new IPEndPoint(IPAddress.Loopback, port));
+        clientNative.Connect(new IPEndPoint(IPAddress.Loopback, port), 0);
+        await Task.WhenAll(serverNative.WaitConnectedAsync(stop.Token), clientNative.WaitConnectedAsync(stop.Token));
+        await using var server = QuicPunch.QuicConnection.FromTransport(serverNative);
+        await using var client = QuicPunch.QuicConnection.FromTransport(clientNative);
+        if (clientNative.NegotiatedTlsGroup != 4588 || serverNative.NegotiatedTlsGroup != 4588)
+            throw new InvalidOperationException("The published native transport must negotiate hybrid TLS on both peers.");
         if (!client.TryGetCongestionControl(out var clientCc) || clientCc != QuicCongestionAlgorithm.Bbr ||
             !MsQuicTuner.TryGetCongestionControl(server, out var serverCc) || serverCc != QuicCongestionAlgorithm.Bbr ||
             !MsQuicTuner.TryApplyOptimalTuning(server))
@@ -186,7 +187,7 @@ internal static class ReleaseSmokeTest
         byte[] data = new byte[1];
         await input.ReadExactlyAsync(data, stop.Token);
         if (data[0] != 42) throw new InvalidDataException("Native AOT QUIC stream transfer failed.");
-        using var serverDatagrams = MsQuicDatagramChannel.Attach(server);
+        var serverDatagrams = server.DatagramChannel ?? throw new InvalidOperationException("Missing native server datagram channel.");
         var clientDatagrams = client.DatagramChannel ?? throw new InvalidOperationException("AOT client datagram callback was not attached.");
         if (!clientDatagrams.Send(new byte[] { 43 })) throw new InvalidOperationException("AOT client cannot send QUIC datagrams.");
         var incomingDatagram = await serverDatagrams.IncomingDatagrams.Reader.ReadAsync(stop.Token);
@@ -196,7 +197,7 @@ internal static class ReleaseSmokeTest
         incomingDatagram = await clientDatagrams.IncomingDatagrams.Reader.ReadAsync(stop.Token);
         if (incomingDatagram.Length != 1 || incomingDatagram[0] != 44)
             throw new InvalidDataException("AOT client datagram callback did not deliver its payload.");
-        Console.WriteLine("Verified first native AOT QUIC handshake: BBR on both ends, runtime tuning, stream transfer and bidirectional datagrams.");
+        Console.WriteLine("Verified native QUIC handshake: BBR on both ends, runtime tuning, stream transfer and bidirectional datagrams.");
     }
 
 }

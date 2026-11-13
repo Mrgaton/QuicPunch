@@ -16,7 +16,7 @@
       picker.value = section;
       document.getElementById('appBehaviorForm').hidden = !['startup', 'notifications'].includes(section);
       document.getElementById('settingsBehaviorTitle').textContent = section === 'startup' ? 'Inicio y segundo plano' : 'Notificaciones';
-      if (section === 'connection' || section === 'contacts' || section === 'diagnostics') {
+      if (section === 'contacts' || section === 'diagnostics') {
         root.querySelector(`[data-settings-panel="${section}"] details`).open = true;
       }
       if (updateUrl) {
@@ -42,7 +42,13 @@
       });
     }
     picker.addEventListener('change', () => select(picker.value, true));
-    const fromUrl = () => select(new URLSearchParams(location.search).get('section'));
+    const fromUrl = () => {
+      const query=new URLSearchParams(location.search);select(query.get('section'));
+      if(query.get('section')==='diagnostics'&&query.get('tab')==='tab-activity-logs'){
+        root.querySelector('[data-subtab="tab-activity-logs"]')?.click();
+        const logs=document.getElementById('logs');logs.tabIndex=0;logs.focus();logs.scrollIntoView({block:'nearest'});
+      }
+    };
     QP.on('view_changed', ({ page }) => { if (page === 'settings') fromUrl(); });
     fromUrl();
   });

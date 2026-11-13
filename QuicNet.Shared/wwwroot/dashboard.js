@@ -3,6 +3,10 @@ let dashboardBusy = false;
 const networkServiceChanges = new Map();
 const discoveryChanges = new Set();
 let savedPeerEditingHash = null;
+let savedPeerSaving = false;
+let listenerPortDirty = false;
+let listenerPortBusy = false;
+let tokenInputRevision = 0;
 let logsClearMarker = null;
 let logsFollowTail = true;
 let logsRendering = false;
@@ -21,8 +25,8 @@ const APP_DEFS = [
 const NETWORK_TYPES = ['Wan', 'Tor'];
 
 document.addEventListener('DOMContentLoaded', () => {
-  byId('copyWanInline').addEventListener('click', () => dashboardStatus && QP.copy(fullToken(dashboardStatus.node?.wanToken)));
-  byId('copyTorInline').addEventListener('click', () => dashboardStatus && QP.copy(fullToken(dashboardStatus.node?.torToken)));
+  byId('copyWanInline').addEventListener('click', () => copyConnectionCode('wan'));
+  byId('copyTorInline').addEventListener('click', () => copyConnectionCode('tor'));
   byId('connectTokenBtn').addEventListener('click', connectToken);
   byId('activateTokenTransport').addEventListener('click', async () => {
     const button = byId('activateTokenTransport');
@@ -31,17 +35,38 @@ document.addEventListener('DOMContentLoaded', () => {
     try { if (await QP.connectionModes.request(mode)) { button.hidden = true; await connectToken(); } }
     finally { button.disabled = false; }
   });
-  byId('tokenInput').addEventListener('input', () => { byId('activateTokenTransport').hidden = true; byId('tokenInput').removeAttribute('aria-invalid'); });
+  byId('tokenInput').addEventListener('input', () => {
+    tokenInputRevision++;
+    byId('activateTokenTransport').hidden = true;
+    byId('tokenInput').removeAttribute('aria-invalid');
+    if (!byId('connectTokenBtn').disabled) QP.setText('connectFeedback', '');
+  });
   byId('connectAllDiscoveredBtn')?.addEventListener('click', connectAllDiscovered);
   byId('saveAllBtn').addEventListener('click', saveAllPeers);
   byId('discoveryToggle').addEventListener('change', e => setDiscovery(e.target.checked, 'wan'));
   byId('torDiscoveryToggle')?.addEventListener('change', e => setDiscovery(e.target.checked, 'tor'));
-  byId('wanToggle')?.addEventListener('change', e => setWan(e.target.checked));
   byId('homeWanToggleBtn')?.addEventListener('click', () => setWan(!(dashboardStatus?.wan?.desiredEnabled ?? dashboardStatus?.wan?.isStarted ?? true)));
   byId('homeTorToggleBtn')?.addEventListener('click', () => setTor(!(dashboardStatus?.tor?.desiredEnabled ?? dashboardStatus?.tor?.isStarted ?? false)));
-  byId('torToggle').addEventListener('change', e => setTor(e.target.checked));
   byId('torNewNymBtn').addEventListener('click', newTorCircuits);
   byId('applyPortBtn').addEventListener('click', applyListenerPort);
+  byId('listenerPortInput').addEventListener('input', () => {
+    listenerPortDirty = byId('listenerPortInput').value !== String(dashboardStatus?.node?.listenerPort || '');
+    byId('listenerPortInput').removeAttribute('aria-invalid');
+    byId('listenerPortFeedback').textContent = listenerPortDirty ? 'Cambio sin aplicar. Pulsa Aplicar para guardar este puerto.' : '';
+    byId('discardPortBtn').hidden = !listenerPortDirty;
+  });
+  byId('listenerPortInput').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); applyListenerPort(); }
+  });
+  byId('discardPortBtn').addEventListener('click', () => {
+    if (listenerPortBusy) return;
+    listenerPortDirty = false;
+    byId('listenerPortInput').value = String(dashboardStatus?.node?.listenerPort || '');
+    byId('listenerPortInput').removeAttribute('aria-invalid');
+    byId('listenerPortFeedback').textContent = 'Cambio descartado.';
+    byId('discardPortBtn').hidden = true;
+    byId('listenerPortInput').focus();
+  });
   byId('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') connectToken(); });
   byId('pasteClipboardBtn')?.addEventListener('click', () => detectClipboardToken(true));
   byId('clearLogsBtn').addEventListener('click', clearLogsView);
@@ -109,71 +134,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function byId(id) { return document.getElementById(id); }
 function fullToken(raw) { const value = String(raw || '').trim(); return !value ? '' : (value.toUpperCase().startsWith('QP://') ? value : `QP://${value}`); }
+async function copyConnectionCode(service) {
+  const token = fullToken(dashboardStatus?.node?.[service + 'Token']);
+  if (!token || await QP.copy(token)) return;
+  const code = byId(service + 'TokenBox');
+  code.closest('details').open = true;
+  code.tabIndex = 0; code.focus();
+  const range = document.createRange(); range.selectNodeContents(code);
+  const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+}
 function td(text, className = '') { const node = document.createElement('td'); if (className) node.className = className; node.textContent = text ?? ''; return node; }
 function emptyRow(body, cols, text) { const tr = document.createElement('tr'); const cell = td(text, 'empty-cell'); cell.colSpan = cols; tr.appendChild(cell); body.appendChild(tr); }
-function formatPortRange(minOrItem, maxPortArg, portsArg, portModeArg) {
-  let ports = null, portMode = null;
-  if (minOrItem && typeof minOrItem === 'object') {
-    if (Array.isArray(minOrItem)) {
-      ports = minOrItem;
-      portMode = maxPortArg || null;
-    } else {
-      ports = minOrItem.ports || minOrItem.portArray || null;
-      portMode = minOrItem.portMode || null;
-    }
-  } else if (Array.isArray(portsArg)) {
-    ports = portsArg;
-    portMode = portModeArg || null;
-  } else if (minOrItem !== undefined && minOrItem !== null && String(minOrItem).trim() !== '' && String(minOrItem) !== '0') {
-    if (maxPortArg && maxPortArg !== minOrItem && String(maxPortArg) !== '0') {
-      return `${minOrItem} – ${maxPortArg}`;
-    }
-    return String(minOrItem);
-  }
-
-  if (Array.isArray(ports) && ports.length > 0) {
-    const validPorts = ports.map(p => Number(p)).filter(p => !isNaN(p) && p > 0);
-    if (validPorts.length === 1) {
-      return String(validPorts[0]);
-    }
-    if (validPorts.length > 0) {
-      const sorted = [...new Set(validPorts)].sort((a, b) => a - b);
-      if (sorted.length === 1) return String(sorted[0]);
-
-      const minP = sorted[0];
-      const maxP = sorted[sorted.length - 1];
-
-      let isContiguous = true;
-      for (let i = 1; i < sorted.length; i++) {
-        if (sorted[i] !== sorted[i - 1] + 1) {
-          isContiguous = false;
-          break;
-        }
-      }
-
-      // Si es un rango de verdad (consecutivos), o son más de 8 puertos, o modo Range:
-      if (isContiguous || sorted.length > 8 || portMode === 'Range') {
-        return `${minP} – ${maxP}`;
-      }
-
-      // Si son múltiples puertos discretos (<= 8 y no contiguos), enumerar separados por coma
-      return sorted.join(', ');
-    }
-  }
-
-  return '—';
-}
-function formatBytes(bytes) {
-  if (bytes === null || bytes === undefined || isNaN(bytes)) return '0 B';
-  const num = Number(bytes);
-  if (num === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(Math.abs(num)) / Math.log(k));
-  const val = (num / Math.pow(k, i)).toFixed(i === 0 ? 0 : 2);
-  return `${val} ${sizes[i] || 'B'}`;
-}
-function isConnectedPeer(peer) { return !!peer && (peer.hasCipher || !!peer.endpoint || Number(peer.lastSeenSecondsAgo || 99999) < 90); }
+function formatPeerPorts(peer) { return QP.formatPorts(peer.ports || peer.portArray, peer.portMode); }
 
 async function refreshDashboard() {
   if (dashboardBusy) return;
@@ -194,47 +166,37 @@ function renderDashboard(s) {
   const untrusted = peers.filter(p => !p.isTrusted);
 
   QP.setText('nodeName', s.node?.name || 'Este dispositivo');
-  QP.setText('nodeNetwork', s.node?.networkType || 'Unknown');
-  if (document.activeElement !== byId('listenerPortInput')) byId('listenerPortInput').value = String(s.node?.listenerPort || '');
+  QP.setText('nodeNetwork', ({Static:'Dirección y puerto estables', DynamicPort:'Puerto variable', DynamicAddress:'Dirección variable',
+    DynamicPortAndAddress:'Dirección y puerto variables', Tor:'Tor', Unknown:'Sin determinar'})[s.node?.networkType] || s.node?.networkType || 'Sin determinar');
+  if (!listenerPortDirty && !listenerPortBusy && document.activeElement !== byId('listenerPortInput')) byId('listenerPortInput').value = String(s.node?.listenerPort || '');
   const wanMetaEl = byId('wanMeta');
   if (wanMetaEl) {
     wanMetaEl.textContent = wanStatusText(s);
-    if (s.wan?.lastError) {
-      wanMetaEl.title = s.wan.lastError;
-      wanMetaEl.style.cursor = 'pointer';
-      wanMetaEl.onclick = () => byId('logs')?.scrollIntoView({ behavior: 'smooth' });
-    } else {
-      wanMetaEl.removeAttribute('title');
-      wanMetaEl.style.cursor = 'default';
-      wanMetaEl.onclick = null;
-    }
+    const action=byId('wanErrorLogs');
+    action.hidden=!s.wan?.lastError;
+    action.onclick=()=>{QP.navigate('settings','/settings.html?section=diagnostics&tab=tab-activity-logs');};
   }
   QP.setText('discoveryMeta', discoveryStatusText(s.discovery?.wan || s.discovery, s.wan));
   QP.setText('torDiscoveryMeta', discoveryStatusText(s.discovery?.tor, s.tor));
   const torMetaEl = byId('torMeta');
   if (torMetaEl) {
     torMetaEl.textContent = torStatusText(s);
-    if (s.tor?.lastError) {
-      torMetaEl.title = s.tor.lastError;
-      torMetaEl.style.cursor = 'pointer';
-      torMetaEl.onclick = () => byId('logs')?.scrollIntoView({ behavior: 'smooth' });
-    } else {
-      torMetaEl.removeAttribute('title');
-      torMetaEl.style.cursor = 'default';
-      torMetaEl.onclick = null;
-    }
+    const action=byId('torErrorLogs');
+    action.hidden=!s.tor?.lastError;
+    action.onclick=()=>{QP.navigate('settings','/settings.html?section=diagnostics&tab=tab-activity-logs');};
   }
-  QP.setText('wanTokenBox', fullToken(s.node?.wanToken) || (s.wan?.isStarted === false ? 'Servicio WAN inactivo' : 'Preparando invitación WAN…'));
-  QP.setText('torTokenBox', fullToken(s.node?.torToken) || (s.tor?.isStarted === false ? 'Servicio Tor inactivo' : 'Preparando invitación Tor…'));
-  byId('copyWanInline').disabled = !s.node?.wanToken || s.wan?.isStarted === false;
-  byId('copyTorInline').disabled = !s.node?.torToken || s.tor?.isStarted === false;
-  byId('torNewNymBtn').disabled = !s.tor?.isStarted;
+  for (const [service, label] of [['wan', 'WAN'], ['tor', 'Tor']]) {
+    const text = fullToken(s.node?.[service + 'Token']) || (s[service]?.isStarted === false ? `Servicio ${label} inactivo` : `Preparando invitación ${label}…`);
+    const code = byId(service + 'TokenBox');
+    // Preserve manual text selection across periodic status updates.
+    if (code.textContent !== text) code.textContent = text;
+  }
   renderHomeServiceControls(s);
   byId('discoveryToggle').checked = !!(s.discovery?.wan?.desiredEnabled ?? s.discovery?.desiredEnabled);
-  byId('discoveryToggle').disabled = discoveryChanges.has('wan') || (s.wan?.isStarted === false && !s.wan?.desiredEnabled);
+  byId('discoveryToggle').disabled = networkServiceChanges.has('wan') || discoveryChanges.has('wan') || (s.wan?.isStarted === false && !s.wan?.desiredEnabled);
   if (byId('torDiscoveryToggle')) {
     byId('torDiscoveryToggle').checked = !!s.discovery?.tor?.desiredEnabled;
-    byId('torDiscoveryToggle').disabled = discoveryChanges.has('tor') || (s.tor?.isStarted === false && !s.tor?.desiredEnabled);
+    byId('torDiscoveryToggle').disabled = networkServiceChanges.has('tor') || discoveryChanges.has('tor') || (s.tor?.isStarted === false && !s.tor?.desiredEnabled);
   }
 
   renderStun(s.stun || {}, s.node || {});
@@ -265,7 +227,7 @@ function cleanInlineError(err, maxLen = 65) {
 
 function wanStatusText(s) {
   if (s.wan?.isStarted) return `Activo · puerto ${s.node?.listenerPort || s.wan?.port || '—'}`;
-  if (s.wan?.lastError) return `Failed · ${cleanInlineError(s.wan.lastError)}`;
+  if (s.wan?.lastError) return `Error · ${cleanInlineError(s.wan.lastError)}`;
   if (s.wan?.desiredEnabled) return 'Iniciando…';
   return 'Detenido';
 }
@@ -280,7 +242,7 @@ function discoveryStatusText(d, parentService) {
 
   if (d?.desiredEnabled) {
     if (parentService && !parentService.isStarted && parentService.desiredEnabled) {
-      return 'Waiting for service…';
+      return 'Esperando a que se inicie la conexión…';
     }
     return 'Iniciando…';
   }
@@ -289,7 +251,7 @@ function discoveryStatusText(d, parentService) {
 
 function torStatusText(s) {
   if (s.tor?.isStarted) return `Activo · SOCKS ${s.tor.socksPort || '—'} · virtual ${s.tor.virtualPort || '—'}`;
-  if (s.tor?.lastError) return `Failed · ${cleanInlineError(s.tor.lastError)}`;
+  if (s.tor?.lastError) return `Error · ${cleanInlineError(s.tor.lastError)}`;
   if (s.tor?.desiredEnabled) {
     const status = s.tor.bootstrapStatus || '';
     const isGeneric = !status || status === 'Bootstrapping...' || status === 'Not initialized';
@@ -321,15 +283,15 @@ function renderStun(stun, node) {
     serverCount: stun.serverCount ?? 0
   };
 
-  QP.setText('stunAddresses', publicAddresses.length ? publicAddresses.join(', ') : 'No exact public address observed yet');
-  QP.setText('stunPorts', stun.portDisplay || formatPortRange(currentStunData));
+  QP.setText('stunAddresses', publicAddresses.length ? publicAddresses.join(', ') : 'Aún no se ha detectado una dirección pública');
+  QP.setText('stunPorts', stun.portDisplay || formatPeerPorts(currentStunData));
 
   const stunTextEl = byId('stunMappings');
   const stunDotsBtn = byId('openStunModalBtn');
 
   if (!exact.length) {
     if (stunTextEl) {
-      stunTextEl.textContent = 'No exact public mapping observed yet';
+      stunTextEl.textContent = 'Todavía no hay mapeos STUN';
       stunTextEl.style.cursor = 'default';
     }
     if (stunDotsBtn) stunDotsBtn.classList.add('hidden');
@@ -408,11 +370,11 @@ function renderDiscovered(items, s) {
     }
     tr.appendChild(addrCell);
 
-    tr.appendChild(td(formatPortRange(item), 'mono'));
+    tr.appendChild(td(formatPeerPorts(item), 'mono'));
 
     const timeCell = document.createElement('td');
     const secAgo = Number(item.lastSeenSecondsAgo || 0);
-    const timeStr = secAgo < 60 ? `${secAgo}s ago` : `${Math.floor(secAgo / 60)}m ago`;
+    const timeStr = secAgo < 60 ? `Hace ${secAgo} s` : `Hace ${Math.floor(secAgo / 60)} min`;
     timeCell.appendChild(QP.el('div', '', timeStr));
     timeCell.appendChild(QP.el('div', 'peer-sub', item.discoveredAt || ''));
     tr.appendChild(timeCell);
@@ -426,7 +388,7 @@ function renderDiscovered(items, s) {
       QP.button('Descartar', 'ghost', () => dismissDiscoveredPeer(item.certHash))
     );
     if (item.token) {
-      actions.appendChild(QP.button('Copiar invitación', 'ghost', () => { QP.copy(fullToken(item.token)); QP.toast('Invitación copiada'); }));
+      actions.appendChild(QP.button('Copiar invitación', 'ghost', () => QP.copy(fullToken(item.token))));
     }
     actionsCell.appendChild(actions);
     tr.appendChild(actionsCell);
@@ -484,7 +446,7 @@ function renderInterrogations(items) {
     const tr = document.createElement('tr');
     const peer = td(item.peerName || 'Unknown');
     peer.appendChild(QP.el('div', 'peer-sub mono', item.canonicalId || QP.canonicalId(item.certHash || item.peerId || item.id)));
-    tr.append(peer, td((item.addresses || []).join(', ') || 'Unknown', 'mono wrap'), td(formatPortRange(item), 'mono'), td(item.startTime || '—'));
+    tr.append(peer, td((item.addresses || []).join(', ') || 'Unknown', 'mono wrap'), td(formatPeerPorts(item), 'mono'), td(item.startTime || '—'));
     const actions = document.createElement('td'); actions.appendChild(QP.button('Cancelar', 'danger', () => cancelInterrogation(item.sessionId || item.id))); tr.appendChild(actions);
     body.appendChild(tr);
   });
@@ -612,7 +574,7 @@ function renderUntrusted(peers) {
   peers.forEach(peer => {
     const tr = document.createElement('tr');
     const p = td(peer.name || 'Peer'); p.appendChild(QP.el('div', 'peer-sub mono', peer.canonicalId || QP.canonicalId(peer.certHash || peer.id))); p.appendChild(QP.el('div', 'peer-sub', peer.isQuicConnected ? 'QUIC conectado · protocolos bloqueados' : (peer.connectionState === 'connecting' ? 'Conectando QUIC…' : 'Disponible · conexión automática'))); tr.appendChild(p);
-    tr.append(td(peer.isTor ? 'Tor' : (peer.activeTransport || peer.networkType || 'WAN')), td(peer.quicEndpoint || peer.activeEndPoint || QP.peerMeta(peer), 'mono wrap'), td(peer.lastSeenFormatted || `${peer.lastSeenSecondsAgo || 0}s ago`), td(peer.canonicalId || (peer.certHash ? QP.canonicalId(peer.certHash) : '—'), 'mono'));
+    tr.append(td(peer.isTor ? 'Tor' : (peer.activeTransport || peer.networkType || 'WAN')), td(peer.quicEndpoint || peer.activeEndPoint || QP.peerMeta(peer), 'mono wrap'), td(peer.lastSeenFormatted || `Hace ${peer.lastSeenSecondsAgo || 0} s`), td(peer.canonicalId || (peer.certHash ? QP.canonicalId(peer.certHash) : '—'), 'mono'));
     const actions = document.createElement('td'); const wrap = QP.el('div', 'mini-actions'); wrap.append(QP.button('Confiar', 'green', () => trustPeer(peer.id, true)), QP.button('Desconectar', 'ghost', () => disconnectPeer(peer.id))); actions.appendChild(wrap); tr.appendChild(actions);
     body.appendChild(tr);
   });
@@ -631,23 +593,33 @@ function renderUntrustedAttention(peers) {
 }
 
 function renderSaved(saved, peers) {
-  const body = byId('savedPeersBody'); QP.clear(body);
+  const body = byId('savedPeersBody');
+  const focused=body.contains(document.activeElement)?document.activeElement:null;
+  const previous = new Map([...body.querySelectorAll('tr')].filter(row=>row.savedItem).map(row=>[row.savedItem.certHash,row]));
+  for(const row of [...body.children]) if(!row.savedItem || !saved.some(item=>item.certHash===row.savedItem.certHash)) row.remove();
   if (!saved.length) { emptyRow(body, 7, 'Todavía no has guardado contactos.'); return; }
-  saved.forEach(item => {
+  saved.forEach((snapshot,index) => {
+    const existing=previous.get(snapshot.certHash);
+    const item=existing?.savedItem || {...snapshot}; Object.assign(item,snapshot);
     const live = peers.find(p => p.certHash && p.certHash === item.certHash);
     const tr = document.createElement('tr');
-    const nameCell = td(item.name || 'Saved peer'); if (live) nameCell.appendChild(QP.el('div', 'peer-sub', live.hasCipher ? 'Authenticated session' : 'Peer available'));
+    const nameCell = td(item.name || 'Contacto guardado');
+    const liveStatus=QP.el('div','peer-sub',live?.isQuicConnected?'Sesión QUIC establecida':'Sin conexión QUIC');
+    liveStatus.hidden=!live;nameCell.appendChild(liveStatus);
     const profile = document.createElement('select'); profile.className = 'select';
     profile.setAttribute('aria-label', 'Permisos de este peer sobre mi dispositivo');
     profile.append(new Option('Amigo', 'friend'), new Option('Administrador de este dispositivo', 'administrator'));
     profile.value = item.profile || 'friend';
     profile.addEventListener('change', async () => {
-      profile.disabled = true;
+      const requested=profile.value;profile.value=item.profile||'friend';
+      profile.dataset.pending='true';profile.disabled=true;
+      if(requested==='administrator' && !await confirmAdministrator(item.name||'Este contacto')){delete profile.dataset.pending;profile.disabled=false;return;}
       try {
         await QP.api('/api/peer/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ certHash: item.certHash, profile: profile.value }) });
-        QP.toast(profile.value === 'administrator' ? 'Este peer puede iniciar aplicaciones, controlar mi pantalla y explorar y compartir mis discos sin nuevas peticiones.' : 'Perfil de amigo aplicado');
+          body: JSON.stringify({ certHash: item.certHash, profile: requested }) });
+        QP.toast(requested === 'administrator' ? 'Este peer puede iniciar aplicaciones, controlar mi pantalla y explorar y compartir mis discos sin nuevas peticiones.' : 'Perfil de amigo aplicado');
       } catch (e) { QP.toast(e.message, 'error'); }
+      delete profile.dataset.pending;profile.disabled=false;
       refreshDashboard();
     });
     nameCell.append(profile);
@@ -658,9 +630,8 @@ function renderSaved(saved, peers) {
       ['speedtest', 'Prueba de velocidad'], ['watch', 'QuicWatch'], ['virtual-disk', 'Conectar disco virtual (solo carpetas compartidas)'], ['screen-share-request', 'Pedir mi pantalla'], ['screen-settings', 'Cambiar ajustes de mi transmisión']
     ];
     permissionOptions.forEach(([key, label]) => {
-      if (key === 'vpn' && QP.capabilities?.capabilities?.vpn?.available === false) return;
-      if (key === 'watch' && QP.capabilities?.capabilities?.watch?.available === false) return;
       const control = document.createElement('label'); control.className = 'peer-permission-choice';
+      control.hidden=(key==='vpn'||key==='watch')&&QP.capabilities?.capabilities?.[key]?.available===false;
       const input = document.createElement('input'); input.type = 'checkbox';
       input.checked = (item.automaticPermissions || []).includes(key);
       if (key === 'chat' || item.profile === 'administrator') { input.checked = true; input.disabled = true; }
@@ -670,14 +641,15 @@ function renderSaved(saved, peers) {
     nameCell.appendChild(permissions); tr.appendChild(nameCell);
     const certCell = td(item.canonicalId || QP.canonicalId(item.certHash), 'mono'); certCell.appendChild(QP.el('div', 'peer-sub', item.networkType || 'Wan')); tr.appendChild(certCell);
     tr.appendChild(td(item.onionAddress || (item.addresses || []).join(', ') || '—', 'mono wrap'));
-    tr.appendChild(td(formatPortRange(item), 'mono'));
+    tr.appendChild(td(formatPeerPorts(item), 'mono'));
 
     const autoCell = document.createElement('td');
     const autoLabel = document.createElement('label'); autoLabel.className = 'check-line compact-check';
     const autoInput = document.createElement('input'); autoInput.type = 'checkbox'; autoInput.checked = !!item.autoConnect; autoInput.addEventListener('change', () => toggleSavedAutoConnect(item.certHash, autoInput.checked));
-    autoLabel.append(autoInput, document.createTextNode('Enabled')); autoCell.appendChild(autoLabel); tr.appendChild(autoCell);
+    autoInput.setAttribute('aria-label', 'Conectar automáticamente con ' + (item.name || 'este contacto'));
+    autoLabel.append(autoInput, document.createTextNode('Activar')); autoCell.appendChild(autoLabel); tr.appendChild(autoCell);
 
-    const statusCell = document.createElement('td'); statusCell.appendChild(QP.el('span', `badge ${live ? 'green' : ''}`, live ? 'Connected' : 'Stored offline')); tr.appendChild(statusCell);
+    const statusCell = document.createElement('td'); statusCell.appendChild(QP.el('span', `badge ${live?.isQuicConnected ? 'green' : ''}`, live?.isQuicConnected ? 'Conectado' : 'Desconectado')); tr.appendChild(statusCell);
 
     const actionsCell = document.createElement('td');
     const actions = QP.el('div', 'mini-actions');
@@ -687,7 +659,38 @@ function renderSaved(saved, peers) {
       QP.button('Eliminar', 'danger', () => deleteSavedPeer(item))
     );
     actionsCell.appendChild(actions); tr.appendChild(actionsCell);
-    body.appendChild(tr);
+    tr.savedItem=item;
+    if(existing) syncSavedRow(existing,tr);
+    const row=existing||tr;
+    if(body.children[index]!==row) body.insertBefore(row,body.children[index]||null);
+  });
+  if(focused?.isConnected&&document.activeElement!==focused)focused.focus({preventScroll:true});
+}
+
+// Preserve the actual focused controls and open disclosures across status snapshots.
+function syncSavedRow(target,source) {
+  if(target.nodeType===Node.TEXT_NODE){if(target.data!==source.data)target.data=source.data;return;}
+  const pending=target.dataset?.pending;
+  for(const attr of [...target.attributes]) if(attr.name!=='open'&&attr.name!=='data-pending'&&!(pending&&attr.name==='disabled')&&!source.hasAttribute(attr.name))target.removeAttribute(attr.name);
+  for(const attr of source.attributes) if(attr.name!=='open'&&!(pending&&attr.name==='disabled')&&target.getAttribute(attr.name)!==attr.value)target.setAttribute(attr.name,attr.value);
+  for(let i=0;i<source.childNodes.length;i++){
+    const a=target.childNodes[i],b=source.childNodes[i];
+    if(!a)target.appendChild(b.cloneNode(true));
+    else if(a.nodeName!==b.nodeName)a.replaceWith(b.cloneNode(true));
+    else syncSavedRow(a,b);
+  }
+  while(target.childNodes.length>source.childNodes.length)target.lastChild.remove();
+  if(!pending && target.matches('input,select')){target.value=source.value;if(target.type==='checkbox')target.checked=source.checked;}
+}
+
+function confirmAdministrator(name){
+  return new Promise(resolve=>{
+    const dialog=document.createElement('dialog');dialog.className='permission-dialog';dialog.setAttribute('aria-labelledby','permissionTitle');dialog.setAttribute('aria-describedby','permissionScope');
+    const title=QP.el('h2','','Conceder acceso de administrador');title.id='permissionTitle';
+    const scope=QP.el('p','',`${name} podrá iniciar aplicaciones, controlar tu pantalla y explorar y compartir los discos accesibles de este dispositivo sin nuevas peticiones. Puedes revocar este acceso cambiando su perfil a Amigo.`);scope.id='permissionScope';
+    const actions=QP.el('div','toolbar');const cancel=QP.button('Cancelar','',()=>dialog.close('cancel'));cancel.autofocus=true;
+    actions.append(cancel,QP.button('Conceder acceso','danger',()=>dialog.close('confirm')));dialog.append(title,scope,actions);document.body.append(dialog);
+    dialog.addEventListener('close',()=>{const accepted=dialog.returnValue==='confirm';dialog.remove();resolve(accepted);},{once:true});dialog.showModal();cancel.focus();
   });
 }
 
@@ -703,14 +706,14 @@ function renderActiveApps(s) {
     const sessionTelem = (s.quicTelemetry || []).find(qt => qt.peerId === row.peerId && qt.protocolName?.toLowerCase()?.includes(row.app.toLowerCase()));
     let detailText = row.detail;
     if (sessionTelem?.telemetry) {
-      detailText += ` · RTT ${sessionTelem.telemetry.rttMs} ms · CWND ${formatBytes(sessionTelem.telemetry.sendCongestionWindow)}`;
+      detailText += ` · RTT ${sessionTelem.telemetry.rttMs} ms · CWND ${QP.fmtBytes(sessionTelem.telemetry.sendCongestionWindow)}`;
     }
     tr.append(td(row.peerName || row.canonicalId || QP.canonicalId(row.peerId)), td(row.app), td(detailText));
     const action = document.createElement('td');
     const a = document.createElement('a');
     a.className = 'btn sm accent';
     a.href = row.href;
-    a.textContent = 'Open';
+    a.textContent = 'Abrir';
     action.appendChild(a);
     tr.appendChild(action);
     body.appendChild(tr);
@@ -771,6 +774,7 @@ function clearLogsView() {
 }
 
 function openSavedPeerEditor(item = null) {
+  if (savedPeerSaving) return;
   savedPeerEditingHash = item?.certHash || null;
   byId('savedPeerModalTitle').textContent = item ? 'Editar contacto' : 'Añadir contacto';
   byId('savedName').value = item?.name || '';
@@ -778,7 +782,7 @@ function openSavedPeerEditor(item = null) {
   byId('savedCertHash').readOnly = !!item;
   byId('savedAddresses').value = (item?.addresses || []).join('\n');
   byId('savedOnion').value = item?.onionAddress || '';
-  byId('savedPorts').value = item ? formatPortRange(item) : '443';
+  byId('savedPorts').value = item ? (item.ports || item.portArray || []).join(', ') : '443';
   byId('savedNetworkType').value = NETWORK_TYPES.includes(item?.networkType) ? item.networkType : (item?.onionAddress ? 'Tor' : 'Wan');
   byId('savedAutoConnect').checked = item ? !!item.autoConnect : true;
   byId('savedPeerModalError').classList.add('hidden');
@@ -787,61 +791,54 @@ function openSavedPeerEditor(item = null) {
   setTimeout(() => (item ? byId('savedName') : byId('savedCertHash')).focus(), 0);
 }
 
-function closeSavedPeerEditor() { byId('savedPeerModal').classList.add('hidden'); savedPeerEditingHash = null; }
+function closeSavedPeerEditor() {
+  if (savedPeerSaving) return;
+  byId('savedPeerModal').classList.add('hidden'); savedPeerEditingHash = null;
+}
 
 async function saveSavedPeerEditor() {
+  if (savedPeerSaving) return;
   const certHash = byId('savedCertHash').value.trim();
   const portsRaw = byId('savedPorts').value.trim();
-  const error = byId('savedPeerModalError');
-  if (!certHash) return showSavedError('Certificate hash is required.');
+  if (!certHash) return showSavedError('Introduce la huella del certificado del contacto.');
   
-  const ports = [];
-  const parts = portsRaw.split(/[\s,;]+/).filter(Boolean);
-  for (const part of parts) {
-    if (part.includes('-') || part.includes('–')) {
-      const rp = part.split(/[-–]/).filter(Boolean);
-      if (rp.length === 2) {
-        const start = parseInt(rp[0], 10);
-        const end = parseInt(rp[1], 10);
-        if (!isNaN(start) && !isNaN(end) && start >= 1 && end <= 65535 && end >= start) {
-          for (let p = start; p <= end; p++) ports.push(p);
-        } else {
-          return showSavedError('Invalid port range: ' + part);
-        }
-      } else {
-        return showSavedError('Invalid port range format: ' + part);
-      }
-    } else {
-      const p = parseInt(part, 10);
-      if (!isNaN(p) && p >= 1 && p <= 65535) {
-        ports.push(p);
-      } else {
-        return showSavedError('Invalid port: ' + part);
-      }
-    }
-  }
-
-  const uniquePorts = [...new Set(ports)].sort((a, b) => a - b);
-  if (!uniquePorts.length) return showSavedError('Enter at least one valid port (1-65535).');
+  let ports;
+  try { ports = QP.parsePorts(portsRaw); }
+  catch (error) { return showSavedError(error.message); }
 
   const payload = {
     certHash,
     name: byId('savedName').value.trim(),
     addresses: byId('savedAddresses').value,
     onionAddress: byId('savedOnion').value.trim(),
-    ports: uniquePorts,
+    ports,
     networkType: byId('savedNetworkType').value,
     autoConnect: byId('savedAutoConnect').checked
   };
+  const modal = byId('savedPeerModal');
+  const card = modal.querySelector('.modal-card');
+  const controls = [...modal.querySelectorAll('input, select, textarea, button')];
+  const previousDisabled = controls.map(control => control.disabled);
+  savedPeerSaving = true;
+  controls.forEach(control => { control.disabled = true; });
+  card.setAttribute('aria-busy', 'true');
+  card.tabIndex = -1; card.focus({preventScroll:true});
+  byId('saveSavedPeerBtn').textContent = 'Guardando…';
+  byId('savedPeerModalError').classList.add('hidden');
   try {
-    byId('saveSavedPeerBtn').disabled = true;
     await QP.api('/api/saved-peer-update', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
-    QP.toast(savedPeerEditingHash ? 'Saved peer updated' : 'Saved peer added');
+    QP.toast(savedPeerEditingHash ? 'Contacto guardado actualizado' : 'Contacto añadido');
+    savedPeerSaving = false;
     closeSavedPeerEditor();
     refreshDashboard();
   } catch (e) { showSavedError(e.message); }
-  finally { byId('saveSavedPeerBtn').disabled = false; }
-  function showSavedError(message) { error.textContent = message; error.classList.remove('hidden'); }
+  finally {
+    savedPeerSaving = false;
+    controls.forEach((control, index) => { control.disabled = previousDisabled[index]; });
+    card.setAttribute('aria-busy', 'false');
+    byId('saveSavedPeerBtn').textContent = 'Guardar cambios';
+    if (!modal.classList.contains('hidden') && document.activeElement === card) byId('saveSavedPeerBtn').focus();
+  }
 }
 
 function showSavedError(message) { const error = byId('savedPeerModalError'); error.textContent = message; error.classList.remove('hidden'); }
@@ -849,8 +846,8 @@ function showSavedError(message) { const error = byId('savedPeerModalError'); er
 async function reconnectSavedPeer(certHash) { try { await QP.api('/api/connect-saved-peer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash})}); QP.toast('Reconexión solicitada'); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
 async function toggleSavedAutoConnect(certHash,autoConnect) { try { await QP.api('/api/toggle-saved-peer-autoconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash,autoConnect})}); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
 async function setSavedPeerPermission(certHash,permission,allowed) { try { await QP.api('/api/peer/automatic-permission',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash,permission,allowed})}); QP.toast(allowed?'Permiso automático concedido':'Permiso automático revocado'); } catch(e){ QP.toast(e.message,'error'); } refreshDashboard(); }
-async function deleteSavedPeer(item) { if (!confirm(`Delete saved peer "${item.name || 'Saved peer'}"? This removes it from the persistent database.`)) return; try { await QP.api('/api/saved-peer-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash:item.certHash})}); QP.toast('Contacto eliminado'); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
-async function clearOfflineSavedPeers() { if (!confirm('Are you sure you want to remove all offline saved peers from the database?')) return; try { const r = await QP.api('/api/saved-peers-clear-offline',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); QP.toast(`Cleared ${r.removedCount || 0} offline saved peer(s)`); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
+async function deleteSavedPeer(item) { if (!confirm(`¿Eliminar el contacto guardado "${item.name || 'Contacto guardado'}"? Se eliminará de la libreta de este dispositivo.`)) return; try { await QP.api('/api/saved-peer-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash:item.certHash})}); QP.toast('Contacto eliminado'); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
+async function clearOfflineSavedPeers() { if (!confirm('¿Eliminar de la libreta todos los contactos guardados que están desconectados?')) return; try { const r = await QP.api('/api/saved-peers-clear-offline',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); QP.toast(`Se han eliminado ${r.removedCount || 0} contactos desconectados`); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
 
 async function setDiscovery(enabled, type = 'wan') {
   if (discoveryChanges.has(type)) return;
@@ -883,8 +880,12 @@ function renderHomeServiceControls(snapshot) {
       button.textContent = busy ? `${target ? 'Activando' : 'Desactivando'} ${label}…` : `${enabled ? 'Desactivar' : 'Activar'} ${label}`;
       button.setAttribute('aria-pressed', String(enabled));
     }
-    const setting = byId(service + 'Toggle');
-    if (setting) { setting.checked = enabled; setting.disabled = busy; }
+    const ready = !!state?.isStarted && enabled && !busy;
+    const copy = byId(service === 'wan' ? 'copyWanInline' : 'copyTorInline');
+    if (copy) copy.disabled = !ready || !snapshot?.node?.[service + 'Token'];
+    const discovery = byId(service === 'wan' ? 'discoveryToggle' : 'torDiscoveryToggle');
+    if (discovery) discovery.disabled = !snapshot || busy || discoveryChanges.has(service) || (!state?.isStarted && !enabled);
+    if (service === 'tor') byId('torNewNymBtn').disabled = !ready;
     let detail = !snapshot ? 'Consultando…' : busy ? (target ? 'Activando…' : 'Desactivando…')
       : state?.isStarted ? (enabled ? 'Activo' : 'Deteniéndose…')
       : enabled ? (state?.lastError ? 'No se pudo iniciar' : 'Iniciando…') : 'Inactivo';
@@ -892,7 +893,11 @@ function renderHomeServiceControls(snapshot) {
       detail = `Iniciando · ${state.bootstrapProgress}%`;
     QP.setText(prefix + 'ServiceStatus', detail);
     const status = byId(prefix + 'ServiceStatus');
-    if (status) status.title = enabled ? (state?.lastError || '') : '';
+    if (status) {
+      status.title = enabled ? (state?.lastError || '') : '';
+      status.dataset.state = busy ? 'pending' : enabled && state?.lastError && !state?.isStarted ? 'error' :
+        state?.isStarted && enabled ? 'active' : enabled || state?.isStarted ? 'pending' : 'inactive';
+    }
   }
 }
 
@@ -917,13 +922,42 @@ async function trustPeer(peerId,trust){try{await QP.api('/api/peer/trust',{metho
 async function savePeer(peerId,save){try{await QP.api('/api/save-peer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId,save,autoConnect:true})});QP.toast(save?'Contacto guardado':'Contacto retirado de la libreta');}catch(e){QP.toast(e.message);}refreshDashboard();}
 async function connectPeerDirect(peerId){try{const r=await QP.api('/api/peer/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId})});if(r.success){QP.toast('Estableciendo conexión…','success');}else{QP.toast(r.error||'No se pudo conectar','error');}}catch(e){QP.toast(e.message,'error');}refreshDashboard();}
 async function disconnectPeer(peerId){try{await QP.api('/api/disconnect-peer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId})});}catch(e){QP.toast(e.message);}refreshDashboard();}
-async function saveAllPeers(){try{const r=await QP.api('/api/save-all-peers',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});QP.toast(`${r.savedCount} peer(s) saved`);}catch(e){QP.toast(e.message);}refreshDashboard();}
+async function saveAllPeers(){try{const r=await QP.api('/api/save-all-peers',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});QP.toast(`${r.savedCount} contactos guardados`);}catch(e){QP.toast(e.message);}refreshDashboard();}
 async function cancelInterrogation(id){try{await QP.api('/api/cancel-interrogation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});QP.toast('Intento de conexión cancelado');}catch(e){QP.toast(e.message);}refreshDashboard();}
-async function applyListenerPort(){const port=Number(byId('listenerPortInput').value);if(!Number.isInteger(port)||port<1||port>65535){QP.toast('Introduce un puerto válido entre 1 y 65535');return;}try{const r=await QP.api('/api/change-listener-port',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({port})});QP.toast(`Listener moved to ${r.port}`);}catch(e){QP.toast(e.message);}refreshDashboard();}
+async function applyListenerPort() {
+  if (listenerPortBusy) return;
+  const input = byId('listenerPortInput'), button = byId('applyPortBtn'), feedback = byId('listenerPortFeedback');
+  const port = Number(input.value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    input.setAttribute('aria-invalid', 'true');
+    feedback.textContent = 'Introduce un puerto entero entre 1 y 65535.';
+    input.focus(); return;
+  }
+  listenerPortBusy = true; input.readOnly = true; button.disabled = true; byId('discardPortBtn').disabled = true;
+  button.textContent = 'Aplicando…'; feedback.textContent = 'Aplicando el puerto de escucha…';
+  input.removeAttribute('aria-invalid');
+  try {
+    const result = await QP.api('/api/change-listener-port', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({port})});
+    input.value = String(result.port ?? port);
+    listenerPortDirty = false;
+    if (dashboardStatus?.node) dashboardStatus.node.listenerPort = result.port ?? port;
+    feedback.textContent = `Puerto de escucha cambiado a ${result.port ?? port}.`;
+    byId('discardPortBtn').hidden = true;
+  } catch (error) {
+    listenerPortDirty = true;
+    feedback.textContent = `No se pudo aplicar el puerto: ${error.message}. Puedes corregirlo o volver a intentarlo.`;
+    byId('discardPortBtn').hidden = false;
+  } finally {
+    listenerPortBusy = false; input.readOnly = false; button.disabled = false; byId('discardPortBtn').disabled = false;
+    button.textContent = 'Aplicar';
+  }
+  refreshDashboard();
+}
 
 async function connectToken() {
   const input = byId('tokenInput');
   const button = byId('connectTokenBtn');
+  const paste = byId('pasteClipboardBtn');
   if (button.disabled) return;
   const token = input.value.trim();
   if (!token) {
@@ -932,7 +966,10 @@ async function connectToken() {
   }
   input.removeAttribute('aria-invalid');
   byId('activateTokenTransport').hidden = true;
+  tokenInputRevision++;
   button.disabled = true;
+  input.readOnly = true;
+  if (paste) paste.disabled = true;
   button.textContent = 'Conectando…';
   QP.setText('connectFeedback', 'Comprobando invitación…');
   try {
@@ -953,19 +990,26 @@ async function connectToken() {
     } else input.setAttribute('aria-invalid', 'true');
   } finally {
     button.disabled = false;
+    input.readOnly = false;
+    if (paste) paste.disabled = false;
     button.textContent = 'Buscar contacto';
   }
   refreshDashboard();
 }
 
 async function detectClipboardToken(explicit = false) {
+  if (byId('tokenInput')?.readOnly) return;
   if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
     if (explicit) QP.toast('El navegador no permite acceso directo al portapapeles.', 'warn');
     return;
   }
 
+  const revision = ++tokenInputRevision;
   try {
     const rawText = (await navigator.clipboard.readText() || '').trim();
+    // A later edit, connection or paste request owns the field now, even if
+    // that connection has already finished and removed its readonly state.
+    if (revision !== tokenInputRevision || byId('tokenInput')?.readOnly) return;
     if (!rawText) {
       if (explicit) QP.toast('El portapapeles está vacío.', 'info');
       return;
@@ -982,9 +1026,10 @@ async function detectClipboardToken(explicit = false) {
 
     if (candidate) {
       const input = byId('tokenInput');
-      if (input) {
+      if (input && !input.readOnly) {
         if (input.value.trim() !== candidate) {
           input.value = candidate;
+          input.dispatchEvent(new Event('input', {bubbles:true}));
           QP.toast('Token de conexión detectado en portapapeles y cargado.', 'info');
         } else if (explicit) {
           QP.toast('El token ya está cargado en el campo.', 'info');
@@ -994,7 +1039,7 @@ async function detectClipboardToken(explicit = false) {
       QP.toast('No se encontró un token QP válido en el portapapeles.', 'warn');
     }
   } catch (err) {
-    if (explicit) {
+    if (explicit && revision === tokenInputRevision) {
       QP.toast('No se pudo acceder al portapapeles: ' + (err.message || 'Permiso denegado'), 'warn');
     }
   }
@@ -1041,7 +1086,7 @@ function renderStunModalList() {
   const stat1 = QP.el('span', '', ''); stat1.innerHTML = `<strong>Total responses:</strong> ${totalHits}`;
   const stat2 = QP.el('span', '', ''); stat2.innerHTML = `<strong>Unique endpoints:</strong> ${endpoints.length}`;
   const stat3 = QP.el('span', '', ''); stat3.innerHTML = `<strong>Unique IPs:</strong> ${uniqueIps.length}`;
-  const stat4 = QP.el('span', '', ''); stat4.innerHTML = `<strong>Port(s):</strong> ${formatPortRange(ports.length ? ports : currentStunData.ports, currentStunData.portMode)}`;
+  const stat4 = QP.el('span', '', ''); stat4.innerHTML = `<strong>Port(s):</strong> ${QP.formatPorts(ports.length ? ports : currentStunData.ports, currentStunData.portMode)}`;
   statsBox.append(stat1, stat2, stat3, stat4);
 
   if (!endpoints.length) {
@@ -1118,7 +1163,7 @@ function renderQuicTelemetry(s) {
     QP.setText('kpiQuicRtt', '—');
     QP.setText('kpiQuicRttRange', 'Min: — · Max: — · Var: —');
     QP.setText('kpiQuicLoss', '0.00%');
-    QP.setText('kpiQuicLossDetails', '0 lost · 0 retrans');
+    QP.setText('kpiQuicLossDetails', '0 perdidos · 0 retransmisiones');
     QP.setText('kpiQuicCwnd', '—');
     QP.setText('kpiQuicAlgorithm', 'Algorithm: BBR / CUBIC · MTU: —');
     QP.setText('kpiQuicThroughput', '—');
@@ -1182,10 +1227,10 @@ function renderQuicTelemetry(s) {
   QP.setText('kpiQuicRtt', avgRtt > 0 ? `${avgRtt.toFixed(1)} ms` : '< 1 ms');
   QP.setText('kpiQuicRttRange', `Min: ${minRttGlobal === Infinity ? '—' : minRttGlobal.toFixed(1) + ' ms'} · Max: ${maxRttGlobal ? maxRttGlobal.toFixed(1) + ' ms' : '—'} · Var: ${avgVar.toFixed(1)} ms`);
   QP.setText('kpiQuicLoss', `${overallLossRatio.toFixed(2)}%`);
-  QP.setText('kpiQuicLossDetails', `${totalLost.toLocaleString()} lost · ${totalRetrans.toLocaleString()} retrans`);
-  QP.setText('kpiQuicCwnd', formatBytes(totalCwnd));
+  QP.setText('kpiQuicLossDetails', `${totalLost.toLocaleString()} perdidos · ${totalRetrans.toLocaleString()} retransmisiones`);
+  QP.setText('kpiQuicCwnd', QP.fmtBytes(totalCwnd));
   QP.setText('kpiQuicAlgorithm', algos.size ? [...algos].join(' / ') : 'Algoritmo no disponible');
-  QP.setText('kpiQuicThroughput', `Tx: ${formatBytes(totalTxBytes)} · Rx: ${formatBytes(totalRxBytes)}`);
+  QP.setText('kpiQuicThroughput', `Tx: ${QP.fmtBytes(totalTxBytes)} · Rx: ${QP.fmtBytes(totalRxBytes)}`);
   QP.setText('kpiQuicPackets', `Tx: ${totalTxPackets.toLocaleString()} pkts · Rx: ${totalRxPackets.toLocaleString()} pkts`);
 
   const fragment = document.createDocumentFragment();
@@ -1228,14 +1273,14 @@ function renderQuicTelemetry(s) {
 
     // 5. CWND / Path MTU
     const cwndCell = document.createElement('td');
-    cwndCell.appendChild(QP.el('div', 'mono strong', formatBytes(t.sendCongestionWindow || 0)));
+    cwndCell.appendChild(QP.el('div', 'mono strong', QP.fmtBytes(t.sendCongestionWindow || 0)));
     cwndCell.appendChild(QP.el('div', 'peer-sub mono', `MTU: ${t.pathMtu || '—'} B`));
     tr.appendChild(cwndCell);
 
     // 6. Wire Transfer (Tx / Rx)
     const wireCell = document.createElement('td');
-    wireCell.appendChild(QP.el('div', 'mono', `Tx: ${formatBytes(t.sendTotalBytes || 0)}`));
-    wireCell.appendChild(QP.el('div', 'mono text-muted', `Rx: ${formatBytes(t.recvTotalBytes || 0)}`));
+    wireCell.appendChild(QP.el('div', 'mono', `Tx: ${QP.fmtBytes(t.sendTotalBytes || 0)}`));
+    wireCell.appendChild(QP.el('div', 'mono text-muted', `Rx: ${QP.fmtBytes(t.recvTotalBytes || 0)}`));
     wireCell.appendChild(QP.el('div', 'peer-sub mono', `${t.sendTotalPackets ?? 0} tx · ${t.recvTotalPackets ?? 0} rx pkts`));
     tr.appendChild(wireCell);
 

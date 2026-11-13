@@ -24,6 +24,7 @@ try {
   assert.match(await card('first').locator('.contact-location').textContent(),/Última IP.*Barcelona/);
   assert.match(await card('first').locator('.contact-last-used').textContent(),/Último uso/);
   assert.equal(await page.getByText('No mostrar esta ciudad').count(),0);
+  await page.locator('.contact-options > summary').click();
   await page.locator('#contactSort').selectOption('usage');assert.deepEqual(await keys(),['first','second','third']);
   await page.locator('#contactSort').selectOption('name');assert.equal((await keys())[0],'first');
   await page.waitForFunction(()=>[...document.querySelectorAll('.identity-mark')].every(mark=>!mark.hasAttribute('aria-busy')));

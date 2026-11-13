@@ -33,7 +33,7 @@ public sealed class NodeCapabilities
         Voice = new(true),
         Video = new(false, "La videollamada integrada espera señalización y transporte entre peers"),
         SpeedTest = new(true),
-        Watch = new(false, "Requiere sincronización de medios en Android (Hito 5)"),
+        Watch = new(true),
         Vpn = new(false, "Fuera de alcance en Android")
     };
 

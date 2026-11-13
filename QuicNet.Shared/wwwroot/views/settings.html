@@ -1,7 +1,7 @@
 <div id="view-settings" class="spa-view hidden"><main class="workspace">
 <header class="page-head"><div><span class="eyebrow">A TU MANERA</span><h1>Ajustes</h1><p>Tu experiencia, tus conexiones y el control de tu privacidad.</p></div></header>
 <div class="settings-layout">
-<aside class="settings-sidebar"><div class="settings-tabs" role="tablist" aria-label="Categorías de ajustes" aria-orientation="vertical">
+<aside class="settings-sidebar" aria-label="Categorías de ajustes"><div class="settings-tabs" role="tablist" aria-label="Categorías de ajustes" aria-orientation="vertical">
 <span class="settings-nav-group" role="presentation">TU CUENTA</span>
 <button type="button" id="settings-tab-profile" role="tab" data-settings-section="profile" aria-controls="settings-profile" aria-selected="true" tabindex="0">Mi perfil</button>
 <button type="button" id="settings-tab-notifications" role="tab" data-settings-section="notifications" aria-controls="settings-notifications" aria-selected="false" tabindex="-1">Notificaciones</button>
@@ -19,7 +19,7 @@
 <div class="section-body profile-photo-row">
 <div id="profilePhotoPreview" class="avatar profile-photo-preview" aria-label="Tu foto de perfil"></div>
 <div class="profile-photo-actions"><div class="toolbar"><button class="btn" id="profileChoosePhoto" type="button">Elegir imagen o vídeo</button><button class="btn ghost" id="profileRemovePhoto" type="button" disabled>Quitar foto</button></div>
-<p class="inline-help">Cuadrado · hasta 512 × 512 píxeles · AVIF fijo o animado · máximo 320 KB. Tu foto no se comparte por Tor.</p>
+<p class="inline-help">Recorta tu imagen o vídeo aquí. Se convierte a AVIF de hasta 512 KB; las imágenes fijas, hasta 512 × 512 píxeles, y las animadas, hasta 320 × 320. Tu foto no se comparte por Tor.</p>
 <p id="profilePhotoStatus" class="muted" role="status"></p></div>
 <input id="profilePhotoFile" type="file" accept="image/jpeg,image/png,image/webp,image/avif,image/gif,video/*" hidden>
 </div>
@@ -30,6 +30,7 @@
 <p class="muted">Nombre del equipo: <strong id="profileDeviceName">—</strong></p>
 <div class="toolbar"><button class="btn accent" id="profileSave" type="submit" disabled>Guardar nombre</button><button class="btn" id="profileReset" type="button" disabled>Usar nombre del equipo</button></div>
 <p id="profileSaveStatus" class="muted" role="status">Consultando perfil…</p>
+<button class="btn" id="profileRetry" type="button" hidden>Reintentar carga del perfil</button>
 </form></section></div>
 <form id="appBehaviorForm" class="app-behavior-settings" hidden>
 <div class="behavior-heading"><div><h2 id="settingsBehaviorTitle">Notificaciones</h2><p>Cada cambio se aplica automáticamente.</p></div><span class="behavior-save-state" id="appBehaviorStatus" role="status" aria-live="polite">Cargando ajustes…</span><button class="btn sm hidden" id="retryAppBehavior" type="button">Reintentar</button></div>
@@ -42,7 +43,23 @@
 </div><p id="appPlatformHelp" class="inline-help behavior-platform-help"></p><div class="behavior-card-foot"><button class="btn ghost sm danger" type="button" id="quitAppBtn">Salir de QuicNet</button></div>
 </section>
 </div>
-<div id="settings-notifications" data-settings-panel="notifications" role="tabpanel" aria-labelledby="settings-tab-notifications" tabindex="0" hidden><div class="behavior-layout"><section class="behavior-card"><div class="behavior-card-head"><h3>Tus notificaciones</h3><p>Elige dónde y cómo recibirlas.</p></div>
+<div id="settings-notifications" data-settings-panel="notifications" role="tabpanel" aria-labelledby="settings-tab-notifications" tabindex="0" hidden>
+<section class="behavior-card notice-contacts-card" aria-labelledby="noticeContactsTitle">
+<div class="behavior-card-head"><h3 id="noticeContactsTitle">Quién puede avisarte</h3><p>Una regla para todos. Excepciones para quien tú elijas.</p></div>
+<div class="notice-contact-layout">
+<div class="notice-defaults-panel"><h4>Predeterminados de los contactos</h4><p class="inline-help">Se aplican también a los nuevos contactos.</p>
+<div id="noticeContactDefaults" class="settings-options"></div>
+<p class="notice-defaults-tip">¿Solo quieres avisos de alguien? Desactiva <strong>Avisos</strong> aquí y actívalos en ese contacto.</p>
+</div>
+<div class="notice-exceptions-panel"><div class="notice-contacts-heading"><h4>Excepciones por contacto</h4><span id="noticeContactCount" class="muted"></span></div>
+<p class="inline-help">Abre un contacto para cambiar solo lo que necesites.</p>
+<div class="notice-contact-toolbar"><label class="sr-only" for="noticeContactSearch">Buscar contacto para configurar sus avisos</label><input class="input" id="noticeContactSearch" type="search" placeholder="Buscar contacto…"><label class="notice-custom-filter"><input id="noticeOnlyCustom" type="checkbox">Solo personalizados</label></div>
+<div id="noticeContactRules" class="notice-rules"></div>
+</div></div>
+<p id="noticeGlobalWarning" class="notice-global-warning" role="status" hidden></p>
+<p class="inline-help behavior-rules-help">Las excepciones sustituyen los valores predeterminados. Los controles generales, No molestar, el horario silencioso y las reglas por función siguen teniendo prioridad.</p>
+</section>
+<div class="behavior-layout"><section class="behavior-card"><div class="behavior-card-head"><h3>Cómo recibir los avisos</h3><p>Controles generales para todos los contactos y la aplicación.</p></div>
 <div class="settings-options">
 <label class="check-line"><input id="noticeEnabled" type="checkbox">Activar notificaciones</label>
 <label class="check-line"><input id="noticeDesktop" type="checkbox">Notificaciones del sistema</label>
@@ -53,8 +70,10 @@
 </div>
 <div class="behavior-sound-controls">
 <div class="field"><label for="noticeTone">Sonido de aviso</label><select class="select" id="noticeTone"><option value="soft">Suave</option><option value="bell">Campana</option><option value="digital">Digital</option></select></div>
-<div class="field"><label for="noticeVolume">Volumen <output id="noticeVolumeValue">60 %</output></label><input id="noticeVolume" type="range" min="0" max="100" value="60"></div>
+<div class="field"><label for="noticeVolume"><span id="noticeVolumeLabel">Volumen</span> <output id="noticeVolumeValue">60 %</output></label><input id="noticeVolume" type="range" min="0" max="100" value="60"></div>
 </div>
+<div id="notificationSystemStatus" class="notice-system-status" hidden><p id="notificationSystemMessage" role="status"></p><button class="btn" type="button" id="openNotificationSettings">Ajustes de Android</button><p id="notificationSystemSoundHelp" class="inline-help" hidden>Android controla el tono, el volumen y la vibración de los avisos del sistema. El volumen de aquí se aplica al timbre de las llamadas pendientes.</p></div>
+<p id="notificationBackgroundHelp" class="inline-help" hidden>Para seguir recibiendo avisos al salir de la aplicación, activa <a href="/settings.html?section=startup">Ejecutar en segundo plano</a>.</p>
 <div class="behavior-card-foot"><button class="btn sm" type="button" id="testAppNotification">Probar notificación</button><button class="btn sm" type="button" id="testCallRingtone" aria-pressed="false">Probar tono de llamada</button></div>
 <p class="inline-help">La prueba de tono reproduce una muestra al volumen elegido, incluso en No molestar.</p>
 <audio id="notificationRingtonePreview" preload="none" hidden></audio></section>
@@ -66,12 +85,9 @@
 <div id="noticeQuietOptions" hidden><div class="behavior-quiet-times"><div class="field"><label for="noticeQuietStart">Desde</label><input class="input" id="noticeQuietStart" type="time" value="22:00" required></div><div class="field"><label for="noticeQuietEnd">Hasta</label><input class="input" id="noticeQuietEnd" type="time" value="08:00" required></div></div><p class="inline-help">Hora de este dispositivo. Si ambas horas coinciden, se silencia todo el día.</p></div>
 <p class="inline-help behavior-platform-help">Silenciar una llamada oculta sus avisos; no la rechaza.</p>
 </section></div>
-<div class="behavior-rules-layout"><section class="behavior-card"><div class="behavior-card-head"><h3>Por función</h3><p>Controla los avisos, ventanas y sonidos por separado.</p></div><div class="notice-rule-header" aria-hidden="true"><span>Función</span><span>Avisos</span><span>Ventanas</span><span>Sonido</span></div>
+<div class="behavior-rules-layout"><section class="behavior-card"><div class="behavior-card-head"><h3>Por función</h3><p>Limita los tipos de aviso, incluso para contactos personalizados.</p></div><div class="notice-rule-header" aria-hidden="true"><span>Función</span><span>Avisos</span><span>Ventanas</span><span>Sonido</span></div>
 <div id="noticeFeatureRules" class="notice-rules"></div></section>
-<section class="behavior-card"><div class="behavior-card-head"><h3>Por contacto</h3><p>Decide quién puede interrumpirte.</p></div>
-<label class="sr-only" for="noticeContactSearch">Buscar contacto para configurar sus avisos</label><input class="input space-top" id="noticeContactSearch" type="search" placeholder="Buscar contacto…">
-<div class="notice-rule-header" aria-hidden="true"><span>Contacto</span><span>Avisos</span><span>Ventanas</span><span>Sonido</span></div><div id="noticeContactRules" class="notice-rules"></div></section></div>
-<p class="inline-help behavior-rules-help">Las reglas de contacto y función se combinan. Los permisos del sistema tienen prioridad.</p>
+</div>
 </div>
 </fieldset>
 </form>
@@ -79,209 +95,61 @@
 <h2 id="notificationTestTitle">Prueba de notificaciones</h2><p id="notificationTestMessage"></p>
 <div class="toolbar"><button class="btn primary" type="button" id="notificationTestClose" autofocus>Entendido</button></div>
 </dialog>
-<div id="settings-updates" data-settings-panel="updates" role="tabpanel" aria-labelledby="settings-tab-updates" tabindex="0" hidden><section class="section"><div class="section-head"><div><h2>Actualizaciones</h2><p>Nuevas versiones de QuicNet, descargadas y verificadas desde tu CDN.</p></div><span class="badge" id="updateStatus" role="status">Pendiente</span></div>
+<div id="settings-updates" data-settings-panel="updates" role="tabpanel" aria-labelledby="settings-tab-updates" tabindex="0" hidden><section class="section"><div class="section-head"><div><h2>Actualizaciones</h2><p>Mantén QuicNet al día con descargas verificadas.</p></div><span class="badge" id="updateStatus" role="status">Pendiente</span></div>
 <div class="section-body">
 <p><strong id="updateVersion">—</strong></p>
-<div class="field space-top"><label for="updateChannel">Canal de actualizaciones</label><select class="select" id="updateChannel" aria-describedby="updateChannelHelp" disabled><option value="stable">Estable · solo releases</option><option value="beta">Beta · pruebas y releases</option></select><p class="inline-help" id="updateChannelHelp">Estable recibe solo releases. Beta recibe pruebas y releases, eligiendo la compilación más reciente.</p></div>
+<div class="field space-top"><label for="updateChannel">Canal de actualizaciones</label><select class="select" id="updateChannel" aria-describedby="updateChannelHelp" disabled><option value="stable">Estable · versiones publicadas</option><option value="beta">Beta · incluye versiones de prueba</option></select><p class="inline-help" id="updateChannelHelp">Estable recibe versiones publicadas. Beta incluye versiones de prueba más recientes.</p></div>
 <label class="checkbox-row"><input type="checkbox" id="updateAutomatic" checked> Descargar e instalar actualizaciones automáticamente</label>
 <p id="updateMessage" role="status">Se comprueba al abrir y cada 15 minutos.</p>
 <progress id="updateProgress" max="1" value="0" hidden style="width:100%" aria-label="Descarga de actualización"></progress>
 <p class="muted">Publicada: <span id="updateLatest">—</span> · Última comprobación: <span id="updateLastCheck">—</span></p>
 <p class="inline-help" id="updatePlatformHelp"></p>
-<div class="toolbar"><button class="btn" id="updateCheck">Buscar ahora</button><button class="btn accent" id="updateInstall" hidden>Instalar y reiniciar</button><a class="btn" href="/updates-help.html" target="_blank" rel="noopener">Cómo publicar actualizaciones</a></div>
+<div class="toolbar"><button class="btn" id="updateCheck">Buscar ahora</button><button class="btn accent" id="updateInstall" hidden>Instalar y reiniciar</button><a class="btn" href="/updates-help.html" target="_blank" rel="noopener">Ayuda con las actualizaciones</a></div>
 </div></section></div>
-<div id="settings-connection" data-settings-panel="connection" role="tabpanel" aria-labelledby="settings-tab-connection" tabindex="0" hidden><details class="section settings-disclosure" open><summary><span><strong>Conexión de este dispositivo</strong><small>Servicios de red y descubrimiento de contactos · Tor desactivado por defecto</small></span></summary><div class="disclosure-body">        <section class="section"><div class="section-body"><h2>Servicios de conexión</h2><p>Activar un servicio permite buscar conexiones; no confirma que un contacto sea accesible.</p><div class="home-network-services" role="group" aria-label="Servicios de conexión">
-  <div class="home-network-service"><div><strong>Conexión directa · WAN</strong><span id="homeWanServiceStatus" role="status">Consultando…</span></div><button class="btn sm" id="homeWanToggleBtn" type="button" aria-pressed="false" aria-describedby="homeWanServiceStatus" disabled>Activar WAN</button></div>
-  <div class="home-network-service"><div><strong>Conexión mediante Tor</strong><span id="homeTorServiceStatus" role="status">Consultando…</span></div><button class="btn sm" id="homeTorToggleBtn" type="button" aria-pressed="false" aria-describedby="homeTorServiceStatus" disabled>Activar Tor</button></div>
-</div><details class="token-details"><summary>Ver códigos de conexión</summary><div id="homeTokenDetails">            <!-- WAN Token Line -->
-            <div class="token-line">
-              <div class="token-label">
-                <strong>Token Directo WAN</strong>
-                <span>Hole-punching UDP de alta velocidad</span>
-              </div>
-              <div class="code-box selectable" id="wanTokenBox">Generando…</div>
-              <div class="toolbar">
-                <button class="btn sm" id="copyWanInline" title="Copiar token WAN al portapapeles">Copiar</button>
-              </div>
-            </div>
-
-            <!-- Tor Token Line -->
-            <div class="token-line">
-              <div class="token-label">
-                <strong>Token Privado Tor</strong>
-                <span>Enrutamiento anónimo Onion hidden-service</span>
-              </div>
-              <div class="code-box selectable" id="torTokenBox">Servicio Tor inactivo</div>
-              <div class="toolbar">
-                <button class="btn sm" id="copyTorInline" title="Copiar token Tor al portapapeles">Copiar</button>
-                <button class="btn sm ghost" id="torNewNymBtn" title="Renovar circuitos de Tor">Nuevos circuitos</button>
-              </div>
-            </div>
-</div></details></div></section><!-- Local Node Card -->
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <h2>Este dispositivo</h2>
-              <p>Estos ajustes determinan cómo te conectas.</p>
-            </div>
-          </div>
-          <div class="section-body no-pad">
-            <table class="detail-table local-node-table">
-              <tbody>
-                <tr>
-                  <th>Nombre de usuario</th>
-                  <td id="nodeName" style="font-weight: 600; color: var(--text-strong);">—</td>
-                  <th>Tipo de red</th>
-                  <td id="nodeNetwork">—</td>
-                </tr>
-                <tr>
-                  <th>Puerto de escucha</th>
-                  <td>
-                    <div class="inline-form">
-                      <input class="input mono short-input" id="listenerPortInput" type="number" min="1" max="65535" aria-label="Puerto de escucha">
-                      <button class="btn sm" id="applyPortBtn">Aplicar</button>
-                    </div>
-                  </td>
-                  <th>Conexión de contactos</th>
-                  <td>QUIC automático · permisos por protocolo</td>
-                </tr>
-                <tr>
-                  <th>Servicio WAN UDP</th>
-                  <td>
-                    <div class="service-state">
-                      <label class="inline-toggle">
-                        <input id="wanToggle" type="checkbox" aria-label="Activar conexión directa">
-                        <span>Activar</span>
-                      </label>
-                      <span class="service-detail" id="wanMeta"></span>
-                    </div>
-                  </td>
-                  <th>Descubrimiento Nostr WAN</th>
-                  <td>
-                    <div class="service-state">
-                      <label class="inline-toggle">
-                        <input id="discoveryToggle" type="checkbox" aria-label="Descubrir contactos por conexión directa">
-                        <span>Activar</span>
-                      </label>
-                      <span class="service-detail" id="discoveryMeta"></span>
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <th>Servicio Tor Onion</th>
-                  <td>
-                    <div class="service-state">
-                      <label class="inline-toggle">
-                        <input id="torToggle" type="checkbox" aria-label="Activar Tor">
-                        <span>Activar</span>
-                      </label>
-                      <span class="service-detail" id="torMeta"></span>
-                    </div>
-                  </td>
-                  <th>Descubrimiento Nostr Tor</th>
-                  <td>
-                    <div class="service-state">
-                      <label class="inline-toggle">
-                        <input id="torDiscoveryToggle" type="checkbox" aria-label="Descubrir contactos por Tor" aria-describedby="torDiscoveryPrivacyHelp">
-                        <span>Activar</span>
-                      </label>
-                      <span class="service-detail" id="torDiscoveryMeta"></span><p class="inline-help" id="torDiscoveryPrivacyHelp">Desactivado por defecto: los anuncios pueden vincular tu identidad Tor con tu IP pública. Activarlo requiere aceptar el aviso de privacidad.</p>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-</div></details>
-
-<section class="section mobile-tools"><div class="section-head"><div><h2>Herramientas</h2><p>Conecta tus equipos y comprueba su rendimiento.</p></div></div><div class="section-body toolbar"><a class="btn" href="/vpn.html">Red privada</a><a class="btn" href="/speedtest.html">Prueba de velocidad</a></div></section></div>
-<div id="settings-geolocation" data-settings-panel="geolocation" role="tabpanel" aria-labelledby="settings-tab-geolocation" tabindex="0" hidden><section class="section"><div class="section-head"><div><h2>Localización</h2><p>Prueba esta conexión y explora el mapa.</p></div></div><div class="section-body"><p id="geolocationPanelLoading" class="muted" role="status">El laboratorio se carga al entrar en esta opción.</p><iframe id="geolocationWorkbench" title="Laboratorio de localización" data-src="/geolocation/workbench.html" hidden></iframe><details class="space-top"><summary>Análisis automático y catálogo</summary><p class="inline-help">Un intento por IP, guardado al reiniciar, con cinco minutos de espera entre análisis. Las pruebas manuales se ejecutan al pulsar Iniciar. Los contactos se consultan localmente y Tor no se geolocaliza.</p><p id="connectionGeolocationStatus" role="status" class="muted space-top"></p><ul id="connectionGeolocationResults" class="inline-help"></ul><p class="inline-help space-top">La ubicación por IP usa el catálogo IPTrust integrado y funciona sin descargas.</p><div class="toolbar space-top"><span id="geolocationStatus" role="status" class="muted"></span></div><p class="inline-help space-top"><a class="text-link" href="https://db-ip.com" target="_blank" rel="noopener noreferrer">ASN de DB-IP</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a></p></details></div></section></div>
-<div id="settings-contacts" data-settings-panel="contacts" role="tabpanel" aria-labelledby="settings-tab-contacts" tabindex="0" hidden><details class="section settings-disclosure" id="advancedContacts"><summary><span><strong>Gestión avanzada de contactos</strong><small>Identidades, permisos, conexiones y sesiones</small></span></summary><div class="disclosure-body">      <!-- PRIMARY: Connected Contactos (Tailscale style) -->
+<div id="settings-connection" data-settings-panel="connection" role="tabpanel" aria-labelledby="settings-tab-connection" tabindex="0" hidden>
+<header class="connection-heading"><div><h2>Conexión y Tor</h2><p>Elige cómo conectar con tus contactos. Puedes usar ambas conexiones a la vez.</p></div><a class="btn ghost sm" href="/settings.html?section=diagnostics">Diagnóstico de red</a></header>
+<div class="connection-cards">
+<section class="connection-card" id="wanConnectionCard" aria-labelledby="wanConnectionTitle">
+<div class="connection-card-heading"><span class="connection-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg></span><div><h3 id="wanConnectionTitle">Conexión directa</h3><p>Conecta directamente con tus contactos por Internet.</p></div><span class="connection-kind">WAN</span></div>
+<div class="connection-service-control"><span class="connection-status" id="homeWanServiceStatus" role="status">Consultando…</span><button class="btn" id="homeWanToggleBtn" type="button" aria-pressed="false" aria-describedby="homeWanServiceStatus" disabled>Activar WAN</button></div>
+<button type="button" class="btn ghost sm connection-error" id="wanErrorLogs" hidden>Ver error en el registro</button>
+<div class="connection-share"><div class="connection-row-heading"><div><h4>Invita a un contacto</h4><p>Comparte tu código de conexión directa.</p></div><button class="btn sm" id="copyWanInline" type="button" disabled>Copiar código</button></div><details class="connection-token"><summary>Ver código</summary><div class="code-box selectable" id="wanTokenBox">Preparando código…</div><p>Compártelo con las personas que quieras añadir.</p></details></div>
+<div class="connection-discovery"><label class="connection-switch-row" for="discoveryToggle"><span><strong>Encontrar contactos automáticamente</strong><small>Busca contactos y permite que te encuentren.</small></span><input id="discoveryToggle" type="checkbox" role="switch" aria-label="Descubrir contactos por conexión directa" aria-describedby="discoveryMeta" disabled></label><p class="connection-detail" id="discoveryMeta" role="status"></p></div>
+<details class="connection-advanced" id="wanConnectionDetails"><summary>Puerto y detalles de red</summary><div class="connection-advanced-body"><div class="field"><label for="listenerPortInput">Puerto de escucha</label><p class="inline-help">Cámbialo solo si necesitas usar un puerto concreto.</p><div class="inline-form"><input class="input mono short-input" id="listenerPortInput" type="number" min="1" max="65535" step="1" aria-label="Puerto de escucha" aria-describedby="listenerPortFeedback"><button class="btn sm" id="applyPortBtn" type="button">Aplicar</button><button class="btn sm ghost" id="discardPortBtn" type="button" hidden>Descartar</button></div><p class="inline-help" id="listenerPortFeedback" role="status"></p></div><dl class="connection-facts"><div><dt>Estado del servicio</dt><dd id="wanMeta">Consultando…</dd></div><div><dt>Tipo de red detectado</dt><dd id="nodeNetwork">—</dd></div></dl></div></details>
+</section>
+<section class="connection-card connection-card-tor" id="torConnectionCard" aria-labelledby="torConnectionTitle">
+<div class="connection-card-heading"><span class="connection-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6z"/><path d="m8 12 3 3 5-6"/></svg></span><div><h3 id="torConnectionTitle">Conexión por Tor</h3><p>Usa la red Tor para conectar. El inicio puede tardar un poco.</p></div></div>
+<div class="connection-service-control"><span class="connection-status" id="homeTorServiceStatus" role="status">Consultando…</span><button class="btn" id="homeTorToggleBtn" type="button" aria-pressed="false" aria-describedby="homeTorServiceStatus" disabled>Activar Tor</button></div>
+<button type="button" class="btn ghost sm connection-error" id="torErrorLogs" hidden>Ver error en el registro</button>
+<div class="connection-share"><div class="connection-row-heading"><div><h4>Invita por Tor</h4><p>El código estará disponible al iniciar Tor.</p></div><button class="btn sm" id="copyTorInline" type="button" disabled>Copiar código</button></div><details class="connection-token"><summary>Ver código</summary><div class="code-box selectable" id="torTokenBox">Tor está desactivado.</div><p>Este código permite conectar contigo a través de Tor.</p></details></div>
+<div class="connection-discovery"><label class="connection-switch-row" for="torDiscoveryToggle"><span><strong>Encontrar contactos automáticamente</strong><small>Desactivado por defecto para cuidar tu privacidad.</small></span><input id="torDiscoveryToggle" type="checkbox" role="switch" aria-label="Descubrir contactos por Tor" aria-describedby="torDiscoveryPrivacyHelp torDiscoveryMeta" disabled></label><p class="connection-detail" id="torDiscoveryMeta" role="status"></p><p class="connection-privacy" id="torDiscoveryPrivacyHelp">Estos anuncios pueden vincular tu identidad Tor con tu IP pública. Activarlos requiere aceptar el aviso de privacidad.</p></div>
+<details class="connection-advanced" id="torConnectionDetails"><summary>Circuitos y detalles de Tor</summary><div class="connection-advanced-body"><dl class="connection-facts"><div><dt>Estado del servicio</dt><dd id="torMeta">Consultando…</dd></div></dl><div class="connection-row-heading"><div><h4>Renovar circuitos</h4><p>Solicita nuevos circuitos a Tor.</p></div><button class="btn sm" id="torNewNymBtn" type="button" disabled>Nuevos circuitos</button></div></div></details>
+</section>
+</div>
+<footer class="connection-footer"><p>Configuración de <strong id="nodeName">este dispositivo</strong></p><p>Activar una conexión permite buscar contactos; cada sesión necesita establecerse y respetar sus permisos.</p><a href="/settings.html?section=contacts">Gestionar contactos y permisos</a></footer>
+<section class="section mobile-tools"><div class="section-head"><div><h2>Herramientas</h2><p>Conecta tus equipos y comprueba su rendimiento.</p></div></div><div class="section-body toolbar"><a class="btn" href="/vpn.html">Red privada</a><a class="btn" href="/speedtest.html">Prueba de velocidad</a></div></section>
+</div>
+<div id="settings-geolocation" data-settings-panel="geolocation" role="tabpanel" aria-labelledby="settings-tab-geolocation" tabindex="0" hidden><section class="section"><div class="section-head"><div><h2>Localización por IP</h2><p>Ubicación aproximada de los contactos.</p></div></div><div class="section-body"><p class="inline-help">Las ubicaciones se consultan en el catálogo local integrado. No requieren descargas ni envían las IP a un servicio externo. Tor no se geolocaliza.</p><p class="inline-help space-top">La ciudad es orientativa y puede corresponder a la salida de red del operador o de una VPN.</p><div class="toolbar space-top"><span id="geolocationStatus" role="status" class="muted"></span></div><p class="inline-help space-top"><a class="text-link" href="https://www.geonames.org/" target="_blank" rel="noopener noreferrer">Localidades de GeoNames</a> · <a class="text-link" href="https://db-ip.com" target="_blank" rel="noopener noreferrer">ASN de DB-IP</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a></p></div></section></div>
+<div id="settings-contacts" data-settings-panel="contacts" role="tabpanel" aria-labelledby="settings-tab-contacts" tabindex="0" hidden><details class="section settings-disclosure" id="advancedContacts"><summary><span><strong>Gestión avanzada de contactos</strong><small>Identidades, permisos, conexiones y sesiones</small></span></summary><div class="disclosure-body">      <!-- SECONDARY PEER DIRECTORY (Tabs for Saved, Discovered, Untrusted, Active Apps) -->
       <section class="section">
         <div class="section-head">
           <div>
-            <h2>Contactos Conectados</h2>
-            <p>Túneles QUIC establecidos. La señalización UDP no cuenta como una conexión.</p>
-          </div>
-          <div class="toolbar">
-            <button class="btn sm" id="saveAllBtn" title="Guardar todos los contactos conectados en la base de datos local">Guardar todos en libreta</button>
-          </div>
-        </div>
-        <div class="section-body no-pad">
-          <div class="table-wrap borderless">
-            <table class="data-table connected-table">
-              <thead>
-                <tr>
-                  <th>Peer / Dispositivo</th>
-                  <th>Transporte / Endpoint</th>
-                  <th>Latencia (RTT)</th>
-                  <th>Sesión</th>
-                  <th>Ajustes de Confianza</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="connectedPeers"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head"><div><h2>Contactos Disponibles</h2><p>Identidades de confianza que responden por señalización, todavía sin túnel QUIC.</p></div></div>
-        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table">
-          <thead><tr><th>Peer / Dispositivo</th><th>Endpoint de señalización</th><th>Estado</th><th>Acciones</th></tr></thead>
-          <tbody id="availablePeers"></tbody>
-        </table></div></div>
-      </section>
-
-      <!-- Connecting Contactos (Interrogations / Hole Punching in Progress) -->
-      <section class="section">
-        <div class="section-head">
-          <div>
-            <h2>Contactos en Proceso de Conexión</h2>
-            <p>Intentos activos de perforación de puertos NAT (hole punching) o sincronización de claves.</p>
-          </div>
-        </div>
-        <div class="section-body no-pad">
-          <div class="table-wrap borderless">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Peer</th>
-                  <th>Direcciones candidatas</th>
-                  <th>Puerto(s)</th>
-                  <th>Iniciado hace</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="interrogationsBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- SECONDARY PEER DIRECTORY (Tabs for Saved, Discovered, Untrusted, Active Apps) -->
-      <section class="section">
-        <div class="section-head">
-          <div>
-            <h2>Directorio &amp; Registro de Contactos</h2>
+            <h2>Directorio de contactos</h2>
             <p>Libreta de contactos guardados, contactos descubiertos mediante Nostr y sesiones de protocolos.</p>
           </div>
         </div>
         <div class="subtabs-bar">
-          <button class="subtab-btn" data-group="peerdir" data-subtab="tab-saved-peers">📒 Libreta de Contactos Guardados</button>
-          <button class="subtab-btn active" data-group="peerdir" data-subtab="tab-discovered-peers">🌐 Descubiertos por Nostr</button>
-          <button class="subtab-btn" data-group="peerdir" data-subtab="tab-active-apps">⚡ Sesiones de Aplicación</button>
-          <button class="subtab-btn" data-group="peerdir" data-subtab="tab-untrusted-peers">🛡️ Contactos no Confiables <span class="peer-attention-count hidden" id="untrustedTabCount"></span></button>
+          <button class="subtab-btn active" data-group="peerdir" data-subtab="tab-saved-peers">Guardados</button>
+          <button class="subtab-btn" data-group="peerdir" data-subtab="tab-discovered-peers">Descubiertos por Nostr</button>
+          <button class="subtab-btn" data-group="peerdir" data-subtab="tab-active-apps">Sesiones activas</button>
+          <button class="subtab-btn" data-group="peerdir" data-subtab="tab-untrusted-peers">Pendientes de confianza <span class="peer-attention-count hidden" id="untrustedTabCount"></span></button>
         </div>
 
         <!-- 1. Saved Contactos Table -->
-        <div id="tab-saved-peers" data-group-target="peerdir" class="hidden">
+        <div id="tab-saved-peers" data-group-target="peerdir">
           <div style="padding: 10px 18px; border-bottom: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: rgba(0,0,0,0.1);">
             <button class="btn sm ghost" id="clearOfflineSavedBtn">Limpiar desconectados</button>
-            <button class="btn sm primary" id="addSavedPeerBtn">+ Añadir peer manualmente</button>
+            <button class="btn sm primary" id="addSavedPeerBtn">Añadir contacto</button>
           </div>
           <div class="table-wrap borderless no-pad">
             <table class="data-table saved-table">
@@ -302,7 +170,7 @@
         </div>
 
         <!-- 2. Discovered Contactos Table -->
-        <div id="tab-discovered-peers" data-group-target="peerdir">
+        <div id="tab-discovered-peers" data-group-target="peerdir" class="hidden">
           <div style="padding: 10px 18px; border-bottom: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: rgba(0,0,0,0.1);">
             <button class="btn sm primary" id="connectAllDiscoveredBtn">Conectar todos los descubiertos</button>
           </div>
@@ -332,7 +200,7 @@
                   <th>Peer</th>
                   <th>Aplicación</th>
                   <th>Detalles del flujo</th>
-                  <th></th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody id="activeAppsBody"></tbody>
@@ -351,7 +219,7 @@
                   <th>Endpoint</th>
                   <th>Última vez visto</th>
                   <th>Certificado</th>
-                  <th></th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody id="untrustedPeers"></tbody>
@@ -359,7 +227,71 @@
           </div>
         </div>
       </section>
+<details class="contact-connection-details"><summary>Estado de conexiones y sesiones</summary>      <!-- PRIMARY: Connected Contactos (Tailscale style) -->
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>Contactos conectados</h2>
+            <p>Túneles QUIC establecidos. La señalización UDP no cuenta como una conexión.</p>
+          </div>
+          <div class="toolbar">
+            <button class="btn sm" id="saveAllBtn" title="Guardar todos los contactos conectados en la base de datos local">Guardar todos en libreta</button>
+          </div>
+        </div>
+        <div class="section-body no-pad">
+          <div class="table-wrap borderless">
+            <table class="data-table connected-table">
+              <thead>
+                <tr>
+                  <th>Peer / Dispositivo</th>
+                  <th>Transporte / Endpoint</th>
+                  <th>Latencia (RTT)</th>
+                  <th>Sesión</th>
+                  <th>Ajustes de Confianza</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="connectedPeers"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
 
+      <section class="section">
+        <div class="section-head"><div><h2>Contactos Disponibles</h2><p>Identidades de confianza que responden por señalización, todavía sin túnel QUIC.</p></div></div>
+        <div class="section-body no-pad"><div class="table-wrap borderless"><table class="data-table">
+          <thead><tr><th>Peer / Dispositivo</th><th>Endpoint de señalización</th><th>Estado</th><th>Acciones</th></tr></thead>
+          <tbody id="availablePeers"></tbody>
+        </table></div></div>
+      </section>
+
+      <!-- Connecting Contactos (Interrogations / Hole Punching in Progress) -->
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>Conexiones en curso</h2>
+            <p>Intentos activos de perforación de puertos NAT (hole punching) o sincronización de claves.</p>
+          </div>
+        </div>
+        <div class="section-body no-pad">
+          <div class="table-wrap borderless">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Peer</th>
+                  <th>Direcciones candidatas</th>
+                  <th>Puerto(s)</th>
+                  <th>Iniciado hace</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="interrogationsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+</details>
 </div></details></div>
 <div id="settings-diagnostics" data-settings-panel="diagnostics" role="tabpanel" aria-labelledby="settings-tab-diagnostics" tabindex="0" hidden><details class="section settings-disclosure" id="networkDiagnostics"><summary><span><strong>Diagnóstico de red</strong><small>Rendimiento, direcciones públicas y registro de eventos</small></span></summary><div class="disclosure-body">      <!-- ADVANCED TELEMETRY & DIAGNOSTICS SECTION (Progressive Disclosure) -->
       <section class="section">
@@ -370,9 +302,9 @@
           </div>
         </div>
         <div class="subtabs-bar">
-          <button class="subtab-btn active" data-group="diagtabs" data-subtab="quicTelemetrySection">📊 Telemetría MsQuic &amp; BBR</button>
-          <button class="subtab-btn" data-group="diagtabs" data-subtab="tab-stun-mapping">🌐 Mapeos STUN / NAT</button>
-          <button class="subtab-btn" data-group="diagtabs" data-subtab="tab-activity-logs">📜 Registros de Eventos</button>
+          <button class="subtab-btn active" data-group="diagtabs" data-subtab="quicTelemetrySection">Rendimiento QUIC</button>
+          <button class="subtab-btn" data-group="diagtabs" data-subtab="tab-stun-mapping">Mapeos STUN / NAT</button>
+          <button class="subtab-btn" data-group="diagtabs" data-subtab="tab-activity-logs">Registro de eventos</button>
         </div>
 
         <!-- Tab 1: QUIC Telemetry -->

@@ -23,6 +23,7 @@ public sealed class WatchWebServer : IAsyncDisposable
     private readonly WebSocketHub _hub;
     private readonly string _csrf = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24));
     private IWatchFilePicker? _filePicker;
+    private readonly SemaphoreSlim _mediaSelection = new(1, 1);
 
     public WatchWebServer(
         QuicPunch.QuicPunch qcc,
@@ -138,20 +139,33 @@ public sealed class WatchWebServer : IAsyncDisposable
                     }
                     case "/api/media/pick":
                     {
-                        string? pathSelected = await PickVideoAsync().ConfigureAwait(false);
-                        if (string.IsNullOrWhiteSpace(pathSelected))
+                        await _mediaSelection.WaitAsync(_cts.Token).ConfigureAwait(false);
+                        try
                         {
-                            await JsonAsync(resp, new global::QuicNet.Serialization.WatchWebServerMessage6(false, true)).ConfigureAwait(false);
+                            WatchRoom selectedRoom = _rooms.Snapshot() ?? throw new InvalidOperationException("Crea una sala antes de elegir el vídeo.");
+                            if (selectedRoom.OwnerPeerId != _rooms.LocalPeerId) throw new UnauthorizedAccessException("Solo el anfitrión puede elegir el vídeo.");
+                            string? pathSelected = await PickVideoAsync().ConfigureAwait(false);
+                            if (string.IsNullOrWhiteSpace(pathSelected))
+                            {
+                                await JsonAsync(resp, new global::QuicNet.Serialization.WatchWebServerMessage6(false, true)).ConfigureAwait(false);
+                                return;
+                            }
+                            if (_rooms.Snapshot()?.RoomId != selectedRoom.RoomId)
+                                throw new InvalidOperationException("La sala ha cambiado. Vuelve a elegir el vídeo.");
+                            Guid localId = _rooms.LocalPeerId;
+                            MediaManifest manifest = _library.SelectLocalMedia(pathSelected, localId);
+                            await _rooms.SetMediaAsync(manifest, _cts.Token).ConfigureAwait(false);
+                            _filePicker?.MediaSelected(pathSelected);
+                            await JsonAsync(resp, new global::QuicNet.Serialization.WatchWebServerMessage7(true, manifest)).ConfigureAwait(false);
                             return;
                         }
-                        Guid localId = _rooms.LocalPeerId;
-                        MediaManifest manifest = _library.SelectLocalMedia(pathSelected, localId);
-                        await _rooms.SetMediaAsync(manifest, _cts.Token).ConfigureAwait(false);
-                        await JsonAsync(resp, new global::QuicNet.Serialization.WatchWebServerMessage7(true, manifest)).ConfigureAwait(false);
-                        return;
+                        finally { _mediaSelection.Release(); }
                     }
                     case "/api/media/select-path":
                     {
+                        if (OperatingSystem.IsAndroid()) throw new UnauthorizedAccessException("Utiliza el selector de vídeos de Android.");
+                        var room = _rooms.Snapshot();
+                        if (room == null || room.OwnerPeerId != _rooms.LocalPeerId) throw new UnauthorizedAccessException("Solo el anfitrión puede elegir el vídeo.");
                         PathRequest body = await ReadAsync<PathRequest>(req).ConfigureAwait(false);
                         Guid localId = _rooms.LocalPeerId;
                         MediaManifest manifest = _library.SelectLocalMedia(body.Path ?? "", localId);
@@ -220,7 +234,7 @@ public sealed class WatchWebServer : IAsyncDisposable
     {
         WatchRoom? room = _rooms.Snapshot();
         Guid localId = _rooms.LocalPeerId;
-        return new global::QuicNet.Serialization.WatchWebServerMessage8(_csrf, new global::QuicNet.Serialization.WatchWebServerMessage9(localId, _qcc.CurrentPeer?.Name ?? Environment.MachineName, _qcc.GetToken() ?? ""), _qcc.AvailablePeers.Values.Where(p => p.Id != localId).Select(p => new global::QuicNet.Serialization.WatchWebServerMessage10(p.Id, p.Name, _control.ConnectedPeerIds.Contains(p.Id) && _media.ConnectedPeerIds.Contains(p.Id), room?.Participants.ContainsKey(p.Id) == true, room?.Participants.TryGetValue(p.Id, out ParticipantRole role) == true ? role.ToString() : null)).OrderBy(p => p.name).ToArray(), room == null ? null : new global::QuicNet.Serialization.WatchWebServerMessage11(room.RoomId, room.Name, room.OwnerPeerId, room.OwnerPeerId == localId, room.Participants.GetValueOrDefault(localId, ParticipantRole.Viewer).ToString(), room.Participants.Select(p => new global::QuicNet.Serialization.WatchWebServerMessage12(p.Key, p.Value.ToString())).ToArray(), room.Media, room.Playback));
+        return new global::QuicNet.Serialization.WatchWebServerMessage8(_csrf, new global::QuicNet.Serialization.WatchWebServerMessage9(localId, _qcc.CurrentPeer?.Name ?? Environment.MachineName, _qcc.GetToken() ?? ""), _qcc.AvailablePeers.Values.Where(p => p.Id != localId).Select(p => new global::QuicNet.Serialization.WatchWebServerMessage10(p.Id, p.Name, _control.ConnectedPeerIds.Contains(p.Id) && _media.ConnectedPeerIds.Contains(p.Id), room?.Participants.ContainsKey(p.Id) == true, room?.Participants.TryGetValue(p.Id, out ParticipantRole role) == true ? role.ToString() : null)).OrderBy(p => p.name).ToArray(), room == null ? null : new global::QuicNet.Serialization.WatchWebServerMessage11(room.RoomId, room.Name, room.OwnerPeerId, room.OwnerPeerId == localId, room.Participants.GetValueOrDefault(localId, ParticipantRole.Viewer).ToString(), room.Participants.Select(p => new global::QuicNet.Serialization.WatchWebServerMessage12(p.Key, p.Value.ToString())).ToArray(), room.Media, room.Playback), canPickMedia: _filePicker != null, canSelectPath: !OperatingSystem.IsAndroid());
     }
 
     private Task PublishStatusAsync() => _hub.BroadcastAsync("status", BuildStatus());

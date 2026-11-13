@@ -158,7 +158,7 @@ namespace QuicPunch
                     if (!TryParseStunEndpoint(host, out var h, out var port)) continue;
                     if (IPAddress.TryParse(h, out var ip))
                     {
-                        if (ip.AddressFamily == AddressFamily.InterNetwork && !SimpleStunClient.IsBogonOrLocalhost(ip))
+                        if (EndpointAddressCodec.CanAdvertise(ip) && !SimpleStunClient.IsBogonOrLocalhost(ip))
                             result.Add(new IPEndPoint(ip, port));
                         continue;
                     }
@@ -166,7 +166,7 @@ namespace QuicPunch
                     var addresses = Dns.GetHostAddresses(h);
                     foreach (var addr in addresses)
                     {
-                        if (addr.AddressFamily == AddressFamily.InterNetwork && !SimpleStunClient.IsBogonOrLocalhost(addr))
+                        if (EndpointAddressCodec.CanAdvertise(addr) && !SimpleStunClient.IsBogonOrLocalhost(addr))
                             result.Add(new IPEndPoint(addr, port));
                     }
                 }
@@ -231,7 +231,7 @@ namespace QuicPunch
 
                 if (IPAddress.TryParse(host, out var ip))
                 {
-                    if (ip.AddressFamily == AddressFamily.InterNetwork && !SimpleStunClient.IsBogonOrLocalhost(ip))
+                    if (EndpointAddressCodec.CanAdvertise(ip) && !SimpleStunClient.IsBogonOrLocalhost(ip))
                     {
                         ipEndpoints.Add(new IPEndPoint(ip, port));
                     }
@@ -277,7 +277,7 @@ namespace QuicPunch
                         var addresses = await Dns.GetHostAddressesAsync(item.host, dnsCts.Token).ConfigureAwait(false);
                         foreach (var addr in addresses)
                         {
-                            if (addr.AddressFamily == AddressFamily.InterNetwork && !SimpleStunClient.IsBogonOrLocalhost(addr))
+                            if (EndpointAddressCodec.CanAdvertise(addr) && !SimpleStunClient.IsBogonOrLocalhost(addr))
                             {
                                 var ep = new IPEndPoint(addr, item.port);
                                 result.Add(ep);

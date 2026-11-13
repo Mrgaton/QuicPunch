@@ -1,6 +1,17 @@
 <div id="view-virtual-disk" class="spa-view hidden">
   <main class="workspace disk-workspace">
-    <header class="page-head compact-head"><div><h1>Disco virtual</h1><p>Comparte una carpeta o accede a los archivos de tus dispositivos.</p></div></header>
+    <header class="page-head compact-head"><div><h1>Disco virtual</h1><p>Envía archivos, recibe en tu bandeja y comparte carpetas entre el móvil y el ordenador.</p></div></header>
+    <section class="section disk-quick" id="diskQuickPanel" aria-labelledby="diskQuickTitle"><div class="section-head"><div><h2 id="diskQuickTitle">Enviar y recibir</h2><p>Elige un contacto autorizado. Tú decides qué puede ver y durante cuánto tiempo.</p></div></div><div class="section-body">
+      <div class="disk-controls">
+        <div class="field" id="diskRecipientField"><label for="diskRecipient">Contacto</label><select class="select" id="diskRecipient"></select></div>
+        <button class="btn accent" id="diskSend" type="button">Compartir archivos</button>
+        <button class="btn" id="diskReceive" type="button">Activar recepción · 24 h</button>
+        <button class="btn" id="diskPickFolder" type="button" hidden>Compartir carpeta de Android</button>
+        <input type="file" id="diskSendFiles" multiple hidden>
+      </div>
+      <p id="diskRecipientHelp" class="muted space-top" role="status"></p>
+      <p class="muted space-top">Compartir archivos crea una carpeta de envío de solo lectura durante 24 horas. Al activar recepción, este contacto podrá enviar archivos a su propia bandeja; no podrá borrar. En el otro equipo, pulsa Conectar y abre la carpeta compartida.</p>
+    </div></section>
     <section class="section"><div class="section-body disk-controls">
       <div class="field"><label for="diskDevice">Equipo que comparte</label><select class="select" id="diskDevice"><option value="">Este dispositivo</option></select></div>
       <button class="btn accent" id="diskConnect" type="button">Conectar</button>
@@ -11,16 +22,18 @@
       <section class="section" aria-labelledby="diskSharesTitle"><div class="section-head"><h2 id="diskSharesTitle">Carpetas compartidas</h2></div><div class="section-body" id="diskShares"></div></section>
       <section class="section" aria-labelledby="diskFilesTitle"><div class="section-head"><h2 id="diskFilesTitle">Archivos</h2></div><div class="section-body">
         <div class="disk-controls"><button class="btn" id="diskUp" type="button">Subir un nivel</button><button class="btn" id="diskExplore" type="button" hidden>Explorar equipo</button></div>
-        <form id="diskPathForm" class="disk-controls space-top"><div class="field disk-grow"><label for="diskPath">Ubicación</label><input class="input mono" id="diskPath" autocomplete="off" placeholder="Selecciona una carpeta compartida"></div><button class="btn" type="submit">Ir</button></form>
-        <div id="diskFiles" class="disk-files" aria-label="Archivos y carpetas"></div>
+        <form id="diskPathForm" class="disk-controls space-top"><div class="field disk-grow"><label for="diskPath">Ubicación</label><input class="input mono" id="diskPath" autocomplete="off" placeholder="Selecciona una carpeta compartida" disabled></div><button class="btn" id="diskGo" type="submit" disabled>Ir</button></form>
+        <div id="diskFiles" class="disk-files" role="region" aria-label="Archivos y carpetas"><p class="muted">Selecciona una carpeta compartida para ver sus archivos.</p></div>
         <button class="btn" id="diskMore" type="button" hidden>Ver más</button>
-        <div class="disk-controls space-top"><label class="btn" id="diskUploadLabel" hidden>Subir archivo<input type="file" id="diskUpload" hidden></label><button class="btn" id="diskMkdir" type="button" hidden>Nueva carpeta</button></div>
+        <div class="disk-controls space-top"><button type="button" class="btn accent" id="diskUploadLabel" hidden>Enviar archivos</button><input type="file" id="diskUpload" multiple hidden><button type="button" class="btn" id="diskFolderUploadLabel" hidden>Enviar carpeta</button><input type="file" id="diskFolderUpload" webkitdirectory multiple hidden><button class="btn" id="diskMkdir" type="button" hidden>Nueva carpeta</button></div>
+        <p class="muted" id="diskDropHint">También puedes arrastrar archivos a esta vista.</p>
         <p id="diskTransfer" role="status" aria-live="polite"></p><progress id="diskProgress" max="1" value="0" hidden aria-label="Progreso de transferencia"></progress>
+        <button class="btn" id="diskCancel" type="button" hidden>Cancelar envío</button>
+        <ol id="diskQueue" class="disk-queue" aria-label="Transferencias de esta sesión"></ol>
       </div></section>
     </div>
     <section class="section space-top" id="diskGrantPanel" hidden><div class="section-head"><div><h2>Compartir esta ubicación</h2><p>El administrador puede explorar y seleccionar cualquier disco o carpeta accesible para Quicknet. Un amigo solo ve lo que le compartes.</p></div></div><div class="section-body">
       <form id="diskGrantForm" class="disk-controls">
-        <div class="field" id="diskRecipientField"><label for="diskRecipient">Compartir con</label><select class="select" id="diskRecipient"></select></div>
         <div class="field"><label for="diskPermission">Permiso</label><select class="select" id="diskPermission"><option value="read">Solo lectura</option><option value="write">Lectura y escritura</option></select></div>
         <label class="check-line"><input type="checkbox" id="diskAllowDelete"><span>Permitir borrar archivos y carpetas vacías</span></label>
         <div class="field"><label for="diskExpiry">Duración</label><select class="select" id="diskExpiry"><option value="1">1 hora</option><option value="24" selected>24 horas</option><option value="168">7 días</option><option value="0">Hasta revocar</option></select></div>

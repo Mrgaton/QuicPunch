@@ -318,7 +318,7 @@ def recover_update(data):
         return
     state = json.loads(pending.read_bytes())
     name = state['table']
-    if name not in ('city', 'asn', 'routers'):
+    if name not in ('city', 'asn'):
         raise ValueError('Invalid pending catalogue update')
     path = data / (name + '.bin')
     digest = file_hash(path) if path.exists() else None
@@ -379,7 +379,7 @@ def _prepare_catalogs(data, check=False, verify=False):
     manifest_path = data / 'manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
     results = {}
-    for name in ('city', 'asn', 'routers'):
+    for name in ('city', 'asn'):
         path = data / (name + '.bin')
         if not path.exists():
             if name in manifest.get('tables', {}):

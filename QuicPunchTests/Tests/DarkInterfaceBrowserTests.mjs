@@ -7,7 +7,7 @@ let browser;
 try{
  const url = await server.ready;
  browser = await launchBrowser();
- const source=readFileSync(new URL('../../QuicNet.Shared/wwwroot/design.css',import.meta.url),'utf8');
+ const source=readFileSync(new URL('../../QuicNet.Shared/wwwroot/workspace.css',import.meta.url),'utf8');
  assert.ok(!source.includes('[data-theme')&&!source.includes('prefers-color-scheme'),'Palette is still conditional');
  // A bright OS preference and a saved preference from an older installation
  // must have no effect, including before JavaScript runs.
@@ -15,7 +15,7 @@ try{
  for(const route of ['', 'settings.html','call.html','watch/','updates-help.html']){
   const page=await noScript.newPage();await page.goto(url+route);
   assert.equal(await page.locator('html').evaluate(n=>getComputedStyle(n).colorScheme),'dark',route+' depends on JavaScript to become dark');
-  assert.equal(await page.locator('body').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(21, 28, 33)',route+' starts with the wrong background');
+  assert.equal(await page.locator('body').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(16, 17, 22)',route+' starts with the wrong background');
   await page.close();
  }
  await noScript.close();
@@ -31,7 +31,7 @@ try{
   for(const view of ['dashboard','chat','voice','vpn','speedtest','settings','watch']){
    await page.evaluate(view=>QP.navigate(view),view);
    assert.equal(await page.locator('html').evaluate(n=>getComputedStyle(n).colorScheme),'dark',view);
-   assert.equal(await page.locator('body').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(21, 28, 33)',view);
+   assert.equal(await page.locator('body').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(16, 17, 22)',view);
   }
  }
  const frame=page.frameLocator('#watchFrame');await frame.locator('body').waitFor();

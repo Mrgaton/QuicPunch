@@ -55,9 +55,10 @@ internal sealed partial class ChatApiModule
         if (status != null) _hub.Broadcast("chat_file_paused", status);
     }
 
-    private void DiscardSavedDownload(Guid peerId, Guid fileId)
+    private void DiscardSavedDownload(Guid peerId, Guid fileId, bool preserveCompleted = false)
     {
         var saved = _transferStore.Find(peerId, fileId, includeExpired: true);
+        if (preserveCompleted && saved?.Completed == true) return;
         if (saved != null && !saved.Completed)
             try { File.Delete(saved.TempPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         _transferStore.Delete(peerId, fileId);
@@ -75,6 +76,7 @@ internal sealed partial class ChatApiModule
         using JsonDocument doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
         Guid peer = WebUiContext.ParseGuid(doc.RootElement, "peerId");
         Guid file = WebUiContext.ParseGuid(doc.RootElement, "fileId");
+        CancelDownloadStart(peer, file);
         if (_activeDownloads.TryRemove((peer, file), out var download)) await download.PauseAsync().ConfigureAwait(false);
         await ChatHandler.CancelFileAsync(peer, file, _fileLifetime.Token).ConfigureAwait(false);
         BroadcastDownloadPaused(peer, file);
