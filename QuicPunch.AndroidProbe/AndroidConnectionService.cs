@@ -21,6 +21,7 @@ public sealed class AndroidConnectionService : Service
     private bool _started, _microphoneAllowed;
     private WebUiServer? _server;
     private QuicNet.Updates.AutoUpdateService? _updater;
+    private AndroidUpdateIdle? _updateIdle;
     private CancellationTokenSource? _cts;
     private global::QuicPunch.QuicPunch? _qcc;
     private ChatHandler? _chatHandler;
@@ -206,10 +207,14 @@ public sealed class AndroidConnectionService : Service
             DiskDocuments = new AndroidDiskDocuments(this),
             PlatformScreenCapture = new AndroidScreenCapture(this)
         };
-        _updater = new QuicNet.Updates.AutoUpdateService(appDataDir, "android-arm64", (path, artifact, automatic) => {
-            UpdatePackageProvider.ReadyPackage = path;
-            return AndroidAutoUpdate.InstallAsync(path, artifact, automatic);
-        });
+        var updateIdle = new AndroidUpdateIdle((Android.OS.PowerManager)GetSystemService(PowerService)!);
+        updateIdle.Register(this);
+        _updateIdle = updateIdle;
+        var lifetime = _cts.Token;
+        _updater = new QuicNet.Updates.AutoUpdateService(appDataDir, "android-arm64",
+            (path, artifact, automatic) => AndroidAutoUpdate.InstallAsync(this, path, artifact, automatic,
+                () => _updater!.CanApplyAutomatically(), lifetime), getIdleTime: updateIdle.GetIdleTime,
+            canStartAutomaticInstallation: artifact => AndroidAutoUpdate.CanInstallAutomatically(this, artifact));
         _server.Updates = _updater;
         _server.Start();
         _updater.Start(_cts.Token);
@@ -279,6 +284,7 @@ public sealed class AndroidConnectionService : Service
         Running = false;
         StopService(new Intent(this, typeof(AndroidScreenCaptureService)));
         _cts?.Cancel();
+        if (_updateIdle != null) UnregisterReceiver(_updateIdle);
         lock (_networkObserverGate)
         {
             if (_networkObserver != null) try { _connectivity?.UnregisterNetworkCallback(_networkObserver); } catch { }

@@ -13,11 +13,18 @@ internal sealed class DesktopAppPlatform : IAppPlatform, IDisposable
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetLastInputInfo(ref LastInput input);
-    public TimeSpan? GetUserIdleTime()
+    [DllImport("kernel32.dll")]
+    private static extern uint GetTickCount();
+    public TimeSpan? GetUserIdleTime() => GetWindowsIdleTime();
+    internal static TimeSpan? GetWindowsIdleTime()
     {
         if (!OperatingSystem.IsWindows()) return null;
         var input = new LastInput { Size = (uint)Marshal.SizeOf<LastInput>() };
-        return GetLastInputInfo(ref input) ? TimeSpan.FromMilliseconds(unchecked((uint)Environment.TickCount64 - input.Tick)) : null;
+        if (!GetLastInputInfo(ref input)) return null;
+        // The input timestamp uses the Win32 clock, which includes suspend time on .NET 11 too.
+        uint elapsed = unchecked(GetTickCount() - input.Tick);
+        // GetLastInputInfo can report ticks out of order; a future tick is not weeks of inactivity.
+        return elapsed <= int.MaxValue ? TimeSpan.FromMilliseconds(elapsed) : TimeSpan.Zero;
     }
     private readonly string _url, _sounds;
     private readonly WindowsNotificationIcon? _icon;

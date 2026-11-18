@@ -1,5 +1,5 @@
+using System.Diagnostics;
 using System.Net;
-using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -10,11 +10,15 @@ internal partial class UpdateJsonContext : JsonSerializerContext { }
 
 public sealed class AutoUpdateService : IDisposable
 {
+    private static readonly TimeSpan RequiredIdleTime = TimeSpan.FromMinutes(15);
     private readonly HttpClient _http;
     private readonly string _directory, _settings, _channelSettings, _publicKey;
     private readonly Func<string, UpdateArtifact, bool, Task<bool>> _installer;
+    private readonly Func<TimeSpan?>? _getIdleTime;
+    private readonly Func<UpdateArtifact, bool>? _canStartAutomaticInstallation;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _stop = new();
+    private long _lastCheckTimestamp;
     private UpdateArtifact? _available;
     private string? _readyPath;
     private readonly object _stateGate = new();
@@ -40,7 +44,8 @@ public sealed class AutoUpdateService : IDisposable
     }
 
     public AutoUpdateService(string directory, string platform,
-        Func<string, UpdateArtifact, bool, Task<bool>> installer, HttpMessageHandler? handler = null, string? publicKey = null)
+        Func<string, UpdateArtifact, bool, Task<bool>> installer, HttpMessageHandler? handler = null, string? publicKey = null,
+        Func<TimeSpan?>? getIdleTime = null, Func<UpdateArtifact, bool>? canStartAutomaticInstallation = null)
     {
         _directory = Path.Combine(directory, "updates");
         Directory.CreateDirectory(_directory);
@@ -55,6 +60,8 @@ public sealed class AutoUpdateService : IDisposable
         // including when the user has never touched the channel selector.
         if (!File.Exists(_channelSettings) || File.ReadAllText(_channelSettings).Trim() != channel) PersistChannel(channel);
         _installer = installer;
+        _getIdleTime = getIdleTime;
+        _canStartAutomaticInstallation = canStartAutomaticInstallation;
         _publicKey = publicKey ?? UpdateManifest.ReadPublicKey();
         _http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(10) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("QuicNet/" + ReleaseIdentity.Version);
@@ -122,11 +129,17 @@ public sealed class AutoUpdateService : IDisposable
         try
         {
             await Task.Delay(TimeSpan.FromSeconds(5), linked.Token);
-            while (!linked.IsCancellationRequested)
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+            do
             {
-                if (Status.Automatic) await CheckAsync(true, linked.Token);
-                await Task.Delay(Status.Stage == "error" ? TimeSpan.FromMinutes(1) : TimeSpan.FromMinutes(15), linked.Token);
-            }
+                var status = Status;
+                if (!status.Automatic || status.Stage == "installing") continue;
+                var interval = status.Stage == "error" ? TimeSpan.FromMinutes(1) : TimeSpan.FromMinutes(15);
+                if (status.LastCheck == null || Stopwatch.GetElapsedTime(Interlocked.Read(ref _lastCheckTimestamp)) >= interval)
+                    await CheckAsync(true, linked.Token);
+                else if (status.Stage is "available" or "ready")
+                    await TryInstallAutomaticallyAsync(linked.Token);
+            } while (await timer.WaitForNextTickAsync(linked.Token));
         }
         catch (OperationCanceledException) { }
     }
@@ -138,6 +151,7 @@ public sealed class AutoUpdateService : IDisposable
         try
         {
             if (Status.Stage == "installing") return;
+            Interlocked.Exchange(ref _lastCheckTimestamp, Stopwatch.GetTimestamp());
             Set(s => s with { Stage = "checking", Message = "Buscando actualizaciones…", LastCheck = DateTimeOffset.UtcNow });
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(linked.Token);
             timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -151,7 +165,7 @@ public sealed class AutoUpdateService : IDisposable
             if (_readyPath != null && _available != null && (candidate == null || candidate.Build < _available.Build || candidate == _available))
             {
                 Set(s => s with { Stage = "ready", Message = "Actualización verificada y lista para instalar." });
-                if (installAutomatically && Status.Automatic) await InstallCoreAsync(true, linked.Token);
+                if (installAutomatically) await InstallAutomaticallyCoreAsync(linked.Token);
                 return;
             }
             if (candidate == null)
@@ -162,7 +176,11 @@ public sealed class AutoUpdateService : IDisposable
                     Message = "Todavía no hay versiones publicadas para este canal." });
                 return;
             }
-            if (candidate != _available) _readyPath = null;
+            if (candidate != _available)
+            {
+                _readyPath = null;
+                Set(s => s with { Downloaded = 0, Total = 0 });
+            }
             _available = candidate;
             Set(s => s with { LatestVersion = _available.Version, LatestBuild = _available.Build, LatestChannel = _available.Channel });
             // Build is monotonically increasing across PC and Android; CDN rollback cannot downgrade clients.
@@ -175,21 +193,59 @@ public sealed class AutoUpdateService : IDisposable
                 return;
             }
             Set(s => s with { Stage = "available", Message = "Hay una actualización disponible." });
-            if (installAutomatically && Status.Automatic)
-            {
-                string failed = Path.Combine(_directory, "release-" + _available.Build + (UpdateManifest.PlatformExtension(Status.Platform) + ".failed"));
-                if (File.Exists(failed))
-                {
-                    Set(s => s with { Stage = "error", Message = "La instalación anterior falló. Se conserva la versión actual; espera otra publicación o pulsa Instalar para reintentar." });
-                    return;
-                }
-                await DownloadCoreAsync(linked.Token);
-                if (Status.Automatic) await InstallCoreAsync(true, linked.Token);
-            }
+            if (installAutomatically) await InstallAutomaticallyCoreAsync(linked.Token);
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
         catch (Exception ex) { Set(s => s with { Stage = "error", Message = ex is OperationCanceledException ? "El CDN no respondió a tiempo. Se reintentará automáticamente." : ex.Message }); }
         finally { _gate.Release(); }
+    }
+
+    internal async Task TryInstallAutomaticallyAsync(CancellationToken token = default)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token);
+        if (!await _gate.WaitAsync(0, linked.Token)) return;
+        try { await InstallAutomaticallyCoreAsync(linked.Token); }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+        catch (Exception ex) { Set(s => s with { Stage = "error", Message = ex.Message }); }
+        finally { _gate.Release(); }
+    }
+
+    private async Task InstallAutomaticallyCoreAsync(CancellationToken token)
+    {
+        if (_available == null || !Status.Automatic || Status.Stage == "installing") return;
+        string failed = Path.Combine(_directory, "release-" + _available.Build + UpdateManifest.PlatformExtension(Status.Platform) + ".failed");
+        if (File.Exists(failed))
+        {
+            Set(s => s with { Stage = "error", Message = "La instalación anterior falló. Se conserva la versión actual; espera otra publicación o pulsa Instalar para reintentar." });
+            return;
+        }
+        if (_readyPath == null)
+        {
+            if (!CanApplyAutomatically())
+            {
+                SetWaitingForIdle();
+                return;
+            }
+            await DownloadCoreAsync(token);
+        }
+        if (!Status.Automatic) return;
+        if (_canStartAutomaticInstallation?.Invoke(_available) == false)
+        {
+            Set(s => s with { Stage = "ready", Message = "Actualización verificada. Pulsa Instalar para completarla en Android." });
+            return;
+        }
+        await InstallCoreAsync(true, token);
+    }
+
+    internal bool CanApplyAutomatically() => Status.Automatic && QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty &&
+        _getIdleTime?.Invoke() >= RequiredIdleTime;
+
+    private void SetWaitingForIdle()
+    {
+        if (!Status.Automatic) return;
+        Set(s => s with { Stage = _readyPath == null ? "available" : "ready", Message = _readyPath == null
+            ? "Actualización disponible. Se descargará tras 15 minutos de inactividad, sin llamadas en curso."
+            : "Actualización verificada. Se instalará cuando el dispositivo vuelva a estar inactivo y no haya llamadas en curso." });
     }
 
     public async Task InstallAsync(CancellationToken token = default)
@@ -219,7 +275,13 @@ public sealed class AutoUpdateService : IDisposable
         {
             if (File.Exists(destination))
             {
-                try { await UpdateManifest.VerifyFileAsync(destination, artifact, token); _readyPath = destination; return; }
+                try
+                {
+                    await UpdateManifest.VerifyFileAsync(destination, artifact, token);
+                    _readyPath = destination;
+                    Set(s => s with { Stage = "ready", Downloaded = wire.Size, Message = "Actualización verificada y lista para instalar." });
+                    return;
+                }
                 catch (InvalidDataException) { File.Delete(destination); }
             }
             using var downloadTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -262,12 +324,23 @@ public sealed class AutoUpdateService : IDisposable
     private async Task InstallCoreAsync(bool automatic, CancellationToken token)
     {
         if (_readyPath == null || _available == null) return;
+        if (automatic && !CanApplyAutomatically())
+        {
+            SetWaitingForIdle();
+            return;
+        }
         await UpdateManifest.VerifyFileAsync(_readyPath, _available, token);
+        token.ThrowIfCancellationRequested();
+        if (automatic && !CanApplyAutomatically())
+        {
+            SetWaitingForIdle();
+            return;
+        }
         Set(s => s with { Stage = "ready", Message = "Actualización verificada. Preparando instalación…" });
         bool started = await _installer(_readyPath, _available, automatic);
         Set(s => s with { Stage = started ? "installing" : "ready", Message = started
-            ? (Status.Platform != "android-arm64" ? "Reiniciando para actualizar…" : "Confirma la instalación en Android.")
-            : (Status.Platform == "android-arm64" ? "Lista para instalar. Pulsa Instalar para permitir esta fuente y confirmar en Android." : "Lista para instalar. Se espera a que terminen las llamadas.") });
+            ? (Status.Platform != "android-arm64" ? "Reiniciando para actualizar…" : automatic ? "Android está aplicando la actualización…" : "Completa la instalación en Android.")
+            : "Actualización verificada. Puedes pulsar Instalar para reintentar." });
     }
 
     internal static async Task<byte[]> ReadLimitedAsync(Stream input, int limit, CancellationToken token)

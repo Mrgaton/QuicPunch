@@ -138,7 +138,8 @@ internal static class Program
         await using var watchWeb = new WatchWebServer(qcc, watchControlHandler, watchMediaHandler, watchLibrary, watchRooms, watchConnector, cts);
 
         var webUi = new WebUiServer(qcc, chatHandler, lanHandler, voiceCallHandler, speedTestHandler, preferencesStore, cts, watchWeb);
-        using var updater = new QuicNet.Updates.AutoUpdateService(qcc.NodeAppDataPath, OperatingSystem.IsLinux() ? "linux-x64" : "win-x64", WindowsAutoUpdate.InstallAsync);
+        using var updater = new QuicNet.Updates.AutoUpdateService(qcc.NodeAppDataPath, OperatingSystem.IsLinux() ? "linux-x64" : "win-x64",
+            WindowsAutoUpdate.InstallAsync, getIdleTime: DesktopUpdateIdle.GetIdleTime);
         webUi.Updates = updater;
         webUi.Start();
         File.WriteAllText(instanceUrl, webUi.Url);

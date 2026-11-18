@@ -16,13 +16,13 @@
     const android = status.Platform === 'android-arm64';
     const percent = status.Total > 0 ? Math.min(100, Math.floor(status.Downloaded * 100 / status.Total)) : null;
     const title = status.Stage === 'downloading' ? 'Descargando actualización'
-      : status.Stage === 'installing' ? (android ? 'Confirma la instalación' : 'Reiniciando para actualizar')
+      : status.Stage === 'installing' ? (android ? 'Instalando actualización' : 'Reiniciando para actualizar')
       : status.Stage === 'error' ? 'Actualización pendiente' : 'Actualización disponible';
+    const version = 'Versión ' + status.LatestVersion + ((status.LatestChannel || status.Channel) === 'beta' ? ' · Beta' : ' · Estable');
     const detail = status.Stage === 'downloading' ? (percent === null ? 'Preparando descarga…' : percent + ' % descargado')
-      : status.Stage === 'installing' ? (android ? 'Continúa en el instalador de Android.' : 'La aplicación se abrirá de nuevo.')
-      : status.Stage === 'error' ? status.Message
+      : ['installing', 'error'].includes(status.Stage) && status.Message ? status.Message
       : status.Stage === 'checking' ? 'Comprobando la nueva versión…'
-      : 'Versión ' + status.LatestVersion + ((status.LatestChannel || status.Channel) === 'beta' ? ' · Beta' : ' · Estable') + (android ? ' · Confirma la instalación en Android.' : ' · Tus datos se conservan.');
+      : status.Message ? version + ' · ' + status.Message : version;
     for (const prefix of notices) {
       document.getElementById(prefix + 'Notice').hidden = !newer;
       document.getElementById(prefix + 'Title').textContent = title;
@@ -65,8 +65,8 @@
       progress.value = status.Downloaded; progress.max = status.Total || 1;
       document.getElementById('updateInstall').textContent = status.Platform === 'android-arm64' ? 'Instalar actualización' : 'Instalar y reiniciar';
       document.getElementById('updatePlatformHelp').textContent = status.Platform === 'android-arm64'
-        ? 'La descarga es automática. Android te pedirá permitir esta fuente y confirmar la instalación. Tus datos se conservan.'
-        : 'QuicNet se reinicia para instalar la actualización cuando no hay llamadas. Tus datos y una copia de la versión anterior se conservan.';
+        ? 'QuicNet espera 15 minutos con el móvil en reposo. Si Android pide permiso o confirmación, pulsa Instalar actualización.'
+        : 'QuicNet espera 15 minutos de inactividad y a que terminen las llamadas antes de reiniciar para actualizar.';
       renderNotices(status);
   }
   app.on('update_status', render);

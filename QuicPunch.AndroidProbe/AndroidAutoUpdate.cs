@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using Android.App;
 using Android.Content;
 using Android.Content.PM;
 using Android.Database;
@@ -9,50 +11,167 @@ namespace QuicPunch.AndroidProbe;
 internal static class AndroidAutoUpdate
 {
     internal static WeakReference<MainActivity>? ForegroundActivity;
-    internal static string? PendingPackage;
-    internal static Task<bool> InstallAsync(string path, UpdateArtifact artifact, bool automatic)
+    private static string? _pendingPermissionPackage;
+    private static long _confirmationRequiredBuild;
+    private static readonly ConcurrentDictionary<int, TaskCompletionSource<(PackageInstallStatus Status, string? Message)>> InstallResults = new();
+
+    internal static bool CanInstallAutomatically(Context context, UpdateArtifact artifact) =>
+        OperatingSystem.IsAndroidVersionAtLeast(31) && Interlocked.Read(ref _confirmationRequiredBuild) != artifact.Build &&
+        context.PackageManager?.CanRequestPackageInstalls() == true;
+
+    internal static Task<bool> InstallAsync(Context context, string path, UpdateArtifact artifact, bool automatic,
+        Func<bool> canApplyAutomatically, CancellationToken token)
     {
-        var activity = ForegroundActivity != null && ForegroundActivity.TryGetTarget(out var current) ? current : null;
-        if (activity == null || activity.IsFinishing || activity.IsDestroyed || QuicNet.Protocols.VoiceCallHandler.ActiveCalls.Count != 0)
-            return Task.FromResult(false);
-        var info = activity.PackageManager!.GetPackageArchiveInfo(path, PackageInfoFlags.SigningCertificates)
+        if (!QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty) return Task.FromResult(false);
+        var info = context.PackageManager!.GetPackageArchiveInfo(path, PackageInfoFlags.SigningCertificates)
             ?? throw new InvalidDataException("La APK no es válida.");
-        if (info.PackageName != activity.PackageName || info.LongVersionCode != artifact.Build)
+        if (info.PackageName != context.PackageName || info.LongVersionCode != artifact.Build)
             throw new InvalidDataException("La APK no corresponde a esta aplicación o compilación.");
-        PendingPackage = path;
-        if (automatic && !activity.PackageManager.CanRequestPackageInstalls()) return Task.FromResult(false);
+
+        if (automatic)
+            return OperatingSystem.IsAndroidVersionAtLeast(31) && CanInstallAutomatically(context, artifact)
+                ? InstallInBackgroundAsync(context, path, artifact, canApplyAutomatically, token) : Task.FromResult(false);
+
+        var activity = ForegroundActivity?.TryGetTarget(out var current) == true ? current : null;
+        if (activity == null || activity.IsFinishing || activity.IsDestroyed) return Task.FromResult(false);
         activity.RunOnUiThread(() =>
         {
             try
             {
-                if (!activity.PackageManager.CanRequestPackageInstalls())
+                if (!activity.PackageManager!.CanRequestPackageInstalls())
                 {
+                    _pendingPermissionPackage = path;
                     activity.StartActivity(new Intent(Android.Provider.Settings.ActionManageUnknownAppSources,
                         Android.Net.Uri.Parse("package:" + activity.PackageName)));
                     return;
                 }
-                OpenInstaller(activity);
+                OpenInstaller(activity, path);
             }
-            catch (Exception ex) { QuicNet.WebUi.WebUiServer.AddNotification("error", "No se pudo abrir el instalador: " + ex.Message); }
+            catch (Exception ex)
+            {
+                _pendingPermissionPackage = null;
+                QuicNet.WebUi.WebUiServer.Instance?.Updates?.ResetInstallAttempt();
+                QuicNet.WebUi.WebUiServer.AddNotification("error", "No se pudo abrir el instalador: " + ex.Message);
+            }
         });
         return Task.FromResult(true);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("android31.0")]
+    private static async Task<bool> InstallInBackgroundAsync(Context context, string path, UpdateArtifact artifact,
+        Func<bool> canApplyAutomatically, CancellationToken token)
+    {
+        using var installer = context.PackageManager!.PackageInstaller!;
+        using var parameters = new PackageInstaller.SessionParams(PackageInstallMode.FullInstall);
+        parameters.SetAppPackageName(context.PackageName);
+        parameters.SetSize(artifact.Size);
+        parameters.SetRequireUserAction((int)PackageInstallUserAction.NotRequired);
+        int sessionId = installer.CreateSession(parameters);
+        var result = new TaskCompletionSource<(PackageInstallStatus Status, string? Message)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        InstallResults[sessionId] = result;
+        bool installed = false;
+        try
+        {
+            using var session = installer.OpenSession(sessionId)!;
+            await using (var source = File.OpenRead(path))
+            using (var destination = session.OpenWrite("base.apk", 0, artifact.Size)!)
+            {
+                await source.CopyToAsync(destination, token);
+                session.Fsync(destination);
+            }
+
+            token.ThrowIfCancellationRequested();
+            if (!canApplyAutomatically()) return false;
+            using var intent = new Intent(context, typeof(AndroidUpdateResultReceiver));
+            // PackageInstaller supplies the result extras through an explicit, app-private callback.
+            using var callback = PendingIntent.GetBroadcast(context, sessionId, intent, PendingIntentFlags.Mutable | PendingIntentFlags.OneShot)!;
+            session.Commit(callback.IntentSender!);
+            var outcome = await result.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
+            if (outcome.Status is PackageInstallStatus.PendingUserAction or PackageInstallStatus.FailureBlocked)
+            {
+                Interlocked.Exchange(ref _confirmationRequiredBuild, artifact.Build);
+                return false;
+            }
+            installed = outcome.Status == PackageInstallStatus.Success;
+            if (!installed) throw new IOException("Android no pudo instalar la actualización: " + (outcome.Message ?? outcome.Status.ToString()));
+            return true;
+        }
+        finally
+        {
+            InstallResults.TryRemove(sessionId, out _);
+            if (!installed)
+            {
+                try { installer.AbandonSession(sessionId); }
+                catch (Java.Lang.IllegalStateException) { /* Android already ended this session. */ }
+                catch (Java.Lang.SecurityException) { /* Android already released this session. */ }
+            }
+        }
+    }
+
+    internal static void ReportInstallResult(Intent intent)
+    {
+        if (InstallResults.TryGetValue(intent.GetIntExtra(PackageInstaller.ExtraSessionId, -1), out var result))
+            result.TrySetResult(((PackageInstallStatus)intent.GetIntExtra(PackageInstaller.ExtraStatus, (int)PackageInstallStatus.Failure),
+                intent.GetStringExtra(PackageInstaller.ExtraStatusMessage)));
     }
 
     internal static void Resume(MainActivity activity)
     {
         ForegroundActivity = new(activity);
-        if (PendingPackage != null && activity.PackageManager!.CanRequestPackageInstalls())
-            OpenInstaller(activity);
+        string? path = _pendingPermissionPackage;
+        _pendingPermissionPackage = null;
+        if (path == null || !QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty || !activity.PackageManager!.CanRequestPackageInstalls()) return;
+        try { OpenInstaller(activity, path); }
+        catch (Exception ex) { QuicNet.WebUi.WebUiServer.AddNotification("error", "No se pudo abrir el instalador: " + ex.Message); }
     }
 
-    private static void OpenInstaller(MainActivity activity)
+    private static void OpenInstaller(MainActivity activity, string path)
     {
-        if (PendingPackage == null) return;
+        UpdatePackageProvider.ReadyPackage = path;
         var uri = Android.Net.Uri.Parse("content://" + activity.PackageName + ".updates/package.apk")!;
         activity.StartActivity(new Intent(Intent.ActionView)
             .SetDataAndType(uri, "application/vnd.android.package-archive")
             .AddFlags(ActivityFlags.GrantReadUriPermission));
-        PendingPackage = null;
+    }
+}
+
+[BroadcastReceiver(Exported = false)]
+public sealed class AndroidUpdateResultReceiver : BroadcastReceiver
+{
+    public override void OnReceive(Context? context, Intent? intent)
+    {
+        if (intent != null) AndroidAutoUpdate.ReportInstallResult(intent);
+    }
+}
+
+internal sealed class AndroidUpdateIdle(PowerManager power) : BroadcastReceiver
+{
+    private long _nonInteractiveSince = power.IsInteractive ? -1 : SystemClock.ElapsedRealtime();
+
+    internal void Register(Context context)
+    {
+        using var filter = new IntentFilter(Intent.ActionScreenOff);
+        filter.AddAction(Intent.ActionScreenOn);
+        if (OperatingSystem.IsAndroidVersionAtLeast(33)) context.RegisterReceiver(this, filter, ReceiverFlags.NotExported);
+        else context.RegisterReceiver(this, filter);
+    }
+
+    public override void OnReceive(Context? context, Intent? intent)
+    {
+        if (intent?.Action == Intent.ActionScreenOn) Interlocked.Exchange(ref _nonInteractiveSince, -1);
+        else if (intent?.Action == Intent.ActionScreenOff) Interlocked.Exchange(ref _nonInteractiveSince, SystemClock.ElapsedRealtime());
+    }
+
+    internal TimeSpan? GetIdleTime()
+    {
+        if (power.IsInteractive)
+        {
+            Interlocked.Exchange(ref _nonInteractiveSince, -1);
+            return TimeSpan.Zero;
+        }
+        long now = SystemClock.ElapsedRealtime();
+        long since = Interlocked.CompareExchange(ref _nonInteractiveSince, now, -1);
+        return TimeSpan.FromMilliseconds(since < 0 ? 0 : Math.Max(0, now - since));
     }
 }
 

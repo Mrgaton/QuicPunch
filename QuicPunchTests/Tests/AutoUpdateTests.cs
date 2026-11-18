@@ -102,7 +102,8 @@ internal static class AutoUpdateTests
             }
             byte[] corrupted = (byte[])binary.Clone(); corrupted[99] ^= 1;
             using (var updater = new AutoUpdateService(Path.Combine(directory, "corrupt"), "win-x64",
-                (_, _, _) => throw new Exception("Corrupt installer invoked"), new FakeHandler(Envelope(ReleaseIdentity.Build + 2), corrupted), publicKey))
+                (_, _, _) => throw new Exception("Corrupt installer invoked"), new FakeHandler(Envelope(ReleaseIdentity.Build + 2), corrupted), publicKey,
+                getIdleTime: () => TimeSpan.FromMinutes(15)))
             {
                 await updater.CheckAsync(true);
                 Require(updater.Status.Stage == "error" && updater.ReadyPath == null, "Corrupt update was staged");
@@ -174,7 +175,7 @@ internal static class AutoUpdateTests
                     Require(release.Channel == expected && release.Build == (expected == "stable" ? stableBuild : betaBuild) && isAutomatic,
                         "Installed the wrong audience, build or automatic mode: " + name);
                     installed++; return Task.FromResult(true);
-                }, feeds, publicKey);
+                }, feeds, publicKey, getIdleTime: () => TimeSpan.FromMinutes(15));
                 Require(File.ReadAllText(Path.Combine(directory, name, "updates", "channel.txt")) == ReleaseIdentity.Channel, "Default enrollment was not persisted");
                 await updater.SetChannelAsync(channel); updater.SetAutomatic(automatic);
                 await updater.CheckAsync(true);
@@ -193,7 +194,8 @@ internal static class AutoUpdateTests
             await Audience("beta-manual", "beta", ReleaseIdentity.Build + 9, ReleaseIdentity.Build + 8, "stable", automatic: false);
             var pendingFeeds = new FakeHandler(Envelope(ReleaseIdentity.Build + 5, channel: "stable"), binary)
             { BetaManifest = Envelope(ReleaseIdentity.Build + 6, channel: "beta") };
-            using (var updater = new AutoUpdateService(Path.Combine(directory, "pending-promotion"), "win-x64", (_, _, _) => Task.FromResult(false), pendingFeeds, publicKey))
+            using (var updater = new AutoUpdateService(Path.Combine(directory, "pending-promotion"), "win-x64", (_, _, _) => Task.FromResult(false), pendingFeeds, publicKey,
+                getIdleTime: () => TimeSpan.FromMinutes(15)))
             {
                 await updater.SetChannelAsync("beta"); await updater.CheckAsync(true);
                 Require(updater.ReadyPath != null && updater.Status.LatestChannel == "beta", "Pending beta was not prepared");
@@ -204,6 +206,36 @@ internal static class AutoUpdateTests
                 pendingFeeds.Offline = true; string? ready = updater.ReadyPath;
                 await updater.CheckAsync();
                 Require(updater.ReadyPath == ready && updater.Status.Stage == "ready", "Offline feed discarded a verified release");
+            }
+            TimeSpan? idleTime = null;
+            var idleFeed = new FakeHandler(Envelope(ReleaseIdentity.Build + 1), binary)
+                { OnDownload = () => idleTime = TimeSpan.Zero };
+            int idleInstalls = 0;
+            using (var updater = new AutoUpdateService(Path.Combine(directory, "idle"), "win-x64", (_, _, automatic) =>
+            {
+                Require(automatic, "An automatic retry was passed to the manual installer");
+                idleInstalls++;
+                return Task.FromResult(true);
+            }, idleFeed, publicKey, getIdleTime: () => idleTime))
+            {
+                await updater.CheckAsync(true);
+                Require(updater.Status.Stage == "available" && idleFeed.Downloads == 0, "Unknown idle time triggered a download");
+                int feedChecks = idleFeed.Feeds.Count;
+                idleTime = TimeSpan.FromMinutes(15) - TimeSpan.FromSeconds(1);
+                await updater.TryInstallAutomaticallyAsync();
+                Require(idleFeed.Downloads == 0 && idleInstalls == 0, "Downloaded before 15 idle minutes");
+                idleTime = TimeSpan.FromMinutes(15);
+                await updater.TryInstallAutomaticallyAsync();
+                Require(updater.Status.Stage == "ready" && idleFeed.Downloads == 1 && idleInstalls == 0, "Returning during download should leave a verified package ready");
+                updater.SetAutomatic(false);
+                idleTime = TimeSpan.FromMinutes(15);
+                await updater.TryInstallAutomaticallyAsync();
+                Require(idleInstalls == 0, "Installed after automatic updates were disabled");
+                updater.SetAutomatic(true);
+                await updater.TryInstallAutomaticallyAsync();
+                await updater.TryInstallAutomaticallyAsync();
+                Require(updater.Status.Stage == "installing" && idleInstalls == 1 && idleFeed.Downloads == 1 && idleFeed.Feeds.Count == feedChecks,
+                    "Idle retry did not install exactly once from the existing download and feed check");
             }
             await TestChannelApiAsync(Path.Combine(directory, "api"), publicKey, channels);
         }
@@ -311,6 +343,7 @@ internal static class AutoUpdateTests
         public string? LastFeed;
         public readonly System.Collections.Concurrent.ConcurrentBag<string> Feeds = new();
         public bool Offline, Redirect, Missing, MissingBeta, StableOffline;
+        public Action? OnDownload;
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             if (Offline) throw new HttpRequestException("Offline test");
@@ -322,7 +355,7 @@ internal static class AutoUpdateTests
             if (isManifest && !beta && StableOffline) throw new HttpRequestException("Stable feed offline test");
             if (beta && MissingBeta) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
             if (isManifest) { Require(request.RequestUri.Query.StartsWith("?check="), "Manifest requests must avoid immutable CDN cache"); Require(request.Headers.CacheControl == null, "Cache-Control triggers a CDN challenge"); }
-            if (!isManifest) Downloads++;
+            if (!isManifest) { Downloads++; OnDownload?.Invoke(); }
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(isManifest ? (beta ? BetaManifest ?? Manifest : Manifest) : binary) });
         }
     }
