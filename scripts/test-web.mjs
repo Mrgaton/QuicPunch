@@ -10,26 +10,29 @@ const args = process.argv.slice(2);
 const web = args.includes('--web'), browser = args.includes('--browser');
 const verbose = args.includes('--verbose'), list = args.includes('--list');
 const noBuild = args.includes('--no-build');
-const filter = args.find(arg => arg.startsWith('--filter='))?.slice(9).toLowerCase();
+const filters = args.filter(arg => arg.startsWith('--filter=')).map(arg => arg.slice(9).toLowerCase());
 const unknown = args.filter(arg => !['--web','--browser','--verbose','--list','--no-build'].includes(arg) && !arg.startsWith('--filter='));
-if ((!web && !browser) || unknown.length) {
-  console.error('Usage: node scripts/test-web.mjs --web|--browser [--filter=Name] [--list] [--no-build] [--verbose]');
+if ((!web && !browser) || unknown.length || filters.includes('')) {
+  console.error('Usage: node scripts/test-web.mjs --web|--browser [--filter=Name ...] [--list] [--no-build] [--verbose]');
   process.exit(2);
 }
 const directory = resolve(root, 'QuicPunchTests/Tests');
-const files = (await readdir(directory)).filter(name =>
-  ((web && name.endsWith('WebTests.mjs')) || (browser && name.endsWith('BrowserTests.mjs')))
-  && (!filter || name.toLowerCase().includes(filter))).sort();
+const available = (await readdir(directory)).filter(name =>
+  (web && name.endsWith('WebTests.mjs')) || (browser && name.endsWith('BrowserTests.mjs'))).sort();
+const unmatched = filters.filter(filter => !available.some(name => name.toLowerCase().includes(filter)));
+if (unmatched.length) { console.error('No matching test suites for: ' + unmatched.join(', ')); process.exit(2); }
+const files = filters.length ? available.filter(name => filters.some(filter => name.toLowerCase().includes(filter))) : available;
 if (!files.length) { console.error('No matching test suites.'); process.exit(2); }
 if (list) { console.log(files.join('\n')); process.exit(0); }
 const logs = resolve(root, '.artifacts/test-output');
 await mkdir(logs, {recursive: true});
 const run = randomUUID();
+const env = {...process.env, QUICNET_TEST_NO_BUILD: noBuild ? '1' : '0'};
 let failed = 0;
 function execute(command, args) {
   return new Promise(resolveResult => {
     let output = '';
-    const child = spawn(command, args, {cwd: root, windowsHide: true, stdio: ['ignore','pipe','pipe']});
+    const child = spawn(command, args, {cwd: root, env, windowsHide: true, stdio: ['ignore','pipe','pipe']});
     child.stdout.on('data', data => {output += data; if (verbose) process.stdout.write(data);});
     child.stderr.on('data', data => {output += data; if (verbose) process.stderr.write(data);});
     child.once('error', error => {output += error.stack;});

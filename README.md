@@ -30,6 +30,14 @@ A high-performance, decentralized P2P networking and virtual overlay mesh librar
 - **Asynchronous Rotating File Logger**: High-throughput non-blocking channel logger with 50MB size thresholds, date rolling, and background gzip compression.
 - **Dynamic Subservice Controls**: Activate, stop, or rebind **WAN UDP** and **Tor Onion** services on the fly via code or the embedded dashboard.
 - **Modular WebUI & Desktop GUI**: Built-in HTTP server, modular REST APIs, async WebSocket hub, real-time QUIC telemetry dashboard with polling, and native Photino window.
+
+### Remote control during calls
+
+Windows and Linux X11 can share their desktop or a monitor for remote control. On Android, enable the QuicNet accessibility service and choose whole-screen sharing for remote control in the call's video settings. Android 13 or later supports typing into focused editors through the accessibility input method.
+
+The sharer approves each request. The viewer can switch between monitors already included in the share, use physical keys and shortcuts in the focused viewer, and opt into text clipboard sync separately. Windows and Linux use the system clipboard. Android uses clipboard access granted to QuicNet while it is open.
+
+For Linux X11, build the native media library with `bash scripts/build-native-media.sh linux-x64` before building QuicNet. The build uses the distribution's FFmpeg, X11 and Xext development packages. Run with FFmpeg and the XTest and XRandR libraries available. Native Wayland capture and input require the desktop portal integration.
 - **Multi-Protocol Multiplexing**: Register custom protocols (`IProtocolHandler`) on a single authenticated tunnel. Included out-of-the-box:
   - **Direct Chat**: Structured JSON messaging with delivery receipts.
   - **Voice Calls**: Low-latency encrypted Opus audio streaming plane over QUIC datagrams.
@@ -113,6 +121,22 @@ await quicPunch.InitQuicConnection(
 ```
 
 ---
+
+## Remote error reporting
+
+QuicNet can send error summaries to CoreServer's `POST /logs/post`. To enable it, create a private `core-logs.json` in the QuicNet data directory and restart the app. On Windows the directory is `%APPDATA%\QuicPunchV17`. On Linux it is `QuicPunchV17` in the user's application data directory. On Android the file goes in the app's private `FilesDir`.
+
+```json
+{
+  "auth": "<LOGS_DISCORD_MESSAGES_KEY>",
+  "categoryKey": "<quic-net entry in LOGS_DISCORD_KEYS>",
+  "endpoint": "https://gato.ovh/logs/post"
+}
+```
+
+The endpoint is optional and defaults to the URL shown. Keep this file outside the source tree, release packages, and backups shared with others. Reports go to the `quic-net` category and the `errores-windows`, `errores-linux`, or `errores-android` channel. Enabling the integration authorizes HTTPS connections to the configured server. Web error reports include the page, context, message, and JavaScript stack trace within the browser diagnostic limits. QuicNet redacts recognized credentials and URL query strings and fragments. Native exceptions are reported as summaries. Delivery is best effort, with a bounded in-memory queue and retries for temporary failures.
+
+Deploy the CoreServer change for private QuicNet logs before enabling this integration. QuicNet checks the `X-QuicNet-Private-Logs` response header on `HEAD /logs/post` before sending any report.
 
 ## Running Tests
 

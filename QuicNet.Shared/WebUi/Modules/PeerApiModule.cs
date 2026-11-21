@@ -49,14 +49,15 @@ internal sealed class PeerApiModule
             () => { var p = _preferences.Snapshot(); return (p.WanEnabled, p.TorEnabled); },
             (wan, tor) => { _preferences.Update(p => { p.WanEnabled = wan; p.TorEnabled = tor; }); _qcc.WanEnabled = wan; },
             async (enabled, port, ct) => {
-                if (enabled) { await _qcc.StartWanAsync((ushort)port, ct); await _qcc.Mailbox.StartAsync(_qcc.Discovery.NostrRelays, _cts.Token); }
+                if (enabled) { await _qcc.StartWanAsync((ushort)port, _cts.Token, ct); ct.ThrowIfCancellationRequested(); await _qcc.Mailbox.StartAsync(_qcc.Discovery.NostrRelays, _cts.Token); }
                 else { await _qcc.Mailbox.StopAsync(); await _qcc.StopWanAsync(); }
             },
             async (enabled, port, ct) => {
-                if (enabled) { await _qcc.StartTorAsync(port > 0 ? port : _preferences.Snapshot().TorVirtualPort, cancellationToken: ct); await _qcc.Mailbox.StartAsync(_qcc.Discovery.NostrRelays, _cts.Token); }
+                if (enabled) { await _qcc.StartTorAsync(port > 0 ? port : _preferences.Snapshot().TorVirtualPort, null, null, _cts.Token, ct); ct.ThrowIfCancellationRequested(); await _qcc.Mailbox.StartAsync(_qcc.Discovery.NostrRelays, _cts.Token); }
                 else { await _qcc.Mailbox.StopAsync(); await _qcc.StopTorAsync(); }
             },
             () => WebUiServer.BroadcastStatusUpdate());
+        _qcc.TorBootstrapChanged += () => WebUiServer.BroadcastStatusUpdate();
 
         _qcc.Manager.HandshakeRequested += HandleHandshakeRequestAsync;
         _qcc.OnPeerAvailable += peer =>
@@ -70,6 +71,9 @@ internal sealed class PeerApiModule
             _hub.Broadcast("peer_network_disconnected", new global::QuicNet.Serialization.PeerApiModuleMessage1(peer.Id.ToString(), peer.Name));
         };
     }
+
+    internal Task RestoreTorAsync() => _connectionModes.RestoreTorAsync(_cts.Token);
+    internal QuicNet.Networking.ConnectionModeTransition? ConnectionMode => _connectionModes.Status;
 
     public Task<HandshakeDecision> HandleHandshakeRequestAsync(HandshakeRequest request, CancellationToken ct)
     {
@@ -775,8 +779,8 @@ internal sealed class PeerApiModule
         {
             using var doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
             string mode = doc.RootElement.GetProperty("mode").GetString() ?? "";
-            await _connectionModes.SetModeAsync(mode, _cts.Token).ConfigureAwait(false);
-            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.PeerApiModuleMessage11(true)).ConfigureAwait(false);
+            var (accepted, _) = _connectionModes.RequestMode(mode, _cts.Token);
+            await WebUiContext.WriteJsonAsync(resp, accepted, 202).ConfigureAwait(false);
             return true;
         }
 

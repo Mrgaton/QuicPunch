@@ -11,24 +11,32 @@
     <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
     <AndroidExtractNativeLibs>true</AndroidExtractNativeLibs>
     <ApplicationId>org.quicpunch.androidprobe</ApplicationId>
+    <ApplicationId Condition="'$(RuntimeIdentifier)' == 'android-x64'">org.quicpunch.androidprobe.qa</ApplicationId>
+    <AndroidManifestPlaceholders>quicNetApplicationId=$(ApplicationId)</AndroidManifestPlaceholders>
     <ApplicationVersion>$(ReleaseNumber)</ApplicationVersion>
     <ApplicationDisplayVersion>$(ReleaseVersion)</ApplicationDisplayVersion>
     <ApplicationDisplayVersion Condition="'$(ReleaseChannel)' == 'beta'">$(ReleaseVersion)-beta</ApplicationDisplayVersion>
-    <!--
-      Enables trim analyzers and full trimming during Release mode.
-      To learn more, see: https://learn.microsoft.com/dotnet/core/deploying/trimming/trimming-options#trimming-granularity
-    -->
-    <TrimMode>copyused</TrimMode>
+    <!-- Trim unused framework code and keep application assemblies intact. -->
+    <TrimMode>partial</TrimMode>
   </PropertyGroup>
   <ItemGroup>
-    <AndroidNativeLibrary Include="bin/native-tests/arm64-v8a/libnettt_test_pattern.so" Condition="'$(Configuration)' == 'Debug' and Exists('bin/native-tests/arm64-v8a/libnettt_test_pattern.so')" Link="lib/arm64-v8a/libnettt_test_pattern.so" />
+    <AndroidNativeLibrary Include="bin/native-tests/arm64-v8a/libnettt_test_pattern.so" Condition="'$(RuntimeIdentifier)' == 'android-arm64' and '$(Configuration)' == 'Debug' and Exists('bin/native-tests/arm64-v8a/libnettt_test_pattern.so')" Link="lib/arm64-v8a/libnettt_test_pattern.so" />
     <Compile Include="../QuicPunch.AndroidProbe.Shared/QuicProbe.cs" Link="QuicProbe.cs" />
     <ProjectReference Include="..\QuicNet.Shared\QuicNet.Shared.csproj" />
     <AndroidAsset Include="../QuicNet.Geolocation/Data/NOTICE.txt" Link="Assets/GEOLOCATION-NOTICE.txt" />
-    <AndroidNativeLibrary Include="../QuicPunch/runtimes/android-arm64/native/libmsquic.so"
+    <AndroidNativeLibrary Include="../QuicPunch/runtimes/android-arm64/native/libmsquic.so" Condition="'$(RuntimeIdentifier)' == 'android-arm64'"
                           Link="lib/arm64-v8a/libmsquic.so" />
   </ItemGroup>
-  <Target Name="RequireAndroidMsQuic" BeforeTargets="Build">
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'android-x64'">
+    <AndroidNativeLibrary Remove="native/arm64-v8a/*.so" />
+    <AndroidNativeLibrary Include="bin/native/x86_64/*.so" Link="lib/x86_64/%(Filename)%(Extension)" />
+    <_EmulatorLibrary Include="libmsquic;libqp_transport;libqp_probe;libtor;libnettt_media;libavcodec;libavutil;libswscale" />
+  </ItemGroup>
+  <Target Name="RequireAndroidEmulatorLibraries" BeforeTargets="PrepareForBuild" Condition="'$(RuntimeIdentifier)' == 'android-x64'">
+    <Error Condition="!Exists('bin/native/x86_64/%(_EmulatorLibrary.Identity).so')"
+           Text="Missing x86_64 library %(_EmulatorLibrary.Identity).so. Run build-native-android.sh x86_64, scripts/build-native-media.sh android-x64 and prepare-tor-android.ps1 -Abi x86_64." />
+  </Target>
+  <Target Name="RequireAndroidMsQuic" BeforeTargets="Build" Condition="'$(RuntimeIdentifier)' == 'android-arm64'">
     <Error Condition="!Exists('native/arm64-v8a/libnettt_media.so') or !Exists('native/arm64-v8a/libavcodec.so') or !Exists('native/arm64-v8a/libavutil.so') or !Exists('native/arm64-v8a/libswscale.so')" Text="Build the native FFmpeg libraries with scripts/build-native-media.sh android-arm64 before packaging." />
     <Error Condition="!Exists('native/arm64-v8a/libtor.so')"
            Text="Run QuicPunch.AndroidProbe/prepare-tor-android.ps1 before packaging the Android Tor runtime." />

@@ -6,23 +6,28 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#101116">
   <title>Inicio · QuicNet</title>
+  <link rel="icon" href="/favicon.ico">
   <script>(function(){if(/Android/i.test(navigator.userAgent)||window.__qp_is_android){document.documentElement.classList.add('platform-android');}})();</script>
   <link rel="stylesheet" href="/app.css">
   <link rel="stylesheet" href="/media-studio.css">
   <script defer src="/diagnostics.js"></script>
   <script defer src="/ui-values.js"></script>
   <script defer src="/app.js"></script>
+  <script defer src="/dialogs.js"></script>
   <script defer src="/presence.js"></script>
   <script defer src="/identity.js"></script>
   <script defer src="/network-telemetry.js"></script>
   <script defer src="/dashboard.js"></script>
   <script defer src="/tor-discovery-warning.js"></script>
   <script defer src="/chat-markdown.js"></script>
+  <script defer src="/chat-drafts.js"></script>
   <script defer src="/chat.js"></script>
   <script defer src="/chat-social.js"></script>
   <script defer src="/screen-audio-capture.js"></script>
   <script defer src="/screen-audio-playback.js"></script>
   <script defer src="/native-video.js"></script>
+  <script defer src="/remote-input.js"></script>
+  <script defer src="/screen-source-picker.js"></script>
   <script defer src="/voice.js"></script>
   <script defer src="/vpn.js"></script>
   <script defer src="/vpn-traffic.js"></script>
@@ -36,15 +41,34 @@
   <script defer src="/app-settings.js"></script>
   <script defer src="/settings-navigation.js"></script>
   <script defer src="/design-usability.js"></script>
-  <script defer src="/geolocation.js"></script>
   <script type="module" src="/profile-photo.js"></script>
   <link rel="stylesheet" href="/workspace.css">
+  <link rel="stylesheet" href="/dialogs.css">
 </head>
 <body data-page="dashboard">
+<svg xmlns="http://www.w3.org/2000/svg" hidden aria-hidden="true"><defs>
+  <symbol id="nav-icon-watch" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m10 8 6 4-6 4z"/></symbol>
+  <symbol id="nav-icon-virtual-disk" viewBox="0 0 24 24"><path d="M5 4h14l3 10v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4L5 4Z"/><path d="M2 14h20M6 17h4"/><circle cx="18" cy="17" r=".9" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="nav-icon-vpn" viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="6" rx="1"/><rect x="2" y="16" width="8" height="5" rx="1"/><rect x="14" y="16" width="8" height="5" rx="1"/><path d="M12 9v4M6 16v-3h12v3"/></symbol>
+  <symbol id="nav-icon-speedtest" viewBox="0 0 24 24"><path d="M4 18a9 9 0 1 1 16 0M12 13l5-5M4 12h2M12 3v2M18 12h2"/><circle cx="12" cy="13" r="1"/></symbol>
+  <symbol id="voice-icon-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></symbol>
+  <symbol id="voice-icon-headphones" viewBox="0 0 24 24"><path d="M3 14v-3a9 9 0 0 1 18 0v3"/><rect x="3" y="12" width="4" height="9" rx="2"/><rect x="17" y="12" width="4" height="9" rx="2"/></symbol>
+</defs></svg>
 <a class="skip-link" href="#spaContainer">Saltar al contenido</a>
 <header class="topbar">
-  <div class="app-location"><a href="/">QuicNet</a><span aria-hidden="true">/</span><strong id="currentWorkspace">Inicio</strong></div>
-  <button class="btn mobile-tools-trigger" id="openMobileTools" type="button" aria-haspopup="dialog" aria-controls="mobileToolsDialog">Herramientas</button><span class="app-local-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/></svg>Tu espacio. Tus conexiones.</span>
+  <div class="app-location"><a href="/"><img class="app-location-icon" src="/quicnet-icon.png" width="28" height="28" alt="">QuicNet</a><span aria-hidden="true">/</span><strong id="currentWorkspace">Inicio</strong></div>
+  <button class="btn mobile-tools-trigger" id="openMobileTools" data-open-tools type="button" aria-haspopup="dialog" aria-controls="mobileToolsDialog">Herramientas</button>
+  <div class="header-network-switch" id="headerNetworkSwitch" role="group" aria-label="Modo de conexión" aria-describedby="headerNetworkStatus">
+    <button type="button" data-connection-mode="wan" aria-pressed="false" aria-disabled="true">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg>
+      Solo WAN
+    </button>
+    <button type="button" data-connection-mode="tor" aria-pressed="false" aria-disabled="true">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c0 4-8 4.5-8 10a8 6 0 0 0 16 0c0-5.5-8-6-8-10ZM12 5c-1-1-1.5-2-1.5-3M12 5c1.5-.7 2.5-1.4 3-2.5M12 9c-2 2.1-4.5 3.9-4.5 6.4a4.5 5.6 0 0 0 9 0c0-2.5-2.5-4.3-4.5-6.4ZM12 12.5c-1.1 1.2-1.5 2.3-1.5 3.5s.7 2.3 1.5 2.3 1.5-1.1 1.5-2.3-.4-2.3-1.5-3.5Z"/></svg>
+      Solo Tor
+    </button>
+  </div>
+  <p class="header-network-status" id="headerNetworkStatus" role="status">Consultando modo de conexión…</p>
   <div class="update-notice update-notice-mobile" id="mobileUpdateNotice" hidden>
     <span class="update-notice-dot" aria-hidden="true"></span>
     <div class="update-notice-copy"><div role="status" aria-live="polite" aria-atomic="true"><strong id="mobileUpdateTitle">Actualización disponible</strong><span id="mobileUpdateDetail"></span></div>
@@ -54,6 +78,26 @@
   </div>
 </header>
 <div id="connectionNotice" class="connection-notice hidden" role="status"><span id="connectionNoticeText">Se ha perdido la conexión con la aplicación. Intentando reconectar…</span><button class="btn sm" id="retryConnectionBtn">Reintentar</button></div>
+<section id="remoteInputBanner" class="remote-input-banner" aria-label="Control remoto" hidden>
+  <strong id="remoteInputStatus" role="status"></strong>
+  <div class="remote-input-actions">
+    <button id="remoteInputReview" class="btn accent" type="button">Revisar solicitud</button>
+    <button id="remoteInputClipboard" class="btn" type="button" hidden>Portapapeles</button>
+    <button id="remoteInputSendClipboard" class="btn" type="button" hidden>Enviar texto copiado</button>
+    <button id="remoteInputReceiveClipboard" class="btn" type="button" hidden>Copiar texto recibido</button>
+    <button id="remoteInputStop" class="btn danger" type="button">Detener control</button>
+  </div>
+</section>
+<dialog id="remoteInputConsent" class="remote-input-consent" aria-labelledby="remoteInputTitle" aria-describedby="remoteInputDetail">
+  <h2 id="remoteInputTitle">Permitir control remoto</h2>
+  <p id="remoteInputDetail"></p>
+  <label id="remoteInputConfirm"><input id="remoteInputPermission" type="checkbox"> Quiero compartir el control del ratón y el teclado.</label>
+  <label id="remoteInputClipboardConsent" hidden><input id="remoteInputClipboardPermission" type="checkbox"> Permitir sincronizar el texto del portapapeles durante esta sesión.</label>
+  <div class="dialog-actions">
+    <button id="remoteInputClose" class="btn" type="button" autofocus>Volver</button>
+    <button id="remoteInputAccept" class="btn accent" type="button">Permitir control</button>
+  </div>
+</dialog>
 <!-- Global Incoming Call Alert Banner -->
 <div id="incomingCallBanner" class="incoming-call-banner hidden">
   <div class="incoming-call-pulse"></div>
@@ -67,25 +111,21 @@
   </div>
 </div>
 
-<!-- Persistent global active call bar -->
-<div id="globalActiveCallBar" class="global-call-bar hidden">
-  <div class="call-bar-left" id="globalCallBarInfo">
-    <div class="live-dot-pulse"></div>
-    <div class="avatar sm" id="globalCallAvatar">QP</div>
-    <div>
-      <strong id="globalCallPeerName">En llamada</strong>
-      <span id="globalCallMeta">Audio conectado</span>
-    </div>
-  </div>
-  <div class="call-bar-controls">
-    <button class="btn sm ghost" id="globalCallMicBtn" type="button" aria-label="Silenciar micrófono" aria-pressed="false" title="Silenciar micrófono"></button>
-    <button class="btn sm ghost" id="globalCallDeafenBtn" type="button" aria-label="Silenciar audio de la llamada" aria-pressed="false" title="Silenciar audio de la llamada"></button>
-    <button class="btn sm call-hangup" id="globalCallHangupBtn" type="button" aria-label="Colgar llamada" title="Colgar llamada"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16v-4c5-5 13-5 18 0v4l-5 1-1-4a12 12 0 0 0-6 0l-1 4z"/></svg><span class="call-state-label">Colgar</span></button>
-    <button class="btn sm accent" id="globalCallGoToVoiceBtn" type="button" title="Abrir sala de llamada">Ver llamada</button>
+<div class="floating-call-area">
+  <div class="floating-call" id="floatingCall" role="group" aria-label="Llamada en curso" hidden>
+    <button class="floating-call-open" id="floatingCallOpen" type="button" aria-label="Abrir llamada" aria-description="Usa las flechas para mover la ventana.">
+      <span class="avatar floating-call-avatar" id="floatingCallAvatar" aria-hidden="true"></span>
+    </button>
+    <button class="floating-call-control" id="globalCallMicBtn" type="button" aria-label="Silenciar micrófono" aria-pressed="false"></button>
+    <button class="floating-call-control" id="globalCallDeafenBtn" type="button" aria-label="Silenciar audio de la llamada" aria-pressed="false"></button>
   </div>
 </div>
 
-<aside class="nav-wrap" aria-label="Navegación de QuicNet"><a class="brand" href="/" aria-label="QuicNet, inicio"><span class="brand-mark">q</span><span>QuicNet<span class="brand-period">.</span><small>Conecta. Comparte. Disfruta.</small></span></a><span class="nav-caption">TU ESPACIO</span><nav class="nav" aria-label="Navegación principal"><a class="nav-link" data-page="dashboard" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span class="nav-label">Inicio</span><span class="peer-attention-count hidden" id="untrustedNavCount"></span></a><a class="nav-link" data-page="chat" href="/chat.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg><span class="nav-label">Mensajes</span></a><a class="nav-link" data-page="voice" href="/call.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-4l-5-2-2 2a15 15 0 0 1-6-6l2-2-2-5z"/></svg><span class="nav-label">Llamadas</span></a><a class="nav-link" data-page="watch" href="/watch.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m10 8 6 4-6 4z"/></svg><span class="nav-label">Ver juntos</span></a><span class="nav-caption nav-tools">HERRAMIENTAS</span><a class="nav-link" data-page="vpn" href="/vpn.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="6" rx="1"/><rect x="2" y="16" width="8" height="5" rx="1"/><rect x="14" y="16" width="8" height="5" rx="1"/><path d="M12 9v4M6 16v-3h12v3"/></svg><span class="nav-label">Red privada</span></a><a class="nav-link" data-page="speedtest" href="/speedtest.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a9 9 0 1 1 16 0M12 13l5-5M4 12h2M12 3v2M18 12h2"/><circle cx="12" cy="13" r="1"/></svg><span class="nav-label">Velocidad</span></a><a class="nav-link" data-page="settings" href="/settings.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg><span class="nav-label">Ajustes</span></a></nav><div class="update-notice update-notice-menu" id="menuUpdateNotice" hidden>
+<aside class="nav-wrap" aria-label="Navegación de QuicNet"><a class="brand" href="/" aria-label="QuicNet, inicio"><img class="brand-mark" src="/quicnet-icon.png" width="44" height="44" alt=""><span>QuicNet<span class="brand-period">.</span><small>Conecta. Comparte. Disfruta.</small></span></a><span class="nav-caption">TU ESPACIO</span><nav class="nav" aria-label="Navegación principal"><a class="nav-link" data-page="dashboard" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span class="nav-label">Inicio</span><span class="peer-attention-count hidden" id="untrustedNavCount"></span></a><a class="nav-link" data-page="chat" href="/chat.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg><span class="nav-label">Mensajes</span></a><a class="nav-link" data-page="voice" href="/call.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1c0 9.4 7.6 17 17 17a1 1 0 0 0 1-1v-4l-5-2-2 2a15 15 0 0 1-6-6l2-2-2-5z"/></svg><span class="nav-label">Llamadas</span></a><span class="nav-caption nav-tools">HERRAMIENTAS</span><a class="nav-link" data-page="watch" data-workspace-tool href="/watch.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#nav-icon-watch"/></svg><span class="nav-label">Ver juntos</span></a><a class="nav-link" data-page="vpn" data-workspace-tool href="/vpn.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#nav-icon-vpn"/></svg><span class="nav-label">Red privada</span></a><a class="nav-link" data-page="speedtest" data-workspace-tool href="/speedtest.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#nav-icon-speedtest"/></svg><span class="nav-label">Velocidad</span></a>
+  <a class="nav-link" data-page="virtual-disk" data-workspace-tool href="/virtual-disk.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#nav-icon-virtual-disk"/></svg><span class="nav-label">Disco virtual</span></a>
+  <button class="nav-link nav-more" id="navMore" type="button" data-open-tools aria-haspopup="dialog" aria-controls="mobileToolsDialog"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="4" cy="12" r="2.5"/><circle cx="12" cy="12" r="2.5"/><circle cx="20" cy="12" r="2.5"/></svg><span class="nav-label">Más</span></button>
+  <a class="nav-link" data-page="settings" href="/settings.html"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg><span class="nav-label">Ajustes</span></a>
+</nav><div class="update-notice update-notice-menu" id="menuUpdateNotice" hidden>
   <span class="update-notice-dot" aria-hidden="true"></span>
   <div class="update-notice-copy"><div role="status" aria-live="polite" aria-atomic="true"><strong id="menuUpdateTitle">Actualización disponible</strong><span id="menuUpdateDetail"></span></div>
     <progress id="menuUpdateProgress" max="1" value="0" hidden aria-label="Descarga de actualización"></progress>
@@ -203,61 +243,70 @@
       <section id="mediaAudioPanel" class="hidden" role="tabpanel" aria-labelledby="mediaAudioTab">
         <section class="section">
           <div class="section-head">
-            <div>
-              <h2>Dispositivos de audio</h2>
-              <p>Elige tu micrófono y dónde quieres escuchar.</p>
-            </div>
+            <h2>Dispositivos de audio</h2>
           </div>
           <div class="section-body">
-            <div class="field">
-              <label for="micSelect">Micrófono (Dispositivo de Entrada)</label>
-              <select class="select" id="micSelect"></select>
-            </div>
-            <div class="field space-top">
-              <label for="speakerSelect">Altavoces / Auriculares (Dispositivo de Salida)</label>
-              <select class="select" id="speakerSelect"></select>
-            </div>
-            
-            <p class="inline-help" id="voiceAudioStatus" role="status">El micrófono se abrirá al llamar o al iniciar una prueba.</p>
-            <div class="field space-top">
-              <div>
-                <label for="masterVolumeSlider">Volumen Maestro de Salida</label>
-                <span id="masterVolumeLabel" class="mono">100%</span>
+            <div class="audio-device-settings">
+              <div class="audio-device-column">
+                <div class="field">
+                  <label for="micSelect">Micrófono</label>
+                  <select class="select" id="micSelect"></select>
+                </div>
+                <div class="field">
+                  <span>Nivel del micrófono</span>
+                  <div class="meter">
+                    <span id="micMeter"></span>
+                  </div>
+                </div>
+                <div class="toolbar">
+                  <button class="btn" id="testMicBtn">Probar micrófono</button>
+                  <button class="btn ghost" id="retryVoiceAudioBtn">Reintentar micrófono</button>
+                </div>
               </div>
-              <input type="range" id="masterVolumeSlider" min="0" max="200" step="5" value="100">
-            </div>
-
-            <div class="field space-top">
-              <label>Nivel de Actividad del Micrófono (Vúmetro)</label>
-              <div class="meter">
-                <span id="micMeter"></span>
+              <div class="audio-device-column">
+                <div class="field">
+                  <label for="speakerSelect">Altavoces o auriculares</label>
+                  <select class="select" id="speakerSelect"></select>
+                </div>
+                <div class="field">
+                  <div class="audio-volume-heading">
+                    <label for="masterVolumeSlider">Volumen de salida</label>
+                    <span id="masterVolumeLabel" class="mono">100%</span>
+                  </div>
+                  <input type="range" id="masterVolumeSlider" min="0" max="200" step="5" value="100">
+                </div>
               </div>
             </div>
-            <div class="toolbar space-top">
-              <button class="btn" id="testMicBtn">🎤 Probar micrófono</button>
-              <button class="btn ghost" id="retryVoiceAudioBtn">Reintentar micrófono</button>
-
+            <div class="audio-device-feedback">
+              <p class="inline-help" id="voiceAudioStatus" role="status">El micrófono se abrirá al llamar o al iniciar una prueba.</p>
+              <p class="inline-help">Los cambios de dispositivo y volumen se aplican al instante.</p>
             </div>
           </div>
-        </section><section class="media-block" id="opusModal"><h3>Voz · Opus</h3>      <div class="field">
-        <label for="opusBitrateSelect">Calidad de audio y consumo de datos</label>
-        <select class="select" id="opusBitrateSelect">
-          <option value="16000">16 kbps · Ahorro de datos</option>
-          <option value="24000">24 kbps · Voz estándar</option>
-          <option value="32000">32 kbps · Voz clara</option>
-          <option value="48000">48 kbps · Voz de alta calidad</option>
-          <option value="64000">64 kbps · Alta calidad</option>
-          <option value="96000" selected>96 kbps · Máxima calidad de voz</option>
-          <option value="128000">128 kbps · Música y audio detallado</option>
-          <option value="160000">160 kbps</option>
-          <option value="192000">192 kbps</option>
-          <option value="256000">256 kbps</option>
-          <option value="300000">300 kbps · Máximo para voz mono</option>
-        </select>
-      </div>
-
-      <p class="inline-help space-top">Una calidad más alta utiliza más datos. La llamada puede adaptarse a tu conexión para mantener el audio fluido.</p>
-<button class="btn primary" id="saveOpusModalBtn">Aplicar calidad de audio</button></section><p class="inline-help">Los cambios de dispositivo y volumen se aplican al instante.</p></section>
+        </section>
+        <section class="section opus-settings" id="opusModal" aria-labelledby="opusSettingsTitle">
+          <div class="opus-settings-copy">
+            <h3 id="opusSettingsTitle">Calidad de voz (Opus)</h3>
+            <p class="inline-help" id="opusBitrateHelp">Más calidad consume más datos. La llamada puede adaptarse a tu conexión.</p>
+          </div>
+          <div class="opus-settings-controls">
+            <label class="sr-only" for="opusBitrateSelect">Tasa de bits de Opus</label>
+            <select class="select" id="opusBitrateSelect" aria-describedby="opusBitrateHelp">
+              <option value="16000">16 kbps · Ahorro de datos</option>
+              <option value="24000">24 kbps · Voz estándar</option>
+              <option value="32000">32 kbps · Voz clara</option>
+              <option value="48000">48 kbps · Voz de alta calidad</option>
+              <option value="64000">64 kbps · Alta calidad</option>
+              <option value="96000" selected>96 kbps · Máxima calidad</option>
+              <option value="128000">128 kbps · Música y detalle</option>
+              <option value="160000">160 kbps</option>
+              <option value="192000">192 kbps</option>
+              <option value="256000">256 kbps</option>
+              <option value="300000">300 kbps · Máximo para voz mono</option>
+            </select>
+            <button class="btn primary" type="button" id="saveOpusModalBtn">Aplicar</button>
+          </div>
+        </section>
+      </section>
       <section id="mediaVideoPanel" role="tabpanel" aria-labelledby="mediaVideoTab">
       <div class="media-detection"><span id="mediaDetectionStatus" role="status" aria-live="polite">Consultando el equipo…</span><button class="btn sm" id="refreshMediaCapabilitiesBtn">Volver a detectar</button></div>
       <details class="media-block" open><summary>Quién puede recibir cada códec</summary><p class="inline-help">Hardware ★ · Software ✓ · No compatible × · Pendiente ·. Se prepara una vez en cada dispositivo y se comparte desde caché. El detalle indica el tamaño probado; el perfil final se valida al recibir vídeo.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Participante</th><th>H.264</th><th>HEVC</th><th>VP9</th><th>AV1</th></tr></thead><tbody id="nativeDecoderMatrix"></tbody></table></div></details>
@@ -295,6 +344,10 @@
         <select id="screenCodecSelect" hidden aria-hidden="true" tabindex="-1"><option value="h264:gpu">H.264 · GPU</option></select>
         <div id="screenCodecPicker"><div class="codec-choice-grid" id="screenCodecOptions" role="group" aria-label="Códec y procesamiento"></div></div>
         <p class="inline-help" id="screenNativeStatus">Consultando los codificadores disponibles…</p>
+        <div id="androidRemoteScreenOptions" hidden>
+          <label><input type="checkbox" id="androidRemoteScreenCapture"> Compartir toda la pantalla para permitir solicitudes de control remoto</label>
+          <button class="btn sm" type="button" id="androidRemoteAccessibility">Configurar accesibilidad en Android</button>
+        </div>
         <p class="inline-help" id="screenCodecCompatibility" role="status">La compatibilidad de los participantes está en la tabla de estos ajustes.</p>
       </section>
       <details class="advanced-settings space-top" id="videoEncodingDetails"><summary>Afinar la codificación</summary><p class="inline-help">Escoge un preset y revisa sus valores antes de aplicar los cambios.</p>
@@ -414,13 +467,32 @@
 </div>
 <div class="modal-foot"><button class="btn" id="avatarCropCancel" type="button">Cancelar</button><button class="btn accent" id="avatarCropSave" type="button">Guardar foto</button></div>
 </div></div>
+<dialog id="addContactDialog" class="add-contact-dialog" aria-labelledby="addContactTitle"><div class="add-contact-heading"><h2 id="addContactTitle">Añadir contacto</h2><button class="btn" id="closeAddContact" type="button" autofocus>Cerrar</button></div><div class="invitation-content" id="connectArea"><section class="section connect-card" id="invitationShare" hidden><div class="section-body"><p>Envía tu invitación a alguien que conozcas para que pueda encontrarte.</p><button class="btn primary" id="shareInvitationBtn" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(1 0) scale(.9)"/></svg>Copiar invitación</button><span class="inline-help" id="invitationHint">Preparando invitación…</span><div class="field space-top" id="invitationManualCopy" hidden><label for="invitationCopyValue">Copia esta invitación manualmente</label><textarea class="input" id="invitationCopyValue" readonly rows="3"></textarea></div></div></section>
+<section class="section connect-card" id="invitationReceive" hidden><div class="section-body"><p>Pega el código que te han enviado. Busca su dispositivo y revisa su identidad antes de permitir mensajes. Las llamadas y la red privada tienen permisos propios.</p><label class="invitation-label" for="tokenInput">Código o enlace de invitación</label><div class="manual-connect"><input class="input" id="tokenInput" placeholder="Código QP://…" autocomplete="off" spellcheck="false" aria-describedby="connectFeedback"><button class="btn" id="pasteClipboardBtn" type="button">Pegar</button></div><div class="connect-footer"><button class="btn primary" id="connectTokenBtn">Buscar contacto</button><button class="btn" id="activateTokenTransport" type="button" hidden>Activar transporte y conectar</button><span id="connectFeedback" class="inline-help" role="status"></span><button class="btn" id="returnFromInvitation" type="button" hidden>Volver al selector</button></div></div></section></div>
+</dialog>
 <dialog id="mobileToolsDialog" class="permission-dialog mobile-tools-dialog" aria-labelledby="mobileToolsTitle">
-  <header class="mobile-tools-heading"><h2 id="mobileToolsTitle">Herramientas</h2><button type="button" class="btn" id="closeMobileTools" autofocus>Cerrar</button></header>
+  <header class="mobile-tools-heading"><h2 id="mobileToolsTitle">Más</h2><button type="button" class="btn" id="closeMobileTools" autofocus>Cerrar</button></header>
   <nav class="mobile-tools-list" aria-label="Herramientas de QuicNet">
-    <a href="/vpn.html" data-page="vpn"><strong>Red privada</strong><span>Conecta tus dispositivos en una misma red.</span></a>
-    <a href="/speedtest.html" data-page="speedtest"><strong>Prueba de velocidad</strong><span>Comprueba la conexión con tus contactos.</span></a>
-    <a href="/virtual-disk.html" data-page="virtual-disk"><strong>Disco virtual</strong><span>Explora y comparte archivos y carpetas.</span></a>
-    <a href="/settings.html" data-page="settings"><strong>Ajustes</strong><span>Gestiona tu perfil, contactos y preferencias.</span></a>
+    <a href="/watch.html" data-page="watch" data-workspace-tool>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#nav-icon-watch"/></svg>
+      <span class="mobile-tool-copy"><strong>Ver juntos</strong><span>Reproduce vídeos en sincronía con tus contactos.</span><span class="mobile-current-tool">Pantalla actual</span></span>
+    </a>
+    <a href="/virtual-disk.html" data-page="virtual-disk" data-workspace-tool>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#nav-icon-virtual-disk"/></svg>
+      <span class="mobile-tool-copy"><strong>Disco virtual</strong><span>Envía archivos y abre carpetas compartidas.</span><span class="mobile-current-tool">Pantalla actual</span></span>
+    </a>
+    <a href="/vpn.html" data-page="vpn" data-workspace-tool>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#nav-icon-vpn"/></svg>
+      <span class="mobile-tool-copy"><strong>Red privada</strong><span>Conecta tus dispositivos en una misma red.</span><span class="mobile-current-tool">Pantalla actual</span></span>
+    </a>
+    <a href="/speedtest.html" data-page="speedtest" data-workspace-tool>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#nav-icon-speedtest"/></svg>
+      <span class="mobile-tool-copy"><strong>Prueba de velocidad</strong><span>Comprueba la conexión con tus contactos.</span><span class="mobile-current-tool">Pantalla actual</span></span>
+    </a>
+    <button type="button" class="btn" id="mobilePresenceButton" aria-haspopup="dialog" aria-controls="userPresenceDialog">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a5 5 0 0 1 5-5h6a5 5 0 0 1 5 5v2"/></svg>
+      <span class="mobile-tool-copy"><strong>Tu estado</strong><span id="mobilePresenceText">Consultando estado…</span></span>
+    </button>
   </nav>
 </dialog>
 </body>

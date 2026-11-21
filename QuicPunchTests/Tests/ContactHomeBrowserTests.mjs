@@ -21,7 +21,8 @@ try {
   const card=id=>page.locator(`[data-contact-key="${hashes[id]}"]`);
   const keys=async()=>(await page.locator('#homeContacts .contact-card').evaluateAll(cards=>cards.map(c=>c.dataset.contactKey))).map(hash=>Object.keys(hashes).find(id=>hashes[id]===hash));
   assert.deepEqual(await keys(),['first','second','third']);
-  assert.match(await card('first').locator('.contact-location').textContent(),/Última IP.*Barcelona/);
+  assert.equal(await card('first').locator('.contact-location').textContent(),'≈ Barcelona');
+  assert.match(await card('first').locator('.contact-location').getAttribute('title'),/última IP observada/);
   assert.match(await card('first').locator('.contact-last-used').textContent(),/Último uso/);
   assert.equal(await page.getByText('No mostrar esta ciudad').count(),0);
   await page.locator('.contact-options > summary').click();
@@ -35,10 +36,16 @@ try {
   const add=page.locator('[data-focus-connect]');await add.click();
   assert.equal(await page.locator('#addContactDialog').evaluate(d=>d.open),true);
   assert.equal(await page.locator('#tokenInput').evaluate(e=>e===document.activeElement),true);
+  assert.equal(await page.locator('#shareInvitationBtn').isVisible(),false);
+  await page.keyboard.press('Escape');
+  await page.locator('#openShareInvitation').click();
+  assert.equal(await page.locator('#tokenInput').isVisible(),false);
   await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('Clipboard denied for fixture');}}}));
   await page.locator('#shareInvitationBtn').click();
   assert.equal(await page.locator('#invitationManualCopy').isVisible(),true);
   assert.match(await page.locator('#invitationCopyValue').inputValue(),/^QP:\/\//);
+  await page.keyboard.press('Escape');
+  await add.click();
   await page.locator('#connectTokenBtn').click();assert.match(await page.locator('#connectFeedback').textContent(),/Pega una invitación/);
   await page.locator('#tokenInput').fill('invitation-invalid');await page.locator('#connectTokenBtn').click();
   await page.waitForFunction(()=>document.querySelector('#tokenInput').getAttribute('aria-invalid')==='true'&&!document.querySelector('#connectTokenBtn').disabled);
@@ -52,6 +59,16 @@ try {
   for(const width of [2560,1440,768,390,320]) {
     await page.setViewportSize({width,height:900});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Home overflow at '+width);
+    if (width <= 390) {
+      const [identity, location, state, activity] = await Promise.all(
+        ['.ci', '.contact-location', '.contact-card-connection .badge', '.contact-last-used']
+          .map(selector=>card('first').locator(selector).boundingBox())
+      );
+      assert.ok(location.x >= identity.x + identity.width && Math.abs(location.y - identity.y) < identity.height,
+        'Location should sit to the right of the identity at '+width);
+      assert.ok(activity.x >= state.x + state.width && Math.abs(activity.y - state.y) < state.height,
+        'Last use should sit to the right of the connection status at '+width);
+    }
     await page.screenshot({path:'.artifacts/contact-home-'+width+'.png',fullPage:true});
     await add.click();
     assert.ok(await page.locator('#addContactDialog').evaluate(d=>d.scrollWidth<=d.clientWidth),'Invitation overflow at '+width);

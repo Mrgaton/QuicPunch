@@ -29,6 +29,7 @@ internal static class WatchReliabilityTests
         Directory.CreateDirectory(root);
         try
         {
+            await HostOwnsWatchProtocols(root);
             await AdmissionAndCleanup(root);
             await GlobalAdmission();
             await TransferAndCache(root);
@@ -36,6 +37,21 @@ internal static class WatchReliabilityTests
             await TorRooms(root);
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task HostOwnsWatchProtocols(string root)
+    {
+        using var lifetime = new CancellationTokenSource();
+        await using var node = new QuicPunch.QuicPunch(lifetime.Token, updateIpReputationOnlyWithWan: true,
+            appDataPath: Path.Combine(root, "host-watch"), listeningPort: 0);
+        await using var watch = new QuicNet.Watch.WatchApplication(node, lifetime);
+        var handlers = node.ProtocolHandlers.Values.ToArray();
+        Check(handlers.OfType<WatchControlHandler>().Count() == 1 &&
+            handlers.OfType<MediaTransferHandler>().Count() == 1, "shared host registers both Watch protocols");
+        lifetime.Cancel();
+        await watch.DisposeAsync();
+        await watch.DisposeAsync();
+        Check(node.ProtocolHandlers.IsEmpty, "shared host unregisters both Watch protocols on dispose");
     }
 
     private static byte[] Request(Guid media, Guid request)

@@ -28,7 +28,7 @@ El aviso explica que publicar la dirección onion y el nombre del dispositivo pe
 
 El uso cuenta periodos de actividad de un minuto al enviar mensajes o completar conexiones de aplicación, evitando escribir en disco por cada mensaje. Los anuncios, pings y refrescos de la interfaz no incrementan ese contador.
 
-La localidad se consulta en la base GeoIP local existente. Los contactos desconectados usan la última IP observada, con la etiqueta «Última IP» y la fecha de su última conexión; si aún no existe esa observación se pueden consultar las direcciones guardadas/anunciadas. La interfaz muestra una aproximación de la IP, no la ubicación física de la persona. Las conexiones Tor no guardan una IP de relay como ubicación y mantienen su localidad oculta.
+La localidad aproximada aparece junto al nombre y se consulta en la base GeoIP local. En los contactos desconectados se usa la última IP observada, indicada en el texto de ayuda de la localidad. Si aún no existe esa observación se pueden consultar las direcciones guardadas o anunciadas. Junto al estado aparece el último uso o, si corresponde, la última conexión. Las conexiones Tor mantienen su localidad oculta y evitan guardar la IP del relay como ubicación.
 
 ## Descubrimiento recíproco
 

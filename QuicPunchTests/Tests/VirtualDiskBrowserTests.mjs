@@ -114,6 +114,22 @@ try {
  await page.getByRole('button',{name:'Revocar',exact:true}).click();
  await page.waitForFunction(()=>document.getElementById('diskFiles').textContent.includes('revocado'));
  assert.equal(await page.locator('#diskUploadLabel').isVisible(),false);
+ await page.evaluate(() => {
+   const current = QP.state.status;
+   const snapshot = {...current, savedPeers:[], peers:[{...current.peers[0], isTrusted:false}]};
+   QP.state.status = snapshot;
+   QP.emit('status_updated', snapshot);
+ });
+ await page.locator('#diskConnect').click();
+ await page.waitForFunction(() => document.getElementById('diskStatus').textContent.includes('desde este dispositivo'));
+ assert.ok(await page.locator('#diskSend').isDisabled());
+ await page.locator('#diskAddContact').click();
+ await page.locator('#addContactDialog').waitFor();
+ await page.keyboard.press('Escape');
+ await page.locator('#diskReviewContacts').click();
+ const review = page.locator('[data-contact-filter="review"]');
+ assert.equal(await review.getAttribute('aria-pressed'), 'true');
+ assert.ok(await review.evaluate(element => document.activeElement === element));
  assert.deepEqual(errors,[]);
  console.log('PASS disk UI: batch and empty uploads, cancellation, failures, quick send/receive, Android tree picker/save, escaping, revocation and desktop/mobile layout');
 } finally { await closeBrowserFixture(browser, server); }

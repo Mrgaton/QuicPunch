@@ -5,3 +5,8 @@
 - Guardar la clave privada de publicación fuera del repositorio y del CDN. La ubicación predeterminada se obtiene con `Get-DefaultReleaseSigningKeyPath` en `scripts/ReleaseSecrets.psm1`: `%LOCALAPPDATA%/QuicNet/signing/release-private.pem` en Windows y la carpeta de datos local del usuario en Linux.
 - Una clave de publicación perdida no se reemplaza generando otra: recuperar la identidad original y mantener una copia de seguridad privada. No mostrar el contenido de claves en registros ni respuestas.
 - Usar las carpetas estándar `bin/` y `obj/` para compilar y probar. Las compilaciones de publicación separadas usan `bin/updates/`. No crear carpetas `.codex-*` por proyecto para cada prueba o tarea; las antiguas solo contienen resultados de compilación y el script de limpieza las retira cuando reconoce ese contenido. Conservar `.codex/` si contiene configuración o instrucciones.
+
+## Desarrollo y pruebas
+
+- Sigue el [mapa de flujos y pruebas](doc/architecture/development-map.md) para localizar el punto de entrada y elegir las comprobaciones. Busca primero en los proyectos activos con `rg`.
+- Desde la raíz, usa `npm run test:web` para JavaScript y `./scripts/test.ps1 -Tests <suite>` para C#. Consulta el mapa para Chromium, plataformas y cambios de contrato.

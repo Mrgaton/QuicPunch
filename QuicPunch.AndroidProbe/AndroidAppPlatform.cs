@@ -62,11 +62,15 @@ internal sealed class AndroidAppPlatform(Context context) : IAppPlatform
         bool sound = enabled && channel.Importance >= NotificationImportance.Default && channel.Sound != null &&
             Audio.RingerMode == RingerMode.Normal && Manager.CurrentInterruptionFilter == InterruptionFilter.All &&
             Audio.GetStreamVolume(category == "calls" ? Android.Media.Stream.Ring : Android.Media.Stream.Notification) > 0;
-        string message = !enabled ? "Android tiene bloqueadas estas notificaciones. Actívalas en los ajustes del sistema." :
+        bool canRequest = MainActivity.Foreground?.CanRequestNotificationPermission == true;
+        string message = canRequest ? "Permite los avisos de Android para recibir mensajes y llamadas de QuicNet fuera de la app." :
+            !enabled ? "Android tiene bloqueadas estas notificaciones. Actívalas en los ajustes del sistema." :
             !sound ? "Los avisos están permitidos, pero Android está silenciando el sonido. Revisa el modo silencio, No molestar, el volumen y el canal." :
             "Android permite estos avisos y su sonido. Puedes cambiar el tono y la vibración de cada categoría en sus ajustes.";
-        return new(enabled, sound, true, true, message);
+        return new(enabled, sound, true, true, message, canRequest);
     }
+    public Task RequestNotificationPermissionAsync() => MainActivity.Foreground?.RequestNotificationPermissionAsync() ??
+        Task.FromException(new InvalidOperationException("Abre QuicNet para permitir los avisos de Android."));
     public bool OpenNotificationSettings()
     {
         if (MainActivity.Foreground is not { } activity) return false;
@@ -167,7 +171,8 @@ public sealed class AppBootReceiver : BroadcastReceiver
         if (context == null || intent?.Action is not (Intent.ActionBootCompleted or Intent.ActionMyPackageReplaced)) return;
         try
         {
-            if (!AndroidAppPlatform.Preferences(context).StartWithSystem) return;
+            var preferences = AndroidAppPlatform.Preferences(context);
+            if (!preferences.OnboardingCompleted || !preferences.StartWithSystem) return;
             // connectedDevice is allowed at boot; never request microphone service from a receiver.
             context.StartForegroundService(new Intent(context, typeof(AndroidConnectionService)).PutExtra("fromBoot", true));
         }

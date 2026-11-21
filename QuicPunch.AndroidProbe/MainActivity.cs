@@ -1,4 +1,5 @@
 using Android.App;
+using Android.Content;
 using Android.Widget;
 using Android.Content.PM;
 using Android.Webkit;
@@ -11,9 +12,47 @@ namespace QuicPunch.AndroidProbe;
 public class MainActivity : Activity
 {
     private WebView? _webView;
+    private SystemInsetLayout? _content;
+    private string _webUrl = AndroidConnectionService.Url;
     private MobileChromeClient? _chromeClient;
-    private bool _startupPermissionsPending;
-    internal static MainActivity? Foreground { get; private set; }
+    private ActivityBackCallback? _backCallback;
+    private bool _checkingWebBack;
+    private bool _visible;
+    private bool _recoveredRenderer;
+    private static int _visibleActivityCount;
+    internal static bool IsVisible => Volatile.Read(ref _visibleActivityCount) > 0;
+    internal static event Action? VisibilityChanged;
+    private const int NotificationPermissionRequest = 78;
+    private TaskCompletionSource? _notificationPermission;
+
+    internal bool CanRequestNotificationPermission => OperatingSystem.IsAndroidVersionAtLeast(33) &&
+        CheckSelfPermission(Android.Manifest.Permission.PostNotifications) != Permission.Granted &&
+        (ShouldShowRequestPermissionRationale(Android.Manifest.Permission.PostNotifications) ||
+         GetPreferences(FileCreationMode.Private)?.GetBoolean("notificationPermissionRequested", false) != true);
+
+    internal Task RequestNotificationPermissionAsync()
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RunOnUiThread(() =>
+        {
+            if (!OperatingSystem.IsAndroidVersionAtLeast(33) || Foreground != this || !CanRequestNotificationPermission || _notificationPermission != null ||
+                _cameraPermission != null || _chromeClient?.HasPendingOperation == true)
+            {
+                completion.TrySetException(new InvalidOperationException("Abre los ajustes de Android para revisar los permisos de avisos."));
+                return;
+            }
+            _notificationPermission = completion;
+            try { RequestPermissions([Android.Manifest.Permission.PostNotifications], NotificationPermissionRequest); }
+            catch (Exception ex) { _notificationPermission = null; completion.TrySetException(ex); }
+        });
+        return completion.Task;
+    }
+    private static MainActivity? _foreground;
+    internal static MainActivity? Foreground
+    {
+        get => Volatile.Read(ref _foreground);
+        private set => Volatile.Write(ref _foreground, value);
+    }
     private TaskCompletionSource<Android.Content.Intent>? _projectionPermission;
     private const int ProjectionRequest = 74;
     private const int WatchVideoRequest = 75;
@@ -84,25 +123,35 @@ public class MainActivity : Activity
         return done.Task;
     }
 
-    internal Task<Android.Content.Intent> RequestProjectionAsync()
+    internal async Task<Android.Content.Intent> RequestProjectionAsync(bool wholeDisplay, CancellationToken ct)
     {
         var completion = new TaskCompletionSource<Android.Content.Intent>(TaskCreationOptions.RunContinuationsAsynchronously);
         RunOnUiThread(() =>
         {
+            if (ct.IsCancellationRequested) { completion.TrySetCanceled(ct); return; }
             if (Foreground != this || _projectionPermission != null) { completion.TrySetException(new InvalidOperationException("Abre QuicNet para autorizar la pantalla.")); return; }
             _projectionPermission = completion;
             try
             {
                 var manager = (Android.Media.Projection.MediaProjectionManager)GetSystemService(MediaProjectionService)!;
-                StartActivityForResult(manager.CreateScreenCaptureIntent(), ProjectionRequest);
+                var intent = wholeDisplay && OperatingSystem.IsAndroidVersionAtLeast(34)
+                    ? manager.CreateScreenCaptureIntent(Android.Media.Projection.MediaProjectionConfig.CreateConfigForDefaultDisplay())
+                    : manager.CreateScreenCaptureIntent();
+                StartActivityForResult(intent, ProjectionRequest);
             }
             catch (Exception ex) { _projectionPermission = null; completion.TrySetException(ex); }
         });
-        return completion.Task;
+        using var registration = ct.Register(() => RunOnUiThread(() =>
+        {
+            completion.TrySetCanceled(ct);
+            if (_projectionPermission == completion) FinishActivity(ProjectionRequest);
+        }));
+        return await completion.Task.ConfigureAwait(false);
     }
 
     protected override void OnCreate(Android.OS.Bundle? savedInstanceState)
     {
+        if (FilesDir?.AbsolutePath is { } dataDirectory) QuicNet.Diagnostics.CoreErrorReporter.Start(dataDirectory);
         base.OnCreate(savedInstanceState);
         try
         {
@@ -111,62 +160,133 @@ public class MainActivity : Activity
             if (OperatingSystem.IsAndroidVersionAtLeast(30) && !OperatingSystem.IsAndroidVersionAtLeast(35))
                 Window!.SetDecorFitsSystemWindows(false);
             Window!.SetSoftInputMode(Android.Views.SoftInput.AdjustResize);
-            StartNodeService();
-
 #if DEBUG
             WebView.SetWebContentsDebuggingEnabled(true);
 #endif
-            _webView = new WebView(this);
-            _webView.SetBackgroundColor(Android.Graphics.Color.Rgb(16, 17, 22));
-            _webView.Settings.JavaScriptEnabled = true;
-            _webView.Settings.DomStorageEnabled = true;
-            _webView.Settings.MediaPlaybackRequiresUserGesture = false;
-            _webView.SetWebViewClient(new WebViewClient());
-            _chromeClient = new MobileChromeClient(this, AndroidConnectionService.Url);
-            _webView.SetWebChromeClient(_chromeClient);
             var content = new SystemInsetLayout(this);
+            _content = content;
             content.SetBackgroundColor(Android.Graphics.Color.Rgb(16, 17, 22));
-            content.AddView(_webView, new FrameLayout.LayoutParams(
-                Android.Views.ViewGroup.LayoutParams.MatchParent,
-                Android.Views.ViewGroup.LayoutParams.MatchParent));
+            _webUrl = NotificationUrl(Intent);
+            CreateWebView(content);
             SetContentView(content);
-            QuicNet.Video.NativeMedia.qpv_android_init(Android.Runtime.JNIEnv.Handle);
-            QuicNet.Video.NativeVideoRuntime.Instance.Attach(new AndroidVideoHost(this, content));
-            content.RequestApplyInsets();
-            _webView.PostDelayed(() => OpenNotification(Intent), 300);
-
-            var missingPermissions = new List<string>();
-            foreach (string permission in new[] { Android.Manifest.Permission.RecordAudio })
-                if (CheckSelfPermission(permission) != Permission.Granted) missingPermissions.Add(permission);
-            if (OperatingSystem.IsAndroidVersionAtLeast(33) &&
-                CheckSelfPermission(Android.Manifest.Permission.PostNotifications) != Permission.Granted)
-                missingPermissions.Add(Android.Manifest.Permission.PostNotifications);
-            if (missingPermissions.Count > 0)
+            if (OperatingSystem.IsAndroidVersionAtLeast(33) && OnBackInvokedDispatcher is { } dispatcher)
             {
-                _startupPermissionsPending = true;
-                try { RequestPermissions(missingPermissions.ToArray(), 1); }
-                catch { _startupPermissionsPending = false; throw; }
+                _backCallback = new ActivityBackCallback(this);
+                dispatcher.RegisterOnBackInvokedCallback(Android.Window.IOnBackInvokedDispatcher.PriorityDefault, _backCallback);
             }
+            QuicNet.Video.NativeVideoRuntime.Instance.Attach(new AndroidVideoHost(this, content), warmCapabilities: false);
+            content.RequestApplyInsets();
         }
         catch (Exception ex)
         {
+            QuicNet.Diagnostics.CoreErrorReporter.Report("Actividad Android", ex);
             SetContentView(new Android.Widget.TextView(this) { Text = $"Could not start Android WebView: {ex}" });
+        }
+    }
+
+    private void CreateWebView(SystemInsetLayout content)
+    {
+        var webView = new WebView(this);
+        _webView = webView;
+        webView.SetBackgroundColor(Android.Graphics.Color.Rgb(16, 17, 22));
+        webView.Settings.JavaScriptEnabled = true;
+        webView.Settings.DomStorageEnabled = true;
+        webView.Settings.MediaPlaybackRequiresUserGesture = false;
+        webView.SetWebViewClient(new MobileWebViewClient(this));
+        webView.SetRendererPriorityPolicy(RendererPriority.Important, true);
+        _chromeClient = new MobileChromeClient(this, AndroidConnectionService.Url, content);
+        webView.SetWebChromeClient(_chromeClient);
+        content.AddView(webView, 0, new FrameLayout.LayoutParams(
+            Android.Views.ViewGroup.LayoutParams.MatchParent,
+            Android.Views.ViewGroup.LayoutParams.MatchParent));
+        content.RequestApplyInsets();
+    }
+
+    private void DestroyWebView()
+    {
+        var webView = _webView;
+        _webView = null;
+        _checkingWebBack = false;
+        _chromeClient?.CancelPendingOperations();
+        _chromeClient = null;
+        if (webView == null) return;
+        _content?.RemoveView(webView);
+        webView.Destroy();
+        webView.Dispose();
+    }
+
+    private sealed class MobileWebViewClient(MainActivity activity) : WebViewClient
+    {
+        public override void DoUpdateVisitedHistory(WebView? view, string? url, bool isReload)
+        {
+            if (view == activity._webView && url?.StartsWith(AndroidConnectionService.Url, StringComparison.Ordinal) == true)
+                activity._webUrl = url;
+        }
+
+        public override bool OnRenderProcessGone(WebView? view, RenderProcessGoneDetail? detail)
+        {
+            if (view == null || view != activity._webView) return true;
+            activity.DestroyWebView();
+            if (activity._visible && !activity.IsFinishing && activity._content is { } content)
+            {
+                content.Post(() =>
+                {
+                    if (!activity._visible || activity.IsFinishing || activity.IsDestroyed || activity._webView != null) return;
+                    if (activity._recoveredRenderer) { activity.Finish(); return; }
+                    activity._recoveredRenderer = true;
+                    activity.CreateWebView(content);
+                    activity._webView!.LoadUrl(activity._webUrl);
+                });
+            }
+            return true;
         }
     }
 
 #pragma warning disable CS0809, CA1422
     [Obsolete("Deprecated in Java")]
-    public override void OnBackPressed()
+    public override void OnBackPressed() => HandleBack();
+
+    private void HandleBack()
     {
         if (_chromeClient?.HideFullscreen() == true) return;
-        if (_webView != null && _webView.CanGoBack())
+        if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window is { InsetsController: { } controller } window &&
+            window.DecorView.RootWindowInsets?.IsVisible(Android.Views.WindowInsets.Type.Ime()) == true)
         {
-            _webView.GoBack();
+            controller.Hide(Android.Views.WindowInsets.Type.Ime());
+            return;
         }
-        else
+
+        if (_checkingWebBack) return;
+        var webView = _webView;
+        string appUrl = AndroidConnectionService.Url.TrimEnd('/') + "/";
+        if (webView?.Url?.StartsWith(appUrl, StringComparison.Ordinal) != true)
         {
-            base.OnBackPressed();
+            NavigateBack(webView);
+            return;
         }
+
+        _checkingWebBack = true;
+        webView.EvaluateJavascript("window.QP?.dismissMobileTools?.() === true", new WebBackResult(handled =>
+        {
+            _checkingWebBack = false;
+            if (!handled && !IsFinishing && !IsDestroyed && _webView == webView) NavigateBack(webView);
+        }));
+    }
+
+    private void NavigateBack(WebView? webView)
+    {
+        if (webView?.CanGoBack() == true) webView.GoBack();
+        else base.OnBackPressed();
+    }
+
+    private sealed class WebBackResult(Action<bool> complete) : Java.Lang.Object, IValueCallback
+    {
+        public void OnReceiveValue(Java.Lang.Object? value) => complete(value?.ToString() == "true");
+    }
+
+    private sealed class ActivityBackCallback(MainActivity activity) : Java.Lang.Object, Android.Window.IOnBackInvokedCallback
+    {
+        public void OnBackInvoked() => activity.HandleBack();
     }
 #pragma warning restore CS0809, CA1422
 
@@ -179,7 +299,13 @@ public class MainActivity : Activity
 
     protected override void OnDestroy()
     {
+        if (OperatingSystem.IsAndroidVersionAtLeast(33) && _backCallback is { } callback)
+        {
+            OnBackInvokedDispatcher?.UnregisterOnBackInvokedCallback(callback);
+            _backCallback = null;
+        }
         _cameraPermission?.TrySetCanceled(); _cameraPermission = null;
+        _notificationPermission?.TrySetCanceled(); _notificationPermission = null;
         _projectionPermission?.TrySetCanceled();
         _projectionPermission = null;
         _watchSelection?.TrySetResult(null);
@@ -187,15 +313,28 @@ public class MainActivity : Activity
         _diskSelection?.TrySetResult(null);
         _diskSelection = null;
         QuicNet.Video.NativeVideoRuntime.Instance.Detach();
-        _chromeClient?.CancelPendingOperations();
-        _webView?.Destroy();
+        DestroyWebView();
         base.OnDestroy();
+    }
+
+    protected override void OnStart()
+    {
+        base.OnStart();
+        _visible = true;
+        _recoveredRenderer = false;
+        Interlocked.Increment(ref _visibleActivityCount);
+        VisibilityChanged?.Invoke();
     }
 
     protected override void OnStop()
     {
         base.OnStop();
-        if (!IsChangingConfigurations && !_startupPermissionsPending && _projectionPermission == null && _cameraPermission == null && _watchSelection == null && _diskSelection == null && !AndroidWatchFilePicker.IsImporting && !AndroidScreenCaptureService.IsCapturing && _chromeClient?.HasPendingOperation != true && !AndroidAppPlatform.Preferences(this).RunInBackground)
+        if (_webView?.Url is { } url && url.StartsWith(AndroidConnectionService.Url, StringComparison.Ordinal))
+            _webUrl = url;
+        _visible = false;
+        Interlocked.Decrement(ref _visibleActivityCount);
+        VisibilityChanged?.Invoke();
+        if (!IsChangingConfigurations && _notificationPermission == null && _projectionPermission == null && _cameraPermission == null && _watchSelection == null && _diskSelection == null && !AndroidWatchFilePicker.IsImporting && !AndroidScreenCaptureService.IsCapturing && _chromeClient?.HasPendingOperation != true && !AndroidAppPlatform.Preferences(this).RunInBackground)
             StopService(new Android.Content.Intent(this, typeof(AndroidConnectionService)));
     }
 
@@ -203,13 +342,14 @@ public class MainActivity : Activity
     {
         base.OnNewIntent(intent);
         Intent = intent;
-        OpenNotification(intent);
+        _webUrl = NotificationUrl(intent);
+        _webView?.LoadUrl(_webUrl);
     }
-    private void OpenNotification(Android.Content.Intent? intent)
+    private static string NotificationUrl(Android.Content.Intent? intent)
     {
         string route = intent?.GetStringExtra("quicnetRoute") ?? "/";
         if (!route.StartsWith('/') || route.StartsWith("//") || route.Contains('\\')) route = "/";
-        _webView?.LoadUrl(AndroidConnectionService.Url.TrimEnd('/') + route);
+        return AndroidConnectionService.Url.TrimEnd('/') + route;
     }
 
     protected override void OnResume()
@@ -220,13 +360,24 @@ public class MainActivity : Activity
         AndroidAutoUpdate.Resume(this);
         bool reconnect = !AndroidConnectionService.Running;
         StartNodeService();
-        if (reconnect && _webView != null) _webView.PostDelayed(() => _webView.Reload(), 400);
+        if (_webView == null && _content is { } content) CreateWebView(content);
+        if (_webView is { } webView && (reconnect || webView.Url == null))
+            webView.PostDelayed(() => { if (webView == _webView) webView.LoadUrl(_webUrl); }, 400);
     }
 
     public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResults)
     {
         base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 1) _startupPermissionsPending = false;
+        if (requestCode == NotificationPermissionRequest)
+        {
+            if (grantResults.Length > 0)
+                GetPreferences(FileCreationMode.Private)?.Edit()?.PutBoolean("notificationPermissionRequested", true)?.Apply();
+            var notification = _notificationPermission;
+            _notificationPermission = null;
+            notification?.TrySetResult();
+            _chromeClient?.ProcessPermissionQueue();
+            return;
+        }
         if (requestCode == 77) {
             var camera = _cameraPermission; _cameraPermission = null;
             if (CheckSelfPermission(Android.Manifest.Permission.Camera) == Permission.Granted) camera?.TrySetResult();
@@ -255,7 +406,7 @@ public class MainActivity : Activity
         {
             var completion = _projectionPermission; _projectionPermission = null;
             if (resultCode == Result.Ok && data != null) completion?.TrySetResult(data);
-            else completion?.TrySetCanceled();
+            else completion?.TrySetException(new UnauthorizedAccessException("Se ha rechazado la captura de pantalla en Android."));
         }
         _chromeClient?.CompleteFileSelection(requestCode, resultCode, data);
     }
@@ -284,53 +435,59 @@ public class MainActivity : Activity
         ushort port, [MarshalAs(UnmanagedType.LPUTF8Str)] string fingerprint,
         [Out] byte[] output, uint outputCapacity);
 
-    private sealed class MobileChromeClient(MainActivity activity, string localUrl) : WebChromeClient
+    private sealed class MobileChromeClient(MainActivity activity, string localUrl, SystemInsetLayout content) : WebChromeClient
     {
-        private Dialog? _fullscreenDialog;
-        private SystemInsetLayout? _fullscreenContent;
+        private Android.Views.View? _fullscreenView;
         private ICustomViewCallback? _fullscreenCallback;
+        private FullscreenBackCallback? _fullscreenBack;
+        private int _barsToRestore;
+        private int _previousBarsBehavior;
+        private Android.Views.SystemUiFlags _previousUiFlags;
 
         public override void OnShowCustomView(Android.Views.View? view, ICustomViewCallback? callback)
         {
-            if (view == null || callback == null || _fullscreenDialog != null || activity.IsFinishing || activity.IsDestroyed)
+            var window = activity.Window;
+            if (view == null || callback == null || _fullscreenView != null || window == null || activity.IsFinishing || activity.IsDestroyed)
             {
                 callback?.OnCustomViewHidden();
                 return;
             }
-            // A separate window leaves the activity's normal system-bar and inset
-            // configuration intact when fullscreen closes or the device rotates.
-            var dialog = new Dialog(activity, Android.Resource.Style.ThemeBlackNoTitleBarFullScreen);
-            var content = new SystemInsetLayout(activity);
-            content.SetBackgroundColor(Android.Graphics.Color.Black);
-            content.AddView(view, new FrameLayout.LayoutParams(
-                Android.Views.ViewGroup.LayoutParams.MatchParent, Android.Views.ViewGroup.LayoutParams.MatchParent));
-            _fullscreenDialog = dialog;
-            _fullscreenContent = content;
+            // Keep the fullscreen WebView content in the activity, between the
+            // original WebView and the native video textures that share its coordinates.
+            _fullscreenView = view;
             _fullscreenCallback = callback;
-            dialog.SetContentView(content);
-            dialog.CancelEvent += (_, _) => HideFullscreen(); // Includes Android's Back gesture.
             try
             {
-                dialog.Show();
-                var window = dialog.Window!;
-                window.SetLayout(Android.Views.ViewGroup.LayoutParams.MatchParent, Android.Views.ViewGroup.LayoutParams.MatchParent);
                 if (OperatingSystem.IsAndroidVersionAtLeast(30))
                 {
-                    if (!OperatingSystem.IsAndroidVersionAtLeast(35)) window.SetDecorFitsSystemWindows(false);
                     if (window.InsetsController is { } controller)
                     {
+                        var insets = content.RootWindowInsets;
+                        int status = Android.Views.WindowInsets.Type.StatusBars();
+                        int navigation = Android.Views.WindowInsets.Type.NavigationBars();
+                        _barsToRestore = (insets?.IsVisible(status) != false ? status : 0) |
+                            (insets?.IsVisible(navigation) != false ? navigation : 0);
+                        _previousBarsBehavior = controller.SystemBarsBehavior;
                         controller.SystemBarsBehavior = 2; // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                        controller.Hide(Android.Views.WindowInsets.Type.SystemBars());
+                        controller.Hide(status | navigation);
                     }
                 }
                 else
                 {
 #pragma warning disable CA1422
+                    _previousUiFlags = window.DecorView.SystemUiFlags;
                     window.DecorView.SystemUiFlags =
-                        Android.Views.SystemUiFlags.Fullscreen | Android.Views.SystemUiFlags.HideNavigation |
+                        _previousUiFlags | Android.Views.SystemUiFlags.Fullscreen | Android.Views.SystemUiFlags.HideNavigation |
                         Android.Views.SystemUiFlags.ImmersiveSticky | Android.Views.SystemUiFlags.LayoutFullscreen |
                         Android.Views.SystemUiFlags.LayoutHideNavigation | Android.Views.SystemUiFlags.LayoutStable;
 #pragma warning restore CA1422
+                }
+                content.AddView(view, 1, new FrameLayout.LayoutParams(
+                    Android.Views.ViewGroup.LayoutParams.MatchParent, Android.Views.ViewGroup.LayoutParams.MatchParent));
+                if (OperatingSystem.IsAndroidVersionAtLeast(33) && activity.OnBackInvokedDispatcher is { } dispatcher)
+                {
+                    _fullscreenBack = new FullscreenBackCallback(this);
+                    dispatcher.RegisterOnBackInvokedCallback(Android.Window.IOnBackInvokedDispatcher.PriorityDefault, _fullscreenBack);
                 }
                 content.RequestApplyInsets();
             }
@@ -341,15 +498,41 @@ public class MainActivity : Activity
 
         public bool HideFullscreen()
         {
-            if (_fullscreenDialog == null) return false;
-            var dialog = _fullscreenDialog;
+            if (_fullscreenView is not { } view) return false;
             var callback = _fullscreenCallback;
-            _fullscreenDialog = null; _fullscreenCallback = null;
-            _fullscreenContent?.RemoveAllViews(); _fullscreenContent = null;
-            dialog.Dismiss();
-            dialog.Dispose();
+            _fullscreenView = null; _fullscreenCallback = null;
+            if (OperatingSystem.IsAndroidVersionAtLeast(33) && _fullscreenBack is { } back)
+            {
+                activity.OnBackInvokedDispatcher?.UnregisterOnBackInvokedCallback(back);
+                _fullscreenBack = null;
+                back.Dispose();
+            }
+            content.RemoveView(view);
+            if (activity.Window is { } window)
+            {
+                if (OperatingSystem.IsAndroidVersionAtLeast(30))
+                {
+                    if (window.InsetsController is { } controller)
+                    {
+                        controller.SystemBarsBehavior = _previousBarsBehavior;
+                        if (_barsToRestore != 0) controller.Show(_barsToRestore);
+                    }
+                }
+                else
+                {
+#pragma warning disable CA1422
+                    window.DecorView.SystemUiFlags = _previousUiFlags;
+#pragma warning restore CA1422
+                }
+            }
+            content.RequestApplyInsets();
             callback?.OnCustomViewHidden();
             return true;
+        }
+
+        private sealed class FullscreenBackCallback(MobileChromeClient client) : Java.Lang.Object, Android.Window.IOnBackInvokedCallback
+        {
+            public void OnBackInvoked() => client.HideFullscreen();
         }
 
         private IValueCallback? _fileCallback;
@@ -406,7 +589,7 @@ public class MainActivity : Activity
         private bool _closing;
         private const int MediaPermissionRequest = 42;
         public bool HasPendingOperation => _fileCallback != null || _pending != null || _runtimePermissionPending ||
-            _permissionQueue.Count > 0 || activity._startupPermissionsPending;
+            _permissionQueue.Count > 0;
         public override void OnPermissionRequest(PermissionRequest? request)
         {
             if (request is null) return;
@@ -427,12 +610,12 @@ public class MainActivity : Activity
             });
         }
 
-        private void ProcessPermissionQueue()
+        internal void ProcessPermissionQueue()
         {
             // Android's result code belongs to the one system dialog in flight.
             // Never replace its WebView request with a later camera/audio request.
             if (_closing) return;
-            while (!_closing && _pending == null && !_runtimePermissionPending && !activity._startupPermissionsPending &&
+            while (!_closing && _pending == null && !_runtimePermissionPending && activity._notificationPermission == null &&
                 _permissionQueue.TryDequeue(out var next))
             {
                 if (activity.IsFinishing || activity.IsDestroyed) { next.Request.Deny(); continue; }
@@ -475,9 +658,7 @@ public class MainActivity : Activity
                 _runtimePermissionPending = false;
                 ResolvePermissionRequest();
             }
-            else if (code == 1 && activity.CheckSelfPermission(Android.Manifest.Permission.RecordAudio) != Permission.Granted)
-                _deniedPermissions.Add(Android.Manifest.Permission.RecordAudio);
-            if (code == MediaPermissionRequest || code == 1) ProcessPermissionQueue();
+            if (code == MediaPermissionRequest) ProcessPermissionQueue();
         }
 
         private void ResolvePermissionRequest()

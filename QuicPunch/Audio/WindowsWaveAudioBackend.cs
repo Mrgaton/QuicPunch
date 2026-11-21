@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 using QuicPunch.Helpers;
 
 namespace QuicPunch.Audio;
@@ -129,11 +130,16 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
     public string? PlaybackError { get; private set; }
     private long _submittedPlaybackFrames, _completedPlaybackFrames;
     private long _playbackRefills, _droppedPlaybackFrames;
+    private int _peakPlaybackBuffers, _failedPlaybackWrites;
+    private long _lastPlaybackDelivery, _longestPlaybackInterval;
     private readonly short[] _playbackLead = new short[FrameSize];
     internal long SubmittedPlaybackFrames => Interlocked.Read(ref _submittedPlaybackFrames);
     internal long CompletedPlaybackFrames => Interlocked.Read(ref _completedPlaybackFrames);
     internal long PlaybackRefills => Interlocked.Read(ref _playbackRefills);
     internal long DroppedPlaybackFrames => Interlocked.Read(ref _droppedPlaybackFrames);
+    internal int PeakPlaybackBuffers => _peakPlaybackBuffers;
+    internal int FailedPlaybackWrites => _failedPlaybackWrites;
+    internal double LongestPlaybackIntervalMs => TimeSpan.FromSeconds((double)_longestPlaybackInterval / Stopwatch.Frequency).TotalMilliseconds;
 
     public string Name => "Windows Multimedia (waveIn/waveOut)";
     public bool IsSupported => OperatingSystem.IsWindows();
@@ -149,7 +155,9 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
 
     private IntPtr _waveOutHandle = IntPtr.Zero;
     private WaveOutProc? _waveOutProc;
-    private const int PlaybackBufferCount = 6; // 60ms capacity, not a fixed playout delay.
+    // Provide headroom when a driver returns completed buffers in batches.
+    // Only the startup/refill guard adds a frame of silence to normal playback.
+    private const int PlaybackBufferCount = 16;
     private const int MaxPlaybackFrameBytes = 5760 * 2; // Headroom for up to 60ms stereo / 120ms mono frames
     private readonly IntPtr[] _outHeaders = new IntPtr[PlaybackBufferCount];
     private readonly IntPtr[] _outBuffers = new IntPtr[PlaybackBufferCount];
@@ -366,6 +374,10 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
             Interlocked.Exchange(ref _completedPlaybackFrames, 0);
             Interlocked.Exchange(ref _playbackRefills, 0);
             Interlocked.Exchange(ref _droppedPlaybackFrames, 0);
+            _peakPlaybackBuffers = 0;
+            _failedPlaybackWrites = 0;
+            _lastPlaybackDelivery = 0;
+            _longestPlaybackInterval = 0;
             _waveOutProc = OnWaveOutMessage;
             int res = WaveOutOpen(out _waveOutHandle, devIndex, ref wfx, _waveOutProc, IntPtr.Zero, CALLBACK_FUNCTION);
             if (res != MMSYSERR_NOERROR)
@@ -416,6 +428,9 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
         lock (_outLock)
         {
             if (_waveOutHandle == IntPtr.Zero && !StartPlayback()) return;
+            long now = Stopwatch.GetTimestamp();
+            if (_lastPlaybackDelivery != 0) _longestPlaybackInterval = Math.Max(_longestPlaybackInterval, now - _lastPlaybackDelivery);
+            _lastPlaybackDelivery = now;
             // Keep one 10ms scheduling guard in the device. Network buffering
             // cannot protect waveOut from a late mixer tick. Refill only if drained.
             if (SubmittedPlaybackFrames == CompletedPlaybackFrames)
@@ -456,11 +471,13 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
                 }
             }
 
-            // An in-flight WinMM buffer must never be overwritten. Bound backlog
-            // to 60ms of 10ms frames; never overwrite an in-flight buffer.
+            // An in-flight WinMM buffer must never be overwritten.
             if (chosenIndex == -1)
             {
-                Interlocked.Increment(ref _droppedPlaybackFrames);
+                _peakPlaybackBuffers = PlaybackBufferCount;
+                long dropped = Interlocked.Increment(ref _droppedPlaybackFrames);
+                if (dropped == 1)
+                    QuicPunchLog.Info($"[AUDIO-WIN] Playback ring full ({PlaybackBufferCount} buffers); max delivery interval {LongestPlaybackIntervalMs:F1} ms.");
                 return;
             }
             _nextOutIndex = (chosenIndex + 1) % PlaybackBufferCount;
@@ -478,14 +495,19 @@ internal sealed class WindowsWaveAudioBackend : INativeAudioBackend
                 int res = WaveOutWrite(_waveOutHandle, pHdr, (uint)Marshal.SizeOf<WaveHdr>());
                 if (res != MMSYSERR_NOERROR)
                 {
+                    _failedPlaybackWrites++;
                     PlaybackError = $"No se pudo enviar audio a la salida (Windows: {res}).";
                     QuicPunchLog.Info($"[AUDIO-WIN] {PlaybackError}");
                     return;
                 }
                 PlaybackError = null;
                 Interlocked.Increment(ref _submittedPlaybackFrames);
+                int queued = 0;
+                foreach (IntPtr header in _outHeaders)
+                    if ((Marshal.PtrToStructure<WaveHdr>(header).dwFlags & WHDR_INQUEUE) != 0) queued++;
+                _peakPlaybackBuffers = Math.Max(_peakPlaybackBuffers, queued);
             }
-            catch (Exception ex) { PlaybackError = ex.Message; QuicPunchLog.Info($"[AUDIO-WIN] Playback failed: {ex.Message}"); }
+            catch (Exception ex) { _failedPlaybackWrites++; PlaybackError = ex.Message; QuicPunchLog.Info($"[AUDIO-WIN] Playback failed: {ex.Message}"); }
         }
     }
 

@@ -10,6 +10,7 @@
   let availabilityTimer;
   const pending = new Set();
   let reviewedHashes = new Set();
+  let invitationOrigin;
   const needsReview = p => p.source !== 'pending' && !p.isTrusted && !reviewedHashes.has(p.certHash);
   const latestDiscoveryDeadline = (a, b) => Number.isFinite(Date.parse(a)) &&
     (!Number.isFinite(Date.parse(b)) || Date.parse(a) > Date.parse(b)) ? a : b;
@@ -48,11 +49,24 @@
     }).sort((a, b) => Number(!!b.isQuicConnected) - Number(!!a.isQuicConnected) || Number(!!b.isSaved) - Number(!!a.isSaved) || String(a.name || '').localeCompare(String(b.name || ''), 'es'));
   }
 
-  function focusConnect() {
-    if (QP.currentPage !== 'dashboard') QP.navigate('dashboard');
+  function openContactInvitation(opener, { mode = 'receive', restore } = {}) {
     const dialog = $('addContactDialog');
-    if (!dialog.open) dialog.showModal();
-    $('tokenInput').focus();
+    if (dialog.open) return;
+    const share = mode === 'share';
+    invitationOrigin = { opener, restore, accepted: false };
+    $('invitationShare').hidden = !share;
+    $('invitationReceive').hidden = share;
+    $('addContactTitle').textContent = share ? 'Compartir mi invitación' : 'Usar una invitación recibida';
+    $('returnFromInvitation').hidden = true;
+    if (!$('tokenInput').readOnly) {
+      $('connectFeedback').textContent = '';
+      $('tokenInput').removeAttribute('aria-invalid');
+      $('activateTokenTransport').hidden = true;
+    }
+    dialog.showModal();
+    $('connectArea').scrollTop = 0;
+    const target = share ? $('shareInvitationBtn') : $('tokenInput');
+    (target.disabled ? $('closeAddContact') : target).focus({ preventScroll: true });
   }
 
   function contactButton(label, action, p, primary = false) {
@@ -75,8 +89,7 @@
 
   function contactSignals(card, peer) {
     const box = card.querySelector('.contact-card-signals');
-    if (!box) return;
-    const signature = JSON.stringify([peer.lastUsedUtc, peer.lastConnectedUtc, peer.lastKnownIp, peer.locationIsHistorical, peer.ping, peer.pingSource, peer.isQuicConnected, peer.isTor, peer.networkType, peer.location]);
+    const signature = JSON.stringify([peer.lastUsedUtc, peer.lastConnectedUtc, peer.locationIsHistorical, peer.ping, peer.pingSource, peer.isQuicConnected, peer.isTor, peer.networkType, peer.location]);
     if (box.dataset.signature === signature) return;
     box.dataset.signature = signature;
     box.replaceChildren();
@@ -89,23 +102,43 @@
     const country = location?.country || location?.countryCode || '';
     const code = /^[a-z]{2}$/i.test(location?.countryCode || '') ? location.countryCode.toLowerCase().replace(/^uk$/, 'gb') : '';
     const located = location?.status === 'located' && (names.length || country || code);
-    const text = located ? (peer.locationIsHistorical ? 'Última IP · ≈ ' : '≈ ') + (names.join(', ') || country) :
+    const text = located ? '≈ ' + (names[0] || country || code.toUpperCase()) :
       location?.status === 'tor' ? 'Tor · ubicación oculta' : location?.status === 'local' ? 'Red local' :
-      location?.status === 'missing' ? 'Preparando base de localidades…' : 'Ubicación no disponible';
-    const place = QP.el('span', 'contact-location', text);
+      location?.status === 'missing' ? 'Preparando ubicación…' : '';
+    const place = card.querySelector('.contact-location');
+    const placeName = QP.el('span', 'contact-location-name', text);
+    place.replaceChildren(placeName);
+    place.hidden = !text;
     if (located && code) {
       const flag = QP.el('img', 'country-flag');
-      flag.src = `/flags/${code}.svg`; flag.alt = country || code.toUpperCase(); flag.title = flag.alt; flag.width = 24; flag.height = 18;
-      flag.addEventListener('error', () => flag.replaceWith(QP.el('span', 'country-fallback', country || 'País no disponible')), { once: true });
+      flag.src = `/flags/${code}.svg`; flag.alt = country || code.toUpperCase(); flag.title = flag.alt; flag.width = 18; flag.height = 14;
+      flag.addEventListener('error', () => {
+        if (names.length && country) placeName.append(', ' + country);
+        flag.remove();
+      }, { once: true });
       place.append(flag);
-    } else if (located && country) place.append(document.createTextNode((names.length ? ', ' : '') + country));
-    place.title = (located ? [...names, country].filter(Boolean).join(', ') + '. ' : '') + (location?.source ? `Fuente: ${location.source}. ` : '') + (location?.advertised ? 'IP anunciada por el contacto. ' : '') + 'Ubicación aproximada publicada para la IP, no de la persona. Una VPN o red móvil puede situarla en otra región.';
-    box.append(place);
+    } else if (located && names.length && country) {
+      placeName.append(', ' + country);
+    }
+    place.title = located
+      ? [...names, country || code.toUpperCase()].filter(Boolean).join(', ') + '. ' +
+        (peer.locationIsHistorical ? 'Ubicación de la última IP observada. ' : '') +
+        (location?.source ? `Fuente: ${location.source}. ` : '') +
+        (location?.advertised ? 'IP anunciada por el contacto. ' : '') +
+        'Ubicación aproximada de la IP. Una VPN o red móvil puede situarla en otra región.'
+      : text;
     if (peer.lastUsedUtc || (peer.isSaved && peer.lastConnectedUtc)) {
       const date = new Date(peer.lastUsedUtc || peer.lastConnectedUtc);
       if (Number.isFinite(date.getTime())) {
-        const seen = QP.el('span', peer.lastUsedUtc ? 'contact-last-used' : 'contact-last-connected', (peer.lastUsedUtc ? 'Último uso: ' : 'Última conexión: ') + date.toLocaleString('es', {dateStyle:'medium',timeStyle:'short'}));
-        seen.title = date.toLocaleString('es'); box.append(seen);
+        const dateLabel = date.toLocaleString('es', {
+          day: 'numeric', month: 'short', year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
+          hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+        });
+        const seen = QP.el('time', peer.lastUsedUtc ? 'contact-last-used' : 'contact-last-connected',
+          `${peer.lastUsedUtc ? 'Último uso' : 'Última conexión'} · ${dateLabel}`);
+        seen.dateTime = date.toISOString();
+        seen.title = date.toLocaleString('es', {dateStyle: 'long', timeStyle: 'short'});
+        box.append(seen);
       }
     }
   }
@@ -120,7 +153,7 @@
     const time = p => Date.parse((sort === 'recent' ? null : p.lastUsedUtc) || p.lastConnectedUtc || '') || 0;
     list.sort((a, b) => group(a) - group(b) || (sort === 'usage' ? (b.usageCount || 0) - (a.usageCount || 0) || time(b) - time(a) : ['activity','recent'].includes(sort) ? time(b) - time(a) : 0) || String(a.name || '').localeCompare(String(b.name || ''), 'es') || String(a.certHash || a.id).localeCompare(String(b.certHash || b.id)));
     // Ignore rapidly changing telemetry: keep focus and card position stable during live updates.
-    const signature = JSON.stringify([query, filter, connectionFilter, sort, list.map(p => [p.id, p.certHash, p.name, p.isTrusted, needsReview(p), p.isSaved, p.isQuicConnected, p.connectionState, p.interrogationId, p.source, p.lastConnectionError, p.hasNameCollision, status.avatars?.[p.id], QP.userPresence?.(p, status)]), [...pending]]);
+    const signature = JSON.stringify([query, filter, connectionFilter, sort, list.map(p => [p.id, p.certHash, p.name, p.isTrusted, needsReview(p), p.isSaved, p.isQuicConnected, p.connectionState, p.interrogationId, p.source, p.lastConnectionError, p.hasNameCollision, p.isTor, p.networkType, status.avatars?.[p.id], QP.userPresence?.(p, status)]), [...pending]]);
     if (signature === contactSignature) {
       const byKey = new Map(list.map(p => [p.certHash || p.id, p]));
       for (const card of $('homeContacts').querySelectorAll('[data-contact-key]')) {
@@ -147,7 +180,7 @@
         if (query) { $('contactSearch').value = ''; renderContacts(); }
         else if (connectionFilter !== 'all') { connectionFilter = 'all'; $('contactConnectionFilter').value = 'all'; renderContacts(); }
         else if (alternative) setFilter(alternative);
-        else focusConnect();
+        else openContactInvitation(action);
       });
       empty.append(action); box.append(empty); return;
     }
@@ -165,20 +198,22 @@
     for (const p of list) {
       const card = QP.el('div', 'contact-card');
       card.dataset.contactKey = p.certHash || p.id;
-      card.dataset.transport = p.isTor || p.networkType === 'Tor' ? 'tor' : 'wan';
       card.setAttribute('role', 'listitem');
       card.classList.toggle('needs-review', needsReview(p));
       const head = QP.el('div', 'contact-card-head');
       const title = QP.el('div', 'contact-card-name');
-      const identity = QP.el('div', 'contact-identity');
-      identity.append(QP.identity.createCapsule(p, {snapshot: status, slot: 'contact'}));
-      if (p.isTor || p.networkType === 'Tor') identity.append(QP.el('span', 'identity-transport', 'Tor'));
-      title.append(identity);
+      const identityLine = QP.el('div', 'contact-card-identity-line');
+      identityLine.append(QP.identity.createCapsule(p, {snapshot: status, slot: 'contact'}), QP.el('span', 'contact-location'));
+      title.append(identityLine);
       head.append(title);
       const meta = QP.el('div', 'contact-card-meta');
       const stateLabel = p.isQuicConnected ? QP.userPresence?.(p, status)?.label || 'Conectado' : p.connectionState === 'connecting' ? 'Conectando…' : QP.isPeerAvailable?.(p) ? 'Disponible' : 'Sin conexión';
       const connection = QP.el('div', 'contact-card-connection');
       connection.append(QP.el('span', `badge ${QP.isPeerAvailable?.(p) ? 'green' : ''}`, stateLabel));
+      const summary = QP.el('div', 'contact-card-summary');
+      summary.append(connection, QP.el('div', 'contact-card-signals'));
+      const statusBlock = QP.el('div', 'contact-card-status');
+      statusBlock.append(summary);
       if (!p.isTrusted) meta.append(QP.el('span', `badge ${needsReview(p) ? 'yellow' : ''}`, needsReview(p) ? 'Nuevo · pendiente de revisión' : 'Sin confianza · revisado'));
       if (p.hasNameCollision) {
         const warning = QP.el('span', 'badge yellow', 'Mismo nombre · otra identidad');
@@ -186,7 +221,6 @@
         meta.append(warning);
       }
       const actions = QP.el('div', 'contact-card-actions');
-      actions.append(connection);
       if (p.isTrusted) {
         if (p.isQuicConnected || p.canSendOffline) actions.append(contactButton('Mensaje', 'message', p));
         if (p.isQuicConnected) actions.append(contactButton('Llamar', 'call', p));
@@ -194,20 +228,20 @@
           const tor = p.isTor || p.networkType === 'Tor';
           const service = tor ? status.tor : status.wan;
           const active = service?.isStarted ?? service?.running ?? false;
-          connection.append(contactButton(active ? (p.lastConnectionError ? 'Reintentar' : 'Conectar') : (tor ? 'Cambiar a Tor' : 'Cambiar a WAN'), active ? 'connect' : 'change-mode', p, true));
+          actions.prepend(contactButton(active ? (p.lastConnectionError ? 'Reintentar' : 'Conectar') : (tor ? 'Cambiar a Tor' : 'Cambiar a WAN'), active ? 'connect' : 'change-mode', p, true));
         }
         if (!p.isSaved && p.source === 'live') actions.append(contactButton('Guardar', 'save', p));
       } else if (p.source === 'live') {
         actions.append(contactButton('Aceptar contacto', 'trust', p, true));
         if (needsReview(p)) actions.append(contactButton('No confiar', 'decline', p));
         actions.append(contactButton('Revisar contacto', 'review', p));
-      } else if (p.connectionState !== 'connecting') connection.append(contactButton('Conectar y revisar', 'connect', p, true));
-      if (p.interrogationId) connection.append(contactButton('Cancelar búsqueda', 'cancel', p));
-      card.append(head);
-      { card.append(QP.el('div', 'contact-card-signals')); contactSignals(card, p); }
+      } else if (p.connectionState !== 'connecting') actions.append(contactButton('Conectar y revisar', 'connect', p, true));
+      if (p.interrogationId) actions.prepend(contactButton('Cancelar búsqueda', 'cancel', p));
       if (meta.childElementCount) title.append(meta);
-      if (p.lastConnectionError && !p.isQuicConnected && p.connectionState !== 'connecting') card.querySelector('.contact-card-signals').append(QP.el('p', 'contact-error', 'No se pudo establecer la conexión. ' + p.lastConnectionError));
-      card.append(actions); groups.get(group(p)).append(card);
+      if (p.lastConnectionError && !p.isQuicConnected && p.connectionState !== 'connecting') statusBlock.append(QP.el('p', 'contact-error', 'No se pudo establecer la conexión. ' + p.lastConnectionError));
+      card.append(head, statusBlock, actions);
+      contactSignals(card, p);
+      groups.get(group(p)).append(card);
     }
     if (active) [...box.querySelectorAll('button')].find(b => b.dataset.actionKey === active)?.focus({ preventScroll: true });
   }
@@ -269,7 +303,7 @@
     const heading = QP.el('h2', '', `Revisar a ${p.name || 'este contacto'}`); heading.id = 'reviewContactTitle';
     dialog.append(heading, QP.el('p', '', 'Compara esta identidad con la que te indique la otra persona. Al confiar en ella, podrá enviarte mensajes. Las llamadas, la pantalla y la red privada mantienen sus propios permisos.'));
     QP.identity.appendDetails(dialog, p);
-    const actions = QP.el('div', 'toolbar review-actions');
+    const actions = QP.el('div', 'dialog-actions');
     const cancel = QP.button('Ahora no', '', () => dialog.close());
     const decide = async trust => {
       accept.disabled = reject.disabled = cancel.disabled = true;
@@ -370,7 +404,7 @@
       queued = true; queueMicrotask(() => { queued = false; sync(); });
     }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
     document.addEventListener('keydown', e => {
-      if (!current) return;
+      if (!current || document.querySelector('dialog[open]')) return;
       if (e.key === 'Escape') {
         const close = current.querySelector('[id^="close"], [id$="CloseBtn"], [id^="cancel"], [id$="Cancel"], [id$="CancelBtn"], #lightboxCloseBtn');
         if (close) { e.preventDefault(); close.click(); }
@@ -386,15 +420,27 @@
 
   document.addEventListener('DOMContentLoaded', async () => {
     const addDialog = $('addContactDialog');
-    let addOpener = null;
-    $('openShareInvitation').addEventListener('click', () => { addOpener = $('openShareInvitation'); focusConnect(); $('shareInvitationBtn').focus(); });
+    QP.openContactInvitation = openContactInvitation;
+    $('openShareInvitation').addEventListener('click', event => openContactInvitation(event.currentTarget, { mode: 'share' }));
     $('closeAddContact').addEventListener('click', () => addDialog.close());
-    addDialog.addEventListener('close', () => { if (addOpener?.isConnected) addOpener.focus(); });
-    document.querySelectorAll('[data-focus-connect]').forEach(b => b.addEventListener('click', () => { addOpener = b; }));
+    $('returnFromInvitation').addEventListener('click', () => addDialog.close());
+    addDialog.addEventListener('close', () => {
+      const origin = invitationOrigin;
+      invitationOrigin = null;
+      if (!origin?.opener?.isConnected) return;
+      if (origin.restore) origin.restore(origin.accepted);
+      else origin.opener.focus({ preventScroll: true });
+    });
+    QP.on('contact_invitation_accepted', origin => {
+      if (!origin || origin !== invitationOrigin || !addDialog.open) return;
+      origin.accepted = true;
+      $('returnFromInvitation').hidden = !origin.restore;
+    });
+    QP.contactInvitationOrigin = () => invitationOrigin;
     $('contactSort').value = ['activity','recent','usage','name'].includes(sort) ? sort : (sort = 'activity');
     $('contactConnectionFilter').addEventListener('change', e => { connectionFilter = e.target.value; renderContacts(); });
     $('contactSort').addEventListener('change', e => { sort = e.target.value; try { localStorage.setItem('quicnet.contactSort.v2', sort); } catch {} renderContacts(); });
-    document.querySelectorAll('[data-focus-connect]').forEach(b => b.addEventListener('click', focusConnect));
+    document.querySelectorAll('[data-focus-connect]').forEach(b => b.addEventListener('click', event => openContactInvitation(event.currentTarget)));
     document.querySelectorAll('[data-contact-filter]').forEach(b => b.addEventListener('click', () => setFilter(b.dataset.contactFilter)));
     document.querySelectorAll('.nav-link').forEach(a => { a.setAttribute('aria-label', a.querySelector('.nav-label').textContent); a.title = a.getAttribute('aria-label'); });
     document.querySelectorAll('.subtab-btn').forEach(b => b.setAttribute('aria-pressed', String(b.classList.contains('active'))));

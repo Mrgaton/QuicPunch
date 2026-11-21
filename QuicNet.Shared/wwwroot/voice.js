@@ -20,6 +20,7 @@
   const localScreenAllowed = new Map();
   const talkingPeers = new Set();
   let localSpeaking = false;
+  let floatingSpeakerId = '';
   const participantCards = new Map();
   let voiceDrawerTab = 'contacts';
   let settingsReturnToPicker = false;
@@ -159,6 +160,17 @@
   let fullscreenTile = null;
   let tileFullscreenMode = '';
   let tileFullscreenRevision = 0;
+  let tilePreviousInfo = false;
+  let localSettingsAnchor = null;
+
+  function setDesktopVideoFullscreen(enabled) {
+    if (typeof window.external?.sendMessage !== 'function') return false;
+    window.external.sendMessage('quicnet:video-fullscreen:' + (enabled ? 'on' : 'off'));
+    return true;
+  }
+  globalThis.addEventListener?.('pagehide', () => {
+    if (tileFullscreenMode === 'desktop') setDesktopVideoFullscreen(false);
+  });
 
   // The full studio always lives outside the narrow contacts drawer.
   function mountVoiceSettings() {
@@ -175,7 +187,10 @@
     const drawer = document.getElementById('voiceDrawer');
     const toggle = document.getElementById('voiceTrayToggle');
     if (!drawer || !toggle) return;
-    if (!open && drawer.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+    if (!open && drawer.contains(document.activeElement)) {
+      const opener = toggle.checkVisibility() ? toggle : document.getElementById(tab === 'settings' ? 'voiceScreenSettingsBtn' : 'voiceInviteBtn');
+      opener?.focus({ preventScroll: true });
+    }
     voiceDrawerTab = tab;
     drawer.hidden = !open; drawer.inert = !open;
     toggle.setAttribute('aria-expanded', String(open));
@@ -184,6 +199,21 @@
     document.getElementById('voiceContactsTab')?.setAttribute('aria-pressed', 'true');
     document.getElementById('voiceDrawerContacts').hidden = false;
     document.getElementById('voiceInviteBtn')?.setAttribute('aria-expanded', String(open && tab === 'contacts'));
+  }
+
+  let mediaIdleTimer;
+
+  function revealMediaLabels(event) {
+    if (event?.target.closest?.('.is-tile-fullscreen:not(.is-driving-screen) .screen-tile-body') &&
+        (['pointerdown', 'pointerup', 'focusin'].includes(event.type) ||
+          (event.type === 'keydown' && [' ', 'Enter'].includes(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey))) return;
+    const room = document.getElementById('view-voice');
+    room.classList.remove('is-media-idle');
+    fullscreenTile?.classList.remove('has-hidden-stream-header');
+    clearTimeout(mediaIdleTimer);
+    mediaIdleTimer = setTimeout(() => {
+      if (!room.querySelector('.voice-person-menu[open], .screen-tile-vol-group[open]')) room.classList.add('is-media-idle');
+    }, 3000);
   }
 
   function initVoiceDrawer() {
@@ -198,18 +228,15 @@
       else setVoiceDrawer(drawer.hidden);
     });
     document.getElementById('voiceDrawerClose').addEventListener('click', () => setVoiceDrawer(false));
-    const room = document.getElementById('view-voice');
-    let idleTimer;
-    const revealMediaLabels = () => {
-      room.classList.remove('is-media-idle');
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        // Keep an open participant menu usable until the user dismisses it.
-        if (!room.querySelector('.voice-person-menu[open]')) room.classList.add('is-media-idle');
-      }, 3000);
-    };
-    for (const event of ['pointermove', 'pointerdown', 'keydown', 'focusin', 'wheel', 'scroll']) document.addEventListener(event, revealMediaLabels, { passive: true, capture: true });
-    document.addEventListener('toggle', revealMediaLabels, true);
+    for (const event of ['pointermove', 'pointerdown', 'pointerup', 'keydown', 'focusin', 'wheel', 'scroll']) document.addEventListener(event, revealMediaLabels, { passive: true, capture: true });
+    document.addEventListener('toggle', event => {
+      if (!event.target.closest?.('.has-hidden-stream-header') || event.target.open) revealMediaLabels();
+    }, true);
+    document.addEventListener('click', event => {
+      for (const volume of document.querySelectorAll('.screen-tile-vol-group[open]')) {
+        if (!volume.contains(event.target)) volume.open = false;
+      }
+    }, true);
     revealMediaLabels();
     document.getElementById('voiceContactsTab').addEventListener('click', () => setVoiceDrawer(true, 'contacts'));
     document.getElementById('voiceSettingsTab').addEventListener('click', () => openScreenSettingsModal('audio'));
@@ -237,28 +264,104 @@
     return icon;
   }
 
-  function updateGlobalCallMeta() {
-    const bar = document.getElementById('globalActiveCallBar');
-    if (!bar || bar.classList.contains('hidden')) return;
-    const calls = activeCallsList();
-    const starts = calls.map(call => Number(call.startedAtUnixMs || voiceState.activeCalls?.find(item => item.peerId === call.peerId)?.startedAtUnixMs)).filter(time => Number.isFinite(time) && time > 0);
-    const duration = starts.length ? QP.formatDuration((Date.now() - Math.min(...starts)) / 1000) + ' · ' : '';
-    QP.setText('globalCallMeta', `${duration}${voiceState.isMuted ? 'Micrófono silenciado' : 'Micrófono activo'}${voiceState.isDeafened ? ' · Audio silenciado' : ''}`);
-  }
-
-  function updateGlobalCallControl(id, icon, pressed, label, action) {
+  function updateGlobalCallControl(id, icon, pressed, action) {
     const button = document.getElementById(id);
     if (!button) return;
-    const signature = `${icon}:${pressed}`;
-    if (button.dataset.iconState !== signature) {
-      const text = QP.el('span', 'call-state-label', label);
-      button.replaceChildren(voiceIcon(icon, pressed), text);
-      button.dataset.iconState = signature;
-    }
-    button.className = `btn sm ${pressed ? 'danger' : 'ghost'}`;
+    if (!button.firstChild || button.getAttribute('aria-pressed') !== String(pressed))
+      button.replaceChildren(voiceIcon(icon, pressed));
     button.title = action;
-    button.setAttribute('aria-label', action);
     button.setAttribute('aria-pressed', String(pressed));
+  }
+
+  function renderFloatingCallSpeaker(calls) {
+    if (!calls.length) {
+      floatingSpeakerId = '';
+      return;
+    }
+    const isSpeaking = id => id === 'local' ? localSpeaking : talkingPeers.has(id);
+    const previousId = floatingSpeakerId === 'local' || calls.some(call => call.peerId === floatingSpeakerId) ? floatingSpeakerId : '';
+    if (!isSpeaking(previousId)) {
+      const speakingPeer = calls.find(call => isSpeaking(call.peerId));
+      const fallback = localSpeaking ? 'local' : previousId || calls[0].peerId;
+      floatingSpeakerId = speakingPeer?.peerId || fallback;
+    }
+    const open = document.getElementById('floatingCallOpen');
+    if (!open || open.parentElement.hidden) return;
+    const snapshot = voiceStatus || QP.state?.status;
+    const isLocal = floatingSpeakerId === 'local';
+    const call = calls.find(item => item.peerId === floatingSpeakerId);
+    const peer = isLocal ? snapshot?.node :
+      QP.findPeer(snapshot, floatingSpeakerId) || snapshot?.savedPeers?.find(item => item.id === floatingSpeakerId);
+    const name = isLocal ? 'Tú' : peer?.name || call?.peerName || 'Contacto';
+    const avatar = document.getElementById('floatingCallAvatar');
+    const speaking = isSpeaking(floatingSpeakerId);
+    QP.paintAvatar(avatar, peer || {id: floatingSpeakerId, name}, snapshot, 'floating-call');
+    avatar.classList.toggle('is-speaking', speaking);
+    const label = speaking ? (isLocal ? 'Estás hablando' : `${name} está hablando`) : name;
+    open.title = `${label} · Abrir llamada`;
+    open.setAttribute('aria-label', `Abrir llamada · ${label}`);
+  }
+
+  function initFloatingCall() {
+    const card = document.getElementById('floatingCall');
+    const open = document.getElementById('floatingCallOpen');
+    if (!card || !open) return;
+    const area = card.parentElement;
+    let drag = null;
+    let moved = false;
+
+    function place(x, y, snap = false) {
+      const maxX = Math.max(0, area.clientWidth - card.offsetWidth);
+      const maxY = Math.max(0, area.clientHeight - card.offsetHeight);
+      let left = Math.max(0, Math.min(x, maxX));
+      const top = Math.max(0, Math.min(y, maxY));
+      if (snap && Math.min(left, maxX - left) < 24) left = left < maxX / 2 ? 0 : maxX;
+      card.style.setProperty('--call-x', maxX ? left / maxX : 0);
+      card.style.setProperty('--call-top', `calc((100% - var(--call-height)) * ${maxY ? top / maxY : 0})`);
+    }
+
+    open.addEventListener('pointerdown', event => {
+      if (drag || !event.isPrimary || event.button !== 0) return;
+      const bounds = card.getBoundingClientRect(), frame = area.getBoundingClientRect();
+      drag = {id: event.pointerId, x: event.clientX, y: event.clientY,
+        left: bounds.left - frame.left, top: bounds.top - frame.top};
+      moved = false;
+      open.setPointerCapture(event.pointerId);
+    });
+    open.addEventListener('pointermove', event => {
+      if (event.pointerId !== drag?.id) return;
+      const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+      if (!moved && Math.hypot(dx, dy) < 7) return;
+      moved = true;
+      card.classList.add('is-dragging');
+      place(drag.left + dx, drag.top + dy);
+    });
+    open.addEventListener('pointerup', event => {
+      if (event.pointerId !== drag?.id) return;
+      if (!moved) {
+        if (event.pointerType === 'touch') QP.navigate('voice');
+        return;
+      }
+      card.classList.remove('is-dragging');
+      place(drag.left + event.clientX - drag.x, drag.top + event.clientY - drag.y, true);
+    });
+    // Activate touch taps on release and suppress compatibility mouse events on the drag surface.
+    open.addEventListener('touchstart', event => event.preventDefault(), {passive: false});
+    open.addEventListener('lostpointercapture', event => {
+      if (event.pointerId !== drag?.id) return;
+      drag = null;
+      card.classList.remove('is-dragging');
+    });
+    open.addEventListener('click', event => {
+      if (!card.hidden && (!moved || event.detail === 0)) QP.navigate('voice');
+      moved = false;
+    });
+    open.addEventListener('keydown', event => {
+      const direction = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[event.key];
+      if (!direction || event.altKey || event.ctrlKey || event.metaKey || drag) return;
+      event.preventDefault();
+      place(card.offsetLeft + direction[0] * 24, card.offsetTop + direction[1] * 24);
+    });
   }
 
   function setVoiceControl(key, icon, label, description, state = '') {
@@ -294,7 +397,7 @@
   } catch { }
   let beforeCameraConfig = null;
   const androidCapture = /Android/i.test(navigator.userAgent);
-  let pendingRemoteScreenPeerId = null;
+  let pendingRemoteScreen = null;
   let activeScreenTargetPeerId = null;
   let screenCaptureInterval = null;
   let screenCaptureActive = false;
@@ -357,6 +460,7 @@
 
   async function openRemoteScreenSettings(peerId) {
     let overlay;
+    const tile = fullscreenTile;
     try {
       QP.toast('Consultando los ajustes disponibles del emisor…');
       const reply = await remoteScreenCommand(peerId, 'capabilities');
@@ -371,14 +475,20 @@
           caps.MinBitrate < 500000 || caps.MaxBitrate > 100000000 || caps.MaxBitrate < caps.MinBitrate || !caps.Current)
         throw new Error('El emisor ha enviado opciones de transmisión inválidas.');
       if (!caps.Sharing) throw new Error('Este peer todavía no está compartiendo pantalla.');
-      if (!caps.CanConfigure) throw new Error('El emisor debe darte permiso para cambiar su transmisión o marcarte como administrador.');
+      if (!caps.CanConfigure) throw new Error(caps.Backend === 'platform'
+        ? 'Los ajustes de esta captura se cambian desde el dispositivo que comparte.'
+        : 'El emisor debe darte permiso para cambiar su transmisión o marcarte como administrador.');
       if (!caps.Codecs.length) throw new Error('La captura no tiene opciones disponibles; comprueba que su interfaz está abierta.');
       document.getElementById('remoteScreenSettingsModal')?.remove();
       overlay = QP.el('div', 'modal-backdrop'); overlay.id = 'remoteScreenSettingsModal';
       const card = QP.el('div', 'modal-card remote-screen-modal'); card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true');
       const head = QP.el('div', 'modal-head');
       head.append(QP.el('h2', '', `Transmisión de ${resolvePeerName(peerId)}`));
-      const close = QP.button('Cerrar', '', () => overlay.remove()); head.append(close);
+      const dismiss = () => {
+        overlay.remove();
+        (tile?.isConnected ? tile.querySelector('.screen-transmission-btn') : null)?.focus({ preventScroll: true });
+      };
+      const close = QP.button('Cerrar', '', dismiss); head.append(close);
       const body = QP.el('div', 'modal-body');
       body.append(QP.el('p', 'muted', `Opciones enviadas por el emisor · ${caps.Backend === 'native' ? 'Captura nativa' : 'Captura web'}`));
       const controls = {};
@@ -443,10 +553,12 @@
           if (!result.Success) throw new Error(result.Error || result.Code);
           const current = result.Capabilities.Current;
           QP.toast(`Emisor actualizado: ${current.Width}×${current.Height} · ${current.Fps} FPS · ${current.Codec.toUpperCase()} · ${current.Bitrate / 1e6} Mbps`, 'success');
-          overlay.remove();
+          dismiss();
         } catch (e) { error.textContent = e.message; apply.disabled = false; }
       });
-      foot.append(apply); card.append(head, body, foot); overlay.append(card); document.body.append(overlay);
+      foot.append(apply); card.append(head, body, foot); overlay.append(card);
+      (fullscreenTile === tile && tile?.isConnected ? tile : document.body).append(overlay);
+      close.focus({ preventScroll: true });
     } catch (e) { overlay?.remove(); QP.toast(e.message, 'error'); }
   }
 
@@ -479,7 +591,7 @@
       const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       permissionStream.getTracks().forEach(track => track.stop()); // Release before native AudioRecord opens it.
     } catch (error) {
-      throw new Error(error.name === 'NotAllowedError' ? 'Permite el micrófono para llamar. Puedes activarlo en Ajustes de Android → QuicPunch → Permisos.' :
+      throw new Error(error.name === 'NotAllowedError' ? 'Permite el micrófono en Ajustes de Android → QuicNet → Permisos.' :
         'No se pudo preparar el micrófono: ' + error.message);
     }
   }
@@ -674,233 +786,33 @@
 
 
 
-  async function chooseNativeSource(targetPeerId = null) {
+  function chooseNativeSource(targetPeerId = null) {
     codecPreviewTarget = targetPeerId;
-    const modal = document.getElementById('screenNativeCaptureModal');
-    const grid = document.getElementById('screenCaptureGallery');
-    const search = document.getElementById('screenCaptureSearch');
-    const preview = document.getElementById('screenCapturePreview');
-    if (!modal || !grid || !search || !preview) throw new Error('No se pudo abrir el selector de captura.');
-    let selected = screenShareConfig.source, sources = [], matches = [], category = 'all', previewTimer = null, closed = false, refreshVersion = 0;
-    const thumbnails = new Map();
-    const failedThumbnails = new Set();
-    let cancelPreview = null, cancelThumbnail = null, activeThumbnail = null, thumbnailQueue = [], previewLoading = false, filterTimer = null;
-    const status = document.getElementById('screenCaptureSelection');
-    const start = document.getElementById('screenNativeCaptureStart');
-    start.disabled = true;
-    start.textContent = 'Compartir fuente seleccionada';
-    document.getElementById('screenNativeCaptureWeb').classList.add('hidden');
-    const loadPreviewImage = (image, source, completed) => {
-      let settled = false;
-      const finish = (success, timedOut = false) => {
-        if (settled) return;
-        settled = true; clearTimeout(deadline);
-        image.onload = image.onerror = null;
-        if (!success) image.removeAttribute('src');
-        completed(success, timedOut);
-      };
-      const deadline = setTimeout(() => finish(false, true), 8000);
-      image.onload = () => finish(image.naturalWidth > 0);
-      image.onerror = () => finish(false);
-      image.src = '/api/voice/screen-share/preview?source=' + encodeURIComponent(source) + '&t=' + Date.now();
-      return () => {
-        if (settled) return;
-        settled = true; clearTimeout(deadline);
-        image.onload = image.onerror = null; image.removeAttribute('src');
-      };
-    };
-    const stopPreview = () => {
-      clearTimeout(previewTimer); previewTimer = null;
-      cancelPreview?.(); cancelPreview = null; previewLoading = false;
-    };
-    const stopThumbnail = (requeue = false) => {
-      cancelThumbnail?.(); cancelThumbnail = null;
-      if (requeue && activeThumbnail) thumbnailQueue.unshift(activeThumbnail);
-      activeThumbnail = null;
-    };
-    const loadNextThumbnail = () => {
-      if (closed || previewLoading || activeThumbnail || !thumbnailQueue.length) return;
-      const item = activeThumbnail = thumbnailQueue.shift();
-      item.detail.textContent = item.dimensions + ' · cargando vista previa…';
-      cancelThumbnail = loadPreviewImage(item.image, item.id, success => {
-        activeThumbnail = null; cancelThumbnail = null;
-        if (!success) failedThumbnails.add(item.id);
-        item.detail.textContent = item.dimensions + (success ? '' : ' · vista previa no disponible');
-        loadNextThumbnail();
-      });
-    };
-    const showPreview = () => {
-      if (closed || !selected) return;
-      stopPreview();
-      const source = sources.find(item => item.Id === selected);
-      previewLoading = true;
-      if (status) status.textContent = (source?.Name || 'Fuente') + ' · cargando vista previa…';
-      cancelPreview = loadPreviewImage(preview, selected, (success, timedOut) => {
-        cancelPreview = null; previewLoading = false;
-        if (status) status.textContent = success
-          ? source.Name + ' · fuente completa, sin recortar'
-          : timedOut ? 'La vista previa no ha respondido en 8 segundos. Pulsa Actualizar para reintentar o selecciona otra fuente.'
-            : 'No se puede previsualizar esta fuente. Restaura la ventana o selecciona otra pantalla.';
-        // Failed sources retry only through a deliberate selection or refresh.
-        if (success && !closed) previewTimer = setTimeout(showPreview, 2500);
-        loadNextThumbnail();
-      });
-    };
-    const select = (id, focus = false) => {
-      const previous = selected;
-      selected = matches.some(source => source.Id === id) ? id : null;
-      for (const button of grid.querySelectorAll('.capture-source-card')) {
-        const active = button.dataset.sourceId === selected;
-        button.classList.toggle('selected', active);
-        button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1;
-        if (active && focus) { button.focus({preventScroll:true}); button.scrollIntoView({block:'nearest',inline:'nearest'}); }
+    return openNativeScreenSourcePicker({
+      initialSource: screenShareConfig.source,
+      getSources: () => QP.api('/api/voice/screen-share/sources'),
+      onSources: sources => { if (nativeCapabilities) nativeCapabilities.sources = sources; },
+      updateEncodingSummary: updateCaptureEncodingSummary,
+      setCancel: cancel => { cancelNativeSourcePicker = cancel; },
+      onCancel: () => { settingsReturnToPicker = false; },
+      onEncodingSettings: () => {
+        settingsReturnToPicker = true;
+        openScreenSettingsModal('video');
       }
-      const source = matches.find(item => item.Id === selected);
-      if (status) status.textContent = source ? source.Name + ' · se compartirá completa, sin recortar' : 'Selecciona una pantalla o ventana.';
-      start.disabled = !source;
-      if (!source) {
-        stopPreview(); preview.removeAttribute('src');
-      } else if (previous !== selected || !preview.getAttribute('src')) {
-        stopThumbnail(true); showPreview();
-      }
-    };
-    const render = () => {
-      clearTimeout(filterTimer); filterTimer = null;
-      stopPreview(); stopThumbnail(); thumbnailQueue = [];
-      preview.removeAttribute('src');
-      for (const [id, kind] of [['screenCaptureAll','all'], ['screenCaptureDisplays','display'], ['screenCaptureWindows','window']]) {
-        const button = document.getElementById(id);
-        button.classList.toggle('active', category === kind); button.setAttribute('aria-pressed', String(category === kind));
-      }
-      grid.replaceChildren();
-      const query = search.value.trim().toLocaleLowerCase();
-      matches = sources.filter(source => (category === 'all' || (source.Kind || 'display') === category) &&
-        source.Name.toLocaleLowerCase().includes(query));
-      for (const source of matches) {
-        const button = document.createElement('button');
-        button.type = 'button'; button.className = 'capture-source-card' + (source.Id === selected ? ' selected' : '');
-        button.dataset.sourceId = source.Id; button.setAttribute('role', 'option'); button.title = source.Name;
-        let image = thumbnails.get(source.Id);
-        if (!image) {
-          image = document.createElement('img');
-          image.alt = 'Vista previa de ' + source.Name;
-          thumbnails.set(source.Id, image);
-        }
-        const name = document.createElement('strong'); name.textContent = source.Name;
-        const detail = document.createElement('span');
-        detail.textContent = (source.Width ? source.Width + '×' + source.Height : 'Tamaño al iniciar') +
-          ((source.Kind || 'display') === 'window' ? ' · ventana' : ' · pantalla');
-        const dimensions = detail.textContent;
-        button.setAttribute('aria-label', source.Name + ' · ' + dimensions);
-        const loaded = image.complete && image.naturalWidth > 0;
-        detail.textContent = dimensions + (loaded ? '' : failedThumbnails.has(source.Id) ? ' · vista previa no disponible' : ' · vista previa pendiente');
-        if (!loaded && !failedThumbnails.has(source.Id)) thumbnailQueue.push({ id: source.Id, image, detail, dimensions });
-        button.append(image, name, detail);
-        button.onclick = () => select(source.Id);
-        grid.append(button);
-      }
-      select(matches.some(source => source.Id === selected) ? selected : matches[0]?.Id);
-      loadNextThumbnail();
-      document.getElementById('screenCaptureResults').textContent = matches.length === 1 ? '1 fuente' : matches.length + ' fuentes';
-      if (!matches.length) grid.textContent = 'No hay fuentes que coincidan. Cambia la búsqueda o actualiza las ventanas.';
-    };
-    const refresh = async () => {
-      const version = ++refreshVersion;
-      if (status) status.textContent = 'Buscando pantallas y ventanas…';
-      try {
-        const data = await QP.api('/api/voice/screen-share/sources');
-        if (closed || version !== refreshVersion) return;
-        sources = data.sources || [];
-        if (nativeCapabilities) nativeCapabilities.sources = sources;
-        if (!sources.some(source => source.Id === selected)) selected = sources.find(source => source.Kind !== 'window')?.Id || sources[0]?.Id;
-        render();
-      } catch (error) { if (!closed && version === refreshVersion && status) status.textContent = 'No se pudieron consultar las fuentes: ' + error.message; }
-    };
-    updateCaptureEncodingSummary();
-    modal.classList.remove('hidden');
-    search.value = ''; search.oninput = () => {
-      stopPreview(); stopThumbnail(); thumbnailQueue = [];
-      clearTimeout(filterTimer); start.disabled = true;
-      filterTimer = setTimeout(render, 180);
-    };
-    return new Promise(resolve => {
-      const keydown = event => {
-        if (closed || modal.classList.contains('hidden') || event.isComposing || !modal.contains(event.target)) return;
-        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); done('cancel'); return; }
-        if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey && event.key.length > 1) return;
-        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
-          event.preventDefault(); event.stopPropagation();
-          const buttons = [...grid.querySelectorAll('.capture-source-card')];
-          const current = buttons.find(button => button.dataset.sourceId === selected);
-          if (!current) return;
-          const origin = current.getBoundingClientRect();
-          const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
-          const forward = event.key === 'ArrowRight' || event.key === 'ArrowDown';
-          const candidates = buttons.filter(button => button !== current).map(button => ({button,rect:button.getBoundingClientRect()}))
-            .filter(({rect}) => horizontal
-              ? Math.abs(rect.top - origin.top) < 2 && (forward ? rect.left > origin.left : rect.left < origin.left)
-              : forward ? rect.top > origin.top + 2 : rect.top < origin.top - 2)
-            .sort((a,b) => horizontal
-              ? Math.abs(a.rect.left-origin.left)-Math.abs(b.rect.left-origin.left)
-              : Math.abs(a.rect.top-origin.top)-Math.abs(b.rect.top-origin.top) || Math.abs(a.rect.left-origin.left)-Math.abs(b.rect.left-origin.left));
-          select(candidates[0]?.button.dataset.sourceId || selected, true); return;
-        }
-        if (event.key === 'Enter') {
-          // Tabbed-to actions retain their normal Enter activation.
-          const button = event.target.closest('button');
-          if (button && !grid.contains(button) && button !== start) return;
-          event.preventDefault(); event.stopPropagation();
-          if (!start.disabled && selected) done(selected);
-          return;
-        }
-        if (event.key.length === 1 && !event.target.closest('input,textarea,select,[contenteditable]')) {
-          event.preventDefault(); event.stopPropagation(); search.focus({preventScroll:true});
-          search.setRangeText(event.key, search.selectionStart ?? search.value.length, search.selectionEnd ?? search.value.length, 'end');
-          search.dispatchEvent(new Event('input', {bubbles:true}));
-        }
-      };
-      const done = choice => {
-        if (closed) return;
-        closed = true;
-        cancelNativeSourcePicker = null;
-        if (choice === 'cancel') settingsReturnToPicker = false;
-        clearTimeout(filterTimer);
-        stopPreview(); stopThumbnail(); thumbnailQueue = [];
-        preview.removeAttribute('src');
-        for (const image of thumbnails.values()) image.removeAttribute('src');
-        thumbnails.clear(); grid.replaceChildren(); modal.classList.add('hidden');
-        document.removeEventListener('keydown', keydown, true);
-        search.oninput = null;
-        for (const id of ['screenNativeCaptureStart', 'screenNativeCaptureWeb', 'screenNativeCaptureCancel', 'screenCaptureRefresh', 'screenCaptureAll', 'screenCaptureDisplays', 'screenCaptureWindows', 'screenCaptureEncodingBtn'])
-          document.getElementById(id).onclick = null;
-        resolve(choice);
-      };
-      cancelNativeSourcePicker = () => done('cancel');
-      document.addEventListener('keydown', keydown, true);
-      document.getElementById('screenNativeCaptureStart').onclick = () => { if (!start.disabled && selected) done(selected); };
-      document.getElementById('screenNativeCaptureWeb').onclick = () => done('web');
-      document.getElementById('screenCaptureEncodingBtn').onclick = () => { settingsReturnToPicker = true; modal.classList.add('hidden'); openScreenSettingsModal('video'); };
-      document.getElementById('screenNativeCaptureCancel').onclick = () => done('cancel');
-      document.getElementById('screenCaptureRefresh').onclick = () => {
-        stopPreview(); stopThumbnail(); thumbnailQueue = [];
-        failedThumbnails.clear(); refresh();
-      };
-      for (const [id, kind] of [['screenCaptureAll','all'], ['screenCaptureDisplays','display'], ['screenCaptureWindows','window']])
-        document.getElementById(id).onclick = () => { category = kind; render(); };
-      refresh();
     });
   }
 
-  async function startNativeScreenShare(targetPeerId, reuseSource = false, cancelled = () => false) {
-    if (!nativeCanEncode(screenShareConfig.codec)) {
-      if (screenShareConfig.backend === 'ffmpeg') throw new Error('El formato y codificador elegidos no están disponibles. Revisa la tabla de compatibilidad.');
-      return false;
-    }
+  async function startNativeScreenShare(targetPeerId, reuseSource = false, cancelled = () => false, inventory = loadNativeCapabilities()) {
     nativeStartPending = true;
     try {
       const source = reuseSource ? screenShareConfig.source : await chooseNativeSource(targetPeerId);
       if (cancelled()) return true;
       if (source === 'cancel') return true;
+      // The source picker can open while FFmpeg probes the computer's encoders.
+      await inventory;
+      if (cancelled()) return true;
+      if (!nativeCanEncode(screenShareConfig.codec))
+        throw new Error('El formato y codificador elegidos no están disponibles. Revisa la tabla de compatibilidad.');
 
       screenShareConfig.source = source;
       syncMediaControls();
@@ -1016,6 +928,10 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     initVoiceDrawer();
+    const androidRemoteOptions = document.getElementById('androidRemoteScreenOptions');
+    if (androidRemoteOptions) androidRemoteOptions.hidden = !androidCapture;
+    document.getElementById('androidRemoteAccessibility')?.addEventListener('click', () =>
+      QP.api('/api/voice/remote-input/accessibility', { method: 'POST' }).catch(error => QP.toast(error.message, 'error')));
     for (const name of ['fullscreenchange', 'webkitfullscreenchange']) {
       document.addEventListener(name, () => {
         if (!fullscreenTile) return;
@@ -1025,9 +941,27 @@
     }
     document.addEventListener('keydown', event => {
       if (!fullscreenTile) return;
-      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); exitTileFullscreen(); }
+      const remote = activeScreenStreams.get(fullscreenTile.dataset.streamPeerId)?.remoteInput;
+      if (remote?.capturesKeyboard(event)) return;
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopImmediatePropagation();
+        const settings = fullscreenTile.querySelector('.modal-backdrop:not(.hidden)');
+        if (settings) {
+          if (settings.id === 'screenShareSettingsModal') closeScreenSettingsModal();
+          else settings.querySelector('.modal-head button')?.click();
+          return;
+        }
+        const volume = fullscreenTile.querySelector('.screen-tile-vol-group[open]');
+        if (volume) {
+          volume.open = false;
+          volume.querySelector('summary').focus();
+          return;
+        }
+        if (!remote?.pause()) exitTileFullscreen();
+      }
       if (event.key === 'Tab') {
-        const controls = [...fullscreenTile.querySelectorAll('button:not(:disabled),input:not(:disabled),.screen-tile-body[tabindex]')].filter(el => el.getClientRects().length);
+        const scope = fullscreenTile.querySelector('.modal-backdrop:not(.hidden)') || fullscreenTile;
+        const controls = [...scope.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),summary,.screen-tile-body')].filter(el => el.getClientRects().length && getComputedStyle(el).visibility === 'visible');
         const index = controls.indexOf(document.activeElement);
         if (controls.length && (index < 0 || event.shiftKey && index === 0 || !event.shiftKey && index === controls.length - 1)) {
           event.preventDefault(); controls[event.shiftKey ? controls.length - 1 : 0].focus();
@@ -1047,12 +981,7 @@
     const callDeafenBtn = document.getElementById('globalCallDeafenBtn');
     if (callDeafenBtn) callDeafenBtn.addEventListener('click', toggleDeafen);
 
-    const callHangupBtn = document.getElementById('globalCallHangupBtn');
-    if (callHangupBtn) callHangupBtn.addEventListener('click', hangupAll);
-
-    const callGoToVoiceBtn = document.getElementById('globalCallGoToVoiceBtn');
-    if (callGoToVoiceBtn) callGoToVoiceBtn.addEventListener('click', () => QP.navigate('voice'));
-    setInterval(updateGlobalCallMeta, 1000);
+    initFloatingCall();
 
     // Llamadas "My Audio & Streaming" Panel Buttons
     const panelMicBtn = document.getElementById('voicePanelMicBtn');
@@ -1065,12 +994,24 @@
     if (panelScreenBtn) panelScreenBtn.addEventListener('click', toggleScreenShare);
     document.getElementById('voiceLeaveBtn')?.addEventListener('click', hangupAll);
     const callPicker = document.getElementById('voiceCallPicker');
+    const callSearch = document.getElementById('voiceCallPickerSearch');
+    const addContact = document.getElementById('voiceAddContactBtn');
     document.getElementById('voiceStartCallBtn')?.addEventListener('click', () => {
       document.getElementById('voiceCallPickerSearch').value = '';
       QP.setText('voiceCallPickerHelp', activeCallsList().length ? 'Llama a otro contacto para añadirlo a la conversación.' : 'Elige a quién quieres llamar.');
       callPicker.showModal();
       renderVoicePeers(QP.trusted(voiceStatus), activeCallsList());
-      document.getElementById('voiceCallPickerSearch').focus();
+      (callSearch.closest('label').hidden ? addContact : callSearch).focus();
+    });
+    addContact?.addEventListener('click', () => {
+      callPicker.close();
+      QP.openContactInvitation(addContact, { restore(accepted) {
+        if (QP.currentPage !== 'voice') return;
+        if (accepted) { callSearch.value = ''; void QP.getStatus(true).catch(() => {}); }
+        callPicker.showModal();
+        renderVoicePeers(QP.trusted(voiceStatus), activeCallsList());
+        (addContact.hidden ? callSearch : addContact).focus();
+      }});
     });
     document.getElementById('voiceCallPickerClose')?.addEventListener('click', () => callPicker.close());
     callPicker?.addEventListener('keydown', event => {
@@ -1192,7 +1133,13 @@
     const saveScreenBtn = document.getElementById('saveScreenModalBtn');
     if (saveScreenBtn) saveScreenBtn.addEventListener('click', saveScreenSettingsModal);
 
-    document.getElementById('remoteScreenRequestStartBtn')?.addEventListener('click', () => startScreenShare(pendingRemoteScreenPeerId));
+    document.getElementById('remoteScreenRequestStartBtn')?.addEventListener('click', () => {
+      const request = pendingRemoteScreen;
+      if (!request) return;
+      pendingRemoteScreen = null;
+      document.getElementById('remoteScreenRequestBanner')?.classList.add('hidden');
+      void startScreenShare(request.peerId, request.forControl);
+    });
 
     for (const id of ['screenResolutionSelect', 'screenFpsSelect', 'screenBitrateSelect']) {
       const control = document.getElementById(id);
@@ -1217,10 +1164,10 @@
         if (el) el.value = String(screenShareConfig[key]);
       }
       try { localStorage.setItem('qp_screen_codec_tuning', JSON.stringify(codecTuning)); } catch {}
-      refreshScreenCodecCapabilities();
+      updateScreenCodecOptions();
     });
     for (const id of ['screenEncoderSelect', 'screenEncoderPresetSelect', 'screenPresetSelect', 'screenRateControlSelect']) {
-      document.getElementById(id)?.addEventListener('change', event => { readNativeControls(); refreshScreenCodecCapabilities(); });
+      document.getElementById(id)?.addEventListener('change', () => { readNativeControls(); syncEncoderTuning(); });
     }
 
     // WebSocket Events
@@ -1250,7 +1197,7 @@
           return;
         }
         QP.toast('FFmpeg se ha detenido: ' + data.reason + '. Intentando captura web.', 'warning');
-        try { await stopScreenShare(); await startScreenShare(target, true); }
+        try { await stopScreenShare(); await startScreenShare(target); }
         finally { fallbackInProgress = false; }
       });
       QP.on('voice_vad', onVoiceVad);
@@ -1258,17 +1205,22 @@
       QP.on('voice_signal', onVoiceSignal);
       QP.on('screen_share_started', onScreenShareStarted);
       QP.on('screen_share_stopped', onScreenShareDetenido);
+      QP.on('remote_input_state', data => { if (data.session?.incoming && fullscreenTile && currentFullscreenElement() === fullscreenTile) exitTileFullscreen(); });
       QP.on('screen_share_request', data => {
         QP.navigate('voice');
-        pendingRemoteScreenPeerId = data.peerId;
+        pendingRemoteScreen = data;
         const banner = document.getElementById('remoteScreenRequestBanner');
         const label = document.getElementById('remoteScreenRequestText');
-        if (label) label.textContent = `${data.peerName || 'Un peer autorizado'} solicita que compartas tu pantalla. Elige la ventana o monitor si el sistema lo pide.`;
+        if (label) label.textContent = data.forControl
+          ? `${data.peerName || 'Un contacto'} solicita el control remoto. Comparte la pantalla para continuar.`
+          : `${data.peerName || 'Un contacto'} solicita que compartas tu pantalla. Elige la ventana o monitor si el sistema lo pide.`;
         banner?.classList.remove('hidden');
-        QP.toast(`${data.peerName || 'Un peer autorizado'} solicita que compartas tu pantalla.`);
+        QP.toast(label?.textContent || 'Solicitud de pantalla recibida.');
       });
       QP.on('screen_share_request_denied', data =>
         QP.toast(`${data.peerName || 'El peer'} no ha autorizado peticiones para compartir su pantalla.`, 'error'));
+      QP.on('screen_platform_consent', data =>
+        QP.toast(`${data.peerName || 'El otro dispositivo'} solicita compartir tu pantalla. Confirma en Android para continuar.`));
       QP.on('screen_codec_capabilities', onScreenCodecCapabilities);
       QP.on('screen_frame', onScreenFrameReceived);
       QP.on('ws_binary', onWsBinaryReceived);
@@ -1437,6 +1389,7 @@
 
   function onVoiceVad(data) {
     if (!data) return;
+    const wasSpeaking = data.isLocal ? localSpeaking : talkingPeers.has(data.peerId);
     if (data.isLocal) {
       const meter = document.getElementById('micMeter');
       if (meter) {
@@ -1470,6 +1423,8 @@
         }
       }
     }
+    if (wasSpeaking !== (data.isLocal ? localSpeaking : talkingPeers.has(data.peerId)))
+      renderFloatingCallSpeaker(activeCallsList());
   }
 
   function activeCallsList() {
@@ -1539,7 +1494,19 @@
       const button = document.getElementById(id); if (button) button.disabled = videoStartPending || !!videoStopPending || cameraPickerPending || !calls.length;
       if (button && !calls.length) button.title = 'Disponible durante una llamada';
     }
-    const leave = document.getElementById('voiceLeaveBtn'); if (leave) leave.disabled = !calls.length && !callingPeers.size;
+    const stage = document.querySelector('.voice-stage');
+    stage?.classList.toggle('has-session-controls', !!(calls.length || callingPeers.size));
+    const leave = document.getElementById('voiceLeaveBtn');
+    if (leave) {
+      const restoreFocus = leave === document.activeElement;
+      leave.disabled = !calls.length && !callingPeers.size;
+      leave.parentElement.hidden = leave.disabled;
+      if (leave.disabled && restoreFocus) document.getElementById('voiceStartCallBtn')?.focus({ preventScroll: true });
+    }
+    for (const id of ['voicePanelMicBtn', 'voicePanelDeafenBtn', 'voicePanelCameraBtn', 'voicePanelScreenBtn']) {
+      const button = document.getElementById(id);
+      if (button) button.hidden = !calls.length;
+    }
     document.getElementById('voiceCameraOptions')?.classList.toggle('hidden', !cameraActive && !cameraSwitchPending);
     document.getElementById('voiceCameraFlipBtn')?.classList.toggle('hidden', !androidCapture);
     const cameraFlip = document.getElementById('voiceCameraFlipBtn');
@@ -1552,24 +1519,20 @@
       const control = document.getElementById(id); if (control) control.disabled = videoStartPending || videoSettingsPending || !!videoStopPending;
     }
     if (!calls.length && document.getElementById('voiceCameraPicker')?.open) document.getElementById('voiceCameraPicker').close();
-    document.querySelector('.voice-stage')?.classList.toggle('in-call', calls.length > 0);
+    stage?.classList.toggle('in-call', calls.length > 0);
     QP.setText('voiceRoomStatus', calls.length ? 'En llamada' : callingPeers.size ? 'Conectando…' : 'Listo para llamar');
     QP.setText('voiceRoomCount', calls.length ? `${calls.length + 1} participantes` : '');
-    QP.setText('voiceDockHint', microphoneFailed ? 'El micrófono necesita atención. Abre Ajustes.' : screenActive ? 'Tu pantalla es visible para los participantes' : cameraActive ? 'Tu cámara está activada' : voiceState.isMuted ? 'Tu micrófono está silenciado' : calls.length ? 'Conectado por audio' : 'Prepara tu audio antes de llamar');
+    const dockHint = microphoneFailed ? 'El micrófono necesita atención. Abre Ajustes.' : voiceState.isMuted ? 'Tu micrófono está silenciado' : '';
+    QP.setText('voiceDockHint', dockHint);
+    const dockHintElement = document.getElementById('voiceDockHint');
+    if (dockHintElement) dockHintElement.hidden = !calls.length || !dockHint;
 
-    // 3. Global Floating Call Bar
-    const callBar = document.getElementById('globalActiveCallBar') || document.getElementById('globalCallBar');
-    if (callBar) {
-      const isVoicePage = QP.currentPage === 'voice' || document.body.dataset.page === 'voice';
-      if (calls.length > 0 && !isVoicePage) {
-        callBar.classList.remove('hidden');
-        const names = calls.map(c => c.peerName || 'Contacto').join(', ');
-        QP.setText('globalCallPeerName', `En llamada con ${names}`);
-        updateGlobalCallMeta();
-        updateGlobalCallControl('globalCallMicBtn', 'mic', voiceState.isMuted, voiceState.isMuted ? 'Silenciado' : 'Micrófono', voiceState.isMuted ? 'Activar micrófono' : 'Silenciar micrófono');
-        updateGlobalCallControl('globalCallDeafenBtn', 'headphones', voiceState.isDeafened, 'Audio', voiceState.isDeafened ? 'Escuchar audio de la llamada' : 'Silenciar audio de la llamada');
-      } else {
-        callBar.classList.add('hidden');
+    const floatingCall = document.getElementById('floatingCall');
+    if (floatingCall) {
+      floatingCall.hidden = !calls.length || QP.currentPage === 'voice' || document.body.dataset.page === 'voice';
+      if (!floatingCall.hidden) {
+        updateGlobalCallControl('globalCallMicBtn', 'mic', voiceState.isMuted, voiceState.isMuted ? 'Activar micrófono' : 'Silenciar micrófono');
+        updateGlobalCallControl('globalCallDeafenBtn', 'headphones', voiceState.isDeafened, voiceState.isDeafened ? 'Activar audio de la llamada' : 'Silenciar audio de la llamada');
       }
     }
 
@@ -1589,9 +1552,11 @@
       if (label) label.textContent = `${pct}%`;
     }
 
+    for (const id of talkingPeers) if (!calls.some(call => call.peerId === id)) talkingPeers.delete(id);
     renderActiveCalls(calls, peers);
     renderVoicePeers(peers, calls);
     updateLocalSpeaking();
+    renderFloatingCallSpeaker(calls);
     for (const entry of activeScreenStreams.values()) paintScreenAvatar(entry);
   }
 
@@ -1635,6 +1600,7 @@
         const screen = action('screen', 'Permitir que vea mi vídeo', togglePeerScreenShare, true);
         const divider = QP.el('div', 'voice-menu-divider'); panel.append(divider);
         action('screen', 'Pedir que comparta pantalla', requestPeerScreenShare);
+        action('screen', 'Solicitar control remoto', peerId => globalThis.QuicNetRemoteInput?.requestWithCapture(peerId));
         action('settings', 'Ajustes de su transmisión', openRemoteScreenSettings);
         const hangupButton = action('hangup', 'Finalizar esta llamada', hangup); hangupButton.classList.add('is-danger');
         menu.append(summary, panel);
@@ -1692,11 +1658,20 @@
 
   function renderVoicePeerList(peers, calls, listId, searchId, picker = false) {
     const box = document.getElementById(listId); if (!box) return;
-    const search = (document.getElementById(searchId)?.value || '').trim().toLocaleLowerCase();
+    const field = document.getElementById(searchId);
+    if (picker) {
+      field.closest('label').hidden = peers.length === 0;
+      document.getElementById('voiceAddContactBtn').hidden = peers.length > 0;
+    }
+    const search = (peers.length ? field?.value || '' : '').trim().toLocaleLowerCase();
     const filtered = peers.filter(peer => (peer.name || 'Contacto').toLocaleLowerCase().includes(search));
     if (!filtered.length) {
       if (!box.querySelector('.voice-no-contacts')) box.replaceChildren(QP.el('p', 'voice-no-contacts'));
-      box.firstElementChild.textContent = peers.length ? 'No hay contactos con ese nombre.' : 'Añade contactos de confianza desde Inicio.';
+      box.firstElementChild.textContent = !voiceStatus ? 'Cargando contactos…' : peers.length ? 'No hay contactos con ese nombre.'
+        : picker ? 'Añade un contacto de confianza para empezar.' : 'Añade contactos de confianza desde Inicio.';
+      if (picker && search && !box.querySelector('button')) box.append(QP.button('Limpiar búsqueda', '', () => {
+        field.value = ''; renderVoicePeerList(peers, calls, listId, searchId, true); field.focus();
+      }));
       return;
     }
     const focused = box.contains(document.activeElement) ? document.activeElement : null;
@@ -1937,7 +1912,7 @@
 
   async function requestPeerScreenShare(peerId) {
     try {
-      QP.toast('Solicitando la pantalla del peer…');
+      QP.toast('Solicitud de pantalla enviada. En Android, confirma la captura cuando aparezca el diálogo del sistema.');
       const reply = await QP.api('/api/voice/screen-share/request', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peerId })
@@ -2291,13 +2266,26 @@
     if (!audioOnly) { nativeCapabilities = null; refreshScreenCodecCapabilities(); }
     const modal = document.getElementById('screenShareSettingsModal');
     mountVoiceSettings(); setVoiceDrawer(false); renderCodecCompatibility();
-    if (modal) modal.classList.remove('hidden');
+    if (modal) {
+      if (fullscreenTile && !fullscreenTile.contains(modal)) {
+        localSettingsAnchor = document.createComment('Ajustes de transmisión');
+        modal.before(localSettingsAnchor);
+        fullscreenTile.append(modal);
+      }
+      modal.classList.remove('hidden');
+      if (localSettingsAnchor) document.getElementById('closeScreenModalBtn')?.focus({ preventScroll: true });
+    }
   }
 
   function closeScreenSettingsModal() {
     if (document.body.dataset.page === 'voice') setVoiceDrawer(false);
     const modal = document.getElementById('screenShareSettingsModal');
     if (modal) modal.classList.add('hidden');
+    if (localSettingsAnchor) {
+      localSettingsAnchor.replaceWith(modal);
+      localSettingsAnchor = null;
+      fullscreenTile?.querySelector('.screen-transmission-btn')?.focus({ preventScroll: true });
+    }
     if (settingsReturnToPicker) {
       settingsReturnToPicker = false;
       updateCaptureEncodingSummary();
@@ -2321,7 +2309,8 @@
   screenShareConfig.resolution=document.getElementById('screenResolutionSelect').value;screenShareConfig.fps=Number(document.getElementById('screenFpsSelect').value);screenShareConfig.bitrate=Number(document.getElementById('screenBitrateSelect').value);
   readCodecSelection(document.getElementById('screenCodecSelect').value);readNativeControls();screenShareConfig.backend='ffmpeg';
   try{localStorage.setItem('qp_screen_config',JSON.stringify(screenShareConfig));}catch{}
-  if(wasSharing){await stopScreenShare();if(kind==='camera')await startCamera();else await startScreenShare(target,false,true,true);}
+  if (wasSharing && !androidCapture && kind === 'screen') await startNativeScreenShare(target, true);
+  else if(wasSharing){await stopScreenShare();if(kind==='camera')await startCamera();else await startScreenShare(target,false,true,true);}
   closeScreenSettingsModal();updateScreenSettingsSubtitle();
 }
 
@@ -2361,14 +2350,16 @@
     }
   }
 
-  async function startScreenShare(targetPeerId=null,unused=false,reuseNativeSource=false,settingsRestart=false){
+  async function startScreenShare(targetPeerId=null,forControl=false,reuseNativeSource=false,settingsRestart=false){
   if(nativeStartPending||videoStartPending||videoStopPending||(videoSettingsPending&&!settingsRestart))return;
   if(!activeCallsList().length){QP.toast('Inicia una llamada antes de compartir.','warning');return;}
   videoStartPending=true;const operation=++videoOperation;const cancelled=()=>operation!==videoOperation||!activeCallsList().length;
-  try{localVideoKind='screen';screenShareConfig.backend='ffmpeg';await loadNativeCapabilities();if(cancelled())return;
-    if(androidCapture){const p=getScreenProbeProfile();const result=await QP.api('/api/voice/screen-share/platform-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...screenShareConfig,encoder:'auto',encoderPreset:null,source:'desktop',width:p.width,height:p.height,fps:Math.min(60,p.fps),targetPeerId})});
+  try{localVideoKind='screen';screenShareConfig.backend='ffmpeg';const inventory=loadNativeCapabilities();
+    if (!nativeCapabilities && /Android/i.test(navigator.userAgent)) await inventory;
+    if(cancelled())return;
+    if(androidCapture){const p=getScreenProbeProfile();const source=forControl||document.getElementById('androidRemoteScreenCapture')?.checked?'remote-desktop':'desktop';const result=await QP.api('/api/voice/screen-share/platform-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...screenShareConfig,encoder:'auto',encoderPreset:null,source,width:p.width,height:p.height,fps:Math.min(60,p.fps),targetPeerId})});
       if(cancelled()){await stopScreenShare();return;}const value=result.profile;nativeSharing=true;voiceState.isScreenSharing=true;activeScreenTargetPeerId=targetPeerId;createOrUpdateScreenTile('local','Tú · Pantalla',value.Width||value.width,value.Height||value.height,value.CodecId||value.codecId,value.Fps||value.fps,true);
-    }else await startNativeScreenShare(targetPeerId,reuseNativeSource,cancelled);
+    }else await startNativeScreenShare(targetPeerId,reuseNativeSource,cancelled,inventory);
   }catch(error){QP.toast('No se pudo iniciar la captura nativa: '+error.message,'error');}finally{videoStartPending=false;renderVoice();}
 }
 
@@ -2479,12 +2470,122 @@
 
   // --- Dynamic Multi-User Stream Grid Manager ---
 
-  function initScreenViewer(entry,body,media,infoButton,resetButton){
-    const setInfo=visible=>{entry.cardEl.classList.toggle('show-stream-info',visible);infoButton.setAttribute('aria-expanded',String(visible));};
-    infoButton.addEventListener('click',()=>setInfo(!entry.cardEl.classList.contains('show-stream-info')));
-    resetButton.hidden=true;setInfo(false);
-    body.setAttribute('role','img');body.setAttribute('aria-label','Vídeo presentado por FFmpeg en una superficie nativa');
-    return {reset(){QuicNetNativeVideo.schedule();},setInfo,refresh(){QuicNetNativeVideo.schedule();},destroy(){}};
+  function initScreenViewer(entry, body, infoButton, resetButton) {
+    const pointers = new Map();
+    let tap;
+    let zoom = 1, x = 0, y = 0;
+    const canUseViewerGestures = () => entry.cardEl === fullscreenTile && !entry.remoteInput?.driving;
+    const headerIsVisible = () => getComputedStyle(entry.headerEl).visibility === 'visible';
+    const toggleHeader = visible => {
+      if (visible) {
+        entry.cardEl.classList.add('has-hidden-stream-header');
+        for (const details of entry.headerEl.querySelectorAll('details[open]')) details.open = false;
+      } else revealMediaLabels();
+    };
+    const setInfo = visible => {
+      entry.cardEl.classList.toggle('show-stream-info', visible);
+      infoButton.setAttribute('aria-expanded', String(visible));
+    };
+    setInfo(true);
+    infoButton.addEventListener('click', () => setInfo(!entry.cardEl.classList.contains('show-stream-info')));
+    resetButton.hidden = true;
+    body.tabIndex = -1;
+    body.setAttribute('role', 'img');
+    body.setAttribute('aria-label', 'Vídeo');
+
+    function constrainedOffsets(box, width, height) {
+      const limitX = Math.max(0, (width - box.width) / 2), limitY = Math.max(0, (height - box.height) / 2);
+      return { x: Math.max(-limitX, Math.min(limitX, x)), y: Math.max(-limitY, Math.min(limitY, y)) };
+    }
+    function frameRect(box, frame) {
+      const width = frame.width * zoom, height = frame.height * zoom;
+      const offset = constrainedOffsets(box, width, height);
+      body.classList.toggle('is-zoomed', zoom > 1);
+      if (resetButton.hidden !== (zoom === 1)) resetButton.hidden = zoom === 1;
+      const label = Math.round(zoom * 100) + '%';
+      if (resetButton.textContent !== label) resetButton.textContent = label;
+      return new DOMRect(frame.x + offset.x - (width - frame.width) / 2, frame.y + offset.y - (height - frame.height) / 2, width, height);
+    }
+    function adjust(box, from, to, factor) {
+      const frame = QuicNetNativeVideo.fitEntry(box, entry);
+      const previousZoom = zoom;
+      const nextZoom = Math.max(1, zoom * factor);
+      // Keep coordinate calculations well within the integer precision of a double.
+      const monitor = entry.remoteInput?.monitor;
+      if (!Number.isFinite(nextZoom) || nextZoom * Math.max(frame.width / (monitor?.width ?? 1), frame.height / (monitor?.height ?? 1)) > 1e11) return;
+      ({ x, y } = constrainedOffsets(box, frame.width * previousZoom, frame.height * previousZoom));
+      zoom = nextZoom;
+      const scale = zoom / previousZoom;
+      const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+      x = (x + cx - from.x) * scale + to.x - cx;
+      y = (y + cy - from.y) * scale + to.y - cy;
+      ({ x, y } = constrainedOffsets(box, frame.width * zoom, frame.height * zoom));
+      QuicNetNativeVideo.schedule();
+    }
+    function reset() {
+      zoom = 1; x = 0; y = 0;
+      for (const id of pointers.keys()) if (body.hasPointerCapture(id)) body.releasePointerCapture(id);
+      pointers.clear();
+      tap = null;
+      QuicNetNativeVideo.schedule();
+    }
+    resetButton.addEventListener('click', () => { body.focus({ preventScroll: true }); reset(); });
+    body.addEventListener('wheel', event => {
+      if (!canUseViewerGestures() || !event.deltaY) return;
+      event.preventDefault();
+      const box = body.getBoundingClientRect();
+      const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? box.height : 1;
+      const anchor = { x: event.clientX, y: event.clientY };
+      adjust(box, anchor, anchor, Math.exp(-event.deltaY * units * 0.002));
+    }, { passive: false });
+    body.addEventListener('pointerdown', event => {
+      if (!canUseViewerGestures() || event.button !== 0 || pointers.size >= 2) return;
+      tap = pointers.size ? null : { id: event.pointerId, x: event.clientX, y: event.clientY, visible: headerIsVisible() };
+      body.focus({ preventScroll: true });
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      body.setPointerCapture(event.pointerId);
+    });
+    body.addEventListener('pointermove', event => {
+      const previous = pointers.get(event.pointerId);
+      if (!previous) return;
+      const current = { x: event.clientX, y: event.clientY };
+      if (tap && Math.hypot(current.x - tap.x, current.y - tap.y) > 6) tap = null;
+      pointers.set(event.pointerId, current);
+      if (pointers.size === 1) {
+        if (zoom > 1) adjust(body.getBoundingClientRect(), previous, current, 1);
+        return;
+      }
+      const [first, second] = pointers.values();
+      const other = first === current ? second : first;
+      const midpoint = point => ({ x: (point.x + other.x) / 2, y: (point.y + other.y) / 2 });
+      const distance = point => Math.max(1, Math.hypot(point.x - other.x, point.y - other.y));
+      adjust(body.getBoundingClientRect(), midpoint(previous), midpoint(current), distance(current) / distance(previous));
+    });
+    for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      body.addEventListener(event, pointer => {
+        pointers.delete(pointer.pointerId);
+        if (tap?.id !== pointer.pointerId) return;
+        if (event === 'pointerup' && canUseViewerGestures() &&
+            Math.hypot(pointer.clientX - tap.x, pointer.clientY - tap.y) <= 6) toggleHeader(tap.visible);
+        tap = null;
+      });
+    }
+    body.addEventListener('keydown', event => {
+      if (!canUseViewerGestures() || event.altKey || event.ctrlKey || event.metaKey) return;
+      const direction = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowLeft: [1, 0], ArrowRight: [-1, 0] };
+      if (event.key === ' ' || event.key === 'Enter') {
+        if (!event.repeat) toggleHeader(headerIsVisible());
+      } else if (event.key === '0') reset();
+      else if (['+', '=', '-'].includes(event.key) || Object.hasOwn(direction, event.key)) {
+        const box = body.getBoundingClientRect();
+        const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+        const [dx, dy] = direction[event.key] || [0, 0];
+        const factor = event.key === '-' ? 1 / 1.25 : dx || dy ? 1 : 1.25;
+        adjust(box, center, { x: center.x + dx * 40, y: center.y + dy * 40 }, factor);
+      } else return;
+      event.preventDefault();
+    });
+    return { reset, setInfo, frameRect, get zoom() { return zoom; } };
   }
 
   function getOrInitScreenGrid() {
@@ -2537,7 +2638,7 @@
     QP.paintAvatar?.(entry.avatarEl, peer || {id: entry.isLocal ? '' : entry.peerId, name: entry.peerName}, snapshot, 'voice-stream');
   }
 
-  function createOrUpdateScreenTile(peerId, peerName, width, height, codecId, fps, isLocal) {
+  function createOrUpdateScreenTile(peerId, peerName, width, height, codecId, fps, isLocal, kind = 'screen') {
     const { grid } = getOrInitScreenGrid();
     if (!grid) return null;
 
@@ -2558,9 +2659,8 @@
       const avatar = QP.el('div', 'avatar', isLocal ? 'TÚ' : QP.initials(resolvedName));
       const metaBox = QP.el('div', 'screen-tile-meta');
       const nameEl = QP.el('span', 'screen-tile-name', resolvedName);
-      const codecBadge = QP.el('span', 'screen-tile-codec', isLocal
-        ? `Transmitiendo · ${getCodecNameFromId(codecId)} · ${width}×${height} · ${fps} FPS`
-        : `Conectando · ${getCodecNameFromId(codecId)}…`);
+      const codecBadge = QP.el('span', 'screen-tile-codec',
+        `Preparando ${isLocal ? 'envío' : 'recepción'} · ${getCodecNameFromId(codecId)}…`);
       metaBox.append(nameEl, codecBadge);
       userBox.append(avatar, metaBox);
 
@@ -2572,15 +2672,30 @@
       codecBadge.id = `stream-info-${normId}`; infoButton.setAttribute('aria-controls', codecBadge.id);
       const resetButton = QP.el('button', 'btn ghost sm screen-zoom-reset', '100%');
       resetButton.type = 'button'; resetButton.title = 'Ajustar imagen completa';
+      resetButton.setAttribute('aria-label', resetButton.title);
       actions.append(infoButton, resetButton);
+      const transmissionBtn = document.createElement('button');
+      transmissionBtn.className = 'btn ghost sm icon-only-btn screen-transmission-btn';
+      transmissionBtn.type = 'button';
+      transmissionBtn.title = isLocal ? 'Ajustes de mi transmisión' : 'Ajustes de su transmisión';
+      transmissionBtn.setAttribute('aria-label', transmissionBtn.title);
+      transmissionBtn.setAttribute('aria-haspopup', 'dialog');
+      transmissionBtn.append(voiceIcon('settings'));
+      transmissionBtn.addEventListener('click', () => isLocal ? openScreenSettingsModal('video') : openRemoteScreenSettings(normId));
+      actions.append(transmissionBtn);
 
       let muteBtn = null;
       let volSlider = null;
       let volGroup = null;
+      let volumeToggle = null;
 
       if (!isLocal) {
-        volGroup = QP.el('div', 'screen-tile-vol-group');
+        volGroup = QP.el('details', 'screen-tile-vol-group');
+        volumeToggle = QP.el('summary', 'btn ghost sm icon-only-btn screen-volume-btn');
+        volumeToggle.title = 'Audio de la transmisión'; volumeToggle.setAttribute('aria-label', volumeToggle.title);
+        volumeToggle.append(voiceIcon('volume'));
         muteBtn = document.createElement('button');
+        muteBtn.type = 'button';
         muteBtn.className = 'btn ghost sm icon-only-btn screen-mute-btn';
         muteBtn.replaceChildren(voiceIcon('volume'));
         muteBtn.title = 'Silenciar audio del vídeo'; muteBtn.setAttribute('aria-label', muteBtn.title);
@@ -2593,11 +2708,19 @@
         volSlider.className = 'screen-tile-volume';
         volSlider.title = 'Volumen del vídeo'; volSlider.setAttribute('aria-label', volSlider.title);
 
-        volGroup.append(muteBtn, volSlider);
+        const volumePanel = QP.el('div', 'screen-tile-volume-panel');
+        volumePanel.append(muteBtn, volSlider);
+        volGroup.append(volumeToggle, volumePanel);
+        volGroup.addEventListener('keydown', event => {
+          if (event.key !== 'Escape' || !volGroup.open) return;
+          event.preventDefault(); event.stopPropagation();
+          volGroup.open = false;
+          volumeToggle.focus();
+        });
       }
 
       const theaterBtn = document.createElement('button');
-      theaterBtn.className = 'btn ghost sm icon-only-btn';
+      theaterBtn.className = 'btn ghost sm icon-only-btn screen-theater-btn';
       theaterBtn.append(voiceIcon('focus'));
       theaterBtn.title = 'Destacar este vídeo'; theaterBtn.setAttribute('aria-label', theaterBtn.title);
       theaterBtn.addEventListener('click', () => toggleTheaterStream(normId));
@@ -2663,10 +2786,12 @@
         canvasCtx,
         loadingEl,
         cardEl: card,
+        headerEl: header,
         codecBadge,
         nameEl,
         avatarEl: avatar,
         isLocal,
+        kind,
         audioContext: null,
         gainNode: null,
         audioVolume: 1.0,
@@ -2679,16 +2804,26 @@
         volSlider,
         muteBtn
       };
-      entry.viewer = initScreenViewer(entry, body, media, infoButton, resetButton, codecBadge);
+      entry.viewer = initScreenViewer(entry, body, infoButton, resetButton);
+      entry.remoteInput = globalThis.QuicNetRemoteInput?.attach(entry, body, actions, () => toggleTileFullscreen(card), () => {
+        const box = body.getBoundingClientRect();
+        return QuicNetNativeVideo.frameGeometry(entry, box);
+      });
       QuicNetNativeVideo.attach(entry, body);
 
       if (muteBtn && volSlider) {
+        const updateVolumeIcons = () => {
+          const silent = entry.audioMuted || entry.audioVolume === 0;
+          volumeToggle.replaceChildren(voiceIcon('volume', silent));
+          muteBtn.replaceChildren(voiceIcon('volume', silent));
+        };
         muteBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           entry.audioMuted = !entry.audioMuted;
           resetScreenAudioPlayback(entry);
-          muteBtn.replaceChildren(voiceIcon('volume', entry.audioMuted));
-          muteBtn.title = entry.audioMuted ? 'Unmute stream audio' : 'Mute stream audio';
+          updateVolumeIcons();
+          muteBtn.title = entry.audioMuted ? 'Reactivar audio del vídeo' : 'Silenciar audio del vídeo';
+          muteBtn.setAttribute('aria-label', muteBtn.title);
           muteBtn.classList.toggle('is-muted', entry.audioMuted);
           updateScreenAudioGain(entry);
           if (entry.audioContext && entry.audioContext.state === 'suspended') {
@@ -2702,11 +2837,7 @@
           entry.audioVolume = val;
           if (val === 0) resetScreenAudioPlayback(entry);
           updateScreenAudioGain(entry);
-          if (val === 0) {
-            muteBtn.replaceChildren(voiceIcon('volume', true));
-          } else if (!entry.audioMuted) {
-            muteBtn.replaceChildren(voiceIcon('volume'));
-          }
+          updateVolumeIcons();
           if (entry.audioContext && entry.audioContext.state === 'suspended') {
             entry.audioContext.resume().catch(() => {});
           }
@@ -2728,15 +2859,16 @@
       entry.height = height;
       entry.codecId = codecId;
       entry.fps = fps;
+      entry.kind = kind;
+      entry.remoteInput?.render();
+      QuicNetNativeVideo.schedule();
       if (entry.nameEl && resolvedName) {
         entry.peerName = resolvedName;
         entry.nameEl.textContent = resolvedName;
         entry.cardEl.setAttribute('aria-label', resolvedName);
       }
-      if (entry.codecBadge && (!entry.stats || entry.stats.fps === 0)) {
-        entry.codecBadge.textContent = isLocal
-          ? `Transmitiendo · ${getCodecNameFromId(codecId)} · ${width}×${height} · ${fps} FPS`
-          : `Conectando · ${getCodecNameFromId(codecId)}…`;
+      if (entry.codecBadge && !entry.nativeStats) {
+        entry.codecBadge.textContent = `Preparando ${isLocal ? 'envío' : 'recepción'} · ${getCodecNameFromId(codecId)}…`;
       }
       if (isLocal && screenStream && entry.videoEl && !entry.videoEl.srcObject) {
         entry.videoEl.srcObject = screenStream;
@@ -2768,7 +2900,7 @@
 
     if (!entry) return;
 
-    entry.viewer?.destroy();
+    entry.remoteInput?.destroy();
     for (const participant of participantCards.values()) {
       if (entry.cardEl.contains(participant.menu)) participant.card.append(participant.menu);
     }
@@ -2829,10 +2961,21 @@
   function clearTileFullscreen() {
     ++tileFullscreenRevision;
     const tile = fullscreenTile;
+    if (tileFullscreenMode === 'desktop') setDesktopVideoFullscreen(false);
+    if (localSettingsAnchor) closeScreenSettingsModal();
     fullscreenTile = null; tileFullscreenMode = '';
     if (!tile) return;
-    tile.classList.remove('is-tile-fullscreen');
-    activeScreenStreams.get(tile.dataset.streamPeerId)?.viewer?.reset();
+    tile.querySelector('#remoteScreenSettingsModal')?.remove();
+    const toastHost = tile.querySelector('.toast-host');
+    if (toastHost) document.body.append(toastHost);
+    tile.classList.remove('is-tile-fullscreen', 'has-hidden-stream-header');
+    const body = tile.querySelector('.screen-tile-body');
+    body.tabIndex = -1;
+    body.removeAttribute('aria-description');
+    const entry = activeScreenStreams.get(tile.dataset.streamPeerId);
+    entry?.remoteInput?.pause();
+    entry?.viewer?.setInfo(tilePreviousInfo);
+    entry?.viewer?.reset();
     const button = tile.querySelector('.screen-fullscreen-btn');
     if (button) {
       button.disabled = false;
@@ -2860,14 +3003,21 @@
     const revision = ++tileFullscreenRevision;
     fullscreenTile = tile; tileFullscreenMode = 'fallback';
     tile.classList.add('is-tile-fullscreen');
+    const toastHost = document.querySelector('.toast-host');
+    if (toastHost) tile.append(toastHost);
     const viewer = activeScreenStreams.get(tile.dataset.streamPeerId)?.viewer;
+    tilePreviousInfo = tile.classList.contains('show-stream-info');
     viewer?.setInfo(false); viewer?.reset();
+    const body = tile.querySelector('.screen-tile-body');
+    body.tabIndex = 0;
+    body.setAttribute('aria-description', 'Usa + y − para ampliar, las flechas para mover la imagen y 0 para ajustarla.');
     const button = tile.querySelector('.screen-fullscreen-btn');
     button.title = 'Salir de pantalla completa'; button.setAttribute('aria-label', button.title);
     button.setAttribute('aria-pressed', 'true'); button.replaceChildren(voiceIcon('close'));
-    button.focus({ preventScroll: true });
-    // Keep the controls with the media, including streams decoded onto a canvas.
-    // Unsupported or rejected native requests still expand inside the app.
+    body.focus({ preventScroll: true });
+    revealMediaLabels();
+    if (setDesktopVideoFullscreen(true)) { tileFullscreenMode = 'desktop'; return; }
+    if (globalThis.QuicNetRemoteInput?.isHosting) return;
     try {
       if (tile.requestFullscreen && document.fullscreenEnabled !== false) {
         button.disabled = true; await tile.requestFullscreen();
@@ -2911,7 +3061,7 @@
     if (!peerName || peerName === 'Contacto' || peerName === 'Peer') {
       peerName = resolvePeerName(normId);
     }
-    createOrUpdateScreenTile(normId, (isLocal ? 'Tú' : peerName) + (data.kind === 'camera' ? ' · Cámara' : ' · Pantalla'), data.width || 1280, data.height || 720, data.codecId ?? 1, data.fps || 30, isLocal);
+    createOrUpdateScreenTile(normId, (isLocal ? 'Tú' : peerName) + (data.kind === 'camera' ? ' · Cámara' : ' · Pantalla'), data.width || 1280, data.height || 720, data.codecId ?? 1, data.fps || 30, isLocal, data.kind);
   }
 
   function onScreenShareDetenido(data) {

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Photino.NET;
 using QuicNet.Watch.Services;
@@ -21,6 +22,8 @@ public sealed class PhotinoWatchFilePicker(PhotinoWindow window) : IWatchFilePic
 
 public static class DesktopWindowManager
 {
+    internal const string WindowsIconResource = "QuicNet.Assets.quicnet.ico";
+
     public static void ShowWindow(string url, string nodeAppDataPath, CancellationTokenSource cts, WatchWebServer? watchWeb = null,
         Func<bool>? keepRunning = null, bool startMinimized = false, Action<Action>? registerOpen = null)
     {
@@ -36,6 +39,9 @@ public static class DesktopWindowManager
 
                 string statePath = Path.Combine(nodeAppDataPath, "window_state.json");
                 Directory.CreateDirectory(nodeAppDataPath);
+                if (PrepareWindowIcon(nodeAppDataPath) is { } iconPath)
+                    window.SetIconFile(iconPath);
+
                 WindowStateConfig state = LoadWindowState(statePath);
                 window.SetSize(state.Width >= 700 ? state.Width : 1320, state.Height >= 500 ? state.Height : 860);
                 if (state.Left >= 0 && state.Top >= 0) window.SetLocation(new System.Drawing.Point(state.Left, state.Top));
@@ -49,20 +55,43 @@ public static class DesktopWindowManager
                     watchWeb.SetFilePicker(new PhotinoWatchFilePicker(window));
                 }
 
+                LinuxVideoHost? linuxVideo = null;
                 window.RegisterWindowCreatedHandler((_, _) =>
                 {
-                    if (OperatingSystem.IsWindows()) QuicNet.Video.NativeVideoRuntime.Instance.Attach(new WindowsVideoHost(window));
+                    if (OperatingSystem.IsWindows())
+                    {
+                        QuicNet.Video.NativeVideoRuntime.Instance.Attach(new WindowsVideoHost(window));
+                        if (VoiceCallHandler.Instance is { } voice) voice.RemoteSessionClipboard = new DesktopSessionClipboard(window, window.WindowHandle);
+                    }
+                    else if (OperatingSystem.IsLinux() && LinuxVideoHost.FindForWindow("QuicNet") is { } host)
+                    {
+                        linuxVideo = host;
+                        QuicNet.Video.NativeVideoRuntime.Instance.Attach(host);
+                        if (VoiceCallHandler.Instance is { } voice) voice.RemoteSessionClipboard = new DesktopSessionClipboard(window, 0);
+                    }
+                });
+                window.RegisterWebMessageReceivedHandler((_, message) =>
+                {
+                    if (message == "quicnet:video-fullscreen:on") window.FullScreen = true;
+                    else if (message == "quicnet:video-fullscreen:off") window.FullScreen = false;
                 });
                 window.Load(url);
 
                 window.WindowClosing += (_, _) =>
                 {
+                    if (window.FullScreen) window.FullScreen = false;
                     SaveWindowState(statePath, window);
                     if (!cts.IsCancellationRequested && keepRunning?.Invoke() == true)
                     {
                         window.SetMinimized(true);
                         return true;
                     }
+                    if (linuxVideo != null)
+                    {
+                        QuicNet.Video.NativeVideoRuntime.Instance.DetachAsync().GetAwaiter().GetResult();
+                        linuxVideo.Dispose();
+                    }
+                    if (VoiceCallHandler.Instance is { } voice) voice.RemoteSessionClipboard = null;
                     try { cts.Cancel(); } catch { }
                     _ = Task.Run(async () =>
                     {
@@ -90,6 +119,43 @@ public static class DesktopWindowManager
             thread.SetApartmentState(ApartmentState.STA);
         thread.IsBackground = true;
         thread.Start();
+    }
+
+    private static string? PrepareWindowIcon(string nodeAppDataPath)
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) return null;
+
+        bool windows = OperatingSystem.IsWindows();
+        using Stream? asset = windows
+            ? typeof(DesktopWindowManager).Assembly.GetManifestResourceStream(WindowsIconResource)
+            : typeof(WebUiServer).Assembly.GetManifestResourceStream("QuicNet.wwwroot.quicnet-icon.png");
+        if (asset == null) return null;
+
+        try
+        {
+            using var buffer = new MemoryStream();
+            asset.CopyTo(buffer);
+            byte[] bytes = buffer.ToArray();
+            string hash = Convert.ToHexString(SHA256.HashData(bytes));
+            string extension = windows ? ".ico" : ".png";
+            string path = Path.GetFullPath(Path.Combine(nodeAppDataPath, $"quicnet-{hash}{extension}"));
+            if (File.Exists(path)) return path;
+
+            string temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllBytes(temporaryPath, bytes);
+                File.Move(temporaryPath, path, overwrite: true);
+            }
+            finally { File.Delete(temporaryPath); }
+
+            return path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            WebUiServer.LogEvent("[WebUI] Could not prepare the QuicNet window icon: " + ex.Message);
+            return null;
+        }
     }
 
     private static WindowStateConfig LoadWindowState(string path)

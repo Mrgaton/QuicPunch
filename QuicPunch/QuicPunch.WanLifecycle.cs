@@ -129,21 +129,32 @@ namespace QuicPunch
         private Task? _rebindRefreshTask;
         private readonly SemaphoreSlim _wanLifecycleLock = new(1, 1);
         private CancellationTokenSource? _wanLoopCts;
+        private readonly bool _updateIpReputationOnlyWithWan;
         public bool IsWanStarted => udp != null && LifecycleState == QuicPunchLifecycleState.Started;
         public string? WanLastError { get; private set; }
         public bool WanEnabled { get; set; } = true;
+        internal Func<TimeSpan>? LanDiscoveryInterval { get; init; }
 
-        public async Task StartWanAsync(ushort port = 0, CancellationToken cancellationToken = default)
+        public Task StartWanAsync(ushort port = 0, CancellationToken cancellationToken = default) =>
+            StartWanAsync(port, cancellationToken, default);
+
+        internal async Task StartWanAsync(ushort port, CancellationToken cancellationToken, CancellationToken startupCancellation)
         {
             EnsureStarted();
-            await _wanLifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            using var start = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, startupCancellation);
+            await _wanLifecycleLock.WaitAsync(start.Token).ConfigureAwait(false);
             try
             {
                 EnsureStarted();
                 if (IsWanStarted)
                     return;
                 WanLastError = null;
-                await StartWanCoreAsync(port > 0 ? port : LocalPort, cancellationToken).ConfigureAwait(false);
+                await StartWanCoreAsync(port > 0 ? port : LocalPort, cancellationToken, startupCancellation).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (start.IsCancellationRequested || LifecycleToken.IsCancellationRequested)
+            {
+                await StopWanCoreAsync().ConfigureAwait(false);
+                throw;
             }
             catch (Exception ex)
             {
@@ -156,13 +167,15 @@ namespace QuicPunch
             }
         }
 
-        private async Task StartWanCoreAsync(int port, CancellationToken cancellationToken)
+        private async Task StartWanCoreAsync(int port, CancellationToken cancellationToken, CancellationToken startupCancellation = default)
         {
             QuicPunchLog.Info("[WAN] Starting WAN UDP service...");
             Helpers.MsQuicTuner.EnsurePathMtuDiscovery();
             try { _wanLoopCts?.Cancel(); _wanLoopCts?.Dispose(); } catch { }
             _wanLoopCts = CancellationTokenSource.CreateLinkedTokenSource(LifecycleToken, cancellationToken);
             CancellationToken wanToken = _wanLoopCts.Token;
+            await using var cancelStartup = startupCancellation.UnsafeRegister(static source => ((CancellationTokenSource)source!).Cancel(), _wanLoopCts);
+            wanToken.ThrowIfCancellationRequested();
 
             var newUdp = EndpointAddressCodec.CreateUdpClient();
             ConfigureUdpSocket(newUdp);
@@ -186,10 +199,12 @@ namespace QuicPunch
             if (newUdp.Client.AddressFamily == AddressFamily.InterNetwork) newUdp.Client.DontFragment = true;
 
             udp = newUdp;
+            if (_updateIpReputationOnlyWithWan) ReputationFilter?.StartAutoUpdate();
             LocalDiscoveryPort = ((IPEndPoint)newUdp.Client.LocalEndPoint!).Port;
             LocalPort = LocalDiscoveryPort;
             ResetNatMapping();
             CurrentPeer.Addresses = Utilities.GetValidLocalIPAddresses().OrderBy(a => a.AddressFamily).ThenBy(a => a.ToString(), StringComparer.Ordinal).ToArray();
+            OnNatMappingChanged(this, NatCoordinator.CurrentMapping);
 
             _upnpMappingTask = StartControlMappingAsync(newUdp, wanToken);
 
@@ -206,10 +221,21 @@ namespace QuicPunch
                     try { await Discovery.SendLocalLanDiscoveryAsync().ConfigureAwait(false); }
                     catch (OperationCanceledException) when (wanToken.IsCancellationRequested) { break; }
                     catch (Exception ex) { QuicPunchLog.Info($"[LAN] Beacon failed: {ex.Message}"); }
-                    // Retry discovery promptly when a mobile misses the first beacon while waking.
-                    await Task.Delay(TimeSpan.FromSeconds(2), wanToken).ConfigureAwait(false);
+                    await Task.Delay(LanDiscoveryInterval?.Invoke() ?? TimeSpan.FromSeconds(2), wanToken).ConfigureAwait(false);
                 }
             }, wanToken);
+
+            if (Discovery.WanNostrDiscoveryEnabled && IsStarted)
+            {
+                try
+                {
+                    await Discovery.StartWanNostrDiscoveryAsync(wanToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    QuicPunchLog.Info($"[NOSTR-WAN] Discovery start warning: {ex.Message}");
+                }
+            }
 
             if (NatCoordinator.Servers.Count == 0)
             {
@@ -252,20 +278,11 @@ namespace QuicPunch
                 }
             }
 
+            await cancelStartup.DisposeAsync().ConfigureAwait(false);
+            wanToken.ThrowIfCancellationRequested();
             InvalidateTokenCache();
+            if (WanEnabled) Discovery.QueueWanAnnouncement();
             WanLastError = null;
-
-            if (Discovery.WanNostrDiscoveryEnabled && IsStarted)
-            {
-                try
-                {
-                    await Discovery.StartWanNostrDiscoveryAsync(wanToken).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    QuicPunchLog.Info($"[NOSTR-WAN] Discovery start warning: {ex.Message}");
-                }
-            }
         }
 
         public async Task StopWanAsync()
@@ -283,6 +300,7 @@ namespace QuicPunch
 
         private async Task StopWanCoreAsync()
         {
+            if (_updateIpReputationOnlyWithWan) ReputationFilter?.StopAutoUpdate();
             var oldUdp = udp;
             udp = null;
             try { _wanLoopCts?.Cancel(); } catch { }

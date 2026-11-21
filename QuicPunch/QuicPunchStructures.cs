@@ -254,6 +254,8 @@ namespace QuicPunch
         public DateTime DiscoveredAt { get; set; } = DateTime.UtcNow;
         public DateTime LastSeen { get; set; } = DateTime.UtcNow;
         private long _lastNostrAnnouncementTicks;
+        internal long WanRouteRevision { get; set; }
+        internal System.Net.IPEndPoint[]? WanCandidates { get; set; }
         public DateTime? LastNostrAnnouncementUtc
         {
             get

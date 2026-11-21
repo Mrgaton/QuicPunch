@@ -22,7 +22,12 @@ internal sealed record ScreenEncoderOptions
     public int BufferMs { get; init; } = 50;
     public Guid? TargetPeerId { get; init; }
 
-    public byte CodecId => Codec switch { "h264" => 1, "hevc" => 5, "vp9" => 3, "av1" => 4, _ => throw new ArgumentException("Unsupported native codec.") };
+    public byte CodecId => CodecIdFor(Codec);
+    internal static byte CodecIdFor(string codec) => codec switch
+    {
+        "h264" => 1, "hevc" => 5, "vp9" => 3, "av1" => 4,
+        _ => throw new ArgumentException("Unsupported native codec.")
+    };
     public void Validate()
     {
         _ = CodecId;
@@ -67,27 +72,33 @@ internal sealed record NativeScreenProfile(string Encoder, byte CodecId, int Wid
 internal sealed partial class FfmpegScreenEncoder : IDisposable
 {
     private readonly Func<ScreenEncoderOptions, string, List<string>> _captureArguments;
-    private readonly bool _allowCaptureFallback;
+    private readonly bool _usesDefaultCapture;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _probeGate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
     private Process? _process;
     private CancellationTokenSource? _captureCts;
+    private WindowsScreenReader? _windowsReader;
+    private ScreenCaptureMetrics? _statistics;
     private Task? _pump;
     private ScreenEncoderCapability[]? _capabilities;
     private int _disposed;
     private static long _generation = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     public NativeScreenProfile? Profile { get; private set; }
     public NativeScreenProfile? PendingProfile { get; private set; }
+    internal ScreenCaptureStatistics? Statistics => Volatile.Read(ref _statistics)?.Snapshot();
+    internal void RequestKeyFrame() => Volatile.Read(ref _windowsReader)?.RequestKeyFrame();
+    internal bool CanAdaptRate => Volatile.Read(ref _windowsReader) != null;
+    internal void SetRealtimeRate(int bitrate, int fps) => Volatile.Read(ref _windowsReader)?.SetRate(bitrate, fps);
     public event Action<string>? Failed;
     public static string Executable => ResolveExecutable();
 
     internal static string ResolveExecutable() => FfmpegInstallation.ResolveExecutable();
 
     // Windows capture uses the CLI. Android uses FFmpeg libraries with MediaProjection/Camera2.
-    public static bool CaptureAvailable => OperatingSystem.IsWindows();
+    public static bool CaptureAvailable => OperatingSystem.IsWindows() || X11RemoteInput.CaptureArea("desktop", requireInput: false) != null;
 
-    public FfmpegScreenEncoder() : this(CaptureArguments) { _allowCaptureFallback = true; }
+    public FfmpegScreenEncoder() : this(CaptureArguments) { _usesDefaultCapture = true; }
     internal FfmpegScreenEncoder(Func<ScreenEncoderOptions, string, List<string>> captureArguments) => _captureArguments = captureArguments;
 
     public static IReadOnlyList<ScreenCaptureSource> Sources(IReadOnlyList<CaptureDisplay>? displays = null)
@@ -157,6 +168,8 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
             "-b:v", Number(options.Bitrate), "-maxrate", Number(options.Bitrate), "-bufsize", Number(Math.Max(options.Bitrate / options.Fps, (long)options.Bitrate * options.BufferMs / 1000)), "-bf", "0" };
         if (options.Codec == "h264") args.AddRange(["-profile:v", "high"]);
         if (options.Codec == "hevc") args.AddRange(["-profile:v", "main"]);
+        if (options.Codec is "h264" or "hevc")
+            args.AddRange(["-force_key_frames", FormattableString.Invariant($"expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+{options.KeyFrameIntervalMs / 1000.0}))")]);
         if (encoder.EndsWith("_nvenc", StringComparison.Ordinal))
         {
             args.AddRange(["-preset", options.EncoderPreset is { Length: > 0 } nvencPreset ? nvencPreset : options.Preset switch { "speed" => "p1", "quality" => "p5", _ => "p3" },
@@ -190,6 +203,16 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
     internal static List<string> CaptureArguments(ScreenEncoderOptions options, string encoder)
     {
         if (!CaptureAvailable) throw new PlatformNotSupportedException("La captura requiere el adaptador FFmpeg nativo de este dispositivo.");
+        if (X11RemoteInput.IsSession)
+        {
+            var area = X11RemoteInput.CaptureArea(options.Source, requireInput: false)
+                ?? throw new ArgumentException("La captura X11 requiere el escritorio o un monitor disponible.");
+            var x11Args = new List<string> { "-hide_banner", "-loglevel", "warning", "-nostdin", "-f", "x11grab", "-framerate",
+                options.Fps.ToString(CultureInfo.InvariantCulture), "-video_size", $"{area.Width}x{area.Height}",
+                "-i", $"{Environment.GetEnvironmentVariable("DISPLAY")}+{area.X},{area.Y}", "-vf", ScaleFilter(options) };
+            x11Args.AddRange(EncodingArguments(options, encoder)); x11Args.AddRange(ContainerArguments(options.Codec)); x11Args.Add("pipe:1");
+            return x11Args;
+        }
         if (options.Source.StartsWith("camera:", StringComparison.Ordinal))
         {
             string name = options.Source[7..];
@@ -198,17 +221,7 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
                 "-vf", ScaleFilter(options), "-r", options.Fps.ToString(CultureInfo.InvariantCulture) };
             camera.AddRange(EncodingArguments(options, encoder)); camera.AddRange(ContainerArguments(options.Codec)); camera.Add("pipe:1"); return camera;
         }
-        if (options.Source == "dxgi:0" && ScreenEncoderOptions.IsHardware(encoder))
-        {
-            var gpuArgs = new List<string> { "-hide_banner", "-loglevel", "warning", "-nostdin", "-f", "lavfi", "-i",
-                $"ddagrab=output_idx=0:framerate={options.Fps}:draw_mouse=1:output_fmt=bgra",
-                "-vf", $"scale_d3d11=width='trunc(min(iw,min({options.Width},{options.Height}*iw/ih))/2)*2':height='trunc(min(ih,min({options.Height},{options.Width}*ih/iw))/2)*2':format=nv12" };
-            gpuArgs.AddRange(EncodingArguments(options, encoder));
-            gpuArgs[gpuArgs.IndexOf("-pix_fmt") + 1] = "d3d11";
-            gpuArgs.AddRange(ContainerArguments(options.Codec));
-            gpuArgs.Add("pipe:1");
-            return gpuArgs;
-        }
+        if (options.Source == "dxgi:0") return DxgiCaptureArguments(options, encoder, 0, direct: false);
         string source = "desktop";
         CaptureDisplay? display = null;
         if (options.Source.StartsWith("window:", StringComparison.Ordinal) && int.TryParse(options.Source[7..], out int pid))
@@ -266,12 +279,106 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
 
     internal static IScreenVideoReader CreateReader(string codec, Stream stream, int frameRate = 30) => codec == "av1" ? new Av1IvfVideoReader(stream) : new MatroskaVideoReader(stream, frameRate);
 
-    private static List<string> CompatibilityCaptureArguments(ScreenEncoderOptions options, string encoder)
+    internal static List<string> DxgiCaptureArguments(ScreenEncoderOptions options, string encoder, int outputIndex, bool direct)
+        => DxgiCaptureArguments(options, encoder, DesktopDuplicationSource(outputIndex, options.Fps), direct);
+
+    private static string DesktopDuplicationSource(int index, int fps)
+        => FormattableString.Invariant($"ddagrab=output_idx={index}:framerate={fps}:draw_mouse=1:output_fmt=bgra");
+
+    private static List<string> DxgiCaptureArguments(ScreenEncoderOptions options, string encoder, string source, bool direct, bool composed = false)
     {
-        var args = CaptureArguments(options, encoder);
-        args[args.IndexOf("-vf") + 1] = "hwdownload,format=bgra," + ScaleFilter(options);
-        args[args.IndexOf("-pix_fmt") + 1] = "yuv420p";
+        var args = new List<string> { "-hide_banner", "-loglevel", "warning", "-nostdin", "-f", "lavfi", "-i", source };
+        if (!direct) args.AddRange(["-vf", (composed ? "" : "hwdownload,format=bgra,") + ScaleFilter(options)]);
+        args.AddRange(EncodingArguments(options, encoder));
+        if (direct) args[args.IndexOf("-pix_fmt") + 1] = "d3d11";
+        args.AddRange(ContainerArguments(options.Codec));
+        args.Add("pipe:1");
         return args;
+    }
+
+    internal static string? DxgiDesktopGraph(IReadOnlyList<CaptureDisplay> displays, int fps,
+        Func<CaptureDisplay, int?> outputIndex)
+    {
+        if (displays.Count < 2) return null;
+        int left = displays.Min(d => d.X), top = displays.Min(d => d.Y);
+        var inputs = new StringBuilder();
+        var labels = new StringBuilder();
+        var layout = new List<string>();
+        var indices = new HashSet<int>();
+        foreach (var display in displays.OrderByDescending(d => d.Primary))
+        {
+            if (outputIndex(display) is not int index || !indices.Add(index)) return null;
+            // xstack requires non-overlapping input rectangles.
+            if (displays.Any(other => other.Id != display.Id && display.X < other.X + other.Width &&
+                other.X < display.X + display.Width && display.Y < other.Y + other.Height && other.Y < display.Y + display.Height))
+                return null;
+            string label = FormattableString.Invariant($"[screen{index}]");
+            inputs.Append(DesktopDuplicationSource(index, fps)).Append(",hwdownload,format=bgra").Append(label).Append(';');
+            labels.Append(label);
+            layout.Add(FormattableString.Invariant($"{display.X - left}_{display.Y - top}"));
+        }
+        return FormattableString.Invariant($"{inputs}{labels}xstack=inputs={displays.Count}:layout={string.Join('|', layout)}:fill=black");
+    }
+
+    private sealed record CaptureAttempt(string Encoder, string Mode, Func<List<string>>? Arguments,
+        WindowsScreenReader.Region[]? Regions = null, int Width = 0, int Height = 0);
+
+    private IEnumerable<CaptureAttempt> CaptureAttempts(
+        ScreenEncoderOptions options, IEnumerable<string> encoders)
+    {
+        CaptureDisplay? display = null;
+        int? dxgiOutput = null;
+        string? desktopGraph = null;
+        WindowsScreenReader.Region[]? regions = null;
+        if (_usesDefaultCapture && OperatingSystem.IsWindows())
+        {
+            if (options.Source == "dxgi:0") dxgiOutput = 0;
+            else if (options.Source == "desktop" || options.Source.StartsWith("display:", StringComparison.Ordinal))
+            {
+                var displays = ScreenCaptureInventory.Displays();
+                if (options.Source == "desktop")
+                {
+                    if (displays.Count == 1) display = displays[0];
+                    else
+                    {
+                        var indices = displays.ToDictionary(d => d, ScreenCaptureInventory.DxgiOutputIndex);
+                        desktopGraph = DxgiDesktopGraph(displays, options.Fps, d => indices[d]);
+                        if (desktopGraph != null)
+                            regions = displays.OrderByDescending(d => d.Primary).Select(d => Region(d, indices[d]!.Value)).ToArray();
+                    }
+                }
+                else display = displays.FirstOrDefault(d => "display:" + d.Id == options.Source);
+                if (display != null)
+                {
+                    dxgiOutput = ScreenCaptureInventory.DxgiOutputIndex(display);
+                    if (dxgiOutput is int index) regions = [Region(display, index)];
+                }
+            }
+        }
+        foreach (string encoder in encoders)
+        {
+            if (regions is { Length: > 0 and <= 16 } && encoder is "h264_nvenc" or "hevc_nvenc")
+            {
+                var (width, height) = WindowsScreenReader.Fit(regions.Max(r => r.X + r.Width) - regions.Min(r => r.X),
+                    regions.Max(r => r.Y + r.Height) - regions.Min(r => r.Y), options);
+                if (width >= 128 && height >= 128)
+                    yield return new(encoder, "D3D11 + NVENC nativo", null, regions, width, height);
+            }
+            if (desktopGraph != null)
+                yield return new(encoder, "DXGI + composición de monitores", () => DxgiCaptureArguments(options, encoder, desktopGraph, direct: false, composed: true));
+            if (dxgiOutput is int outputIndex)
+            {
+                if (encoder.EndsWith("_nvenc", StringComparison.Ordinal) && display is { } monitor &&
+                    monitor.Width <= options.Width && monitor.Height <= options.Height && (monitor.Width | monitor.Height) % 2 == 0)
+                    yield return new(encoder, "DXGI + NVENC directo", () => DxgiCaptureArguments(options, encoder, outputIndex, direct: true));
+                yield return new(encoder, "DXGI + CPU scaling", () => DxgiCaptureArguments(options, encoder, outputIndex, direct: false));
+                if (options.Source == "dxgi:0") continue;
+            }
+            string mode = !_usesDefaultCapture ? "FFmpeg" : X11RemoteInput.IsSession ? "X11 capture + CPU scaling" :
+                options.Source.StartsWith("camera:", StringComparison.Ordinal) ? "DirectShow capture" : "GDI capture + CPU scaling";
+            yield return new(encoder, mode, () => _captureArguments(options, encoder));
+        }
+        static WindowsScreenReader.Region Region(CaptureDisplay d, int index) => new(index, d.X, d.Y, d.Width, d.Height);
     }
 
     internal static string ScaleFilter(ScreenEncoderOptions options) =>
@@ -282,37 +389,47 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
         Func<byte, byte[], Task> output, CancellationToken ct)
     {
         options.Validate();
-        var capabilities = await CapabilitiesAsync(ct).ConfigureAwait(false);
-        var encoders = capabilities.Where(c => c.Available && c.Codec == options.Codec && (options.Encoder == "auto" || c.Id == options.Encoder)).ToArray();
-        if (encoders.Length == 0) throw new InvalidOperationException("No hay un codificador FFmpeg probado para este formato. Revisa las opciones disponibles.");
+        var encoders = ScreenEncoderOptions.Candidates.Where(id => !id.EndsWith("_mediacodec", StringComparison.Ordinal) &&
+            ScreenEncoderOptions.CodecForEncoder(id) == options.Codec && (options.Encoder == "auto" || id == options.Encoder)).ToArray();
+        if (_capabilities is { Length: > 0 } known && options.Encoder == "auto")
+            encoders = encoders.OrderByDescending(id => known.Any(e => e.Id == id && e.Available)).ToArray();
+        if (encoders.Length == 0) throw new InvalidOperationException("No hay un codificador FFmpeg para este formato en esta plataforma.");
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
             await StopCoreAsync().ConfigureAwait(false);
             Exception? last = null;
-            var attempts = encoders.SelectMany(encoder => options.Source == "dxgi:0" && ScreenEncoderOptions.IsHardware(encoder.Id) && _allowCaptureFallback
-                ? new[] { (Encoder: encoder, Compatibility: false), (Encoder: encoder, Compatibility: true) }
-                : new[] { (Encoder: encoder, Compatibility: false) });
-            foreach (var attempt in attempts)
+            foreach (var attempt in CaptureAttempts(options, encoders))
             {
                 var encoder = attempt.Encoder;
+                bool approvalStarted = false;
                 try
                 {
                     var captureCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                     _captureCts = captureCts;
-                    _process = StartProcess(attempt.Compatibility ? CompatibilityCaptureArguments(options, encoder.Id) : _captureArguments(options, encoder.Id));
-                    var process = _process;
-                    Task<string> errors = ReadErrorsAsync(process, captureCts.Token);
-                    var reader = CreateReader(options.Codec, process.StandardOutput.BaseStream, options.Fps);
                     var ready = new TaskCompletionSource<NativeScreenProfile>(TaskCreationOptions.RunContinuationsAsynchronously);
                     var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                     long generation = Math.Max(Interlocked.Increment(ref _generation), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     Interlocked.Exchange(ref _generation, generation);
+                    var statistics = new ScreenCaptureMetrics(attempt.Mode);
+                    IScreenVideoReader reader;
+                    if (attempt.Regions != null)
+                        reader = _windowsReader = new(options, attempt.Regions, attempt.Width, attempt.Height, generation, statistics);
+                    else
+                    {
+                        _process = StartProcess(attempt.Arguments!());
+                        reader = CreateReader(options.Codec, _process.StandardOutput.BaseStream, options.Fps);
+                    }
+                    var process = _process;
+                    Task<string> errors = process == null ? Task.FromResult("") : ReadErrorsAsync(process, captureCts.Token);
+                    _statistics = statistics;
                     _pump = Task.Run(async () =>
                     {
                         bool started = false;
-                        var queue = new RealtimeScreenFrameQueue();
+                        // Allow about 50 ms of frames at the requested rate. The muxer
+                        // can deliver several frames together even with a ready sender.
+                        var queue = new RealtimeScreenFrameQueue(Math.Max(2, (options.Fps + 19) / 20), statistics, RequestKeyFrame);
                         var sender = Task.Run(async () =>
                         {
                             try
@@ -331,23 +448,29 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
                         });
                         try
                         {
-                            await reader.ReadAsync(frame =>
+                            await reader.ReadAsync(async frame =>
                             {
+                                statistics.Encode(frame);
                                 if (!started)
                                 {
-                                    if (!frame.KeyFrame) return Task.CompletedTask;
+                                    if (!frame.KeyFrame) return;
                                     started = true;
-                                    string captureMode = options.Source == "dxgi:0" ? attempt.Compatibility ? "DXGI + CPU scaling" : "DXGI + D3D11 scaling" : "GDI capture + CPU scaling";
-                                    ready.TrySetResult(new(encoder.Id, options.CodecId, reader.Width, reader.Height, options.Fps, reader.WebCodecString(), reader.WebDescription, generation, captureMode));
+                                    ready.TrySetResult(new(encoder, options.CodecId, reader.Width, reader.Height, options.Fps, reader.WebCodecString(), reader.WebDescription, generation, attempt.Mode));
+                                    await resume.Task.WaitAsync(captureCts.Token).ConfigureAwait(false);
                                 }
                                 queue.Enqueue(frame);
-                                return Task.CompletedTask;
                             }, captureCts.Token).ConfigureAwait(false);
                             if (!captureCts.IsCancellationRequested) throw new IOException("FFmpeg dejó de producir vídeo. " + await errors.ConfigureAwait(false));
                         }
                         catch (Exception ex)
                         {
-                            ready.TrySetException(ex);
+                            if (!started && !captureCts.IsCancellationRequested)
+                            {
+                                Kill(process);
+                                string diagnostic = Tail(await errors.ConfigureAwait(false));
+                                ready.TrySetException(new IOException($"{encoder}: {ex.Message} {diagnostic}".Trim(), ex));
+                            }
+                            else ready.TrySetException(ex);
                             if (!captureCts.IsCancellationRequested && resume.Task.IsCompletedSuccessfully)
                             {
                                 Profile = null;
@@ -362,8 +485,11 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
                         }
                     });
                     using var startupCts = CancellationTokenSource.CreateLinkedTokenSource(ct, captureCts.Token);
-                    var profile = await ready.Task.WaitAsync(TimeSpan.FromSeconds(12), startupCts.Token).ConfigureAwait(false);
+                    // Use the request token for the first-frame wait so a failed encoder's
+                    // teardown cannot mask its stderr with an OperationCanceledException.
+                    var profile = await ready.Task.WaitAsync(TimeSpan.FromSeconds(12), ct).ConfigureAwait(false);
                     PendingProfile = profile;
+                    approvalStarted = true;
                     if (!await approve(profile).WaitAsync(startupCts.Token).ConfigureAwait(false)) throw new InvalidOperationException("No se ha autorizado el inicio de esta captura.");
                     Profile = profile;
                     PendingProfile = null;
@@ -374,7 +500,7 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
                 {
                     last = ex;
                     await StopCoreAsync().ConfigureAwait(false);
-                    if (ct.IsCancellationRequested) throw;
+                    if (ct.IsCancellationRequested || approvalStarted) throw;
                 }
             }
             throw new InvalidOperationException("No se pudo iniciar la captura FFmpeg: " + last?.Message, last);
@@ -393,6 +519,8 @@ internal sealed partial class FfmpegScreenEncoder : IDisposable
     {
         Profile = null;
         PendingProfile = null;
+        _windowsReader = null;
+        _statistics = null;
         _captureCts?.Cancel();
         Kill(_process);
         if (_pump != null) { try { await _pump.ConfigureAwait(false); } catch { } }

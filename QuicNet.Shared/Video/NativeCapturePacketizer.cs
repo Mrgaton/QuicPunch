@@ -11,7 +11,7 @@ internal sealed class NativeCapturePacketizer(byte codecId, int width, int heigh
     private readonly Dictionary<int, byte[]> _parameters = new();
     internal string Codec { get; private set; } = codecId switch { 1 => "avc1", 5 => "hvc1", 4 => "av01", _ => throw new ArgumentException("Unsupported capture codec") };
     internal string? Description { get; private set; }
-    internal byte[]? Packet(byte[] encoded, long timestamp, bool key)
+    internal bool Configure(byte[] encoded, bool key)
     {
         if (codecId is 1 or 5)
         {
@@ -45,6 +45,12 @@ internal sealed class NativeCapturePacketizer(byte codecId, int width, int heigh
                 if (((header >> 3) & 15) == 1) Description = Convert.ToBase64String(encoded.AsSpan(start, pos - start));
             }
         }
+        return key;
+    }
+
+    internal byte[]? Packet(byte[] encoded, long timestamp, bool key, bool updateConfiguration = true)
+    {
+        if (updateConfiguration) key = Configure(encoded, key);
         if (Description == null) return null;
         byte[] metadata = JsonSerializer.SerializeToUtf8Bytes(new ScreenFrameMetadata(Codec, Description, timestamp, generation, width, height), SharedJson.Options);
         byte[] packet = new byte[3 + metadata.Length + encoded.Length];

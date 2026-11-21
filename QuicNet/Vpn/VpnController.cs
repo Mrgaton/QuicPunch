@@ -51,7 +51,8 @@ internal sealed class VpnController : IVpnControl, IAsyncDisposable
             _attempts.Select(p => new QuicNet.Serialization.VpnConnectionAttemptResponse(p.Key, p.Value.State, p.Value.Failures, p.Value.Error)).ToArray()),
             QuicNet.Serialization.NativeUiJsonContext.Default.VpnOrchestrationResponse); }
     }
-    public VpnController(QuicPunch.QuicPunch node, VirtualLanHandler handler, VpnConfigurationStore store, CancellationToken token)
+    public VpnController(QuicPunch.QuicPunch node, VirtualLanHandler handler, VpnConfigurationStore store, CancellationToken token,
+        Func<bool>? ready = null)
     {
         _node = node;
         _handler = handler;
@@ -71,7 +72,7 @@ internal sealed class VpnController : IVpnControl, IAsyncDisposable
                 _handler.ApplyConfiguration(initial, new VpnPolicy(local, []));
             }
         }
-        _worker = Task.Run(RunAsync);
+        _worker = Task.Run(() => RunAsync(ready));
     }
 
     internal VpnPolicy Compile(VpnConfiguration config)
@@ -139,13 +140,14 @@ internal sealed class VpnController : IVpnControl, IAsyncDisposable
         SaveConfiguration(config, config.Revision);
     }
 
-    private async Task RunAsync()
+    private async Task RunAsync(Func<bool>? ready)
     {
         try
         {
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
             do
             {
+                if (ready?.Invoke() == false) continue;
                 try { lock (_reconcile) Reconcile(); }
                 catch (Exception ex) { _error = ex.Message; }
             } while (await timer.WaitForNextTickAsync(_stop.Token).ConfigureAwait(false));

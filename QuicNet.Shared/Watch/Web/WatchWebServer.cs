@@ -48,7 +48,6 @@ public sealed class WatchWebServer : IAsyncDisposable
         _rooms.MediaChanged += manifest => _ = _hub.BroadcastAsync("media", manifest);
         _rooms.Error += message => _ = _hub.BroadcastAsync("error", new global::QuicNet.Serialization.WatchWebServerMessage1(message));
         _connector.Error += message => _ = _hub.BroadcastAsync("error", new global::QuicNet.Serialization.WatchWebServerMessage1(message));
-        _library.CacheProgress += (id, cached, total) => _ = _hub.BroadcastAsync("cache", new global::QuicNet.Serialization.WatchWebServerMessage2(id, cached, total));
         _control.PeerConnected += peer => _ = PublishStatusAsync();
         _control.PeerDisconnected += peer => _ = PublishStatusAsync();
     }
@@ -234,7 +233,12 @@ public sealed class WatchWebServer : IAsyncDisposable
     {
         WatchRoom? room = _rooms.Snapshot();
         Guid localId = _rooms.LocalPeerId;
-        return new global::QuicNet.Serialization.WatchWebServerMessage8(_csrf, new global::QuicNet.Serialization.WatchWebServerMessage9(localId, _qcc.CurrentPeer?.Name ?? Environment.MachineName, _qcc.GetToken() ?? ""), _qcc.AvailablePeers.Values.Where(p => p.Id != localId).Select(p => new global::QuicNet.Serialization.WatchWebServerMessage10(p.Id, p.Name, _control.ConnectedPeerIds.Contains(p.Id) && _media.ConnectedPeerIds.Contains(p.Id), room?.Participants.ContainsKey(p.Id) == true, room?.Participants.TryGetValue(p.Id, out ParticipantRole role) == true ? role.ToString() : null)).OrderBy(p => p.name).ToArray(), room == null ? null : new global::QuicNet.Serialization.WatchWebServerMessage11(room.RoomId, room.Name, room.OwnerPeerId, room.OwnerPeerId == localId, room.Participants.GetValueOrDefault(localId, ParticipantRole.Viewer).ToString(), room.Participants.Select(p => new global::QuicNet.Serialization.WatchWebServerMessage12(p.Key, p.Value.ToString())).ToArray(), room.Media, room.Playback), canPickMedia: _filePicker != null, canSelectPath: !OperatingSystem.IsAndroid());
+        return new global::QuicNet.Serialization.WatchWebServerMessage8(_csrf, new global::QuicNet.Serialization.WatchWebServerMessage9(localId, _qcc.CurrentPeer?.Name ?? Environment.MachineName, _qcc.GetToken() ?? ""), _qcc.AvailablePeers.Values.Where(p => p.Id != localId).Select(p => new global::QuicNet.Serialization.WatchWebServerMessage10(p.Id, p.Name, _control.ConnectedPeerIds.Contains(p.Id) && _media.ConnectedPeerIds.Contains(p.Id), room?.Participants.ContainsKey(p.Id) == true, room?.Participants.TryGetValue(p.Id, out ParticipantRole role) == true ? role.ToString() : null)).OrderBy(p => p.name).ToArray(), room == null ? null : new global::QuicNet.Serialization.WatchWebServerMessage11(room.RoomId, room.Name, room.OwnerPeerId, room.OwnerPeerId == localId, room.Participants.GetValueOrDefault(localId, ParticipantRole.Viewer).ToString(), room.Participants.Select(p => new global::QuicNet.Serialization.WatchWebServerMessage12(p.Key, p.Value.ToString())).ToArray(), room.Media, room.Playback), canPickMedia: _filePicker != null, canSelectPath: !OperatingSystem.IsAndroid())
+        {
+            cache = room?.Media is { } media && media.SourcePeerId != localId
+                ? new(media.MediaId, _library.GetCachedBytes(media.MediaId), media.Size)
+                : null
+        };
     }
 
     private Task PublishStatusAsync() => _hub.BroadcastAsync("status", BuildStatus());

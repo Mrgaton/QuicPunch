@@ -1,7 +1,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   let peer = '', shares = [], selected = null, exploring = false, path = '', skip = 0, generation = 0, busy = false, poll = null, mountUrl = null;
-  let cancelled = false;
+  let cancelled = false, polling = false;
   let navigating = false;
   let pathContext = null;
   const android = () => !!window.__qp_is_android || QP.state.status?.platform === 'android';
@@ -46,9 +46,17 @@
       if (!selected) { path = ''; $('diskFiles').replaceChildren(node('p','El acceso ha caducado o ha sido revocado.')); }
     }
     renderShares(); controls();
-    if (!exploring && !selected) status(shares.length ? 'Selecciona una carpeta compartida.' : 'No hay carpetas compartidas. El propietario puede compartir una carpeta desde su dispositivo.');
+    if (!exploring && !selected) status(shares.length ? 'Selecciona una carpeta compartida.' : peer
+      ? 'No hay carpetas compartidas. Pide al contacto que comparta una carpeta desde su dispositivo.'
+      : 'Para compartir desde este dispositivo, selecciona un contacto en Enviar y recibir.');
     else status(exploring ? 'Exploración de administrador.' : !peer ? 'Puedes añadir archivos. El contacto tiene acceso de '+(selected.writable ? 'lectura y escritura.' : 'solo lectura.') : selected.writable ? 'Lectura y escritura.' : 'Solo lectura.');
     if (refreshFiles && selected && !exploring && skip <= 200) await list();
+  }
+  async function pollVisibleDisk() {
+    if (document.hidden || document.body.dataset.page !== 'virtual-disk' || busy || navigating || polling) return;
+    polling = true;
+    try { await run(() => refresh(true)); }
+    finally { polling = false; }
   }
   async function enter(url = location.href) {
     if (busy) return;
@@ -103,6 +111,8 @@
     $('diskDropHint').hidden = !canWrite() || android();
     $('diskMkdir').hidden = !canWrite() || locked;
     const canBrowse = !!selected || exploring, hasRecipient = !!$('diskRecipient').value;
+    $('diskPathForm').hidden = !canBrowse;
+    $('diskUp').hidden = !canBrowse;
     $('diskUp').disabled = locked || !canBrowse || !path;
     $('diskGrant').disabled = !path;
     $('diskAllowDelete').disabled = $('diskPermission').value !== 'write';
@@ -111,9 +121,11 @@
     $('diskGo').disabled = locked || !canBrowse;
     for (const id of ['diskSend','diskReceive','diskPickFolder']) $(id).disabled = locked || !hasRecipient;
     $('diskGrant').disabled = locked || !path || (!peer && !hasRecipient);
-    $('diskRecipientHelp').textContent = hasRecipient ? '' : [...$('diskRecipient').options].some(option => option.value)
-      ? 'Selecciona quién recibirá los archivos o podrá enviarte archivos.'
-      : 'Añade un contacto y autorízalo en Contactos para compartir archivos o activar la recepción.';
+    const hasAvailableRecipients = hasRecipient || [...$('diskRecipient').options].some(option => option.value);
+    $('diskRecipientHelp').textContent = hasAvailableRecipients ? ''
+      : 'Necesitas un contacto autorizado para compartir o activar la recepción.';
+    $('diskRecipientActions').hidden = hasAvailableRecipients;
+    $('diskReviewContacts').hidden = !(QP.state.status?.peers || []).some(contact => contact.isTrusted === false);
     $('diskConnect').textContent = peer ? 'Conectar' : 'Ver mis carpetas';
     $('diskCancel').hidden = !busy; $('diskCancel').disabled = cancelled;
   }
@@ -163,10 +175,22 @@
       }
       if (!exploring && selected?.allowDelete) row.append(button('Borrar', async () => {
         if (busy) return;
-        if (!confirm('¿Borrar '+entry.name+'? Esta acción no se puede deshacer.')) return;
+        const epoch = generation, target = peer, shareId = selected.id;
+        if (!await QP.confirmAction({
+          title: entry.directory ? '¿Borrar la carpeta?' : '¿Borrar el archivo?',
+          message: `Se borrará «${entry.name}» de la carpeta compartida.`,
+          confirmLabel: 'Borrar',
+          danger: true
+        })) return;
+        if (epoch !== generation || selected?.id !== shareId || busy) return;
         let version = null;
-        if (!entry.directory) { const read = await op({operation:'open-read',shareId:selected.id,path:entry.path}); version = read.version; await op({operation:'close',transferId:read.transferId}); }
-        await op({operation:'delete',shareId:selected.id,path:entry.path,version}); await list();
+        if (!entry.directory) {
+          const read = await op({operation:'open-read',shareId,path:entry.path}, target);
+          version = read.version;
+          await op({operation:'close',transferId:read.transferId}, target);
+        }
+        await op({operation:'delete',shareId,path:entry.path,version}, target);
+        if (epoch === generation) await list();
       }));
       $('diskFiles').append(row);
     }
@@ -207,7 +231,13 @@
           row.dataset.state = 'active'; row.textContent = relative+' · Enviando';
           try { transfer = (await op({operation:'begin-write',shareId,path:destination,length:file.size},target)).transferId; }
           catch (e) {
-            if (e.code !== 'Conflict' || !confirm('Ya existe '+relative+'. ¿Reemplazarlo?')) throw e;
+            if (e.code !== 'Conflict' || !await QP.confirmAction({
+              title: '¿Reemplazar el archivo?',
+              message: `Ya existe «${relative}» en la carpeta de destino.`,
+              confirmLabel: 'Reemplazar archivo',
+              danger: true
+            })) throw e;
+            checkCancelled();
             const read = await op({operation:'open-read',shareId,path:destination},target);
             await op({operation:'close',transferId:read.transferId},target);
             checkCancelled();
@@ -256,21 +286,14 @@
     } finally { busy = false; controls(); }
   }
   document.addEventListener('DOMContentLoaded', () => {
-    const nav = document.querySelector('.nav');
-    if (nav) {
-      const a = node('a','','nav-link'); a.href = '/virtual-disk.html'; a.dataset.page = 'virtual-disk';
-      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      for (const [name, value] of Object.entries({class:'icon',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.7','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false'})) icon.setAttribute(name, value);
-      icon.innerHTML = '<path d="M5 4h14l3 10v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4L5 4Z"/><path d="M2 14h20M6 17h4"/><circle cx="18" cy="17" r=".9" fill="currentColor" stroke="none"/>';
-      a.append(icon,node('span','Disco virtual','nav-label')); nav.insertBefore(a,nav.querySelector('[data-page="settings"]'));
-    }
     contacts(QP.state.status); controls();
     QP.on('status_updated', contacts);
     QP.on('view_changed', ({page,url}) => {
       clearInterval(poll); poll = null;
-      if (page === 'virtual-disk') { run(() => enter(url)); poll = setInterval(() => { if (!busy && !document.hidden) run(() => refresh(true)); },5000); }
+      if (page === 'virtual-disk') { run(() => enter(url)); poll = setInterval(pollVisibleDisk, 5000); }
     });
-    if (document.body.dataset.page === 'virtual-disk') { run(() => enter()); poll = setInterval(() => { if (!busy && !document.hidden) run(() => refresh(true)); },5000); }
+    document.addEventListener('visibilitychange', pollVisibleDisk);
+    if (document.body.dataset.page === 'virtual-disk') { run(() => enter()); poll = setInterval(pollVisibleDisk, 5000); }
     $('diskDevice').addEventListener('change', () => { peer = $('diskDevice').value; generation++; selected = null; exploring = false; path = ''; $('diskFiles').replaceChildren(node('p','Selecciona una carpeta compartida para ver sus archivos.','muted')); $('diskShares').replaceChildren(); controls(); if (!peer) run(refresh); else status('Pulsa Conectar. Si no eres administrador, el propietario debe aceptar la conexión y compartir una carpeta.'); });
     $('diskRecipient').addEventListener('change', controls);
     $('diskConnect').addEventListener('click', () => run(async () => { if (!peer) return refresh(); await QP.api('/api/virtual-disk/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId:peer})}); status('Conectando; espera la aceptación del propietario si es necesaria.'); }));
@@ -299,6 +322,13 @@
       await run(async () => { await prepareExchange('outbox'); await upload(files); });
     });
     $('diskReceive').addEventListener('click', () => run(() => prepareExchange('inbox')));
+    $('diskAddContact').addEventListener('click', event => QP.openContactInvitation(event.currentTarget));
+    $('diskReviewContacts').addEventListener('click', () => {
+      QP.navigate('dashboard');
+      const review = document.querySelector('[data-contact-filter="review"]');
+      review?.click();
+      review?.focus();
+    });
     $('diskPickFolder').addEventListener('click', () => run(async () => {
       if (busy) return;
       const reply = await QP.api('/api/virtual-disk/pick-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
@@ -316,7 +346,34 @@
       if ([...e.dataTransfer.items].some(item => item.webkitGetAsEntry?.()?.isDirectory)) { status('Para enviar una carpeta, utiliza «Enviar carpeta».',true); return; }
       run(() => upload(e.dataTransfer.files));
     });
-    $('diskMkdir').addEventListener('click', () => run(async () => { const name = prompt('Nombre de la carpeta'); if (!name || /[/\\]/.test(name)) return; await op({operation:'mkdir',shareId:selected.id,path:path?path+'/'+name:name}); await list(); }));
+    const mkdirDialog = $('diskMkdirDialog');
+    const mkdirName = $('diskMkdirName');
+    let mkdirTarget;
+    $('diskMkdir').addEventListener('click', () => {
+      if (!canWrite() || busy || mkdirDialog.open) return;
+      mkdirTarget = { epoch: generation, shareId: selected.id, path };
+      mkdirName.value = '';
+      mkdirName.setCustomValidity('');
+      mkdirDialog.showModal();
+    });
+    $('diskMkdirCancel').addEventListener('click', () => mkdirDialog.close());
+    mkdirName.addEventListener('input', () => mkdirName.setCustomValidity(''));
+    $('diskMkdirForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const name = mkdirName.value;
+      if (!name.trim() || /[/\\]/.test(name) || name === '.' || name === '..') {
+        mkdirName.setCustomValidity('Introduce un nombre de carpeta válido.');
+        mkdirName.reportValidity();
+        return;
+      }
+      const target = mkdirTarget;
+      mkdirDialog.close();
+      if (!canWrite() || busy || target.epoch !== generation || target.shareId !== selected.id || target.path !== path) return;
+      run(async () => {
+        await op({ operation:'mkdir', shareId:target.shareId, path:[target.path, name].filter(Boolean).join('/') });
+        if (target.epoch === generation) await list();
+      });
+    });
     $('diskAuditRefresh').addEventListener('click', () => run(async () => { const reply = await op({operation:'audit'},''); const rows = (reply.audit || []).slice(-50).reverse().map(a => node('p',new Date(a.utc).toLocaleString()+' · '+a.actor+' · '+a.operation+' · '+a.path+' · '+(a.success?'Correcto':'Denegado'))); $('diskAudit').replaceChildren(...(rows.length ? rows : [node('p','Todavía no hay actividad de archivos en este dispositivo.','muted')])); }));
     $('diskUnmount').addEventListener('click', () => run(async () => { if (mountUrl) await QP.api('/api/virtual-disk/unmount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:mountUrl})}); mountUrl = null; $('diskMountPanel').hidden = true; }));
   });

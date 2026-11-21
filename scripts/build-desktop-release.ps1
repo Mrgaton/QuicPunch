@@ -29,8 +29,12 @@ function Run-DotNet([string[]]$Arguments) {
     try { & dotnet @Arguments; if($LASTEXITCODE -ne 0){throw "dotnet falló ($LASTEXITCODE)."} } finally {Pop-Location}
 }
 $project=Join-Path $repo 'QuicNet/QuicNet.csproj'
+if($Platform -eq 'linux-x64' -and !(Test-Path -LiteralPath (Join-Path $repo 'QuicNet.Shared/bin/native/linux-x64/libnettt_media.so'))){
+    & bash (Join-Path $repo 'scripts/build-native-media.sh') linux-x64
+    if($LASTEXITCODE -ne 0){throw 'No se pudo compilar el visor FFmpeg de Linux X11.'}
+}
 Run-DotNet (@('publish',$project,'-r',$Platform,'-c','Release','--self-contained','true','-p:PublishAot=false','-o',$dependencies,'-v','minimal')+$common)
-$names=if($Platform -eq 'win-x64'){@('msquic.dll','qp_transport.dll','e_sqlite3.dll','Photino.Native.dll','WebView2Loader.dll','wintun.dll','nettt_media.dll','avcodec-62.dll','avutil-60.dll','swscale-9.dll','libwinpthread-1.dll')}else{@('libmsquic.so','libqp_transport.so','libe_sqlite3.so','Photino.Native.so')}
+$names=if($Platform -eq 'win-x64'){@('msquic.dll','qp_transport.dll','e_sqlite3.dll','Photino.Native.dll','WebView2Loader.dll','wintun.dll','nettt_media.dll','avcodec-62.dll','avfilter-11.dll','avutil-60.dll','swscale-9.dll','libwinpthread-1.dll')}else{@('libmsquic.so','libqp_transport.so','libe_sqlite3.so','Photino.Native.so','libnettt_media.so')}
 foreach($name in $names){Copy-Item -LiteralPath (Join-Path $dependencies $name) -Destination (Join-Path $native $name) -Force}
 Run-DotNet (@('publish',$project,'-r',$Platform,'-c','Release','-p:PublishAot=true',"-p:NativeBundleDirectory=$native",'-o',$OutputDirectory,'-v','minimal')+$common)
 $binary=Join-Path $OutputDirectory $(if($Platform -eq 'win-x64'){'QuicNet.exe'}else{'QuicNet'})

@@ -2,7 +2,6 @@
 #nullable enable
 namespace QuicNet.Serialization;
 
-internal sealed record WebUiServerMessage1(string entry);
 internal sealed record WebUiServerMessage2(bool success, string error);
 internal sealed record WebUiServerMessage3(bool success, string message);
 internal sealed record WebUiServerMessage4(bool success);

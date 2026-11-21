@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace QuicNet.Updates;
 
@@ -10,7 +11,12 @@ public sealed record UpdateArtifact(string Version, long Build, Uri Url, string 
 public sealed record UpdateStatus(string CurrentVersion, long CurrentBuild, string Platform, bool Automatic,
     string Stage = "idle", string? LatestVersion = null, long? LatestBuild = null,
     long Downloaded = 0, long Total = 0, string? Message = null, DateTimeOffset? LastCheck = null,
-    string Channel = "stable", string CurrentChannel = "stable", string? LatestChannel = null, long Revision = 0);
+    string Channel = "stable", string CurrentChannel = "stable", string? LatestChannel = null, long Revision = 0,
+    string? DownloadPhase = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ConfirmEndCalls { get; init; }
+}
 
 public static class ReleaseIdentity
 {
@@ -110,7 +116,12 @@ public static class UpdateManifest
         using var file = File.OpenRead(path);
         if (file.Length != artifact.Size) throw new InvalidDataException("Tamaño de actualización incorrecto.");
         byte[] actual = await SHA256.HashDataAsync(file, token);
-        if (!CryptographicOperations.FixedTimeEquals(actual, Convert.FromHexString(artifact.Sha256)))
+        VerifyHash(actual, artifact.Sha256);
+    }
+
+    internal static void VerifyHash(ReadOnlySpan<byte> actual, string expected)
+    {
+        if (!CryptographicOperations.FixedTimeEquals(actual, Convert.FromHexString(expected)))
             throw new InvalidDataException("El SHA-256 de la actualización no coincide.");
     }
 }

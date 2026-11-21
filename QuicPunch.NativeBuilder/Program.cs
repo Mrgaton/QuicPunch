@@ -45,11 +45,15 @@ internal static partial class NativeBuilder
             string builtLibrary = FindBuiltLibrary(sourceDirectory, rid);
             VerifyNativeDependencies(tools, builtLibrary, rid);
             VerifyOpenSslCapabilities(tools, sourceDirectory, buildLock.TlsGroups);
-            string destination = CopyArtifact(repositoryRoot, builtLibrary, rid);
-            BuildTransportBridge(tools, repositoryRoot, sourceDirectory, rid);
+            string bridge = BuildTransportBridge(tools, repositoryRoot, sourceDirectory, rid);
+            string destinationDirectory = Path.Combine(repositoryRoot, "QuicPunch", "runtimes", rid, "native");
+            Directory.CreateDirectory(destinationDirectory);
+            string destination = CopyIfChanged(builtLibrary, destinationDirectory, out string hash);
+            CopyIfChanged(bridge, destinationDirectory, out string bridgeHash);
 
-            await using FileStream libraryStream = File.OpenRead(destination);
-            string hash = Convert.ToHexString(await SHA256.HashDataAsync(libraryStream));
+            string verification = Path.Combine(repositoryRoot, "QuicPunch", "obj", "native", rid, "verified.txt");
+            Directory.CreateDirectory(Path.GetDirectoryName(verification)!);
+            await File.WriteAllLinesAsync(verification, [hash, bridgeHash]);
             Console.WriteLine($"Built and verified {destination}");
             Console.WriteLine($"SHA256: {hash}");
             return 0;
@@ -77,7 +81,7 @@ internal static partial class NativeBuilder
         }
     }
 
-    private static void BuildTransportBridge(Toolchain tools, string root, string source, string rid)
+    private static string BuildTransportBridge(Toolchain tools, string root, string source, string rid)
     {
         string platform = rid == WindowsRid ? "windows" : "linux";
         string openssl = Path.Combine(source, "build", platform, "x64_openssl", "_deps", "opensslquic-build", "openssl");
@@ -91,8 +95,7 @@ internal static partial class NativeBuilder
         Run(tools.CMake, arguments, root, tools.Path);
         Run(tools.CMake, ["--build", output, "--config", "Release"], root, tools.Path);
         string name = rid == WindowsRid ? "qp_transport.dll" : "libqp_transport.so";
-        string artifact = Path.Combine(output, rid == WindowsRid ? "Release" : "", name);
-        File.Copy(artifact, Path.Combine(root, "QuicPunch", "runtimes", rid, "native", name), true);
+        return Path.Combine(output, rid == WindowsRid ? "Release" : "", name);
     }
 
     private static string ParseRid(string[] args)
@@ -346,15 +349,29 @@ internal static partial class NativeBuilder
         Console.WriteLine($"Verified ML-KEM-768 and TLS groups {expectedGroups}.");
     }
 
-    private static string CopyArtifact(string repositoryRoot, string library, string rid)
+    private static string CopyIfChanged(string source, string destinationDirectory, out string hash)
     {
-        string destinationDirectory = Path.Combine(repositoryRoot, "QuicPunch", "runtimes", rid, "native");
-        Directory.CreateDirectory(destinationDirectory);
-        string destination = Path.Combine(destinationDirectory, Path.GetFileName(library));
-        File.Copy(library, destination, overwrite: true);
-        // The verified output also records that changes to the builder were handled;
-        // a no-op native link may otherwise retain an older timestamp indefinitely.
-        File.SetLastWriteTimeUtc(destination, DateTime.UtcNow);
+        string destination = Path.Combine(destinationDirectory, Path.GetFileName(source));
+        using var artifact = File.OpenRead(source);
+        hash = Convert.ToHexString(SHA256.HashData(artifact));
+        if (File.Exists(destination))
+        {
+            using var existing = File.OpenRead(destination);
+            if (Convert.ToHexString(SHA256.HashData(existing)) == hash)
+                return destination;
+        }
+
+        // An interrupted copy must not leave a native library that looks ready to package.
+        string pending = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.Copy(source, pending);
+            File.Move(pending, destination, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(pending);
+        }
         return destination;
     }
 

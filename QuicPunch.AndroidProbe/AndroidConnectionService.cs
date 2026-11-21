@@ -4,9 +4,7 @@ using Android.Content.PM;
 using QuicNet.Protocols;
 using QuicNet.Settings;
 using QuicNet.WebUi;
-using QuicNet.Watch.Protocols;
-using QuicNet.Watch.Services;
-using QuicNet.Watch.Web;
+using QuicNet.Watch;
 using QuicPunch.AndroidProbe.Shared;
 
 namespace QuicPunch.AndroidProbe;
@@ -15,7 +13,10 @@ namespace QuicPunch.AndroidProbe;
 public sealed class AndroidConnectionService : Service
 {
     internal static bool Running { get; private set; }
-    internal const string Url = "http://127.0.0.1:5071/";
+    private static readonly bool HasProductionUpdater = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
+        System.Runtime.InteropServices.Architecture.Arm64;
+    private static readonly int WebPort = HasProductionUpdater ? 5071 : 5072;
+    internal static readonly string Url = $"http://127.0.0.1:{WebPort}/";
     private const string ChannelId = "quicpunch-connections";
     private const string StopAction = "org.quicpunch.androidprobe.STOP";
     private bool _started, _microphoneAllowed;
@@ -27,11 +28,10 @@ public sealed class AndroidConnectionService : Service
     private ChatHandler? _chatHandler;
     private VoiceCallHandler? _voiceCallHandler;
     private SpeedTestHandler? _speedTestHandler;
-    private WatchControlHandler? _watchControl;
-    private MediaTransferHandler? _watchMedia;
-    private MediaLibrary? _watchLibrary;
-    private WatchWebServer? _watchWeb;
+    private WatchApplication? _watch;
     private AndroidWatchFilePicker? _watchPicker;
+    private AppPreferencesStore? _preferences;
+    private readonly object _multicastGate = new();
     private Android.Net.Wifi.WifiManager.MulticastLock? _multicastLock;
     private Android.Net.ConnectivityManager? _connectivity;
     private NetworkObserver? _networkObserver;
@@ -49,22 +49,34 @@ public sealed class AndroidConnectionService : Service
             var network = owner._connectivity?.ActiveNetwork;
             var properties = network == null ? null : owner._connectivity?.GetLinkProperties(network);
             _path = new NetworkPathTracker(network?.ToString(), Fingerprint(properties));
+            owner._qcc?.SetWanNat64Prefix(Nat64Prefix(properties));
+        }
+        private static string? Nat64Prefix(Android.Net.LinkProperties? properties)
+        {
+            if (!OperatingSystem.IsAndroidVersionAtLeast(30) || properties == null ||
+                properties.Routes.Any(route => route.IsDefaultRoute && route.Destination?.Address is Java.Net.Inet4Address))
+                return null;
+            var prefix = properties.Nat64Prefix;
+            return prefix?.Address?.HostAddress is { } address ? address + "/" + prefix.PrefixLength : null;
         }
         private static string Fingerprint(Android.Net.LinkProperties? properties)
         {
             if (properties == null) return "";
-            // The UDP transport is IPv4. IPv6 temporary-address updates, link
-            // statistics and repeated callbacks must not cancel a live handshake.
+            // Include default IPv6 routing and NAT64 changes while ignoring
+            // individual IPv6 privacy address rotations and link statistics.
             var addresses = properties.LinkAddresses.Where(a => a.Address is Java.Net.Inet4Address)
                 .Select(a => a.ToString()).Order(StringComparer.Ordinal);
-            var routes = properties.Routes.Where(r => r.Destination?.Address is Java.Net.Inet4Address)
+            var routes = properties.Routes.Where(r => r.IsDefaultRoute || r.Destination?.Address is Java.Net.Inet4Address)
                 .Select(r => r.ToString()).Order(StringComparer.Ordinal);
-            return properties.InterfaceName + "|" + string.Join(",", addresses) + "|" + string.Join(",", routes);
+            return properties.InterfaceName + "|" + string.Join(",", addresses) + "|" + string.Join(",", routes) + "|" + Nat64Prefix(properties);
         }
         private void Changed(Android.Net.Network network, Android.Net.LinkProperties? properties)
         {
             if (!_lifetime.IsCancellationRequested && _path.Update(network.ToString(), Fingerprint(properties)))
+            {
+                _owner._qcc?.SetWanNat64Prefix(Nat64Prefix(properties));
                 _ = _owner.RefreshNetworkAsync(_lifetime);
+            }
         }
         // API 26+ delivers OnLinkPropertiesChanged immediately after OnAvailable.
         // A synchronous GetLinkProperties in OnAvailable can return stale/null
@@ -72,7 +84,10 @@ public sealed class AndroidConnectionService : Service
         public override void OnLost(Android.Net.Network network)
         {
             if (!_lifetime.IsCancellationRequested && _path.Lost(network.ToString()))
+            {
+                _owner._qcc?.SetWanNat64Prefix(null);
                 _ = _owner.RefreshNetworkAsync(_lifetime);
+            }
         }
         public override void OnLinkPropertiesChanged(Android.Net.Network network, Android.Net.LinkProperties properties) =>
             Changed(network, properties);
@@ -90,6 +105,7 @@ public sealed class AndroidConnectionService : Service
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
     {
         if (intent?.Action == StopAction) { StopSelf(); return StartCommandResult.NotSticky; }
+        if (FilesDir?.AbsolutePath is { } dataDirectory) QuicNet.Diagnostics.CoreErrorReporter.Start(dataDirectory);
         try
         {
             _microphoneAllowed = CheckSelfPermission(Android.Manifest.Permission.RecordAudio) == Permission.Granted &&
@@ -100,7 +116,7 @@ public sealed class AndroidConnectionService : Service
             var stop = PendingIntent.GetService(this, 1, new Intent(this, typeof(AndroidConnectionService)).SetAction(StopAction), PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
             var notification = new Notification.Builder(this, ChannelId)
                 .SetContentTitle("QuicNet activo")
-                .SetContentText("Conexiones y llamadas disponibles. Pulsa para abrir.")
+                .SetContentText("Pulsa para abrir QuicNet.")
                 .SetSmallIcon(Resource.Drawable.ic_stat_quicnet)
                 .SetContentIntent(open).SetOngoing(true)
                 .AddAction(new Notification.Action.Builder(Android.Graphics.Drawables.Icon.CreateWithResource(this, Android.Resource.Drawable.IcMenuCloseClearCancel), "Desconectar", stop).Build())
@@ -113,6 +129,7 @@ public sealed class AndroidConnectionService : Service
         }
         catch (Exception ex)
         {
+            QuicNet.Diagnostics.CoreErrorReporter.Report("Servicio Android", ex);
             Android.Util.Log.Error("QuicPunch", $"[ANDROID SERVICE] {ex}");
             StopSelf();
         }
@@ -122,20 +139,19 @@ public sealed class AndroidConnectionService : Service
     private void InitializeNode()
     {
         QuicProbe.LoadNative(ApplicationInfo?.NativeLibraryDir);
-        AcquireMulticastLock();
 
         string appDataDir = FilesDir?.AbsolutePath ?? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.Personal), "QuicPunchV17");
         Directory.CreateDirectory(appDataDir);
-        string preferencesPath = Path.Combine(appDataDir, "ui-settings.json");
-        var preferencesStore = new AppPreferencesStore(preferencesPath);
+        var preferencesStore = AppPreferencesStore.OpenForApp(appDataDir);
         AppPreferences preferences = preferencesStore.Snapshot();
         preferences.LanEnabled = false;
 
         _cts = new CancellationTokenSource();
-        _qcc = new global::QuicPunch.QuicPunch(_cts, null, null, appDataPath: appDataDir)
+        _qcc = new global::QuicPunch.QuicPunch(_cts.Token, appDataPath: appDataDir, updateIpReputationOnlyWithWan: true)
         {
             SharePeers = true,
-            WanEnabled = preferences.WanEnabled,
+            WanEnabled = preferences.OnboardingCompleted && preferences.WanEnabled,
+            LanDiscoveryInterval = () => TimeSpan.FromSeconds(MainActivity.IsVisible ? 2 : 30),
             DefaultTorRuntimeOptions = new global::QuicPunch.TorRuntimeOptions
             {
                 ExecutablePath = Path.Combine(ApplicationInfo!.NativeLibraryDir!, "libtor.so"),
@@ -143,10 +159,11 @@ public sealed class AndroidConnectionService : Service
                 TransportMode = global::QuicPunch.TorTransportMode.Direct
             }
         };
+        _preferences = preferencesStore;
+        _preferences.Changed += UpdateMulticastLock;
+        MainActivity.VisibilityChanged += UpdateMulticastLock;
+        UpdateMulticastLock();
         LocalUserProfile.DeviceName = Android.OS.Build.Model ?? Environment.MachineName;
-        LocalUserProfile.Apply(_qcc, preferences);
-        _qcc.Discovery.WanNostrDiscoveryEnabled = preferences.WanNostrDiscoveryEnabled;
-        _qcc.Discovery.TorNostrDiscoveryEnabled = preferences.TorNostrDiscoveryEnabled;
 
 #if DEBUG
         _ = Task.Run(async () =>
@@ -176,17 +193,9 @@ public sealed class AndroidConnectionService : Service
         _qcc.RegisterProtocol(_voiceCallHandler);
         _qcc.RegisterProtocol(_speedTestHandler);
 
-        _watchControl = new WatchControlHandler();
-        _watchMedia = new MediaTransferHandler();
-        _qcc.RegisterProtocol(_watchControl);
-        _qcc.RegisterProtocol(_watchMedia);
-        _watchLibrary = new MediaLibrary(_watchMedia, Path.Combine(_qcc.NodeAppDataPath, "watch-media-cache"));
-        var watchRooms = new RoomCoordinator(_watchControl, _watchLibrary, _qcc.CurrentPeer?.Id
-            ?? throw new InvalidOperationException("La identidad local no está disponible."));
-        var watchConnector = new PeerConnector(_qcc, _watchControl, _watchMedia, _cts.Token);
+        _watch = new WatchApplication(_qcc, _cts);
         _watchPicker = new AndroidWatchFilePicker(this, _cts.Token);
-        _watchWeb = new WatchWebServer(_qcc, _watchControl, _watchMedia, _watchLibrary, watchRooms, watchConnector, _cts);
-        _watchWeb.SetFilePicker(_watchPicker);
+        _watch.Web.SetFilePicker(_watchPicker);
 
         _server = new WebUiServer(
             _qcc,
@@ -196,9 +205,10 @@ public sealed class AndroidConnectionService : Service
             _speedTestHandler,
             preferencesStore,
             _cts,
-            watchWeb: _watchWeb,
-            port: 5071,
-            capabilities: NodeCapabilities.CreateAndroid()
+            watchWeb: _watch.Web,
+            port: WebPort,
+            capabilities: NodeCapabilities.CreateAndroid(),
+            startAfterOnboarding: StartNodeAsync
         )
         {
             ProbePingHandler = MainActivity.NativePing,
@@ -207,69 +217,89 @@ public sealed class AndroidConnectionService : Service
             DiskDocuments = new AndroidDiskDocuments(this),
             PlatformScreenCapture = new AndroidScreenCapture(this)
         };
-        var updateIdle = new AndroidUpdateIdle((Android.OS.PowerManager)GetSystemService(PowerService)!);
-        updateIdle.Register(this);
-        _updateIdle = updateIdle;
-        var lifetime = _cts.Token;
-        _updater = new QuicNet.Updates.AutoUpdateService(appDataDir, "android-arm64",
-            (path, artifact, automatic) => AndroidAutoUpdate.InstallAsync(this, path, artifact, automatic,
-                () => _updater!.CanApplyAutomatically(), lifetime), getIdleTime: updateIdle.GetIdleTime,
-            canStartAutomaticInstallation: artifact => AndroidAutoUpdate.CanInstallAutomatically(this, artifact));
-        _server.Updates = _updater;
+        if (HasProductionUpdater)
+        {
+            var updateIdle = new AndroidUpdateIdle((Android.OS.PowerManager)GetSystemService(PowerService)!);
+            updateIdle.Register(this);
+            _updateIdle = updateIdle;
+            var lifetime = _cts.Token;
+            _updater = new QuicNet.Updates.AutoUpdateService(appDataDir, "android-arm64",
+                (path, artifact, automatic) => AndroidAutoUpdate.InstallAsync(this, path, artifact, automatic,
+                    commit => _updater!.TryCommitAutomaticInstallation(commit), lifetime), getIdleTime: updateIdle.GetIdleTime,
+                canStartAutomaticInstallation: artifact => AndroidAutoUpdate.CanInstallAutomatically(this, artifact));
+            _server.Updates = _updater;
+        }
         _server.Start();
-        _updater.Start(_cts.Token);
+        _updater?.Start(_cts.Token);
 
+        if (!preferences.OnboardingCompleted) return;
         _ = Task.Run(async () =>
         {
             try
             {
-                await _qcc.Discovery.SetWanPeerDiscoveryEnabledAsync(preferences.WanNostrDiscoveryEnabled, _cts.Token).ConfigureAwait(false);
-                await _qcc.StartAsync(_cts.Token).ConfigureAwait(false);
-                lock (_networkObserverGate)
-                {
-                    if (_cts.IsCancellationRequested) return;
-                    _connectivity = (Android.Net.ConnectivityManager?)GetSystemService(ConnectivityService);
-                    _networkObserver = new NetworkObserver(this);
-                    _connectivity?.RegisterDefaultNetworkCallback(_networkObserver);
-                }
+                await StartNodeAsync(preferences).ConfigureAwait(false);
+                _server.ObservePeerStore();
                 WebUiServer.BroadcastStatusUpdate();
-                if (preferences.TorEnabled)
-                {
-                    WebUiServer.LogEvent("[TOR] Restoring Tor from the previous session...");
-                    try
-                    {
-                        await _qcc.StartTorAsync(preferences.TorVirtualPort, cancellationToken: _cts.Token).ConfigureAwait(false);
-                        WebUiServer.LogEvent($"[TOR] Hidden service ready at {_qcc.TorOnionAddress}");
-                    }
-                    catch (Exception ex) when (!_cts.IsCancellationRequested)
-                    {
-                        WebUiServer.LogEvent($"[TOR] Start failed: {ex.Message}");
-                    }
-                    WebUiServer.BroadcastStatusUpdate();
-                }
+                await _server.RestoreTorAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 WebUiServer.LogEvent($"[P2P STARTUP] {ex.Message}");
             }
         });
-
     }
 
-    // Without this lock Android drops inbound multicast, so desktop LAN discovery
-    // announcements never reach the phone.
-    private void AcquireMulticastLock()
+    private async Task StartNodeAsync(AppPreferences selected)
     {
-        try
+        var node = _qcc!;
+        var token = _cts!.Token;
+        LocalUserProfile.Apply(node, selected);
+        node.WanEnabled = selected.WanEnabled;
+        node.Discovery.WanNostrDiscoveryEnabled = selected.WanNostrDiscoveryEnabled;
+        node.Discovery.TorNostrDiscoveryEnabled = selected.TorNostrDiscoveryEnabled;
+        lock (_networkObserverGate)
         {
-            var wifi = (Android.Net.Wifi.WifiManager?)ApplicationContext?.GetSystemService(WifiService);
-            _multicastLock = wifi?.CreateMulticastLock("quicpunch-lan-discovery");
-            _multicastLock?.SetReferenceCounted(false);
-            _multicastLock?.Acquire();
+            token.ThrowIfCancellationRequested();
+            _connectivity ??= (Android.Net.ConnectivityManager?)GetSystemService(ConnectivityService);
+            _networkObserver ??= new NetworkObserver(this);
         }
-        catch (Exception ex)
+        await node.StartAsync(token).ConfigureAwait(false);
+        lock (_networkObserverGate)
         {
-            Android.Util.Log.Warn("QuicPunch", $"[ANDROID SERVICE] Multicast lock unavailable: {ex.Message}");
+            token.ThrowIfCancellationRequested();
+            _connectivity?.RegisterDefaultNetworkCallback(_networkObserver);
+        }
+    }
+
+    private void UpdateMulticastLock()
+    {
+        lock (_multicastGate)
+        {
+            bool receiveMulticast = _cts?.IsCancellationRequested == false && MainActivity.IsVisible &&
+                _preferences?.Snapshot() is { OnboardingCompleted: true, WanEnabled: true };
+            try
+            {
+                if (!receiveMulticast)
+                {
+                    if (_multicastLock?.IsHeld == true) _multicastLock.Release();
+                    return;
+                }
+
+                if (_multicastLock == null)
+                {
+                    using var wifi = (Android.Net.Wifi.WifiManager?)ApplicationContext?.GetSystemService(WifiService);
+                    _multicastLock = wifi?.CreateMulticastLock("quicpunch-lan-discovery");
+                    _multicastLock?.SetReferenceCounted(false);
+                }
+                if (_multicastLock?.IsHeld == true) return;
+                _multicastLock?.Acquire();
+                // Discover immediately after waking, even if the periodic beacon is still waiting.
+                if (_qcc is { IsWanStarted: true } node) _ = Task.Run(node.SendLocalLanDiscoveryAsync);
+            }
+            catch (Exception ex)
+            {
+                Android.Util.Log.Warn("QuicPunch", $"[ANDROID SERVICE] Multicast lock unavailable: {ex.Message}");
+            }
         }
     }
 
@@ -284,6 +314,14 @@ public sealed class AndroidConnectionService : Service
         Running = false;
         StopService(new Intent(this, typeof(AndroidScreenCaptureService)));
         _cts?.Cancel();
+        MainActivity.VisibilityChanged -= UpdateMulticastLock;
+        if (_preferences != null) _preferences.Changed -= UpdateMulticastLock;
+        UpdateMulticastLock();
+        lock (_multicastGate)
+        {
+            _multicastLock?.Dispose();
+            _multicastLock = null;
+        }
         if (_updateIdle != null) UnregisterReceiver(_updateIdle);
         lock (_networkObserverGate)
         {
@@ -294,16 +332,22 @@ public sealed class AndroidConnectionService : Service
         _voiceCallHandler?.Dispose();
         _speedTestHandler?.Dispose();
         _server?.Stop();
-        if (_watchWeb != null) _ = _watchWeb.DisposeAsync();
-        _watchLibrary?.Dispose();
-        _watchControl?.Dispose();
-        _watchMedia?.Dispose();
+        if (_watch != null) _ = DisposeWatchAsync(_watch);
         _watchPicker?.Dispose();
         _qcc?.Dispose();
         _updater?.Dispose();
         _cts?.Dispose();
-        try { if (_multicastLock?.IsHeld == true) _multicastLock.Release(); } catch { }
         StopForeground(StopForegroundFlags.Remove);
         base.OnDestroy();
     }
+
+    private static async Task DisposeWatchAsync(WatchApplication watch)
+    {
+        try { await watch.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            Android.Util.Log.Warn("QuicPunch", $"[ANDROID SERVICE] QuicWatch cleanup failed: {ex.Message}");
+        }
+    }
+
 }

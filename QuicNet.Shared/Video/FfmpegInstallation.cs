@@ -30,7 +30,8 @@ internal static class FfmpegInstallation
                     try { if (File.Exists(file)) { release = await File.ReadAllTextAsync(file, ct).ConfigureAwait(false); break; } }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             }
-            _cached = await DetectAsync(platform, release, platform == "android" ? [] : Candidates(), ProbeAsync, ct).ConfigureAwait(false);
+            _cached = await DetectAsync(platform, release, platform == "android" ? [] : Candidates(), ProbeAsync, ct,
+                linuxX11: X11RemoteInput.IsSession).ConfigureAwait(false);
             _checkedAt = DateTimeOffset.UtcNow;
             return _cached;
         }
@@ -86,22 +87,23 @@ internal static class FfmpegInstallation
     }
 
     internal static async Task<FfmpegInstallationStatus> DetectAsync(string platform, string osRelease,
-        IEnumerable<string> candidates, Func<string, CancellationToken, Task<string?>> probe, CancellationToken ct)
+        IEnumerable<string> candidates, Func<string, CancellationToken, Task<string?>> probe, CancellationToken ct, bool linuxX11 = false)
     {
         if (platform == "android") return new(platform, "Android", true, true, null, "FFmpeg n8.1.3",
             "FFmpeg está integrado. Utiliza los componentes MediaCodec disponibles en este dispositivo.", []);
         var values = ParseOsRelease(osRelease);
         string system = platform == "windows" ? "Windows" : values.GetValueOrDefault("PRETTY_NAME", platform == "linux" ? "Linux" : "Este sistema");
+        bool native = platform == "windows" || platform == "linux" && linuxX11;
         foreach (string candidate in candidates)
         {
             string? version = await probe(candidate, ct).ConfigureAwait(false);
-            if (version != null) return new(platform, system, true, platform == "windows", candidate, version,
-                platform == "windows" ? "FFmpeg instalado. Los codificadores se comprueban por separado." :
-                "FFmpeg instalado. La captura nativa de esta aplicación está disponible actualmente en Windows; la captura nativa no está disponible aquí.", []);
+            if (version != null) return new(platform, system, true, native, candidate, version,
+                native ? "FFmpeg instalado. Los codificadores se comprueban por separado." :
+                "FFmpeg instalado. En Linux la captura nativa para llamadas requiere una sesión X11.", []);
         }
-        return new(platform, system, false, platform == "windows", null, null,
-            platform == "windows" ? "No se ha encontrado un FFmpeg que funcione. Instálalo para habilitar la captura nativa de pantalla y sus vistas previas. Puedes seguir usando la captura del navegador." :
-            "FFmpeg no está instalado. Su instalación es opcional: la captura nativa de esta aplicación está disponible actualmente en Windows. Aquí puedes usar la captura del navegador.",
+        return new(platform, system, false, native, null, null,
+            native ? "Instala FFmpeg para habilitar la captura nativa y las vistas previas." :
+            "FFmpeg no está instalado. Puedes utilizar la captura del navegador si está disponible.",
             InstallOptions(platform, values));
     }
 

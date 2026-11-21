@@ -3,6 +3,8 @@ namespace QuicNet.Serialization;
 
 [JsonSerializable(typeof(QuicNet.WebUi.Modules.AppBehaviorSettings))]
 [JsonSerializable(typeof(QuicNet.WebUi.Modules.AppSettingsResponse))]
+[JsonSerializable(typeof(QuicNet.WebUi.Modules.OnboardingState))]
+[JsonSerializable(typeof(QuicNet.WebUi.Modules.OnboardingChoices))]
 [JsonSerializable(typeof(QuicNet.Notifications.AppNotice))]
 [JsonSerializable(typeof(QuicNet.Notifications.NotificationTestResult))]
 [JsonSerializable(typeof(QuicNet.Notifications.NotificationPlatformStatus))]

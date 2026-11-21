@@ -38,6 +38,7 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
     public bool IsActive => _session?.IsHealthy == true && _captureTask?.IsCompleted != true;
     public bool CanStartWithoutElevation => IsActive || BrokerVpnAdapter.IsAvailable || QuicPunch.Vpn.Linux.LinuxVpnAdapter.HasNetworkAdministration;
     public bool CanStartSession => _adapterFactory != null || CanStartWithoutElevation || QuicNet.WebUi.Modules.LanApiModule.IsRunningAsAdmin();
+    bool QuicPunch.QuicPunch.IProtocolHandler.CanStartSession => Control == null ? CanStartSession : IsActive;
     public string AddressMode => AutoAssignEnabled ? "Automatic" : "Manual";
     public IVpnControl? Control { get; private set; }
     public bool UsesOwnSessionPermissions => Control != null;
@@ -139,12 +140,13 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
     long IVirtualLanHandler.TotalRxBytes => TotalRxBytes;
     long IVirtualLanHandler.TotalTxBytes => TotalTxBytes;
 
-    public bool HasActivePeer(Guid peerId) => ActivePeers.Values.Any(p => p.Peer.Id == peerId);
-    public int ActivePeerCount => ActivePeers.Count;
-    public IEnumerable<object> GetActivePeerSummaries() => ActivePeers.Values.Select(item => (object)
+    public bool HasActivePeer(Guid peerId) => ActivePeers.Values.Any(p => p.Peer.Id == peerId && p.IsReady);
+    public bool SingleSessionPerPeer => true;
+    public int ActivePeerCount => ActivePeers.Values.Count(p => p.IsReady);
+    public IEnumerable<object> GetActivePeerSummaries() => ActivePeers.Values.Where(item => item.IsReady).Select(item => (object)
         System.Text.Json.JsonSerializer.SerializeToElement(new QuicNet.Serialization.LanPeerSummaryResponse(
             item.Peer.Id.ToString(), item.Peer.Name, item.Peer.Name, item.RemoteIp.ToString(), item.RemoteIp.ToString(),
-            item.Connection.IsTor ? "Tor/stream" : "Datagram", item.Stream != null ? "Connected" : "Negotiating", item.Peer.Ping, item.TxPackets, item.RxPackets,
+            item.Connection.IsTor ? "Tor/stream" : item.SupportsFragmentedDatagrams ? "Datagram" : "Stream", "Connected", item.Peer.Ping, item.TxPackets, item.RxPackets,
             item.TxBytes, item.RxBytes, item.DroppedPackets, item.ConnectedAt.ToString("HH:mm:ss"), item.ConnectedAt.ToString("o")),
             QuicNet.Serialization.NativeUiJsonContext.Default.LanPeerSummaryResponse));
 
@@ -394,14 +396,11 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
                 if (_session?.IsHealthy != true || (Control != null && (!Control.Configuration.Enabled ||
                     Volatile.Read(ref _policy)?.Peer(Convert.ToHexString(peer.CertHash)) is not { Paused: false } latest || latest.Address != remoteIpUint)))
                     throw new InvalidDataException("VPN authorization changed during negotiation.");
-                if (ActivePeers.ContainsKey(remoteIpUint) || HasActivePeer(peer.Id))
+                if (ActivePeers.ContainsKey(remoteIpUint) || ActivePeers.Values.Any(p => p.Peer.Id == peer.Id))
                     throw new InvalidDataException($"VPN session or address {remoteIp} is already in use.");
                 peerSession = new PeerLanSession(remoteIpUint, remoteIp, peer, stream, connection);
                 ActivePeers[remoteIpUint] = peerSession;
             }
-            Console.WriteLine($"[LAN] {peer.Name} joined as {remoteIp}. Active LAN peers: {ActivePeers.Count}.");
-            StateChanged?.Invoke();
-
             datagramHandler = dgram =>
             {
                 if (dgram.Length > 0 && dgram[0] == QuicPunch.Datagrams.QuicDatagramEnvelope.MagicMarker) return;
@@ -418,6 +417,9 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
             // ends advertise this capability before using fragmented datagrams.
             await stream.WriteAsync(lenBuffer, ct).ConfigureAwait(false);
             await stream.FlushAsync(ct).ConfigureAwait(false);
+            peerSession.IsReady = true;
+            Console.WriteLine($"[LAN] {peer.Name} ready for IPv4 as {remoteIp}. Active LAN peers: {ActivePeerCount}.");
+            StateChanged?.Invoke();
             byte[] rented = System.Buffers.ArrayPool<byte>.Shared.Rent(65536);
             try
             {
@@ -518,7 +520,11 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
 
     private void SendPacketToPeerStream(PeerLanSession session, PooledPacket packet)
     {
-        if (session.TrySendDatagram(packet))
+        if (!session.IsReady || session.IsDisposed) return;
+        // The remote marker is sent after its receive path is installed. Use the
+        // ordered stream until that point so the first packet cannot overtake setup.
+        bool datagramsReady = session.SupportsFragmentedDatagrams;
+        if (datagramsReady && session.TrySendDatagram(packet))
         {
             Interlocked.Increment(ref TotalTxPackets);
             Interlocked.Add(ref TotalTxBytes, packet.Length);
@@ -526,17 +532,13 @@ internal sealed class VirtualLanHandler : IVirtualLanHandler, QuicPunch.QuicPunc
         }
 
         // A native congestion drop must not become a reliable retransmission queue.
-        if (session.Connection.IsNativeQuic)
+        if (datagramsReady && session.Connection.IsNativeQuic && session.Connection.DatagramChannel is { IsSendEnabled: true } channel)
         {
             Interlocked.Increment(ref session.DroppedPackets);
-            // Older peers have no fragmentation capability. Tell local senders
-            // their actual path MTU instead of silently black-holing DF packets.
-            int mtu = session.Connection.DatagramChannel?.MaxSendDatagramLength ?? 0;
-            if (!session.SupportsFragmentedDatagrams && mtu > 0 && packet.Length > mtu &&
-                Ipv4Packet.TryRead(packet.Span, out var ip) && !IsBroadcastOrMulticast(ip.Destination) &&
+            if (packet.Length > 9000 && Ipv4Packet.TryRead(packet.Span, out var ip) && !IsBroadcastOrMulticast(ip.Destination) &&
                 (ip.Source == _localIpUint || Volatile.Read(ref _hostAddresses).Contains(ip.Source)))
             {
-                var feedback = CreateMtuFeedback(packet.Span, _localIpUint, mtu);
+                var feedback = CreateMtuFeedback(packet.Span, _localIpUint, channel.MaxSendDatagramLength);
                 if (feedback != null) try { _session?.SendPacket(feedback); } catch { }
             }
             return;
@@ -896,6 +898,7 @@ public sealed class PeerLanSession : IDisposable
     public long TxBytes;
     public long DroppedPackets;
     public volatile bool SupportsFragmentedDatagrams;
+    internal volatile bool IsReady;
 
     private readonly PooledPacketQueue _outQueue = new(512);
     private readonly CancellationTokenSource _cts = new();

@@ -21,6 +21,7 @@ internal static class DiscoveryAnnouncementTests
             sender.CurrentPeer.Name = "Phone <release>";
             sender.CurrentPeer.Addresses = [IPAddress.Parse("198.51.100.31")];
             sender.CurrentPeer.PortArray = [45678];
+            sender.CurrentPeer.WanCandidates = [new(IPAddress.Parse("93.184.216.34"), 45678)];
             sender.TorCurrentPeer.OnionAddress = new string('a', 56) + ".onion";
             sender.TorCurrentPeer.PortArray = [443];
             await receiver.StartAsync();
@@ -35,7 +36,7 @@ internal static class DiscoveryAnnouncementTests
                 string token = json.RootElement.GetProperty(tor ? "tor" : "wan").GetString()!;
                 byte[] key = Convert.FromBase64String(json.RootElement.GetProperty("certPubKey").GetString()!);
                 byte[] signature = Convert.FromBase64String(json.RootElement.GetProperty("sig").GetString()!);
-                if (json.RootElement.EnumerateObject().Count() != 5 || !Guid.TryParseExact(json.RootElement.GetProperty("presence").GetString(), "N", out _) || json.RootElement.GetProperty("name").GetString() != peer.Name ||
+                if (json.RootElement.EnumerateObject().Count() != (tor ? 5 : 6) || !Guid.TryParseExact(json.RootElement.GetProperty("presence").GetString(), "N", out _) || json.RootElement.GetProperty("name").GetString() != peer.Name ||
                     !Utilities.TryVerifyTokenCertificate(token, key, signature, out var hash) || hash == null ||
                     !CryptographicOperations.FixedTimeEquals(hash, peer.CertHash))
                     throw new Exception("Announcement changed its wire contract or lost its authenticated identity.");
@@ -66,7 +67,11 @@ internal static class DiscoveryAnnouncementTests
                 receiver.PeerStore.SetTrusted(peer.CertHash, false);
                 peer.PortArray = [54321];
                 if (tor) peer.OnionAddress = new string('c', 56) + ".onion";
-                else peer.Addresses = [IPAddress.Parse("198.51.100.42")];
+                else
+                {
+                    peer.Addresses = [IPAddress.Parse("198.51.100.42")];
+                    peer.WanCandidates = [new(IPAddress.Parse("93.184.216.41"), 54321), new(IPAddress.Parse("93.184.216.42"), 12000)];
+                }
                 sender.InvalidateTokenCache();
                 var changedPayload = tor ? sender.Discovery.GetTorNostrDiscoveryPayload() : sender.Discovery.GetWanNostrDiscoveryPayload();
                 if (tor) receiver.Discovery.OnTorNostrEventDiscovered(sender.TorCertManager.NostrPublicKeyHex, changedPayload!);
@@ -80,6 +85,28 @@ internal static class DiscoveryAnnouncementTests
                 if (!reloaded.TryGet(peer.CertHash, out var persisted) || persisted == null ||
                     !persisted.PortArray.SequenceEqual(peer.PortArray) || persisted.Trusted || persisted.AutoConnect)
                     throw new Exception("Verified endpoint refresh was not persisted with its existing permissions.");
+
+                if (!tor)
+                {
+                    long oldRevision = json.RootElement.GetProperty("route").GetProperty("revision").GetInt64();
+                    receiver.Discovery.OnWanNostrEventDiscovered(sender.CertManager.NostrPublicKeyHex, payload);
+                    receiver.Discovery.OnWanNostrEventDiscovered(sender.CertManager.NostrPublicKeyHex,
+                        changedPayload!.Replace("93.184.216.42:12000", "93.184.216.42:54321", StringComparison.Ordinal));
+                    if (persisted.WanRouteRevision <= oldRevision ||
+                        !(persisted.WanCandidates ?? []).SequenceEqual(peer.WanCandidates!) ||
+                        !(active.WanCandidates ?? []).SequenceEqual(peer.WanCandidates!) ||
+                        !active.PortArray.SequenceEqual(peer.PortArray))
+                        throw new Exception("An old or tampered route replaced the current exact pairs.");
+
+                    await using var restarted = new QuicPunch.QuicPunch(appDataPath: Path.Combine(root, "sender"))
+                        { WanEnabled = false, EnableUpnp = false };
+                    restarted.CurrentPeer.Addresses = peer.Addresses;
+                    restarted.CurrentPeer.PortArray = peer.PortArray;
+                    restarted.CurrentPeer.WanCandidates = peer.WanCandidates;
+                    using var restartJson = JsonDocument.Parse(restarted.Discovery.GetWanNostrDiscoveryPayload()!);
+                    if (restartJson.RootElement.GetProperty("route").GetProperty("revision").GetInt64() <= persisted.WanRouteRevision)
+                        throw new Exception("Sender restart did not advance its announcement revision.");
+                }
 
                 // Neither a bad certificate signature nor an unsigned token may overwrite these endpoints.
                 peer.PortArray = [11111]; sender.InvalidateTokenCache();

@@ -10,6 +10,17 @@ internal static class EndpointAddressCodec
 {
     internal static IPAddress Normalize(IPAddress address) => address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
     internal static IPEndPoint Normalize(IPEndPoint endpoint) => new(Normalize(endpoint.Address), endpoint.Port);
+    internal const int MaxWanCandidates = 32;
+
+    internal static IPEndPoint[] NormalizeWanCandidates(IEnumerable<IPEndPoint> endpoints) => endpoints
+        .Select(Normalize)
+        .Where(ep => ep.Port > 0 && CanAdvertise(ep.Address) && !SimpleStunClient.IsBogonOrLocalhost(ep.Address))
+        .Distinct().Take(MaxWanCandidates)
+        .OrderBy(ep => ep.Address.ToString(), StringComparer.Ordinal).ThenBy(ep => ep.Port).ToArray();
+
+    internal static IPEndPoint[] ParseWanCandidates(IEnumerable<string> candidates) => NormalizeWanCandidates(
+        candidates.Take(MaxWanCandidates).Select(value => IPEndPoint.TryParse(value, out var endpoint) ? endpoint : null)
+            .OfType<IPEndPoint>());
     internal static bool CanAdvertise(IPAddress address) => Utilities.IsValidPeerAddress(address) &&
         (!address.IsIPv6LinkLocal && (address.AddressFamily != AddressFamily.InterNetworkV6 || address.ScopeId == 0));
 

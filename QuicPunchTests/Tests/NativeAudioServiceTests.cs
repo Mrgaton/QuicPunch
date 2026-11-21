@@ -310,21 +310,24 @@ public static class NativeAudioServiceTests
             throw new Exception("Invalid output device must surface a playback error.");
         if (!backend.StartPlayback() || backend.PlaybackError != null)
             throw new Exception("Selecting a working output must clear the playback error.");
-        using (var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
-        using (var clock = WindowsAudioClock.TryCreate(stop.Token))
+        foreach (var output in backend.GetOutputDevices())
         {
-            if (clock != null)
+            if (!backend.StartPlayback(output.Id)) throw new Exception($"{output.Name}: {backend.PlaybackError}");
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            using (var clock = WindowsAudioClock.TryCreate(stop.Token) ?? throw new Exception("WinMM continuous test requires the Windows audio clock."))
             {
                 var silence = new short[OpusVoiceCodec.DefaultFrameSize];
-                for (int tick = 0; tick < 150; tick++)
+                for (int tick = 0; tick < 300; tick++)
                 {
                     if (!clock.WaitForNextTick()) throw new Exception("Continuous playback timed out.");
                     backend.PlaySamples(silence);
                 }
-                if (backend.DroppedPlaybackFrames != 0 || backend.PlaybackError != null)
-                    throw new Exception("Continuous 10ms WinMM playback dropped audio.");
-                Console.WriteLine($"WinMM continuous 10ms: dropped={backend.DroppedPlaybackFrames}, refills after drain={backend.PlaybackRefills}");
+                Console.WriteLine($"WinMM 10ms [{output.Name}]: dropped={backend.DroppedPlaybackFrames}, write errors={backend.FailedPlaybackWrites}, peak buffers={backend.PeakPlaybackBuffers}, longest delivery interval={backend.LongestPlaybackIntervalMs:F1}ms, missed deadlines={clock.MissedDeadlines}, refills={backend.PlaybackRefills}");
+                if (backend.DroppedPlaybackFrames != 0 || backend.FailedPlaybackWrites != 0 || backend.PlaybackError != null)
+                    throw new Exception($"Continuous WinMM playback failed on {output.Name}: {backend.PlaybackError ?? "see ring statistics"}.");
             }
+            using var drain = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            while (backend.CompletedPlaybackFrames < backend.SubmittedPlaybackFrames) await Task.Delay(10, drain.Token);
         }
         Console.WriteLine("PASSED real WinMM initial buffers, completion, reuse, restart and device failure/retry");
     }

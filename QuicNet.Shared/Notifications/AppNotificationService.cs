@@ -7,7 +7,8 @@ namespace QuicNet.Notifications;
 public sealed record AppNotice(string Id, string Category, string Title, string Message, string Url,
     bool Popup, bool Sound, int Volume, string Tone);
 internal sealed record NotificationTestResult(bool success, bool sent, string? reason, string message);
-public sealed record NotificationPlatformStatus(bool Enabled, bool SoundEnabled, bool CanOpenSettings, bool SystemControlsSound, string Message);
+public sealed record NotificationPlatformStatus(bool Enabled, bool SoundEnabled, bool CanOpenSettings, bool SystemControlsSound, string Message,
+    bool CanRequestPermission = false);
 
 public interface IAppPlatform
 {
@@ -19,6 +20,7 @@ public interface IAppPlatform
     TimeSpan? GetUserIdleTime() => null;
     NotificationPlatformStatus? GetNotificationStatus(string category = "system") => null;
     bool OpenNotificationSettings() => false;
+    Task RequestNotificationPermissionAsync() => Task.FromException(new NotSupportedException("Usa los ajustes de notificaciones del sistema."));
     void DismissNotification(string id) { }
 }
 

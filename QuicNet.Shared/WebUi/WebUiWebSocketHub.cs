@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -10,21 +12,122 @@ namespace QuicNet.WebUi;
 
 internal sealed class WebUiWebSocketHub : IAsyncDisposable
 {
+    private readonly record struct MetricKey(string Type, string Source, string? Series);
+    private readonly record struct Metric(object Data, long RecordedAt, long Version = 0);
+    private readonly record struct LiveRequest(int Id, bool Refresh);
+
     private sealed class ClientConnection : IAsyncDisposable
     {
+        private const int MaxTrackedMetrics = 64;
         public Guid Id { get; } = Guid.NewGuid();
         public WebSocket Socket { get; }
         internal WebClientDiagnostics Diagnostics { get; } = new();
         private readonly SemaphoreSlim _sendLock = new(1, 1);
         private int _disposed;
-        private readonly Dictionary<string, string> _sentStates = new();
+        private readonly object _liveLock = new();
+        private readonly Dictionary<MetricKey, Metric> _metrics = new();
+        private LiveRequest? _liveRequest;
+        private long _statusVersion, _updateVersion, _metricVersion, _sentMetricVersion;
+        private string? _lastStatus, _lastUpdate;
+
+        public bool HasLiveRequest { get { lock (_liveLock) return _liveRequest.HasValue; } }
 
         public ClientConnection(WebSocket socket)
         {
             Socket = socket;
         }
 
-        public async Task SendTextAsync(string message, CancellationToken ct = default, string? stateKey = null)
+        public void SetLiveRequest(LiveRequest? request)
+        {
+            lock (_liveLock) _liveRequest = request;
+        }
+
+        public bool QueueMetric(MetricKey key, Metric metric)
+        {
+            lock (_liveLock)
+            {
+                if (_metrics.Count == MaxTrackedMetrics && !_metrics.ContainsKey(key))
+                    _metrics.Remove(_metrics.MinBy(entry => entry.Value.Version).Key);
+                _metrics[key] = metric with { Version = ++_metricVersion };
+                return _liveRequest.HasValue;
+            }
+        }
+
+        public void DiscardMetrics(string type, string source)
+        {
+            lock (_liveLock)
+                foreach (var key in _metrics.Keys)
+                    if (key.Type == type && key.Source == source) _metrics.Remove(key);
+        }
+
+        public async Task SendLiveAsync(long statusVersion, Lazy<string?> status, long updateVersion, Lazy<string?> update, CancellationToken ct)
+        {
+            lock (_liveLock)
+            {
+                if (_liveRequest is not { } request ||
+                    (!request.Refresh && _sentMetricVersion == _metricVersion &&
+                     _statusVersion == statusVersion && _updateVersion == updateVersion)) return;
+            }
+
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(TimeSpan.FromSeconds(5));
+            bool locked = false;
+            try
+            {
+                await _sendLock.WaitAsync(deadline.Token).ConfigureAwait(false);
+                locked = true;
+                if (Socket.State != WebSocketState.Open) return;
+                LiveRequest request;
+                lock (_liveLock)
+                {
+                    if (_liveRequest is not { } pending) return;
+                    request = pending;
+                }
+                string? nextStatus = request.Refresh || _statusVersion != statusVersion ? status.Value : _lastStatus;
+                string? nextUpdate = request.Refresh || _updateVersion != updateVersion ? update.Value : _lastUpdate;
+                bool sendStatus, sendUpdate;
+                List<global::QuicNet.Serialization.WebUiWebSocketHubMessage2> metrics = [];
+                lock (_liveLock)
+                {
+                    if (_liveRequest != request) return;
+                    sendStatus = nextStatus != null && (request.Refresh || nextStatus != _lastStatus);
+                    sendUpdate = nextUpdate != null && (request.Refresh || nextUpdate != _lastUpdate);
+                    _lastStatus = nextStatus;
+                    _lastUpdate = nextUpdate;
+                    _statusVersion = statusVersion;
+                    _updateVersion = updateVersion;
+                    foreach (var (key, metric) in _metrics)
+                    {
+                        if (!request.Refresh && metric.Version <= _sentMetricVersion) continue;
+                        if (key.Type is "voice_vad" or "chat_typing" && Stopwatch.GetElapsedTime(metric.RecordedAt).TotalSeconds > 2) continue;
+                        metrics.Add(new(key.Type, metric.Data));
+                    }
+                    _sentMetricVersion = _metricVersion;
+                    if (!sendStatus && !sendUpdate && metrics.Count == 0) return;
+                    // Each browser request grants exactly one batch, even if its event loop stops.
+                    _liveRequest = null;
+                }
+
+                var bytes = new ArrayBufferWriter<byte>();
+                using (var writer = new Utf8JsonWriter(bytes))
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("type", "live_updates");
+                    writer.WriteNumber("id", request.Id);
+                    writer.WriteStartArray("events");
+                    if (sendStatus) writer.WriteRawValue(nextStatus!, skipInputValidation: true);
+                    if (sendUpdate) writer.WriteRawValue(nextUpdate!, skipInputValidation: true);
+                    foreach (var metric in metrics) JsonSerializer.Serialize(writer, metric, WebUiContext.JsonOptions);
+                    writer.WriteEndArray();
+                    writer.WriteEndObject();
+                }
+                await Socket.SendAsync(bytes.WrittenMemory, WebSocketMessageType.Text, true, deadline.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { Socket.Abort(); throw; }
+            finally { if (locked) _sendLock.Release(); }
+        }
+
+        public async Task SendTextAsync(string message, CancellationToken ct = default)
         {
             if (Socket.State != WebSocketState.Open) return;
             byte[] bytes = Encoding.UTF8.GetBytes(message);
@@ -37,9 +140,7 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
                 locked = true;
                 if (Socket.State == WebSocketState.Open)
                 {
-                    if (stateKey != null && _sentStates.GetValueOrDefault(stateKey) == message) return;
                     await Socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, deadline.Token).ConfigureAwait(false);
-                    if (stateKey != null) _sentStates[stateKey] = message;
                 }
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { Socket.Abort(); throw; }
@@ -107,9 +208,9 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
     public Func<QuicNet.Updates.UpdateStatus?>? GetUpdateSnapshot { get; set; }
     public Func<string, JsonElement, Task<object>>? ExecuteCommand { get; set; }
     private readonly Channel<bool> _stateChanges = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
-    private int _statusDirty = 1, _updatesDirty = 1;
-    internal void NotifyStatusChanged() { Interlocked.Exchange(ref _statusDirty, 1); _stateChanges.Writer.TryWrite(true); }
-    internal void NotifyUpdatesChanged() { Interlocked.Exchange(ref _updatesDirty, 1); _stateChanges.Writer.TryWrite(true); }
+    private long _statusVersion = 1, _updateVersion = 1;
+    internal void NotifyStatusChanged() { Interlocked.Increment(ref _statusVersion); _stateChanges.Writer.TryWrite(true); }
+    internal void NotifyUpdatesChanged() { Interlocked.Increment(ref _updateVersion); _stateChanges.Writer.TryWrite(true); }
     private readonly Task _periodicSyncTask;
     private readonly CancellationTokenSource _syncCts;
     private int _disposed;
@@ -126,40 +227,35 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
 
     private async Task PeriodicSyncLoopAsync(CancellationToken token)
     {
-        long lastSample = System.Diagnostics.Stopwatch.GetTimestamp();
+        long lastSample = Stopwatch.GetTimestamp();
         while (!token.IsCancellationRequested)
         {
             try
             {
                 using var wake = CancellationTokenSource.CreateLinkedTokenSource(token);
-                if (!_clients.IsEmpty) wake.CancelAfter(2500); // Sample changing telemetry on the server only.
+                if (_clients.Values.Any(client => client.HasLiveRequest)) wake.CancelAfter(2500);
                 try { await _stateChanges.Reader.ReadAsync(wake.Token); }
-                catch (OperationCanceledException) when (!token.IsCancellationRequested) { Interlocked.Exchange(ref _statusDirty, 1); }
-                if (_clients.IsEmpty) continue;
-                await Task.Delay(75, token); // Bound/coalesce bursts of events and download progress.
+                catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+                if (!_clients.Values.Any(client => client.HasLiveRequest)) continue;
+                await Task.Delay(75, token);
                 while (_stateChanges.Reader.TryRead(out _)) { }
-                if (System.Diagnostics.Stopwatch.GetElapsedTime(lastSample).TotalMilliseconds >= 2500)
-                    Interlocked.Exchange(ref _statusDirty, 1);
-                if (Interlocked.Exchange(ref _statusDirty, 0) != 0 && GetStatusSnapshot != null)
+                if (Stopwatch.GetElapsedTime(lastSample).TotalMilliseconds >= 2500)
                 {
-                    lastSample = System.Diagnostics.Stopwatch.GetTimestamp();
-                    var status = GetStatusSnapshot();
-                    if (status != null)
-                    {
-                        await BroadcastAsync("status_updated", status).ConfigureAwait(false);
-                    }
+                    lastSample = Stopwatch.GetTimestamp();
+                    Interlocked.Increment(ref _statusVersion);
                 }
-                if (Interlocked.Exchange(ref _updatesDirty, 0) != 0 && GetUpdateSnapshot?.Invoke() is { } update)
-                    await BroadcastAsync("update_status", update).ConfigureAwait(false);
+                long statusVersion = Volatile.Read(ref _statusVersion), updateVersion = Volatile.Read(ref _updateVersion);
+                var status = new Lazy<string?>(() => GetStatusSnapshot?.Invoke() is { } value ? SerializeEvent("status_updated", value) : null);
+                var update = new Lazy<string?>(() => GetUpdateSnapshot?.Invoke() is { } value ? SerializeEvent("update_status", value) : null);
+                await Task.WhenAll(_clients.Values.Select(client => client.SendLiveAsync(statusVersion, status, updateVersion, update, token))).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
             catch { }
         }
     }
 
     public void OnClientConnected()
     {
-        NotifyStatusChanged(); NotifyUpdatesChanged();
         Interlocked.Exchange(ref _hasHadClients, 1);
         lock (_shutdownLock)
         {
@@ -215,22 +311,6 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
             OnClientConnected();
 
             await client.SendTextAsync(JsonSerializer.Serialize(new global::QuicNet.Serialization.WebUiWebSocketHubMessage1("ws_connected", client.Id.ToString()),global::QuicNet.WebUi.WebUiContext.JsonOptions), _cts.Token).ConfigureAwait(false);
-
-            if (GetStatusSnapshot != null)
-            {
-                try
-                {
-                    var snapshot = GetStatusSnapshot();
-                    if (snapshot != null)
-                    {
-                        await client.SendTextAsync(JsonSerializer.Serialize(new global::QuicNet.Serialization.WebUiWebSocketHubMessage2("status_updated", snapshot),global::QuicNet.WebUi.WebUiContext.JsonOptions), _cts.Token, "status_updated").ConfigureAwait(false);
-                    }
-                }
-                catch { }
-            }
-
-            if (GetUpdateSnapshot?.Invoke() is { } update)
-                await client.SendTextAsync(JsonSerializer.Serialize(new global::QuicNet.Serialization.WebUiWebSocketHubMessage2("update_status", update), WebUiContext.JsonOptions), _cts.Token, "update_status");
 
             // The listener owns a bounded WebSocket reservation for this task.
             // Keep it until disconnect instead of detaching an unbounded reader.
@@ -402,12 +482,24 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
             string? type = kind.GetString();
             if (type == "client_log") { if (root.TryGetProperty("data", out var diagnostic)) client.Diagnostics.Accept(diagnostic); return; }
             if (type == "ping") { await client.SendTextAsync("{\"type\":\"pong\"}", _cts.Token); return; }
+            if (type == "live_pause") { client.SetLiveRequest(null); return; }
+            if (type == "live_request")
+            {
+                if (root.TryGetProperty("id", out var number) && number.ValueKind == JsonValueKind.Number &&
+                    number.TryGetInt32(out int liveId) && liveId > 0)
+                {
+                    bool refresh = root.TryGetProperty("refresh", out var flag) && flag.ValueKind == JsonValueKind.True;
+                    client.SetLiveRequest(new LiveRequest(liveId, refresh));
+                    _stateChanges.Writer.TryWrite(true);
+                }
+                return;
+            }
             if (type is "sync" or "get_status")
             {
                 if (GetStatusSnapshot?.Invoke() is { } status)
-                    await client.SendTextAsync(JsonSerializer.Serialize(new global::QuicNet.Serialization.WebUiWebSocketHubMessage2("status_updated", status), WebUiContext.JsonOptions), _cts.Token);
+                    await client.SendTextAsync(SerializeEvent("status_updated", status), _cts.Token);
                 if (GetUpdateSnapshot?.Invoke() is { } update)
-                    await client.SendTextAsync(JsonSerializer.Serialize(new global::QuicNet.Serialization.WebUiWebSocketHubMessage2("update_status", update), WebUiContext.JsonOptions), _cts.Token);
+                    await client.SendTextAsync(SerializeEvent("update_status", update), _cts.Token);
                 return;
             }
             if (type != "request" || !root.TryGetProperty("id", out var requestId) || requestId.ValueKind != JsonValueKind.String ||
@@ -436,15 +528,31 @@ internal sealed class WebUiWebSocketHub : IAsyncDisposable
     public async Task BroadcastAsync(string eventType, object data)
     {
         if (_clients.IsEmpty) return;
-        string json = JsonSerializer.Serialize(new global::QuicNet.Serialization.WebUiWebSocketHubMessage2(eventType, data),global::QuicNet.WebUi.WebUiContext.JsonOptions);
-
-        string? stateKey = eventType is "status_updated" or "update_status" ? eventType : null;
-        var tasks = _clients.Values.Select(client => client.SendTextAsync(json, _cts.Token, stateKey));
+        string json = SerializeEvent(eventType, data);
+        var tasks = _clients.Values.Select(client => client.SendTextAsync(json, _cts.Token));
         try
         {
             await Task.WhenAll(tasks).ConfigureAwait(false);
         }
         catch { }
+    }
+
+    private static string SerializeEvent(string type, object data) =>
+        JsonSerializer.Serialize(new global::QuicNet.Serialization.WebUiWebSocketHubMessage2(type, data), WebUiContext.JsonOptions);
+
+    public void BroadcastMetric(string type, string source, object data, string? series = null)
+    {
+        if (_clients.IsEmpty) return;
+        var key = new MetricKey(type, source, series);
+        var metric = new Metric(data, Stopwatch.GetTimestamp());
+        bool wake = false;
+        foreach (var client in _clients.Values) wake |= client.QueueMetric(key, metric);
+        if (wake) _stateChanges.Writer.TryWrite(true);
+    }
+
+    public void DiscardMetrics(string type, string source)
+    {
+        foreach (var client in _clients.Values) client.DiscardMetrics(type, source);
     }
 
     public async ValueTask DisposeAsync()

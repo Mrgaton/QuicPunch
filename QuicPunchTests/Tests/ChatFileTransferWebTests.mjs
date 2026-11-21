@@ -1,7 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {Script, createContext} from 'node:vm';
 import assert from 'node:assert/strict';
-import {attachApp} from '../Fixtures/WebAppRuntime.mjs';
+import {attachApp,loadChatDrafts} from '../Fixtures/WebAppRuntime.mjs';
 
 const source = readFileSync(new URL('../../QuicNet.Shared/wwwroot/chat.js', import.meta.url), 'utf8');
 let resolveRequest;
@@ -12,6 +12,7 @@ const context = createContext({
   QP: {toast() {}, api() {return new Promise(resolve => {resolveRequest = resolve; });}}
 });
 attachApp(context);
+loadChatDrafts(context);
 new Script(source + `
 renderChat = () => {};
 globalThis.fileTest = {

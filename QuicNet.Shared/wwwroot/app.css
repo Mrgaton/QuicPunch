@@ -10,15 +10,14 @@
 @import url('/contact-workspace.css');
 @import url('/identity.css');
 @import url('/chat-layout.css');
-.tor-discovery-warning{width:min(560px,calc(100vw - 32px));line-height:1.6;overflow-wrap:anywhere}
+.tor-discovery-warning{--dialog-width:560px;line-height:1.6;overflow-wrap:anywhere}
 .tor-discovery-warning h2{font-size:20px;line-height:1.35;color:var(--warn)}
 .tor-discovery-warning p{font-size:14px}
 .tor-discovery-advice{padding:12px;border:1px solid var(--warn-border);border-radius:8px;background:var(--warn-soft);color:var(--warn)}
 .tor-discovery-acknowledgement{display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:14px;line-height:1.5;margin:20px 0}
 .tor-discovery-acknowledgement input{margin-top:4px;flex-shrink:0}
-.tor-discovery-warning-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
-.tor-discovery-warning-actions .btn{min-height:40px}
-@media(max-width:480px){.tor-discovery-warning{padding:20px}.tor-discovery-warning-actions .btn{width:100%}}
+
+
 .app-behavior-settings fieldset { border: 0; margin: 0; min-width: 0; }
 .settings-options { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); margin-bottom: 14px; }
 .notice-rules { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
@@ -39,10 +38,15 @@
 #adminRequiredBanner strong { color: var(--warn); }
 #adminRequiredBanner span { margin-top: 4px; font-size: 13px; }
 #view-vpn #adminRequiredBanner button { margin: 0; flex-shrink: 0; color: var(--warn); border-color: var(--warn-border); background: transparent; }
+#view-vpn .vpn-activation { margin-bottom: 12px; padding: 8px 16px; }
+#view-vpn .vpn-activation .service { border: 0; padding: 0; background: transparent; }
+#view-vpn .vpn-activation .service > div { min-width: 0; }
+#view-vpn .vpn-activation #lanError:not(:empty) { margin-top: 8px; color: var(--danger); overflow-wrap: anywhere; }
 #view-vpn .summary-line { align-items: start; gap: 12px; }
 #view-vpn .summary-item { min-height: 166px; padding: 18px; }
 #view-vpn .summary-item label { font-size: 12px; }
 #view-vpn .summary-item small { font-size: 12px; }
+#view-vpn #lanMaskSummary, #view-vpn #virtualIp { white-space: nowrap; overflow-wrap: normal; }
 #view-vpn .vpn-layout { grid-template-columns: minmax(320px, .85fr) minmax(0, 1.15fr); gap: 20px; }
 #view-vpn .section-head { padding: 20px; }
 #view-vpn .section-body:not(.no-pad) { padding: 0 20px 20px; }
@@ -86,7 +90,7 @@
   #vpnPeers .peer-row { padding: 16px; }
   #view-vpn .btn, #view-vpn .vpn-traffic-range { min-height: 44px; }
 }
-.vpn-peer-dialog { width: min(640px, 90vw); max-height: 85dvh; overflow: auto; }
+.vpn-peer-dialog { --dialog-width:640px; }
 .vpn-peer-dialog .field { display: block; }
 .vpn-peer-dialog .field > .input { display: block; width: 100%; margin-top: 6px; }
 .vpn-peer-dialog .toolbar { justify-content: flex-end; }
@@ -118,6 +122,9 @@
 }
 
 .update-notice { display: flex; align-items: flex-start; gap: 10px; padding: 14px; background: var(--accent-soft); border: 1px solid var(--accent-border); border-radius: 10px; color: var(--text-strong); }
+@media (max-width: 23rem) {
+  #view-vpn .summary-line { grid-template-columns: minmax(0, 1fr); }
+}
 .update-notice-dot { width: 8px; height: 8px; flex: 0 0 auto; margin-top: 5px; border-radius: 50%; background: var(--accent); }
 .update-notice-copy { flex: 1; min-width: 0; }
 .update-notice-copy strong { display: block; font-size: 12px; }
@@ -133,21 +140,29 @@
   .watch-workspace { height: calc(100dvh - 72px - var(--update-notice-height, 0px)); }
 }
 @media (max-width: 680px) {
-  .update-notice-mobile { gap: 8px; padding: 12px; margin: 0 10px 10px; flex-wrap: wrap; }
-  .update-notice-mobile .update-notice-copy { flex-basis: calc(100% - 16px); }
-  .update-notice-mobile .btn { flex-basis: 100%; }
+  .update-notice-mobile { width: 100%; gap: 8px; padding: 6px 8px; margin: 0; line-height: 1.35; }
+  .update-notice-mobile .update-notice-dot { display: none; }
+  .update-notice-mobile .update-notice-copy span { margin-top: 2px; }
+  .update-notice-mobile .btn {
+    flex: 0 0 auto;
+    min-width: 44px;
+    max-width: 36%;
+    padding: 6px 8px;
+    line-height: 1.2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
   .watch-workspace { height: calc(100dvh - 134px - var(--update-notice-height, 0px)); }
 }
 
 /* Only an actionable update notice needs space above the workspace. */
 .topbar { height: auto; min-height: 0; border: 0; background: transparent; }
-.global-call-bar, .incoming-call-banner { top: 0; }
+.incoming-call-banner { top: 0; }
 
 /* Let the video room consume the space left by navigation and live banners. */
 body[data-page=watch] { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
 body[data-page=watch] > .topbar,
 body[data-page=watch] > .connection-notice,
-body[data-page=watch] > .global-call-bar,
 body[data-page=watch] > .incoming-call-banner { flex-shrink: 0; }
 body[data-page=watch] #spaContainer,
 body[data-page=watch] #view-watch { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow: hidden; }
@@ -168,9 +183,6 @@ body[data-page=watch] .watch-workspace { flex: 1 1 0; height: auto; min-height: 
   .message-row.me .message-body { max-width: 92%; }
   .voice-recording-bar { flex-wrap: wrap; }
   .voice-recording-actions { margin-left: auto; }
-  .modal-backdrop { padding: 10px; }
-  .modal-card { width: 100%; max-height: calc(100dvh - 20px); }
-  dialog { padding: 18px; }
 }
 
 /* Keep the tablet rail reachable when a phone is rotated. */
@@ -296,6 +308,4 @@ body[data-page=watch] .watch-workspace { flex: 1 1 0; height: auto; min-height: 
 .contact-ping { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--accent); }
 .contact-location { display:inline-flex; align-items:center; flex-wrap:wrap; gap:6px; overflow-wrap:anywhere; min-width:0; }
 .country-flag { display:inline-block; flex:0 0 24px; width:24px; height:18px; object-fit:contain; border-radius:2px; box-shadow:0 0 0 1px var(--line); }
-#geolocationStatus { font-size: 12px; overflow-wrap: anywhere; }
-#geolocationStatus[data-state=error] { color: var(--danger); }
 

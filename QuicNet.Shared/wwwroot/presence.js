@@ -27,7 +27,7 @@
       if (!value) return;
       current = value;
       const info = describe(value);
-      for (const id of ['sidebarPresenceText', 'profilePresenceText', 'userPresenceCurrent']) $(id).textContent = info.label;
+      for (const id of ['sidebarPresenceText', 'profilePresenceText', 'userPresenceCurrent', 'mobilePresenceText']) $(id).textContent = info.label;
       $('sidebarPresenceDot').dataset.userPresence = info.state;
       $('presenceCurrentBadge').dataset.userPresence = info.state;
       $('presenceCurrentIcon').setAttribute('href', `#presence-icon-${info.state === 'unknown' ? 'available' : info.state}`);
@@ -46,8 +46,8 @@
       const dndKey = JSON.stringify([value.doNotDisturb, value.doNotDisturbUntil]);
       if (previousDnd !== dndKey) { previousDnd = dndKey; QP.emit('user_presence_changed', value); }
     }
-    async function open(event) {
-      opener = event.currentTarget;
+    async function open(trigger) {
+      opener = trigger;
       try {
         render(await QP.api('/api/profile/presence'));
         saveStatus('Los cambios se guardan automáticamente.');
@@ -68,8 +68,9 @@
         saveStatus(error.message, 'error');
       }
     }
-    $('selfPresenceButton').addEventListener('click', open);
-    $('profilePresenceButton').addEventListener('click', open);
+    QP.openUserPresence = open;
+    $('selfPresenceButton').addEventListener('click', event => open(event.currentTarget));
+    $('profilePresenceButton').addEventListener('click', event => open(event.currentTarget));
     $('presenceClose').addEventListener('click', () => dialog.close());
     dialog.addEventListener('click', event => {
       if (event.target !== dialog) return;
@@ -77,7 +78,10 @@
       if (event.clientX < bounds.left || event.clientX > bounds.right ||
           event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
     });
-    dialog.addEventListener('close', () => opener?.focus({ preventScroll: true }));
+    dialog.addEventListener('close', () => {
+      if (typeof opener === 'function') opener();
+      else opener?.focus({ preventScroll: true });
+    });
     $('presenceAvailable').addEventListener('click', () => save(false));
     $('presenceDnd').addEventListener('click', () => save(true));
     $('presenceIdleMinutes').addEventListener('change', () => save(current.doNotDisturb));

@@ -36,6 +36,7 @@ internal static class ScreenCaptureInventory
     }
     public static IReadOnlyList<CaptureDisplay> Displays()
     {
+        if (X11RemoteInput.IsSession) return X11RemoteInput.Displays();
         var displays = new List<CaptureDisplay>();
         if (!OperatingSystem.IsWindows()) return displays;
         for (uint index = 0; index < 32; index++)
@@ -49,6 +50,47 @@ internal static class ScreenCaptureInventory
                 mode.Frequency > 1 ? mode.Frequency : 0, mode.X, mode.Y, (device.Flags & 4) != 0));
         }
         return displays;
+    }
+
+    // FFmpeg's ddagrab enumerates outputs on the default D3D11 adapter. Match
+    // the selected Win32 display by device name and bounds, not by list order.
+    internal static unsafe int? DxgiOutputIndex(CaptureDisplay display)
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        Guid factoryId = new("770aae78-f26f-4dba-a829-253c83d1b387"); // IDXGIFactory1
+        if (CreateDXGIFactory1(in factoryId, out nint factory) < 0) return null;
+        nint adapter = 0;
+        nint previousDpi = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try
+        {
+            // EnumAdapters, EnumOutputs and GetDesc are the first methods of
+            // their respective interfaces after the seven IDXGIObject slots.
+            var enumAdapters = (delegate* unmanaged[Stdcall]<nint, uint, nint*, int>)(*(nint**)factory)[7];
+            if (enumAdapters(factory, 0, &adapter) < 0) return null;
+            var enumOutputs = (delegate* unmanaged[Stdcall]<nint, uint, nint*, int>)(*(nint**)adapter)[7];
+            for (uint index = 0; ; index++)
+            {
+                nint output;
+                if (enumOutputs(adapter, index, &output) < 0) return null;
+                try
+                {
+                    var getDesc = (delegate* unmanaged[Stdcall]<nint, DxgiOutputDescription*, int>)(*(nint**)output)[7];
+                    DxgiOutputDescription description;
+                    if (getDesc(output, &description) >= 0 && description.AttachedToDesktop != 0 && description.Rotation == 1 &&
+                        string.Equals(new string(description.DeviceName), display.Id, StringComparison.OrdinalIgnoreCase) &&
+                        description.Bounds.Left == display.X && description.Bounds.Top == display.Y &&
+                        description.Bounds.Right == display.X + display.Width && description.Bounds.Bottom == display.Y + display.Height)
+                        return (int)index;
+                }
+                finally { Marshal.Release(output); }
+            }
+        }
+        finally
+        {
+            if (adapter != 0) Marshal.Release(adapter);
+            Marshal.Release(factory);
+            if (previousDpi != 0) SetThreadDpiAwarenessContext(previousDpi);
+        }
     }
 
     public static (int Width, int Height) WindowSize(IntPtr window)
@@ -113,6 +155,19 @@ internal static class ScreenCaptureInventory
     }
     [StructLayout(LayoutKind.Sequential)]
     private struct Rect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct DxgiOutputDescription
+    {
+        public fixed char DeviceName[32];
+        public Rect Bounds;
+        public int AttachedToDesktop;
+        public int Rotation;
+        public nint Monitor;
+    }
+
+    [DllImport("dxgi.dll", ExactSpelling = true)]
+    private static extern int CreateDXGIFactory1(in Guid interfaceId, out nint factory);
 
     [DllImport("user32.dll", EntryPoint = "EnumDisplayDevicesW", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]

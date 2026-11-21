@@ -39,17 +39,20 @@ try {
   assert.equal(await page.locator('#chatConversationCount').textContent(), '7');
   for (const selector of ['.conversation-head', '#chatHistoryHelp', '.direct-composer'])
     assert.equal(await page.locator(selector).isVisible(), false, `Inactive control visible: ${selector}`);
-  const start = page.locator('.chat-idle-actions button').first();
+  const start = page.locator('#chatNewBtn');
+  assert.equal(await page.getByRole('button',{name:'Nueva conversación',exact:true}).count(),1);
   await start.focus();
   await page.evaluate(() => QP.emit('status_updated', overviewSnapshot));
   assert.equal(await start.evaluate(node => node === document.activeElement), true, 'Status refresh loses welcome focus');
   await start.press('Enter');
   await page.locator('#chatNewDialog').waitFor({state:'visible'});
   await page.keyboard.press('Escape');
-  await page.locator('.chat-idle-actions button').last().click();
+  await page.locator('#chatNewBtn').click();
+  await page.locator('#chatAddContactBtn').click();
   await page.locator('#addContactDialog').waitFor({state:'visible'});
   await page.locator('#closeAddContact').click();
-  await page.locator('.nav-link[data-page=chat]').click();
+  await page.locator('#chatNewDialog[open]').waitFor();
+  await page.keyboard.press('Escape');
   await page.locator('.chat-idle').waitFor();
   await mkdir('.artifacts', {recursive:true});
   await page.screenshot({path:'.artifacts/chat-overview-desktop.png', animations:'disabled'});
@@ -62,7 +65,7 @@ try {
     assert.ok(await page.locator('#chatPeers .ci-name').evaluate(node => node.getBoundingClientRect().width > 100), 'Long name squeezed');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Overflow at ${width}px`);
     await page.locator('#chatPeerSearch').fill('sin coincidencias');
-    assert.match(await page.locator('#chatPeers').textContent(), /No hay contactos/);
+    assert.match(await page.locator('#chatPeers').textContent(), /No hay conversaciones/);
     await page.locator('#chatPeerSearch').fill('');
   }
   await page.setViewportSize({width:390,height:844});
@@ -88,8 +91,11 @@ try {
     QP.state.status = empty; QP.emit('status_updated', empty);
   });
   assert.equal(await page.locator('#chatConversationCount').textContent(), '0');
-  await page.locator('.chat-idle-actions button').first().click();
-  assert.equal(await page.locator('#chatNewDialog .chat-new-peer').count(), 0);
+  assert.equal(await page.locator('#chatNewBtn').isVisible(), false);
+  assert.equal(await page.locator('#chatPeerSearch').isVisible(), false);
+  await page.locator('#chatFirstContactBtn').click();
+  await page.locator('#addContactDialog').waitFor();
+  assert.equal(await page.locator('#chatNewDialog').isVisible(), false);
   assert.deepEqual(errors, []);
   console.log('PASS chat overview: welcome actions, refresh focus, hidden idle tools, search/count, long names, mobile navigation, send, close and no contacts');
 } finally { await closeBrowserFixture(browser, server); }

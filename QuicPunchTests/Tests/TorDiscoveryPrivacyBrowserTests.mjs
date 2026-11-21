@@ -1,4 +1,4 @@
-import {launchBrowser, startPreviewServer, closeBrowserFixture} from '../Fixtures/BrowserFixture.mjs';
+import {launchBrowser, startPreviewServer, closeBrowserFixture, mapStatusMessage} from '../Fixtures/BrowserFixture.mjs';
 
 import {mkdirSync} from 'node:fs';
 import assert from 'node:assert/strict';
@@ -19,12 +19,7 @@ try {
   };
   await page.routeWebSocket('**/ws?*', socket => {
     const backend = socket.connectToServer(); socket.onMessage(message => backend.send(message));
-    backend.onMessage(message => {
-      if (typeof message !== 'string') return socket.send(message);
-      const payload = JSON.parse(message);
-      if ((payload.type === 'status_updated' || payload.type === 'response') && payload.data?.node) payload.data = patch(payload.data);
-      socket.send(JSON.stringify(payload));
-    });
+    backend.onMessage(message => socket.send(mapStatusMessage(message, patch)));
   });
   await page.route('**/api/discovery', async route => {
     const request = route.request().postDataJSON(); requests.push(request);

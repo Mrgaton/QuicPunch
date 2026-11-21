@@ -10,6 +10,7 @@ public static class FfmpegScreenEncoderTests
     public static async Task RunAsync()
     {
         TestValidationAndTuning();
+        TestBandwidthController();
         string resolvedExecutable = FfmpegScreenEncoder.Executable;
         if (Path.IsPathRooted(resolvedExecutable))
         {
@@ -31,6 +32,8 @@ public static class FfmpegScreenEncoderTests
             var args = FfmpegScreenEncoder.CaptureArguments(new() { Source = source.Id }, "h264_nvenc");
             Assert(args[args.IndexOf("-video_size") + 1] == $"{display.Width}x{display.Height}" &&
                 args.IndexOf("-offset_x") < args.IndexOf("-i"), "Monitor capture must use input bounds before opening the desktop.");
+            Assert(ScreenCaptureInventory.DxgiOutputIndex(display with { Id = display.Id + "_different" }) == null,
+                "A display with the same bounds and a different identity must not use this DXGI output.");
         }
         await TestNoUpscalingAsync();
         await TestRealPacketsAsync("libvpx-vp9", ["-deadline", "realtime", "-cpu-used", "8", "-lag-in-frames", "0"], "vp09.", 2560, 1440, 15);
@@ -61,6 +64,9 @@ public static class FfmpegScreenEncoderTests
         }
         foreach (string implementation in new[] { "libx264", "h264_nvenc" })
             if (capabilities.Any(c => c.Id == implementation && c.Available)) await TestCaptureLifecycleAsync(implementation);
+        if (OperatingSystem.IsWindows())
+            foreach (string implementation in new[] { "h264_nvenc", "hevc_nvenc" })
+                if (capabilities.Any(c => c.Id == implementation && c.Available)) await TestNativeWindowsEncodeAsync(implementation);
         if (capabilities.Any(c => c.Id == "libx264" && c.Available)) await NativeWindowCaptureTests.RunAsync();
         if (Environment.GetEnvironmentVariable("QUICNET_SCREEN_TEST_FIXTURES") is { Length: > 0 } fixturePath)
             await File.WriteAllTextAsync(fixturePath, JsonSerializer.Serialize(BrowserFixtures));
@@ -69,6 +75,23 @@ public static class FfmpegScreenEncoderTests
 
     private static void TestValidationAndTuning()
     {
+        var dxgiOptions = new ScreenEncoderOptions { Encoder = "h264_nvenc", Fps = 144 };
+        var direct = FfmpegScreenEncoder.DxgiCaptureArguments(dxgiOptions, dxgiOptions.Encoder, 2, direct: true);
+        Assert(direct[direct.IndexOf("-i") + 1].StartsWith("ddagrab=output_idx=2:framerate=144:") &&
+            direct[direct.IndexOf("-pix_fmt") + 1] == "d3d11" && !direct.Contains("-vf"),
+            "Native-size NVENC capture must pass DXGI textures directly from the selected output.");
+        var scaled = FfmpegScreenEncoder.DxgiCaptureArguments(dxgiOptions, dxgiOptions.Encoder, 2, direct: false);
+        Assert(scaled[scaled.IndexOf("-vf") + 1] == "hwdownload,format=bgra," + FfmpegScreenEncoder.ScaleFilter(dxgiOptions),
+            "Resizing must download the captured frames before scaling.");
+        CaptureDisplay left = new("left", "Left", 1920, 1080, 60, -1920, 151);
+        CaptureDisplay main = new("main", "Main", 1920, 1080, 144, 0, 0, Primary: true);
+        int? OutputIndex(CaptureDisplay display) => display.Id == main.Id ? 2 : 1;
+        Assert(FfmpegScreenEncoder.DxgiDesktopGraph([left, main], 144, OutputIndex)?
+            .EndsWith("[screen2][screen1]xstack=inputs=2:layout=1920_0|0_151:fill=black") == true,
+            "Desktop capture must retain the offset and gaps between all screens.");
+        Assert(FfmpegScreenEncoder.DxgiDesktopGraph([left, main], 144, d => d.Id == main.Id ? 2 : null) == null &&
+            FfmpegScreenEncoder.DxgiDesktopGraph([left with { X = -100 }, main], 144, OutputIndex) == null,
+            "Desktop composition requires all outputs and a non-overlapping layout.");
         foreach (var (bitrate, bufferMs) in new[] { (12_000_000, 250), (30_000_000, 100), (100_000_000, 250) })
         {
             var largeBuffer = FfmpegScreenEncoder.EncodingArguments(new() { Bitrate = bitrate, BufferMs = bufferMs }, "libx264");
@@ -160,6 +183,56 @@ public static class FfmpegScreenEncoderTests
         Assert(received.SequenceEqual(new byte[] { 5, 6 }), "Queue must recover at a fresh keyframe after overflow.");
     }
 
+    private static void TestBandwidthController()
+    {
+        var controller = new ScreenBandwidthController(12_000_000, 60);
+        var peer = Guid.NewGuid();
+        long sent = 0, lost = 0;
+        (int Bitrate, int Fps) Observe(int acknowledged, int expired) =>
+            controller.Observe([(peer, sent += acknowledged, lost += expired)]);
+        Assert(Observe(0, 0) == (12_000_000, 60), "Initial rate must match the requested profile.");
+        Assert(Observe(90, 10) == (12_000_000, 60), "One congested interval must not change the profile.");
+        Assert(Observe(90, 10) == (9_000_000, 60), "Sustained loss must lower bitrate before cadence.");
+        for (int interval = 0; interval < 10; interval++) Observe(90, 10);
+        var floor = Observe(100, 0);
+        Assert(floor.Bitrate == 4_000_000 && floor.Fps is >= 15 and < 60, "Adapted bitrate and cadence must remain bounded.");
+        Assert(Observe(100, 0) == floor, "Recovery must avoid raising the rate after a brief respite.");
+        Assert(Observe(100, 0).Fps > floor.Fps, "Sustained recovery should restore cadence first.");
+    }
+
+    private static async Task TestNativeWindowsEncodeAsync(string implementation)
+    {
+        var options = new ScreenEncoderOptions { Encoder = implementation, Codec = ScreenEncoderOptions.CodecForEncoder(implementation),
+            Width = 320, Height = 180, Fps = 60, KeyFrameIntervalMs = 5000 };
+        var reader = new WindowsScreenReader(options, [], options.Width, options.Height, 7);
+        int count = 0, keyFrames = 0;
+        nint decoder = 0;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        try
+        {
+            await reader.ReadAsync(frame =>
+            {
+                var packet = NativeVideoRuntime.Parse(reader.BuildWirePacket(frame, 7));
+                Assert(packet.Generation == 7 && packet.Width == options.Width && packet.Height == options.Height,
+                    "Native output must use the existing screen-share packet contract.");
+                if (decoder == 0)
+                    decoder = NativeMedia.qpv_open(options.CodecId, 1, packet.Width, packet.Height, packet.Extra,
+                        packet.Extra?.Length ?? 0, 0, null);
+                Assert(decoder != 0 && NativeMedia.Decode(decoder, frame.Data, packet.Timestamp, packet.Key, false) >= 0,
+                    "D3D11VA must decode NVENC's direct output.");
+                if (packet.Key) ++keyFrames;
+                if (++count == 24) reader.RequestKeyFrame();
+                if (count == 48) timeout.Cancel();
+                return Task.CompletedTask;
+            }, timeout.Token);
+            NativeMedia.qpv_stats(decoder, out var stats);
+            Assert(count == 48 && stats.HardwareFrames >= 47 && keyFrames >= 2,
+                "Synthetic NVENC delivery must sustain decoding and produce an on-demand keyframe.");
+            Console.WriteLine($"[D3D11 NVENC] {implementation}: {stats.HardwareFrames} decoded, {keyFrames} keyframes.");
+        }
+        finally { if (decoder != 0) NativeMedia.qpv_close(decoder); }
+    }
+
     private static async Task TestCaptureLifecycleAsync(string implementation)
     {
         using var encoder = new FfmpegScreenEncoder((options, selected) =>
@@ -168,10 +241,19 @@ public static class FfmpegScreenEncoderTests
             args.AddRange(FfmpegScreenEncoder.EncodingArguments(options, selected));
             args.AddRange(FfmpegScreenEncoder.ContainerArguments(options.Codec)); args.Add("pipe:1"); return args;
         });
-        var options = new ScreenEncoderOptions { Width = 320, Height = 180, Fps = 30, Codec = "h264", Encoder = implementation, KeyFrameIntervalMs = 250 };
+        var options = new ScreenEncoderOptions { Width = 320, Height = 180, Fps = 30, Codec = "h264", Encoder = implementation, KeyFrameIntervalMs = 5000 };
         var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var profile = await encoder.StartAsync(options, _ => Task.FromResult(true), (_, _) => { received.TrySetResult(); return Task.CompletedTask; }, CancellationToken.None);
-        await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var startup = Stopwatch.StartNew();
+        long timeToProfile = 0;
+        var profile = await encoder.StartAsync(options, async _ =>
+        {
+            timeToProfile = startup.ElapsedMilliseconds;
+            await Task.Delay(250);
+            Assert(!received.Task.IsCompleted, "A frame was sent before the receiver approved the stream.");
+            return true;
+        }, (_, _) => { received.TrySetResult(); return Task.CompletedTask; }, CancellationToken.None);
+        await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Console.WriteLine($"[STARTUP] {implementation}: profile {timeToProfile} ms, first emitted frame {startup.ElapsedMilliseconds} ms (including 250 ms synthetic negotiation).");
         Assert(profile.Codec.StartsWith("avc1.") && profile.Width == 320, "Invalid capture profile.");
         await encoder.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
         Assert(encoder.Profile == null, "Stop must reset the capture state.");

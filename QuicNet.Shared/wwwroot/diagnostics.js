@@ -3,8 +3,10 @@
   const original = { error: console.error.bind(console), warn: console.warn.bind(console) };
   const pending = [], seen = new Map();
   let transport = null, timer = null, dropped = 0;
-  const clean = value => String(value ?? '').replace(/(https?:\/\/[^\s?]+)\?[^\s)]+/gi, '$1')
-    .replace(/\b(csrf|token|password|authorization|secret)(\s*[:=]\s*)[^\s,;&]+/gi, '$1$2[redacted]');
+  const clean = value => String(value ?? '')
+    .replace(/((?:(?:https?|wss?):\/\/|\/)[^\s?#)"'<>]*)[?#][^\s)"'<>]*?(?=:\d+:\d+(?:[\s)]|$)|[\s)"'<>]|$)/gi, '$1')
+    .replace(/\b((?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*:)[^\r\n]*/gi, '$1 [redacted]')
+    .replace(/(\b[\w-]*(?:csrf|token|password|authorization|secret|api[-_]?key|cookie)[\w-]*["']?[ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|(?:bearer|basic)[ \t]+[^\s,;&]+|[^\s,;&]+)/gi, '$1[redacted]');
   function route(value) {
     try { const url = new URL(value, location.href); return ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol) ? url.origin + url.pathname : url.protocol; }
     catch { return '[URL no válida]'; }

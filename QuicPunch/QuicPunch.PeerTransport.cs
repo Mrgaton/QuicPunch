@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using QuicPunch.Helpers;
 
 namespace QuicPunch;
@@ -60,6 +61,7 @@ public partial class QuicPunch
         public bool Parked;
         public Multiplexer.QuicPeerMultiplexer? LastMultiplexer;
         public byte[]? SessionNonce;
+        public IPEndPoint? ControlEndPoint;
     }
 
     private async Task PeerTransportLoopAsync(long generation, CancellationToken token)
@@ -97,8 +99,12 @@ public partial class QuicPunch
                 foreach (var peer in AvailablePeers.Values)
                 {
                     if (!retries.TryGetValue(peer.Id, out var retry) || !ReferenceEquals(retry.Peer, peer) ||
-                        !(retry.SessionNonce ?? []).AsSpan().SequenceEqual(peer.SessionNonce ?? []))
-                        retries[peer.Id] = retry = new TransportRetry { Peer = peer, SessionNonce = peer.SessionNonce?.ToArray() };
+                        !(retry.SessionNonce ?? []).AsSpan().SequenceEqual(peer.SessionNonce ?? []) ||
+                        !Equals(retry.ControlEndPoint, peer.ActiveEndPoint))
+                        retries[peer.Id] = retry = new TransportRetry
+                        {
+                            Peer = peer, SessionNonce = peer.SessionNonce?.ToArray(), ControlEndPoint = peer.ActiveEndPoint
+                        };
 
                     bool keepConnected = peer.TryGetCertificateHash(out var savedHash) && PeerStore?.TryGet(savedHash, out var savedContact) == true && savedContact?.AutoConnect == true;
                     if (keepConnected) retry.Parked = false;

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#101116">
+  <title>Configuración inicial · QuicNet</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/workspace.css">
+  <link rel="stylesheet" href="/onboarding.css">
+  <script defer src="/onboarding.js"></script>
+</head>
+<body>
+  <main class="onboarding">
+    <header class="onboarding-header">
+      <div class="onboarding-brand"><img src="/quicnet-icon.png" width="36" height="36" alt="">QuicNet</div>
+      <ol class="onboarding-steps" aria-label="Pasos de configuración">
+        <li aria-current="step">Conexión</li>
+        <li>Perfil</li>
+        <li>Inicio</li>
+      </ol>
+    </header>
+    <form class="onboarding-form" novalidate>
+      <section class="onboarding-stage onboarding-connect" aria-labelledby="onboarding-connect-title">
+        <h1 id="onboarding-connect-title" tabindex="-1">¿Cómo quieres conectar?</h1>
+        <p>Elige cómo se conectará QuicNet con tus contactos.</p>
+        <fieldset class="onboarding-modes" disabled>
+          <legend class="sr-only">Modo de conexión inicial</legend>
+          <label class="onboarding-mode">
+            <span class="onboarding-mode-heading">
+              <strong>WAN</strong>
+              <input type="radio" name="mode" value="wan" aria-label="WAN" aria-describedby="onboarding-wan-info" required>
+            </span>
+            <span class="onboarding-mode-description" id="onboarding-wan-info">
+              <strong>Conexión directa</strong>
+              <span>Por lo general ofrece menos latencia y más velocidad para llamadas y archivos.</span>
+              <span>Tus contactos pueden ver tu IP pública. Los anuncios en relés Nostr pueden vincular tu IP con tu perfil. El tráfico directo puede revelar quién se conecta con quién.</span>
+            </span>
+          </label>
+          <label class="onboarding-mode" data-onboarding-palette="tor">
+            <span class="onboarding-mode-heading">
+              <strong>Solo Tor</strong>
+              <input type="radio" name="mode" value="tor" aria-label="Solo Tor" aria-describedby="onboarding-tor-info" required>
+            </span>
+            <span class="onboarding-mode-description" id="onboarding-tor-info">
+              <strong>Conexión por Tor</strong>
+              <span>Tus contactos usan un seudónimo y una dirección .onion. Tor les oculta tu IP, aunque aún se puede correlacionar el tráfico.</span>
+              <span>Puede tardar más en arrancar y ser más lento. Si Tor falla o está bloqueado, WAN sigue desactivada.</span>
+            </span>
+          </label>
+        </fieldset>
+        <p class="onboarding-help">Podrás cambiar de modo en <strong>Ajustes → Conexión y Tor</strong>.</p>
+      </section>
+      <section class="onboarding-stage" id="onboarding-profile" aria-labelledby="onboarding-profile-title" hidden>
+        <h1 id="onboarding-profile-title" tabindex="-1">Configura tu perfil</h1>
+        <p>Tu perfil se guarda en este dispositivo. El nombre se comparte con tus contactos cuando usas WAN.</p>
+        <div class="onboarding-profile-preview">
+          <span class="avatar" id="onboarding-initials" aria-hidden="true"></span>
+          <div><strong id="onboarding-display-preview"></strong><small id="onboarding-identity-label"></small></div>
+        </div>
+        <div class="field">
+          <label for="onboarding-display-name">Nombre de usuario</label>
+          <input class="input" id="onboarding-display-name" type="text" maxlength="64" autocomplete="nickname" aria-describedby="onboarding-profile-help">
+          <p class="onboarding-help" id="onboarding-profile-help">Si dejas el campo vacío se usará el nombre del equipo en WAN. En Tor se usa un seudónimo independiente.</p>
+        </div>
+        <p class="onboarding-help">Puedes cambiar el nombre y añadir una foto en <strong>Ajustes → Mi perfil</strong>.</p>
+      </section>
+      <section class="onboarding-stage" aria-labelledby="onboarding-startup-title" hidden>
+        <h1 id="onboarding-startup-title" tabindex="-1">Inicio y segundo plano</h1>
+        <p>Elige cuándo quieres que QuicNet esté activo.</p>
+        <div class="onboarding-system">
+          <label class="check-line" id="onboarding-startup-option">
+            <input id="onboarding-startup" type="checkbox" role="switch">
+            <span><strong>Iniciar con el sistema</strong><small id="onboarding-startup-help">Activa QuicNet al iniciar sesión.</small></span>
+          </label>
+          <label class="check-line">
+            <input id="onboarding-background" type="checkbox" role="switch">
+            <span><strong>Continuar en segundo plano</strong><small>Mantén tus conexiones cuando cierres la ventana.</small></span>
+          </label>
+        </div>
+        <p id="onboarding-no-startup" class="onboarding-help" hidden>El inicio con el sistema no está disponible en este dispositivo.</p>
+        <p class="onboarding-summary">Modo de conexión <strong id="onboarding-summary-mode"></strong></p>
+      </section>
+      <section class="onboarding-stage" id="onboarding-saved" aria-labelledby="onboarding-saved-title" hidden>
+        <h1 id="onboarding-saved-title" tabindex="-1">Tus ajustes están guardados</h1>
+        <p>Reintenta el arranque para abrir QuicNet con el modo elegido.</p>
+      </section>
+      <p class="onboarding-error" role="alert" hidden></p>
+      <footer class="onboarding-actions">
+        <button class="btn" id="onboarding-back" type="button" hidden>Volver</button>
+        <button class="btn" id="onboarding-reload" type="button" hidden>Reintentar</button>
+        <button class="btn accent" id="onboarding-next" type="submit" disabled>Continuar</button>
+      </footer>
+    </form>
+  </main>
+</body>
+</html>

@@ -52,7 +52,7 @@ try {
   await page.route('**/api/profile/avatar/**',route=>route.fulfill({contentType:'image/avif',body:readFileSync(new URL('../Fixtures/profile-avatar.avif',import.meta.url))}));
   await page.goto(url+'call.html');await page.waitForFunction(()=>window.testRoom);await page.evaluate(()=>testRoom.setup());
   assert.equal(await page.locator('.voice-participant').count(),3);
-  const sizes=await page.locator('.voice-ctrl-btn:not(.hidden)').evaluateAll(buttons=>buttons.map(b=>({w:b.getBoundingClientRect().width,h:b.getBoundingClientRect().height})));
+  const sizes=await page.locator('.voice-dock .voice-ctrl-btn:visible').evaluateAll(buttons=>buttons.map(b=>({id:b.id,w:b.getBoundingClientRect().width,h:b.getBoundingClientRect().height})));
   assert.ok(sizes.every(size=>size.w===sizes[0].w&&size.h===sizes[0].h),'Call controls must have uniform dimensions: '+JSON.stringify(sizes));
   const summary=page.locator('.voice-person-menu > summary').first();await summary.click();
   const menu=page.locator('.voice-person-menu[open]');assert.equal(await menu.count(),1);
@@ -98,7 +98,7 @@ try {
   assert.equal(await page.locator('.voice-participant:visible').count(),1,'A sharing participant must only have one visible tile');
   assert.equal(await page.locator('#screenShareGrid > .voice-participant:visible').count(),1,'Audio participants share the same grid as video');
   assert.equal(await remoteTile.locator('.screen-tile-name').isVisible(),true,'Identity is independent of codec details');
-  assert.equal(await remoteTile.locator('.screen-tile-codec').isVisible(),false);
+  assert.equal(await remoteTile.locator('.screen-tile-codec').isVisible(),true);
   await page.evaluate(()=>{testRoom.vad({peerId:'10000000-0000-0000-0000-000000000000',speaking:true});testRoom.vad({isLocal:true,speaking:true,level:.5});});
   assert.equal(await page.locator('.screen-tile.is-speaking').count(),2,'Local and remote speech must highlight their stream');
   await remoteTile.locator('.voice-person-menu > summary').click();
@@ -115,6 +115,8 @@ try {
   assert.equal(await remoteTile.locator('.screen-tile-name').isVisible(),true,'Pointer activity restores names');
   await page.keyboard.press('Tab');
   for(const tile of [remoteTile,localTile]){
+    await tile.locator('.screen-info-btn').click();
+    assert.equal(await tile.locator('.screen-tile-codec').isVisible(),false);
     await tile.locator('.screen-info-btn').click();
     await tile.locator('.screen-tile-user img').waitFor();
     await page.waitForFunction(()=>[...document.querySelectorAll('.show-stream-info .screen-tile-user img')].every(img=>img.complete&&img.naturalWidth>0));
@@ -143,14 +145,21 @@ try {
     await settle();
     const bounds=await page.evaluate(()=>{
       const box=selector=>document.querySelector(selector).getBoundingClientRect();
-      const dock=box('.voice-dock'),nav=box('.nav-wrap'),media=box('#voiceRoomMedia'),head=box('.voice-stage-head'),controls=box('.voice-quick-controls');
+      const dock=box('.voice-dock'),nav=box('.nav-wrap'),media=box('#voiceRoomMedia'),head=box('.voice-stage-head');
       const drawer=box('#voiceDrawer');
-      return {dockBottom:dock.bottom,dockTop:dock.top,dockLeft:dock.left,dockRight:dock.right,dockWidth:dock.width,limit:innerWidth<=680?nav.top:innerHeight,mediaRight:media.right,mediaBottom:media.bottom,mediaHeight:media.height,headTop:head.top,drawerLeft:drawer.left,drawerRight:drawer.right,drawerWidth:drawer.width,open:!document.getElementById('voiceDrawer').hidden,width:innerWidth,rootHeight:document.scrollingElement.scrollHeight,height:innerHeight,scrollY,overflow:document.documentElement.scrollWidth-innerWidth};
+      const hasSessionControls = document.querySelector('.voice-stage').classList.contains('has-session-controls');
+      return {hasSessionControls,dockBottom:dock.bottom,dockTop:dock.top,dockLeft:dock.left,dockRight:dock.right,dockWidth:dock.width,limit:innerWidth<=680?nav.top:innerHeight,mediaRight:media.right,mediaBottom:media.bottom,mediaHeight:media.height,headTop:head.top,drawerLeft:drawer.left,drawerRight:drawer.right,drawerWidth:drawer.width,drawerBottom:drawer.bottom,open:!document.getElementById('voiceDrawer').hidden,width:innerWidth,rootHeight:document.scrollingElement.scrollHeight,height:innerHeight,scrollY,overflow:document.documentElement.scrollWidth-innerWidth};
     });
     assert.ok(bounds.dockBottom<=bounds.limit+1&&bounds.dockBottom>=bounds.limit-1,label+': controls must meet navigation edge '+JSON.stringify(bounds));
-    assert.ok(bounds.dockRight<=bounds.width&&bounds.dockWidth<=80,label+': controls must form a vertical right rail');
-    assert.ok(bounds.mediaHeight>0&&bounds.mediaRight<=bounds.dockLeft+1&&bounds.headTop>=0,label+': media overlaps right controls');
-    if(bounds.open){assert.ok(bounds.drawerWidth>0&&bounds.drawerLeft>=0&&Math.abs(bounds.drawerRight-bounds.dockLeft)<1,label+': drawer must open beside the right rail '+JSON.stringify(bounds));if(bounds.width>760)assert.ok(bounds.mediaRight<=bounds.drawerLeft+1,label+': desktop sidebar overlaps media');}
+    const landscape = bounds.width>=481 && bounds.width<=1000 && bounds.height<=450;
+    assert.ok(bounds.dockRight<=bounds.width&&bounds.mediaHeight>0&&bounds.headTop>=0,label+': call room is clipped');
+    if (landscape || !bounds.hasSessionControls) {
+      assert.ok(bounds.mediaBottom<=bounds.dockTop+1,label+': media overlaps the bottom dock');
+      if (bounds.open) assert.ok(bounds.drawerWidth>0&&bounds.drawerBottom<=bounds.dockTop+1,label+': drawer overlaps the bottom dock');
+    } else {
+      assert.ok(bounds.dockWidth<=80&&bounds.mediaRight<=bounds.dockLeft+1,label+': media overlaps the right rail');
+      if(bounds.open){assert.ok(bounds.drawerWidth>0&&bounds.drawerLeft>=0&&Math.abs(bounds.drawerRight-bounds.dockLeft)<1,label+': drawer must open beside the right rail '+JSON.stringify(bounds));if(bounds.width>760)assert.ok(bounds.mediaRight<=bounds.drawerLeft+1,label+': desktop sidebar overlaps media');}
+    }
     assert.ok(bounds.rootHeight<=bounds.height+1&&bounds.scrollY===0&&bounds.overflow<=0,label+': outer page scroll/overflow '+JSON.stringify(bounds));
   }
   for(const width of [1920,1280,820,390,320]){
@@ -186,7 +195,7 @@ try {
       await page.evaluate(()=>testRoom.clearStreams());
     }
   }
-  for(const viewport of [{width:320,height:568},{width:390,height:430},{width:844,height:390}]){
+  for(const viewport of [{width:320,height:568},{width:390,height:430},{width:667,height:375},{width:844,height:390},{width:932,height:430}]){
     await page.setViewportSize(viewport);await page.evaluate(()=>testRoom.setup());await assertRoomFits('small closed '+JSON.stringify(viewport));
     await page.click('#voiceTrayToggle');await assertRoomFits('small open '+JSON.stringify(viewport));
     await page.click('#voiceSettingsTab');await assertRoomFits('small settings '+JSON.stringify(viewport));await page.keyboard.press('Escape');

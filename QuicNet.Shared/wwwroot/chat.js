@@ -1,11 +1,20 @@
 let chatStatus = null;
 let selectedPeerId = new URLSearchParams(location.search).get('peer') || '';
-const conversationDrafts = new Map();
+const chatDrafts = createChatDrafts({
+  api: (...args) => QP.api(...args),
+  notify: (...args) => QP.toast(...args),
+  newRevision: () => crypto.randomUUID(),
+  onLoaded(peerId, text) {
+    const input = document.getElementById('messageInput');
+    if (selectedPeerId === peerId && input) input.value = text;
+  }
+});
+
 function selectChatPeer(peerId) {
   closeEmojiPopover();
   if (typeof stopTyping === 'function') stopTyping();
   const input = document.getElementById('messageInput');
-  if (input && selectedPeerId) conversationDrafts.set(selectedPeerId, input.value);
+  if (input && selectedPeerId) chatDrafts.edit(selectedPeerId, input.value, true);
   selectedPeerId = peerId;
   const peer = chatTrustedPeers(chatStatus).find(item => item.id === peerId);
   if (peer) reopenConversation(peer);
@@ -21,7 +30,7 @@ function selectChatPeer(peerId) {
     if (menu) menu.open = false;
   }
   if (typeof ChatSocial !== 'undefined') ChatSocial.select();
-  if (input) { input.value = conversationDrafts.get(peerId) || ''; input.style.height = 'auto'; }
+  if (input) { input.value = chatDrafts.text(peerId); input.style.height = 'auto'; }
   document.getElementById('chatContainer')?.classList.toggle('in-conversation', !!peerId);
 }
 let peerFilter = '';
@@ -146,11 +155,19 @@ function updateChatUnreadBadges() {
   if (chatStatus?.chatTransport?.nostrEnabled) visibleIds.add('global');
   const total = [...unreadChatMessages].reduce((sum, [id, ids]) => sum + (visibleIds.has(id) ? ids.size : 0), 0);
   const nav = document.querySelector('.nav-link[data-page="chat"]');
+  if (!nav) return;
+  const label = nav.querySelector('.nav-label').textContent;
+  const accessibleLabel = total ? `${label}, ${total} mensaje${total === 1 ? '' : 's'} sin leer` : label;
+  if (nav.getAttribute('aria-label') !== accessibleLabel) nav.setAttribute('aria-label', accessibleLabel);
   let badge = document.getElementById('chatUnreadNavCount');
-  if (nav && total) {
-    if (!badge) { badge = QP.el('span', 'chat-unread-count'); badge.id = 'chatUnreadNavCount'; nav.append(badge); }
+  if (total) {
+    if (!badge) {
+      badge = QP.el('span', 'chat-unread-count');
+      badge.id = 'chatUnreadNavCount';
+      badge.setAttribute('aria-hidden', 'true');
+      nav.append(badge);
+    }
     badge.textContent = total > 99 ? '99+' : String(total);
-    badge.setAttribute('aria-label', `${total} mensajes sin leer`);
   } else badge?.remove();
 }
 
@@ -226,8 +243,13 @@ function openChatPeer(peerId) {
 function renderNewChatContacts() {
   const list = document.getElementById('chatNewPeers');
   if (!list) return;
-  const query = document.getElementById('chatNewSearch').value.trim().toLocaleLowerCase('es');
-  const peers = chatTrustedPeers(chatStatus).filter(peer => `${peer.name} ${peer.id}`.toLocaleLowerCase('es').includes(query));
+  const search = document.getElementById('chatNewSearch');
+  const candidates = chatTrustedPeers(chatStatus);
+  const add = document.getElementById('chatAddContactBtn');
+  search.hidden = candidates.length === 0;
+  add.classList.toggle('primary', candidates.length === 0);
+  const query = search.hidden ? '' : search.value.trim().toLocaleLowerCase('es');
+  const peers = candidates.filter(peer => `${peer.name} ${peer.id}`.toLocaleLowerCase('es').includes(query));
   const existing = new Map([...list.children].filter(row => row.dataset.peerId).map(row => [row.dataset.peerId, row]));
   const keep = new Set(peers.map(peer => peer.id));
   for (const row of [...list.children]) if (!keep.has(row.dataset.peerId)) row.remove();
@@ -245,7 +267,11 @@ function renderNewChatContacts() {
     } else QP.identity.updateCapsule(button.querySelector('.ci'), peer, {snapshot: chatStatus});
     if (list.children[index] !== button) list.insertBefore(button, list.children[index] || null);
   }
-  if (!peers.length) list.append(QP.el('p', 'empty', query ? 'No hay contactos que coincidan.' : 'Añade un contacto con su invitación para empezar.'));
+  if (!peers.length) {
+    list.append(QP.el('p', 'empty', !chatStatus ? 'Cargando contactos…'
+      : query ? 'No hay contactos que coincidan.' : 'Añade un contacto con su invitación para empezar.'));
+    if (query) list.append(QP.button('Limpiar búsqueda', '', () => { search.value = ''; renderNewChatContacts(); search.focus(); }));
+  }
 }
 
 function setupChatWorkspace() {
@@ -269,7 +295,12 @@ function setupChatWorkspace() {
   });
   const box = document.getElementById('messages');
   if (box && typeof ResizeObserver !== 'undefined') {
-    chatRowObserver = new ResizeObserver(settleChatMediaLayout);
+    chatRowObserver = new ResizeObserver(entries => {
+      if (entries.some(entry => entry.target === box)) {
+        box.style.setProperty('--chat-history-height', `${box.clientHeight}px`);
+      }
+      settleChatMediaLayout();
+    });
     chatRowObserver.observe(box);
   }
   document.getElementById('chatJumpToLatest')?.addEventListener('click', () => {
@@ -324,14 +355,26 @@ function setupChatWorkspace() {
     document.getElementById('chatNewSearch').value = '';
     renderNewChatContacts();
     document.getElementById('chatNewDialog').showModal();
-    document.getElementById('chatNewSearch').focus();
+    const search = document.getElementById('chatNewSearch');
+    (search.hidden ? document.getElementById('chatAddContactBtn') : search).focus();
   });
   document.getElementById('chatNewSearch')?.addEventListener('input', renderNewChatContacts);
+  document.getElementById('chatFirstContactBtn')?.addEventListener('click', event => {
+    QP.openContactInvitation(event.currentTarget);
+  });
   document.getElementById('chatNewCloseBtn')?.addEventListener('click', () => document.getElementById('chatNewDialog').close());
-  document.getElementById('chatAddContactBtn')?.addEventListener('click', () => {
-    document.getElementById('chatNewDialog').close();
-    QP.navigate('dashboard');
-    document.querySelector('#view-dashboard [data-focus-connect]')?.click();
+  document.getElementById('chatAddContactBtn')?.addEventListener('click', event => {
+    const picker = document.getElementById('chatNewDialog');
+    const opener = event.currentTarget;
+    picker.close();
+    QP.openContactInvitation(opener, { restore(accepted) {
+      if (QP.currentPage !== 'chat') return;
+      const search = document.getElementById('chatNewSearch');
+      if (accepted) { search.value = ''; void refreshChat(true); }
+      renderNewChatContacts();
+      picker.showModal();
+      opener.focus();
+    }});
   });
   document.getElementById('chatClearCancelBtn')?.addEventListener('click', () => document.getElementById('chatClearDialog').close());
   document.getElementById('chatClearConfirmBtn')?.addEventListener('click', confirmClearConversation);
@@ -705,7 +748,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.message-menu[open]').forEach(menu => { menu.open = false; });
   });
   document.getElementById('chatConnectBtn')?.addEventListener('click', () => { connectionRetryAt.delete(selectedPeerId); connectChat(selectedPeerId); });
-  document.getElementById('sendBtn')?.addEventListener('click', () => sendChatMessage());
+  const msgInput = document.getElementById('messageInput');
+  const sendButton = document.getElementById('sendBtn');
+  sendButton?.addEventListener('pointerdown', event => {
+    // Keep the keyboard and composer in place until the tap produces a click.
+    if (event.pointerType === 'touch' && msgInput === document.activeElement) event.preventDefault();
+  });
+  sendButton?.addEventListener('click', () => sendChatMessage());
   document.getElementById('attachBtn')?.addEventListener('click', () => document.getElementById('fileInput').click());
   document.getElementById('fileInput')?.addEventListener('change', e => {
     const files = Array.from(e.target.files || []);
@@ -719,7 +768,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Textarea input & typing notification
-  const msgInput = document.getElementById('messageInput');
   if (msgInput) {
     msgInput.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -728,13 +776,17 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
     msgInput.addEventListener('input', () => {
+      chatDrafts.edit(selectedPeerId, msgInput.value);
       msgInput.style.height = 'auto';
       msgInput.style.height = Math.min(msgInput.scrollHeight, 140) + 'px';
       notifyTyping();
     });
     msgInput.addEventListener('blur', stopTyping);
   }
-  window.addEventListener('pagehide', () => { stopTyping(); stopVoiceRecording(true); });
+  window.addEventListener('pagehide', () => {
+    chatDrafts.saveAllOnPageHide();
+    stopTyping(); stopVoiceRecording(true);
+  });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopTyping(); });
 
   // Header actions: In-chat search & clear
@@ -806,7 +858,7 @@ document.addEventListener('DOMContentLoaded', () => {
   QP.on('peer_disconnected', () => refreshChat());
   QP.on('peer_available', () => refreshChat());
   QP.on('view_changed', data => {
-    if (data.page !== 'chat') { closeEmojiPopover(); stopTyping(); stopVoiceRecording(true); }
+    if (data.page !== 'chat') { void chatDrafts.save(selectedPeerId); closeEmojiPopover(); stopTyping(); stopVoiceRecording(true); }
     renderTypingIndicator();
     if (data.page === 'chat') {
       if (typeof ChatSocial !== 'undefined') ChatSocial.select();
@@ -928,6 +980,7 @@ function onRealtimeFileComplete(data) {
   fileTransfers.set(fileTransferKey(data.fileId, data.peerId), {
     ...existing,
     percent: 100,
+    total: data.total ?? existing.total,
     status: 'completed',
     path: data.path,
     name: data.name
@@ -1011,7 +1064,7 @@ async function deleteChatMessage(item, button, edit = false) {
       const input = document.getElementById('messageInput');
       const text = typeof ChatSocial !== 'undefined' ? ChatSocial.restore(item) : item.message;
       if (selectedPeerId === item.peerId && !input.value) { input.value = text; input.dispatchEvent(new Event('input')); input.focus(); }
-      else { conversationDrafts.set(item.peerId, text); QP.toast('Mensaje recuperado como borrador.'); }
+      else { chatDrafts.edit(item.peerId, text, true); QP.toast('Mensaje recuperado como borrador.'); }
     }
     await refreshChat();
   } catch (error) { button.disabled = false; QP.toast(error.message, 'error'); }
@@ -1178,13 +1231,19 @@ function renderChat(forceScroll = false) {
   renderTypingIndicator();
 
   const list = document.getElementById('chatPeers');
+  const hasContacts = allPeers.length > 0;
+  const hasPublicChannel = !!chatStatus?.chatTransport?.nostrEnabled;
+  document.getElementById('chatNewBtn').hidden = !hasContacts;
+  document.getElementById('chatFirstContactBtn').hidden = !chatStatus || hasContacts;
+  document.querySelector('.dm-search').hidden = !hasContacts;
+  document.querySelector('.dm-list-heading').hidden = !hasContacts && !hasPublicChannel;
   const focusedPeer = list?.contains(document.activeElement) ? document.activeElement.closest('[data-peer-id]')?.dataset.peerId : null;
   QP.clear(list);
   const hasConversation = selectedPeerId === 'global' || allPeers.some(peer => peer.id === selectedPeerId);
   document.getElementById('chatContainer')?.classList.toggle('has-no-conversation', !hasConversation);
 
   // 1. Public channel is paused unless the server explicitly enables it.
-  if (chatStatus?.chatTransport?.nostrEnabled) {
+  if (hasPublicChannel) {
   const isGlobalSelected = selectedPeerId === 'global';
   const globalRow = QP.el('button', `dm-peer ${isGlobalSelected ? 'selected' : ''}`);
   globalRow.dataset.peerId = 'global';
@@ -1214,11 +1273,13 @@ function renderChat(forceScroll = false) {
 
   // 2. Direct peer list
   const peers = visiblePeers.filter(p => !peerFilter || `${p.name} ${p.endpoint} ${p.id}`.toLowerCase().includes(peerFilter));
-  QP.setText('chatConversationCount', String(peers.length + (chatStatus?.chatTransport?.nostrEnabled ? 1 : 0)));
-  if (!visiblePeers.length && !peers.length) {
+  QP.setText('chatConversationCount', String(peers.length + (hasPublicChannel ? 1 : 0)));
+  if (chatStatus && !hasContacts && !hasPublicChannel) {
+    list.appendChild(QP.el('div', 'empty', 'Usa la invitación de tu contacto para empezar a conversar.'));
+  } else if (hasContacts && !visiblePeers.length) {
     list.appendChild(QP.el('div', 'empty', 'No hay conversaciones abiertas. Usa Nueva conversación para elegir un contacto.'));
   } else if (!peers.length && peerFilter) {
-    list.appendChild(QP.el('div', 'empty', 'No hay contactos que coincidan con tu búsqueda.'));
+    list.appendChild(QP.el('div', 'empty', 'No hay conversaciones que coincidan con tu búsqueda.'));
   }
 
   peers.forEach(peer => {
@@ -1273,6 +1334,10 @@ function renderChat(forceScroll = false) {
   if (closeButton) closeButton.disabled = !allPeers.some(peer => peer.id === selectedPeerId);
 
   // 3. Conversation Pane Setup
+  if (QP.currentPage === 'chat' && (selectedPeerId === 'global' || allPeers.some(peer => peer.id === selectedPeerId)) &&
+    !chatDrafts.has(selectedPeerId)) {
+    void chatDrafts.load(selectedPeerId).catch(() => QP.toast('No se pudo recuperar el borrador de esta conversación.', 'error'));
+  }
   if (selectedPeerId === 'global') {
     QP.identity.mount(document.getElementById('chatIdentity'), {name: 'Canal público'}, {snapshot: chatStatus, nameId: 'chatPeerName', avatarId: 'chatAvatar'});
     const enabled = chatStatus?.chatTransport?.nostrEnabled === true;
@@ -1316,9 +1381,9 @@ function renderChat(forceScroll = false) {
     {snapshot: chatStatus, slot: 'chat-header', nameId: 'chatPeerName', avatarId: 'chatAvatar'});
   const presence = peer && QP.userPresence?.(peer, chatStatus);
   QP.setText('chatPeerMeta', !peer ? 'Selecciona alguien de la lista'
-    : connected ? `Conversación privada · ${presence?.state === 'unknown' ? 'Conectado · Estado desconocido' : presence?.state === 'offline' ? 'Conectado' : presence?.label || 'Conectado'}`
-    : isConnecting ? 'Conectando con este contacto…'
-    : 'Sin conexión con este contacto');
+    : connected ? (presence?.state === 'unknown' ? 'Conectado · Estado desconocido' : presence?.state === 'offline' ? 'Conectado' : presence?.label || 'Conectado')
+    : isConnecting ? 'Conectando…'
+    : 'Sin conexión');
 
   const connectBtn = document.getElementById('chatConnectBtn');
   if (connectBtn) {
@@ -1356,7 +1421,7 @@ function renderChat(forceScroll = false) {
     if (control) control.disabled = !peer;
   }
   const input = document.getElementById('messageInput');
-  if (input) input.placeholder = !peer ? 'Elige una conversación' : 'Escribe un mensaje…';
+  if (input) input.placeholder = !peer ? 'Elige una conversación' : 'Mensaje…';
   renderMessages(peer, forceScroll);
   maybeConnectSelectedChat();
 }
@@ -1368,7 +1433,6 @@ function renderMessages(peer, forceScroll = false, preserveScroll = false) {
   if (!peer) {
     lastRenderedPeerId = '';
     lastRenderedFingerprint = '';
-    // Keep the welcome actions mounted across status refreshes so keyboard focus survives.
     if (box.querySelector('.chat-idle')) return;
     QP.clear(box);
     const welcome = QP.el('div', 'empty-state chat-idle');
@@ -1377,19 +1441,7 @@ function renderMessages(peer, forceScroll = false, preserveScroll = false) {
     const bubble = QP.el('div', 'chat-idle-bubble');
     for (let i = 0; i < 3; i++) bubble.appendChild(QP.el('span'));
     illustration.append(QP.el('div', 'chat-idle-bubble-back'), bubble);
-    welcome.append(illustration, QP.el('span', 'chat-idle-eyebrow', 'CERCA, ESTÉS DONDE ESTÉS'),
-      QP.el('h2', '', 'Todo empieza con un hola.'),
-      QP.el('p', 'chat-idle-description', 'Elige una conversación o empieza una nueva. Comparte mensajes, archivos y notas de voz en un mismo lugar.'));
-    const actions = QP.el('div', 'chat-idle-actions');
-    const start = QP.el('button', 'btn primary', 'Nueva conversación');
-    start.type = 'button'; start.setAttribute('aria-haspopup', 'dialog'); start.setAttribute('aria-controls', 'chatNewDialog');
-    start.addEventListener('click', () => document.getElementById('chatNewBtn').click());
-    const add = QP.el('button', 'btn', 'Añadir un contacto'); add.type = 'button';
-    add.addEventListener('click', () => {
-      QP.navigate('dashboard');
-      document.querySelector('#view-dashboard [data-focus-connect]')?.click();
-    });
-    actions.append(start, add); welcome.append(actions);
+    welcome.append(illustration, QP.el('h2', '', 'Tus mensajes'));
     box.appendChild(welcome);
     return;
   }
@@ -2039,6 +2091,8 @@ async function sendChatMessage(payload, peerId = selectedPeerId) {
   const originalDraft = input?.value || '';
   const message = payload ?? originalDraft.trim();
   if (!message || !peerId || (payload === undefined && sendingPeers.has(peerId))) return false;
+  if (payload === undefined && peerId === selectedPeerId) chatDrafts.edit(peerId, originalDraft);
+  const originalEdit = chatDrafts.editVersion(peerId);
   const queueText = peerId !== 'global' && payload === undefined;
   const replyTo = queueText && typeof ChatSocial !== 'undefined' ? ChatSocial.reply(peerId) : null;
   const wireMessage = queueText && typeof ChatSocial !== 'undefined' ? ChatSocial.encode(message,peerId,replyTo) : message;
@@ -2070,9 +2124,12 @@ async function sendChatMessage(payload, peerId = selectedPeerId) {
       await QP.api('/api/chat-send', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peerId,message})});
     }
     if (payload === undefined) {
-      if (selectedPeerId === peerId && input.value === originalDraft) {
-        input.value = ''; input.style.height = ''; conversationDrafts.delete(peerId);
-      } else if (conversationDrafts.get(peerId) === originalDraft) conversationDrafts.delete(peerId);
+      if (chatDrafts.editVersion(peerId) === originalEdit && chatDrafts.text(peerId) === originalDraft) {
+        if (selectedPeerId === peerId && input.value === originalDraft) {
+          input.value = ''; input.style.height = '';
+        }
+        chatDrafts.edit(peerId, '', true);
+      }
       if (typingPeerId === peerId) stopTyping();
     }
     if (selectedPeerId === peerId) scrollToBottom(true);

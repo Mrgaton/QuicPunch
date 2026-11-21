@@ -36,7 +36,9 @@ try {
   assert.equal(await savedRows.nth(1).locator('td').nth(5).innerText(), 'Desconectado',
     'A discovered contact without a QUIC tunnel must not be labelled connected');
   const sections=await page.locator('[data-settings-section]').evaluateAll(tabs=>tabs.map(tab=>tab.dataset.settingsSection));
-  assert.deepEqual(sections,['profile','notifications','startup','updates','connection','geolocation','contacts','diagnostics']);
+  assert.deepEqual(sections,['profile','notifications','startup','updates','connection','contacts','diagnostics']);
+  assert.deepEqual(await page.locator('#settingsCategory option').evaluateAll(options=>options.map(option=>option.value)),sections);
+  assert.deepEqual(await page.locator('[data-settings-panel]').evaluateAll(panels=>panels.map(panel=>panel.dataset.settingsPanel)).then(panels=>panels.sort()),[...sections].sort());
   for(const section of sections) {
     await page.locator('#settings-tab-'+section).click();
     assert.equal(await page.locator('[data-settings-panel]:visible').getAttribute('id'),'settings-'+section);
@@ -96,6 +98,8 @@ try {
   await page.evaluate(()=>QP.navigate('settings'));
   await page.locator('#settings-profile').waitFor();
   await page.goto(url+'settings.html?section=unknown');await page.locator('#settings-profile').waitFor();
+  await page.goto(url+'settings.html?section=geolocation');await page.locator('#settings-profile').waitFor();
+  assert.equal(await page.locator('#settingsCategory').inputValue(),'profile');
   assert.deepEqual(errors,[]);
   console.log('PASS settings categories: profile default, all sections, keyboard, history, reload, safe fallback and 320–2048px dark layouts');
 } finally {await closeBrowserFixture(browser, server);}

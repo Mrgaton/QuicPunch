@@ -1,13 +1,45 @@
 using System.Collections.Concurrent;
+using System.Net;
 using QuicPunch.Helpers;
 
 namespace QuicPunch;
 
 public partial class QuicPunch
 {
+    private sealed class WanControlRouteChangedException() : IOException("The authenticated WAN control route changed.");
+
+    internal void OnWanControlRouteChanged(Guid peerId, IPEndPoint current)
+    {
+        foreach (var item in _activeOutboundNegotiations)
+        {
+            var flight = item.Value;
+            if (item.Key.PeerId != peerId || flight.WanControlEndPoint == null ||
+                flight.WanControlEndPoint.Equals(current) || flight.IsYielded || flight.DecisionTcs.Task.IsCompleted)
+                continue;
+            flight.ControlRouteChanged = true;
+            try { flight.Cts.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        QuicPunchLog.Info("[WAN RECOVERY] Authenticated a new peer control route.");
+        Interlocked.Exchange(ref _networkChanged, new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+        if (TryGetPeerMultiplexer(peerId, out var mux) && mux is { IsDisposed: false } &&
+            _wanTransportRechecks.TryAdd(peerId, mux))
+            _ = RecheckWanTransportAsync(peerId, mux, LifecycleToken);
+    }
+
+    private async Task RecheckWanTransportAsync(Guid peerId, Multiplexer.QuicPeerMultiplexer mux, CancellationToken token)
+    {
+        try { await mux.ProbeLivenessAsync(token, TimeSpan.FromMilliseconds(1500)).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) { QuicPunchLog.Info($"[WAN RECOVERY] Transport liveness check deferred: {ex.Message}"); }
+        finally { _wanTransportRechecks.TryRemove(new KeyValuePair<Guid, Multiplexer.QuicPeerMultiplexer>(peerId, mux)); }
+    }
+
     private DateTime _automaticContactsStartedUtc;
     private Task? _automaticContactProbeTask;
     private readonly ConcurrentDictionary<string, byte> _reactivatedAutomaticContacts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _pendingContactRouteProbes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<Guid, Multiplexer.QuicPeerMultiplexer> _wanTransportRechecks = new();
+    private readonly SemaphoreSlim _automaticContactWake = new(0, 1);
     internal static readonly TimeSpan AutomaticContactActivityWindow = TimeSpan.FromDays(2);
 
     // Eligibility is anchored to this boot. A contact does not age out mid-run.
@@ -33,12 +65,25 @@ public partial class QuicPunch
             PeerStore?.TryGet(hash, out var saved) != true || saved == null) return false;
         if (saved.AutoConnect)
         {
-            _reactivatedAutomaticContacts[Convert.ToHexString(hash)] = 0;
+            string key = Convert.ToHexString(hash);
+            _reactivatedAutomaticContacts[key] = 0;
             if (restartProbe)
+            {
+                NatCoordinator.RequestFastSampling();
+                _pendingContactRouteProbes[key] = 0;
                 foreach (var attempt in ActiveInterrogations.Values.Where(x => x.IsAutomaticContact && PeerTargetsMatch(x.Peer, peer)))
                     CancelInterrogation(attempt.Id);
+            }
+            WakeAutomaticContacts();
         }
         return true;
+    }
+
+    private void WakeAutomaticContacts()
+    {
+        lock (_automaticContactWake)
+            if (_automaticContactWake.CurrentCount == 0)
+                _automaticContactWake.Release();
     }
 
     internal void RecordAuthenticatedPeerActivity(PeerInfo peer, DateTime? observedUtc = null)
@@ -74,20 +119,24 @@ public partial class QuicPunch
                             foreach (var saved in store.SavedPeers.Where(IsAutomaticContactEligible))
                             {
                                 if (saved.NetworkType == NetworkType.Tor || saved.Addresses.Length == 0) continue;
-                                if (TryGetPeerByCertHash(saved.CertHash, out var available) && available != null &&
+                                string key = Convert.ToHexString(saved.CertHash);
+                                bool recheckRoute = _pendingContactRouteProbes.ContainsKey(key);
+                                if (!recheckRoute && TryGetPeerByCertHash(saved.CertHash, out var available) && available != null &&
                                     ((TryGetPeerMultiplexer(available.Id, out var mux) && mux is { IsDisposed: false }) ||
                                      (available.HasCertificate && available.IsSessionReady && available.IsAvailableAndResponsive()))) continue;
-                                if (!probingHashes.Add(Convert.ToHexString(saved.CertHash))) continue;
+                                if (!probingHashes.Add(key)) continue;
 
+                                recheckRoute = _pendingContactRouteProbes.TryRemove(key, out _);
                                 await PeerInterrogationCore(CreatePeerInfoFromSavedPeer(saved), TransportLifetime(TransportType.Wan),
-                                    ownsPeer: true, useDiscoveryBudget: false, automaticContact: true).ConfigureAwait(false);
+                                    ownsPeer: true, useDiscoveryBudget: false, automaticContact: true,
+                                    verifyRoute: recheckRoute).ConfigureAwait(false);
                             }
                     }
                 }
                 catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
                 catch (Exception ex) when (!token.IsCancellationRequested)
                 { QuicPunchLog.Info($"[AUTO-CONNECT] Contact probe deferred: {ex.Message}"); }
-                await Task.Delay(250, token).ConfigureAwait(false);
+                await _automaticContactWake.WaitAsync(250, token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }

@@ -20,7 +20,12 @@ public sealed class MediaLibrary : IDisposable
         private readonly CancellationTokenSource _stop = new();
         private long _clock;
         public MediaManifest Manifest { get; } = manifest;
-        public long CachedBytes { get; private set; }
+        private long _cachedBytes;
+        public long CachedBytes
+        {
+            get => Volatile.Read(ref _cachedBytes);
+            private set => Volatile.Write(ref _cachedBytes, value);
+        }
         public int Readers;
         public bool Retired;
         public long Used;
@@ -85,6 +90,12 @@ public sealed class MediaLibrary : IDisposable
     internal Func<Guid, Guid, bool>? RemoteReadAllowed { get; set; }
     internal int RemoteCacheCount { get { lock (_gate) return _remoteCaches.Count; } }
     internal long RetainedBytes { get { lock (_gate) return _remoteCaches.Values.Sum(c => c.CachedBytes); } }
+
+    internal long GetCachedBytes(Guid mediaId)
+    {
+        lock (_gate)
+            return _remoteCaches.TryGetValue(mediaId, out var cache) && !cache.Retired ? cache.CachedBytes : 0;
+    }
 
     public MediaLibrary(MediaTransferHandler transfer, string cacheRoot)
     {

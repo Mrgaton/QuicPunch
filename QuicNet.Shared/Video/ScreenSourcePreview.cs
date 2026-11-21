@@ -14,9 +14,8 @@ internal sealed partial class FfmpegScreenEncoder
             var options = new ScreenEncoderOptions { Source = source, Width = 480, Height = 270, Fps = 5, Encoder = "libx264" };
             // Use precisely the same input rectangle as the transmission, then
             // scale the entire frame to a thumbnail without cropping it.
-            var args = CaptureArguments(options, source == "dxgi:0" ? "h264_nvenc" : "libx264");
+            var args = CaptureArguments(options, options.Encoder);
             args.RemoveRange(args.IndexOf("-an"), args.Count - args.IndexOf("-an"));
-            if (source == "dxgi:0") args[args.IndexOf("-vf") + 1] = "hwdownload,format=bgra," + ScaleFilter(options);
             args.AddRange(["-frames:v", "1", "-an", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "pipe:1"]);
             using var process = StartProcess(args);
             try

@@ -205,6 +205,8 @@ $envelope = [ordered]@{ payload = [Convert]::ToBase64String($payload); signature
 [IO.File]::WriteAllText((Join-Path $distribution $manifestName), $envelope, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath 'doc/deployment/auto-updates.md' -Destination (Join-Path $distribution 'PUBLISHING.md') -Force
 Copy-Item -LiteralPath 'doc/deployment/auto-updates.md' -Destination (Join-Path $releaseDir 'PUBLISHING.md') -Force
+Copy-Item -LiteralPath 'CHANGELOG.md' -Destination (Join-Path $distribution 'CHANGELOG.md') -Force
+Copy-Item -LiteralPath 'CHANGELOG.md' -Destination (Join-Path $releaseDir 'CHANGELOG.md') -Force
 Copy-Item -LiteralPath 'QuicNet.Geolocation/Data/NOTICE.txt' -Destination (Join-Path $releaseDir 'GEOLOCATION-NOTICE.txt') -Force
 $mediaSource = Join-Path $repo '.artifacts/native-media-source.tar.gz'
 if (!(Test-Path -LiteralPath $mediaSource)) { throw 'Falta native-media-source.tar.gz. Ejecuta scripts/package-native-media-source.sh antes de publicar las bibliotecas FFmpeg.' }

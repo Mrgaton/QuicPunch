@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "QuicPunch.NativeBuilder/**"
+      - "QuicPunch.AndroidProbe/native/**"
       - "QuicPunch/**"
       - "QuicPunch.Vpn/**"
       - "QuicNet/**"
@@ -12,10 +13,13 @@ on:
       - "QuicPunchTests/**"
       - "global.json"
       - "scripts/test.ps1"
+      - "scripts/check-development-guide.mjs"
+      - "doc/architecture/development-map.md"
       - ".github/workflows/native-msquic-pqc.yml"
   pull_request:
     paths:
       - "QuicPunch.NativeBuilder/**"
+      - "QuicPunch.AndroidProbe/native/**"
       - "QuicPunch/**"
       - "QuicPunch.Vpn/**"
       - "QuicNet/**"
@@ -23,6 +27,8 @@ on:
       - "QuicPunchTests/**"
       - "global.json"
       - "scripts/test.ps1"
+      - "scripts/check-development-guide.mjs"
+      - "doc/architecture/development-map.md"
       - ".github/workflows/native-msquic-pqc.yml"
 
 jobs:
@@ -57,17 +63,23 @@ jobs:
       - name: Build and verify native MsQuic
         run: dotnet run --project QuicPunch.NativeBuilder -c Release -- --rid ${{ matrix.rid }}
       - name: Build managed solution with native asset
-        run: dotnet build QuicPunch.slnx -c Release
+        run: dotnet build QuicPunchTests/QuicPunchTests.csproj -c Release
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Verify the documented C# suites
+        run: node scripts/check-development-guide.mjs QuicPunchTests/bin/Release/net11.0/QuicPunchTests.dll
       - name: Verify PQC handshake
         run: dotnet QuicPunchTests/bin/Release/net11.0/QuicPunchTests.dll --test-pqc-handshake
       - name: Verify managed reliability and security
         shell: pwsh
-        run: ./scripts/test.ps1 -Configuration Release -NoBuild -Web -Tests session-recovery,critical-reliability,sha3,antireplay,peer-acl,connectivity-security,webui-security,nostr-mailbox,handshake-cancellation,multiplexer,connection-recovery,automatic-transport
+        run: ./scripts/test.ps1 -Configuration Release -NoBuild -Web -Tests session-recovery,critical-reliability,sha3,antireplay,peer-acl,peer-registry,connectivity-security,webui-security,webui-status,watch-reliability,aot-json,nostr-mailbox,handshake-cancellation,multiplexer,connection-recovery,automatic-transport
       - uses: actions/upload-artifact@v5
         if: failure()
         with:
           name: test-diagnostics-${{ matrix.rid }}
           path: .artifacts/test-output/
+          include-hidden-files: true
       - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact }}

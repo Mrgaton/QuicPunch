@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>QuicNet</RootNamespace>
+    <QuicNetLinuxMediaPath Condition="'$(QuicNetLinuxMediaPath)' == ''">$(MSBuildProjectDirectory)/bin/native/linux-x64/libnettt_media.so</QuicNetLinuxMediaPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,6 +24,7 @@
     <EmbeddedResource Include="../native/media/licenses/*.txt" Link="NativeVideoLicenses/%(Filename)%(Extension)" />
     <EmbeddedResource Include="Video/Probes.json" LogicalName="QuicNet.NativeVideo.Probes.json" />
     <None Include="runtimes/win-x64/native/*.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64' or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows')))" />
+    <None Include="$(QuicNetLinuxMediaPath)" Link="libnettt_media.so" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('$(QuicNetLinuxMediaPath)') and ('$(RuntimeIdentifier)' == 'linux-x64' or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))))" />
   </ItemGroup>
 
   <ItemGroup>

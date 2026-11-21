@@ -52,7 +52,7 @@ internal sealed partial class ChatApiModule
     private void BroadcastDownloadPaused(Guid peerId, Guid fileId)
     {
         var status = GetDownloadStatuses(peerId).FirstOrDefault(r => r.fileId == fileId.ToString());
-        if (status != null) _hub.Broadcast("chat_file_paused", status);
+        if (status != null) BroadcastFileState("chat_file_paused", peerId, fileId, status);
     }
 
     private void DiscardSavedDownload(Guid peerId, Guid fileId, bool preserveCompleted = false)

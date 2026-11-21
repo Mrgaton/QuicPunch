@@ -55,7 +55,7 @@ var quicPunch = await QuicPunch.CreateBuilder()
 ## Discovery Admission & Memory Pruning
 
 To protect against memory exhaustion from untrusted network scanners, [`QuicPunch.cs`](../../QuicPunch/QuicPunch.cs) implements bounded peer pruning:
-- **`MaxDiscoveredPeerCount`**: Capped at `256` anonymous discovered peers.
+- **`MaxDiscoveredPeerCount`**: Capped at `2048` unprotected available peers. The [available peer registry](../../QuicPunch/Discovery/AvailablePeerRegistry.cs) owns admissions, indexing and expiry.
 - **`DiscoveredPeerTtl`**: Default `5 minutes`.
 - **Protected Peer Filter (`IsPeerProtectedFromDiscoveryPrune`)**:
   - Peers in [`PeerStore`](../../QuicPunch/Helpers/PeerStore.cs) (Trusted).

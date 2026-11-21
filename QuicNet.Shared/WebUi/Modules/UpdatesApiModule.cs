@@ -1,19 +1,37 @@
 using System.Net;
 using System.Text.Json;
+using QuicNet.Protocols;
 using QuicNet.Updates;
 
 namespace QuicNet.WebUi.Modules;
 
 internal static class UpdatesApiModule
 {
-    internal static async Task<object> ExecuteAsync(AutoUpdateService? updater, string command, JsonElement data)
+    internal static async Task<object> ExecuteAsync(AutoUpdateService? updater, VoiceCallHandler? voice, string command, JsonElement data)
     {
         if (updater == null) throw new InvalidOperationException("Actualizaciones no disponibles en este host.");
         switch (command)
         {
             case "updates.get": break;
             case "updates.check": _ = updater.CheckAsync(); break;
-            case "updates.install": _ = updater.InstallAsync(); break;
+            case "updates.install":
+                var calls = VoiceCallHandler.ActiveCalls.ToArray();
+                if (calls.Length == 0)
+                {
+                    _ = updater.InstallAsync();
+                    break;
+                }
+                if (voice == null || data.ValueKind != JsonValueKind.Object ||
+                    !data.TryGetProperty("endCalls", out var endCalls) || endCalls.ValueKind != JsonValueKind.True)
+                    return updater.Status with { ConfirmEndCalls = true };
+
+                _ = updater.InstallManualAsync(() =>
+                {
+                    foreach (var (id, call) in calls)
+                        if (VoiceCallHandler.ActiveCalls.TryGetValue(id, out var current) && ReferenceEquals(call, current))
+                            voice.Hangup(id);
+                });
+                break;
             case "updates.automatic":
                 if (data.ValueKind != JsonValueKind.Object || !data.TryGetProperty("enabled", out var enabled) ||
                     enabled.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw new ArgumentException("Falta la preferencia automática.");

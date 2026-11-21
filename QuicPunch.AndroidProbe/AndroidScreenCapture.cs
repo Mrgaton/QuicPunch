@@ -7,6 +7,7 @@ using Android.Hardware.Camera2.Params;
 using Android.Media;
 using Android.Media.Projection;
 using Android.OS;
+using Android.Runtime;
 using QuicNet.Protocols;
 using QuicNet.Video;
 using Environment = System.Environment;
@@ -14,7 +15,7 @@ using OperationCanceledException = System.OperationCanceledException;
 
 namespace QuicPunch.AndroidProbe;
 
-internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCapture
+internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCapture, IPlatformRemoteInput
 {
     internal static AndroidScreenCapture? Pending;
     internal ScreenEncoderOptions Options = new();
@@ -24,7 +25,19 @@ internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCap
     internal TaskCompletionSource ResumeSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal TaskCompletionSource Released = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal CancellationTokenSource Lifetime = new();
+    internal ScreenCaptureMetrics? EncodingMetrics;
     private readonly SemaphoreSlim _start = new(1);
+    public ScreenCaptureStatistics? Statistics => AndroidScreenCaptureService.IsCapturing ? EncodingMetrics?.Snapshot() : null;
+    public bool RemoteInputEnabled => AndroidRemoteInputService.Connected != null;
+    public RemoteInputArea? RemoteInputArea => AndroidRemoteInputService.Connected != null ? AndroidScreenCaptureService.RemoteArea : null;
+    public IRemoteInputDevice? CreateRemoteInputDevice() => AndroidRemoteInputService.Connected is { } service
+        ? new AndroidRemoteInputService.Device(service) : null;
+    public bool OpenRemoteInputSettings()
+    {
+        if (MainActivity.Foreground is not { } activity) return false;
+        activity.RunOnUiThread(() => activity.StartActivity(new Intent(Android.Provider.Settings.ActionAccessibilitySettings)));
+        return true;
+    }
 
     public NativeCamera[] Cameras()
     {
@@ -36,12 +49,13 @@ internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCap
         }).ToArray();
     }
     public ScreenEncoderCapability[] Encoders() => new[] { (1, "h264"), (5, "hevc"), (4, "av1") }.Select(c => {
-        string? component = AndroidVideoHost.FindComponent(c.Item1, 640, 360, true);
+        string? component = AndroidVideoHost.FindScreenEncoder(c.Item1, 640, 360, 30, 2_000_000)?.Component;
         return new ScreenEncoderCapability(c.Item2 + "_mediacodec", c.Item2, component != null,
             component == null ? "No hay codificador de hardware anunciado para 640×360." : "FFmpeg · " + component + ". El perfil final se valida al iniciar.");
     }).ToArray();
 
-    public async Task<NativeScreenProfile> StartAsync(ScreenEncoderOptions options, Func<byte[], Task> output, Action<string?> stopped)
+    public async Task<NativeScreenProfile> StartAsync(ScreenEncoderOptions options, Func<byte[], Task> output, Action<string?> stopped,
+        CancellationToken ct = default)
     {
         if (!await _start.WaitAsync(0)) throw new InvalidOperationException("Ya se está solicitando la pantalla.");
         try
@@ -52,17 +66,29 @@ internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCap
             Ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
             ResumeSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Released = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            var activity = MainActivity.Foreground ?? throw new InvalidOperationException("Abre QuicNet para compartir la pantalla.");
+            using var startup = CancellationTokenSource.CreateLinkedTokenSource(ct, Lifetime.Token);
             bool camera = options.Source.StartsWith("camera:", StringComparison.Ordinal);
+            EncodingMetrics = new(camera ? "Camera2 + MediaCodec" : "MediaProjection + MediaCodec");
+            // A remote request may reach the service while the app is in the background.
+            // Android lets the notification bring the user to the app to approve capture.
+            if (!camera && ct.CanBeCanceled)
+                while (MainActivity.Foreground == null)
+                    await Task.Delay(250, startup.Token).ConfigureAwait(false);
+            var activity = MainActivity.Foreground ?? throw new InvalidOperationException("Abre QuicNet para compartir la pantalla.");
             Intent? permission = null;
-            if (camera) await activity.RequestNativeCameraAsync().WaitAsync(Lifetime.Token);
-            else permission = await activity.RequestProjectionAsync().WaitAsync(Lifetime.Token);
-            Lifetime.Token.ThrowIfCancellationRequested();
+            if (camera) await activity.RequestNativeCameraAsync().WaitAsync(startup.Token);
+            else permission = await activity.RequestProjectionAsync(options.Source == "remote-desktop", startup.Token);
+            startup.Token.ThrowIfCancellationRequested();
             Pending = this;
             context.StartForegroundService(new Intent(context, typeof(AndroidScreenCaptureService)).PutExtra("permission", permission));
-            var profile = await Ready.Task.WaitAsync(TimeSpan.FromSeconds(15), Lifetime.Token);
+            var profile = await Ready.Task.WaitAsync(TimeSpan.FromSeconds(15), startup.Token);
             Lifetime.CancelAfter(Timeout.InfiniteTimeSpan);
             return profile;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && Lifetime.IsCancellationRequested)
+        {
+            await StopAsync();
+            throw new InvalidOperationException("La solicitud de captura ha caducado o se ha cancelado en Android.");
         }
         catch { await StopAsync(); throw; }
         finally { _start.Release(); }
@@ -82,6 +108,10 @@ internal sealed class AndroidScreenCapture(Context context) : IPlatformScreenCap
 public sealed class AndroidScreenCaptureService : Service
 {
     internal static bool IsCapturing { get; private set; }
+    private sealed record AreaSnapshot(RemoteInputArea Area);
+    private static AreaSnapshot? _remoteArea;
+    internal static RemoteInputArea? RemoteArea => Volatile.Read(ref _remoteArea)?.Area;
+    private RemoteInputArea? _expectedRemoteArea;
     private CancellationTokenSource? _lifetime;
     private AndroidScreenCapture? _capture;
     private MediaProjection? _projection;
@@ -101,7 +131,11 @@ public sealed class AndroidScreenCaptureService : Service
     private sealed class ProjectionCallback(AndroidScreenCaptureService owner) : MediaProjection.Callback
     {
         public override void OnStop() => owner.StopSelf();
-        // Android scales changed capture bounds into the fixed encoder surface while keeping aspect ratio.
+        public override void OnCapturedContentResize(int width, int height)
+        {
+            if (owner._expectedRemoteArea is { } area)
+                Volatile.Write(ref _remoteArea, area.Width == width && area.Height == height ? new AreaSnapshot(area) : null);
+        }
     }
 
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
@@ -145,14 +179,45 @@ public sealed class AndroidScreenCaptureService : Service
                 _projection = projectionManager.GetMediaProjection((int)Result.Ok, permission) ?? throw new InvalidOperationException("Android ha denegado la pantalla.");
                 _callback = new ProjectionCallback(this);
                 _projection.RegisterCallback(_callback, new Handler(Looper.MainLooper!));
-                double scale = Math.Min(1, Math.Min((double)options.Width / metrics.WidthPixels, (double)options.Height / metrics.HeightPixels));
-                width = Math.Max(128, (int)(metrics.WidthPixels * scale) / 2 * 2); height = Math.Max(128, (int)(metrics.HeightPixels * scale) / 2 * 2);
+                int sourceWidth = metrics.WidthPixels, sourceHeight = metrics.HeightPixels;
+                if (options.Source == "remote-desktop" && GetSystemService(WindowService)?.JavaCast<Android.Views.IWindowManager>() is { } windows)
+                {
+                    if (OperatingSystem.IsAndroidVersionAtLeast(30))
+                    {
+                        using var bounds = windows.MaximumWindowMetrics.Bounds;
+                        sourceWidth = bounds.Width(); sourceHeight = bounds.Height();
+                    }
+                    else
+                    {
+#pragma warning disable CA1422, CS0618
+                        using var real = new Android.Util.DisplayMetrics();
+                        windows.DefaultDisplay?.GetRealMetrics(real);
+#pragma warning restore CA1422, CS0618
+                        if (real.WidthPixels > 0 && real.HeightPixels > 0) { sourceWidth = real.WidthPixels; sourceHeight = real.HeightPixels; }
+                    }
+                    var area = new RemoteInputArea(0, 0, sourceWidth, sourceHeight);
+                    _expectedRemoteArea = area;
+                    if (!OperatingSystem.IsAndroidVersionAtLeast(34)) Volatile.Write(ref _remoteArea, new AreaSnapshot(area));
+                }
+                int maxWidth = options.Width, maxHeight = options.Height;
+                if (sourceHeight > sourceWidth && maxWidth > maxHeight) (maxWidth, maxHeight) = (maxHeight, maxWidth);
+                double scale = Math.Min(1, Math.Min((double)maxWidth / sourceWidth, (double)maxHeight / sourceHeight));
+                width = Math.Max(128, (int)(sourceWidth * scale) / 2 * 2); height = Math.Max(128, (int)(sourceHeight * scale) / 2 * 2);
             }
             int fps = options.Fps;
-            string component = AndroidVideoHost.FindComponent(options.CodecId, width, height, true)
-                ?? throw new InvalidOperationException("No hay codificador FFmpeg/MediaCodec para este códec y resolución.");
+            int bitrate = options.Bitrate;
+            string? component;
+            if (camera) component = AndroidVideoHost.FindComponent(options.CodecId, width, height, true);
+            else
+            {
+                var supported = AndroidVideoHost.FindScreenEncoder(options.CodecId, width, height, fps, bitrate);
+                component = supported?.Component;
+                if (supported != null) (width, height, fps, bitrate) = (supported.Width, supported.Height, supported.Fps, supported.Bitrate);
+            }
+            if (component == null)
+                throw new InvalidOperationException("No hay codificador FFmpeg/MediaCodec para este códec y resolución.");
             _surface = MediaCodec.CreatePersistentInputSurface();
-            _encoder = NativeMedia.qpv_encoder_open(options.CodecId, width, height, fps, options.Bitrate,
+            _encoder = NativeMedia.qpv_encoder_open(options.CodecId, width, height, fps, bitrate,
                 options.KeyFrameIntervalMs, _surface!.Handle, component, options.RateControl == "vbr" ? 1 : 0, options.BufferMs);
             if (_encoder == 0) throw new InvalidOperationException(NativeMedia.Error);
             _lifetime = CancellationTokenSource.CreateLinkedTokenSource(_capture.Lifetime.Token);
@@ -180,7 +245,8 @@ public sealed class AndroidScreenCaptureService : Service
 
     private async Task PumpAsync(NativeCapturePacketizer packetizer, CancellationToken ct)
     {
-        var queue = new RealtimeScreenFrameQueue();
+        var metrics = _capture!.EncodingMetrics;
+        var queue = new RealtimeScreenFrameQueue(Math.Max(2, ((_profile?.Fps ?? 30) + 19) / 20), metrics);
         var sender = Task.Run(async () =>
         {
             await _capture!.ResumeSignal.Task.WaitAsync(ct);
@@ -200,9 +266,17 @@ public sealed class AndroidScreenCaptureService : Service
                 if (length < 0) throw new InvalidOperationException(NativeMedia.Error);
                 if (length == 0) { await Task.Delay(3, ct); continue; }
                 byte[]? packet = packetizer.Packet(output.AsSpan(0, length).ToArray(), timestamp, key != 0);
-                if (packetizer.Description != null) _capture.Ready.TrySetResult(_profile! with { Codec = packetizer.Codec, Description = packetizer.Description });
-                if (packet != null && _capture.ResumeSignal.Task.IsCompleted)
-                    queue.Enqueue(new EncodedScreenFrame(packet, (packet[0] & 1) != 0, timestamp));
+                if (packet == null) continue;
+                bool keyFrame = (packet[0] & 1) != 0;
+                if (!_capture.ResumeSignal.Task.IsCompleted)
+                {
+                    if (!keyFrame) continue;
+                    _capture.Ready.TrySetResult(_profile! with { Codec = packetizer.Codec, Description = packetizer.Description });
+                    await _capture.ResumeSignal.Task.WaitAsync(ct);
+                }
+                var frame = new EncodedScreenFrame(packet, keyFrame, timestamp);
+                metrics?.Encode(frame, length);
+                queue.Enqueue(frame);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -250,6 +324,7 @@ public sealed class AndroidScreenCaptureService : Service
 
     public override void OnDestroy()
     {
+        Volatile.Write(ref _remoteArea, null);
         IsCapturing = false; _lifetime?.Cancel();
         var pump = _pump;
         // Release only once dequeue has stopped; never race codec teardown with its worker.

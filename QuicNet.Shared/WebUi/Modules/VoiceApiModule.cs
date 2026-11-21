@@ -5,16 +5,19 @@ using System.Text.Json;
 using QuicNet.Protocols;
 using QuicNet.Video;
 using QuicPunch.Helpers;
+using PeerInfo = QuicPunch.PeerInfo;
 
 namespace QuicNet.WebUi.Modules;
 
-internal sealed class VoiceApiModule
+internal sealed class VoiceApiModule : IDisposable
 {
     private readonly VoiceCallHandler _voiceHandler;
     private readonly WebUiWebSocketHub _hub;
 
     private long _lastLocalMeterTick;
     private long _platformGeneration;
+    private readonly SemaphoreSlim _platformStartGate = new(1, 1);
+    private Guid? _platformTarget;
     private readonly ConcurrentDictionary<Guid, long> _lastPeerMeterTicks = new();
 
     public ConcurrentQueue<(string PeerId, string SignalType)> CallSignals { get; } = new();
@@ -23,13 +26,18 @@ internal sealed class VoiceApiModule
     {
         _voiceHandler = voiceHandler;
         _hub = hub;
+        _voiceHandler.RemoteInputChanged += status => _hub.Broadcast("remote_input_state", status);
+        _voiceHandler.RemoteClipboardReceived += item => _hub.Broadcast("remote_input_clipboard", item);
         _voiceHandler.AudioService.OnDeviceStateChanged += BroadcastVoiceState;
         _voiceHandler.SystemAudioCaptureFailed += (shareId, message) => _hub.Broadcast("screen_audio_error", new global::QuicNet.Serialization.VoiceApiModuleMessage21(message) { audioSessionId = shareId });
         _voiceHandler.OnBrowserScreenSettingsRequested += (peerId, requestId, settings) =>
             _hub.Broadcast("screen_settings_request", new global::QuicNet.Serialization.VoiceApiModuleMessage1(peerId, requestId, settings));
         _voiceHandler.OnLocalNativeScreenFrame += (codec, packet) => { NativeVideoRuntime.Instance.Enqueue(Guid.Empty, codec, packet); return Task.CompletedTask; };
-        NativeVideoRuntime.Instance.CapabilitiesChanged += capabilities => { _ = _voiceHandler.PublishNativeVideoCapabilitiesAsync(); _hub.Broadcast("native_video_capabilities", capabilities); };
-        NativeVideoRuntime.Instance.StateChanged += state => _hub.Broadcast("native_video_state", state);
+        _voiceHandler.GetPlatformScreenCapture = () => WebUiServer.Instance?.PlatformScreenCapture;
+        _voiceHandler.StartRemotePlatformScreen = StartRemotePlatformScreenAsync;
+        NativeVideoRuntime.Instance.CapabilitiesChanged += BroadcastNativeCapabilities;
+        NativeVideoRuntime.Instance.StateChanged += BroadcastNativeVideoState;
+        NativeVideoRuntime.Instance.KeyFrameNeeded += RequestNativeVideoKeyFrame;
         _voiceHandler.OnLocalScreenControlChanged += () =>
         {
             if (_voiceHandler.ScreenEncoder.Profile is { } profile)
@@ -58,6 +66,8 @@ internal sealed class VoiceApiModule
         _voiceHandler.OnCallEnded += peer =>
         {
             _ = NativeVideoRuntime.Instance.StopAsync(peer.Id.ToString());
+            if (_voiceHandler.PlatformScreenProfile != null && (VoiceCallHandler.ActiveCalls.IsEmpty || _platformTarget == peer.Id))
+                _ = StopPlatformCaptureAsync(Interlocked.Read(ref _platformGeneration));
             if (!VoiceCallHandler.IsLocalScreenSharing)
                 _hub.Broadcast("screen_share_stopped", new global::QuicNet.Serialization.VoiceApiModuleMessage3("local", "You"));
             string peerId = peer.Id.ToString();
@@ -74,7 +84,7 @@ internal sealed class VoiceApiModule
             if (Stopwatch.GetElapsedTime(_lastLocalMeterTick, now).TotalMilliseconds >= 75)
             {
                 _lastLocalMeterTick = now;
-                _hub.Broadcast("voice_vad", new global::QuicNet.Serialization.VoiceApiModuleMessage6(true, level, level > 0.08f));
+                _hub.BroadcastMetric("voice_vad", "local", new global::QuicNet.Serialization.VoiceApiModuleMessage6(true, level, level > 0.08f));
             }
         };
 
@@ -85,7 +95,8 @@ internal sealed class VoiceApiModule
             if (last == 0 || Stopwatch.GetElapsedTime(last, now).TotalMilliseconds >= 75)
             {
                 _lastPeerMeterTicks[peerId] = now;
-                _hub.Broadcast("voice_vad", new global::QuicNet.Serialization.VoiceApiModuleMessage7(false, peerId.ToString(), level, level > 0.08f));
+                _hub.BroadcastMetric("voice_vad", peerId.ToString(),
+                    new global::QuicNet.Serialization.VoiceApiModuleMessage7(false, peerId.ToString(), level, level > 0.08f));
             }
         };
 
@@ -103,10 +114,10 @@ internal sealed class VoiceApiModule
             WebUiServer.LogEvent($"[VOICE] {peer.Name} stopped screen sharing");
             _hub.Broadcast("screen_share_stopped", new global::QuicNet.Serialization.VoiceApiModuleMessage3(peer.Id.ToString(), peer.Name));
         };
-        _voiceHandler.OnScreenShareRequested += peer =>
+        _voiceHandler.OnScreenShareRequested += (peer, forControl) =>
         {
-            WebUiServer.LogEvent($"[VOICE] {peer.Name} requested local screen sharing with prior permission.");
-            _hub.Broadcast("screen_share_request", new global::QuicNet.Serialization.VoiceApiModuleMessage3(peer.Id.ToString(), peer.Name));
+            WebUiServer.LogEvent($"[VOICE] {peer.Name} requested local screen sharing.");
+            _hub.Broadcast("screen_share_request", new global::QuicNet.Serialization.VoiceApiModuleMessage3(peer.Id.ToString(), peer.Name) { forControl = forControl });
         };
         _voiceHandler.OnScreenShareRequestDenied += peer =>
             _hub.Broadcast("screen_share_request_denied", new global::QuicNet.Serialization.VoiceApiModuleMessage3(peer.Id.ToString(), peer.Name));
@@ -130,12 +141,35 @@ internal sealed class VoiceApiModule
         };
     }
 
+    public void Dispose()
+    {
+        NativeVideoRuntime.Instance.CapabilitiesChanged -= BroadcastNativeCapabilities;
+        NativeVideoRuntime.Instance.StateChanged -= BroadcastNativeVideoState;
+        NativeVideoRuntime.Instance.KeyFrameNeeded -= RequestNativeVideoKeyFrame;
+    }
+
+    private void BroadcastNativeCapabilities(NativeVideoCapabilities capabilities)
+    {
+        _ = _voiceHandler.PublishNativeVideoCapabilitiesAsync();
+        _hub.Broadcast("native_video_capabilities", capabilities);
+    }
+
+    private void BroadcastNativeVideoState(NativeVideoState state) =>
+        _hub.BroadcastMetric("native_video_state", state.peerId, state);
+
+    private void RequestNativeVideoKeyFrame(Guid peer)
+    {
+        if (peer == Guid.Empty) _voiceHandler.ScreenEncoder.RequestKeyFrame();
+        else _ = _voiceHandler.RequestRemoteVideoKeyFrameAsync(peer);
+    }
+
     private void BroadcastVoiceState()
     {
         var audio = _voiceHandler.AudioService;
         var activeCalls = VoiceCallHandler.ActiveCalls.Values.Select(c => new global::QuicNet.Serialization.VoiceApiModuleMessage10(c.Peer.Id.ToString(), c.Peer.Name ?? "Peer", audio.GetPeerVolume(c.Peer.Id), audio.GetPeerMuted(c.Peer.Id), c.IsOutboundMuted, c.IsScreenShareAllowed, c.RemoteScreenEncoderCodecMask, c.RemoteScreenDecoderCodecMask) { startedAtUnixMs = new DateTimeOffset(c.StartedAtUtc).ToUnixTimeMilliseconds(), screenDecoderHardwarePreferenceMask = c.RemoteScreenDecoderHardwarePreferenceMask, screenCapabilitiesReceived = c.RemoteScreenCapabilitiesReceived }).ToList();
 
-        _hub.Broadcast("voice_state", new global::QuicNet.Serialization.VoiceApiModuleMessage11(audio.IsMuted, audio.IsDeafened, audio.MasterVolume, audio.IsTestLoopback, audio.CurrentInputDeviceId ?? "default", audio.CurrentOutputDeviceId ?? "default", audio.BackendName, audio.IsCaptureRunning && audio.CaptureError == null, audio.IsPlaybackRunning && audio.PlaybackError == null, audio.CaptureError, audio.PlaybackError, _voiceHandler.AudioService.Bitrate, _voiceHandler.RequestedBitrate, VoiceCallHandler.IsLocalScreenSharing, _voiceHandler.ScreenEncoder.Profile != null, VoiceCallHandler.LocalScreenTargetPeerId, _voiceHandler.ScreenEncoder.Profile, _voiceHandler.NativeScreenSettings, activeCalls));
+        var profile = _voiceHandler.ScreenEncoder.Profile ?? _voiceHandler.PlatformScreenProfile;
+        _hub.Broadcast("voice_state", new global::QuicNet.Serialization.VoiceApiModuleMessage11(audio.IsMuted, audio.IsDeafened, audio.MasterVolume, audio.IsTestLoopback, audio.CurrentInputDeviceId ?? "default", audio.CurrentOutputDeviceId ?? "default", audio.BackendName, audio.IsCaptureRunning && audio.CaptureError == null, audio.IsPlaybackRunning && audio.PlaybackError == null, audio.CaptureError, audio.PlaybackError, _voiceHandler.AudioService.Bitrate, _voiceHandler.RequestedBitrate, VoiceCallHandler.IsLocalScreenSharing, profile != null, VoiceCallHandler.LocalScreenTargetPeerId, profile, _voiceHandler.NativeScreenSettings, activeCalls));
     }
 
     private async Task HandleEncoderFailureAsync(string reason)
@@ -151,7 +185,10 @@ internal sealed class VoiceApiModule
         try
         {
             if (generation != Interlocked.Read(ref _platformGeneration)) return;
+            _voiceHandler.PlatformScreenProfile = null;
+            _platformTarget = null;
             await NativeVideoRuntime.Instance.StopAsync("local").ConfigureAwait(false);
+            if (generation != Interlocked.Read(ref _platformGeneration)) return;
             await VoiceCallHandler.StopScreenShareAsync().ConfigureAwait(false);
             if (generation != Interlocked.Read(ref _platformGeneration)) return;
             _hub.Broadcast("screen_share_stopped", new global::QuicNet.Serialization.VoiceApiModuleMessage3("local", "Tú"));
@@ -161,9 +198,154 @@ internal sealed class VoiceApiModule
         catch (Exception ex) { WebUiServer.LogEvent($"[SCREEN] {ex}"); }
     }
 
+    private async Task StopPlatformCaptureAsync(long generation)
+    {
+        try
+        {
+            if (generation != Interlocked.Read(ref _platformGeneration)) return;
+            if (WebUiServer.Instance?.PlatformScreenCapture is { } capture)
+                await capture.StopAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex) { WebUiServer.LogEvent($"[SCREEN] {ex}"); }
+        finally { await PlatformStoppedAsync(null, generation).ConfigureAwait(false); }
+    }
+
+    private async Task StartRemotePlatformScreenAsync(PeerInfo peer, bool forControl, CancellationToken ct)
+    {
+        var capture = WebUiServer.Instance?.PlatformScreenCapture ?? throw new NotSupportedException("La captura del dispositivo no está disponible.");
+        if (forControl && capture is not IPlatformRemoteInput { RemoteInputEnabled: true })
+            throw new NotSupportedException("El contacto debe activar el servicio de accesibilidad de QuicNet para permitir el control remoto.");
+        var session = VoiceCallHandler.ActiveCalls[peer.Id];
+        uint receiverMask = session.RemoteScreenDecoderCodecMask;
+        var codec = capture.Encoders().FirstOrDefault(e => e.Available &&
+            (receiverMask == 0 || (receiverMask & (1u << ScreenEncoderOptions.CodecIdFor(e.Codec))) != 0))?.Codec;
+        if (codec == null) throw new NotSupportedException("No hay un códec de pantalla compatible entre ambos dispositivos.");
+        WebUiServer.Instance?.Notifications?.Publish("screen", "Solicitud de pantalla",
+            $"Abre QuicNet y autoriza la captura de pantalla solicitada por {peer.Name ?? "el otro dispositivo"}.",
+            "/call.html", Convert.ToHexString(peer.CertHash));
+        _hub.Broadcast("screen_platform_consent", new global::QuicNet.Serialization.VoiceApiModuleMessage3(peer.Id.ToString(), peer.Name));
+        await StartPlatformCaptureAsync(capture, new()
+        {
+            Codec = codec, Fps = 30, TargetPeerId = peer.Id, Source = forControl ? "remote-desktop" : "desktop"
+        }, peer, ct).ConfigureAwait(false);
+    }
+
+    private async Task<NativeScreenProfile> StartPlatformCaptureAsync(IPlatformScreenCapture capture, ScreenEncoderOptions options,
+        PeerInfo? owner = null, CancellationToken ct = default)
+    {
+        options.Validate();
+        if (!await _platformStartGate.WaitAsync(0, ct).ConfigureAwait(false))
+            throw new InvalidOperationException("Hay otra solicitud de captura en curso.");
+        long generation = Interlocked.Increment(ref _platformGeneration);
+        try
+        {
+            bool Allowed() => !VoiceCallHandler.ActiveCalls.IsEmpty &&
+                (!options.TargetPeerId.HasValue || VoiceCallHandler.ActiveCalls.ContainsKey(options.TargetPeerId.Value)) &&
+                (owner == null || VoiceCallHandler.ActiveCalls.TryGetValue(owner.Id, out var call) && call.IsScreenShareAllowed &&
+                    _voiceHandler.HasScreenPermission(owner, "screen-share-request"));
+
+            if (!Allowed()) throw new UnauthorizedAccessException("La llamada ha terminado o la solicitud ya no tiene permiso.");
+            await _voiceHandler.StopSystemAudioAsync().ConfigureAwait(false);
+            await _voiceHandler.ScreenEncoder.StopAsync().ConfigureAwait(false);
+            int stopQueued = 0;
+            var profile = await capture.StartAsync(options, async packet =>
+            {
+                if (generation != Interlocked.Read(ref _platformGeneration)) return;
+                if (!Allowed())
+                {
+                    // Stop outside the encoder pump, which the capture service joins during teardown.
+                    if (Interlocked.Exchange(ref stopQueued, 1) == 0)
+                        _ = Task.Run(() => StopPlatformCaptureAsync(generation));
+                    return;
+                }
+                await VoiceCallHandler.SendScreenFrameAsync(packet).ConfigureAwait(false);
+                NativeVideoRuntime.Instance.Enqueue(Guid.Empty, options.CodecId, packet);
+            }, reason => { _ = PlatformStoppedAsync(reason, generation); }, ct).ConfigureAwait(false);
+            await _voiceHandler.ProbeScreenDecodersAsync(profile, options.TargetPeerId, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (generation != Interlocked.Read(ref _platformGeneration)) throw new OperationCanceledException("Captura cancelada.");
+            if (!Allowed()) throw new UnauthorizedAccessException("La llamada ha terminado o la solicitud ya no tiene permiso.");
+            string kind = options.Source.StartsWith("camera:", StringComparison.Ordinal) ? "camera" : "screen";
+            await VoiceCallHandler.StartScreenShareAsync(profile.Width, profile.Height, profile.CodecId, (byte)profile.Fps, options.TargetPeerId, kind).ConfigureAwait(false);
+            _platformTarget = options.TargetPeerId;
+            _voiceHandler.PlatformScreenProfile = profile;
+            _voiceHandler.SetPlatformRemoteInput(capture as IPlatformRemoteInput, profile.Generation);
+            _hub.Broadcast("screen_share_started", new global::QuicNet.Serialization.VoiceApiModuleMessage2("local",
+                kind == "camera" ? "Tú · Cámara" : "Tú · Pantalla", profile.Width, profile.Height, profile.CodecId, profile.Fps) { kind = kind });
+            BroadcastVoiceState();
+            capture.Resume();
+            return profile;
+        }
+        catch
+        {
+            await StopPlatformCaptureAsync(generation).ConfigureAwait(false);
+            throw;
+        }
+        finally { _platformStartGate.Release(); }
+    }
+
     public async Task<bool> HandleRequestAsync(string path, HttpListenerRequest req, HttpListenerResponse resp)
     {
         var audio = _voiceHandler.AudioService;
+
+        if (path == "/api/voice/remote-input/accessibility" && req.HttpMethod == "POST")
+        {
+            if (WebUiServer.Instance?.PlatformScreenCapture is not IPlatformRemoteInput platform || !platform.OpenRemoteInputSettings())
+                throw new ArgumentException("Abre QuicNet en Android para configurar la accesibilidad.");
+            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage20(true)).ConfigureAwait(false);
+            return true;
+        }
+
+        if (path == "/api/voice/remote-input")
+        {
+            if (req.HttpMethod == "POST")
+            {
+                using var doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
+                var json = doc.RootElement;
+                switch (json.GetProperty("action").GetString())
+                {
+                    case "request":
+                        await _voiceHandler.RequestRemoteInputAsync(WebUiContext.ParseGuid(json, "peerId")).ConfigureAwait(false);
+                        break;
+                    case "request-with-capture":
+                        await _voiceHandler.RequestRemoteInputWithCaptureAsync(WebUiContext.ParseGuid(json, "peerId")).ConfigureAwait(false);
+                        break;
+                    case "accept":
+                    case "decline":
+                        await _voiceHandler.RespondRemoteInputAsync(WebUiContext.ParseGuid(json, "id"),
+                            json.GetProperty("action").GetString() == "accept",
+                            json.TryGetProperty("confirmed", out var confirmed) && confirmed.ValueKind == JsonValueKind.True,
+                            json.TryGetProperty("clipboard", out var clipboard) && clipboard.ValueKind == JsonValueKind.True).ConfigureAwait(false);
+                        break;
+                    case "stop":
+                        _voiceHandler.StopRemoteInput(WebUiContext.ParseGuid(json, "id"));
+                        break;
+                    case "renew":
+                        await _voiceHandler.ForwardRemoteInputAsync(WebUiContext.ParseGuid(json, "id"), null).ConfigureAwait(false);
+                        break;
+                    case "input":
+                        var inputs = WebUiContext.ReadJsonValue<RemoteDesktopInput[]>(json.GetProperty("inputs"))
+                            ?? throw new ArgumentException("Faltan las entradas remotas.");
+                        await _voiceHandler.ForwardRemoteInputAsync(WebUiContext.ParseGuid(json, "id"), inputs).ConfigureAwait(false);
+                        break;
+                    case "clipboard-toggle":
+                        await _voiceHandler.SetRemoteClipboardAsync(WebUiContext.ParseGuid(json, "id"),
+                            json.GetProperty("enabled").GetBoolean()).ConfigureAwait(false);
+                        break;
+                    case "clipboard":
+                        await _voiceHandler.SendRemoteClipboardAsync(WebUiContext.ParseGuid(json, "id"),
+                            json.GetProperty("text").GetString() ?? "").ConfigureAwait(false);
+                        break;
+                    case "clipboard-send-local":
+                        await _voiceHandler.SendLocalClipboardAsync(WebUiContext.ParseGuid(json, "id")).ConfigureAwait(false);
+                        break;
+                    default: throw new ArgumentException("Acción de control remoto desconocida.");
+                }
+            }
+            else if (req.HttpMethod != "GET") return false;
+            await WebUiContext.WriteJsonAsync(resp, _voiceHandler.GetRemoteInputStatus()).ConfigureAwait(false);
+            return true;
+        }
 
         if (path == "/api/voice/cameras" && req.HttpMethod == "GET")
         {
@@ -175,7 +357,9 @@ internal sealed class VoiceApiModule
             if (req.QueryString["refresh"] == "1") await NativeVideoRuntime.Instance.DetectAsync().ConfigureAwait(false);
             else await NativeVideoRuntime.Instance.EnsureCapabilitiesAsync().ConfigureAwait(false);
             await WebUiContext.WriteJsonAsync(resp, new QuicNet.Serialization.NativeVideoSnapshot(NativeVideoRuntime.Instance.Capabilities,
-                VoiceCallHandler.ActiveCalls.Values.Select(s => new QuicNet.Serialization.NativeVideoPeerCapabilities(s.Peer.Id.ToString(), s.Peer.Name, s.NativeVideoCapabilities)).ToArray(), NativeVideoRuntime.Instance.States)).ConfigureAwait(false);
+                VoiceCallHandler.ActiveCalls.Values.Select(s => new QuicNet.Serialization.NativeVideoPeerCapabilities(s.Peer.Id.ToString(), s.Peer.Name, s.NativeVideoCapabilities)).ToArray(),
+                NativeVideoRuntime.Instance.States, _voiceHandler.ScreenEncoder.Statistics ?? WebUiServer.Instance?.PlatformScreenCapture?.Statistics,
+                VoiceCallHandler.ActiveCalls.Values.Select(s => s.ScreenTransport).ToArray())).ConfigureAwait(false);
             return true;
         }
         if (path == "/api/voice/native-video/playback" && req.HttpMethod == "POST")
@@ -198,7 +382,8 @@ internal sealed class VoiceApiModule
         {
             var activeCalls = VoiceCallHandler.ActiveCalls.Values.Select(c => new global::QuicNet.Serialization.VoiceApiModuleMessage13(c.Peer.Id.ToString(), c.Peer.Name ?? "Peer", _voiceHandler.AudioService.GetPeerBufferedAudioMs(c.Peer.Id), audio.GetPeerVolume(c.Peer.Id), audio.GetPeerMuted(c.Peer.Id), c.IsOutboundMuted, c.IsRemoteScreenSharing, c.IsScreenShareAllowed, c.RemoteScreenEncoderCodecMask, c.RemoteScreenDecoderCodecMask) { startedAtUnixMs = new DateTimeOffset(c.StartedAtUtc).ToUnixTimeMilliseconds(), screenDecoderHardwarePreferenceMask = c.RemoteScreenDecoderHardwarePreferenceMask, screenCapabilitiesReceived = c.RemoteScreenCapabilitiesReceived }).ToList();
 
-            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage14(audio.IsMuted, audio.IsDeafened, audio.MasterVolume, audio.IsTestLoopback, audio.CurrentInputDeviceId ?? "default", audio.CurrentOutputDeviceId ?? "default", audio.BackendName, audio.IsCaptureRunning && audio.CaptureError == null, audio.IsPlaybackRunning && audio.PlaybackError == null, audio.CaptureError, audio.PlaybackError, _voiceHandler.AudioService.Bitrate, _voiceHandler.RequestedBitrate, VoiceCallHandler.IsLocalScreenSharing, _voiceHandler.ScreenEncoder.Profile != null, VoiceCallHandler.LocalScreenTargetPeerId, _voiceHandler.ScreenEncoder.Profile, _voiceHandler.NativeScreenSettings, activeCalls)).ConfigureAwait(false);
+            var profile = _voiceHandler.ScreenEncoder.Profile ?? _voiceHandler.PlatformScreenProfile;
+            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage14(audio.IsMuted, audio.IsDeafened, audio.MasterVolume, audio.IsTestLoopback, audio.CurrentInputDeviceId ?? "default", audio.CurrentOutputDeviceId ?? "default", audio.BackendName, audio.IsCaptureRunning && audio.CaptureError == null, audio.IsPlaybackRunning && audio.PlaybackError == null, audio.CaptureError, audio.PlaybackError, _voiceHandler.AudioService.Bitrate, _voiceHandler.RequestedBitrate, VoiceCallHandler.IsLocalScreenSharing, profile != null, VoiceCallHandler.LocalScreenTargetPeerId, profile, _voiceHandler.NativeScreenSettings, activeCalls)).ConfigureAwait(false);
             return true;
         }
 
@@ -297,39 +482,11 @@ internal sealed class VoiceApiModule
 
         if (path == "/api/voice/screen-share/platform-start" && req.HttpMethod == "POST")
         {
-            await _voiceHandler.StopSystemAudioAsync().ConfigureAwait(false);
             var capture = WebUiServer.Instance?.PlatformScreenCapture ?? throw new NotSupportedException("No hay captura de pantalla del sistema.");
             using var doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
             var options = WebUiContext.ReadJsonValue<ScreenEncoderOptions>(doc.RootElement, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
-            options.Validate();
-            if (VoiceCallHandler.ActiveCalls.IsEmpty) throw new InvalidOperationException("Inicia una llamada antes de compartir.");
-            if (options.TargetPeerId.HasValue && !VoiceCallHandler.ActiveCalls.ContainsKey(options.TargetPeerId.Value)) throw new InvalidOperationException("El contacto ha salido de la llamada.");
-            long generation = Interlocked.Increment(ref _platformGeneration);
-            await _voiceHandler.ScreenEncoder.StopAsync().ConfigureAwait(false);
-            try
-            {
-                var profile = await capture.StartAsync(options, async packet =>
-                {
-                    await VoiceCallHandler.SendScreenFrameAsync(packet).ConfigureAwait(false);
-                    NativeVideoRuntime.Instance.Enqueue(Guid.Empty, options.CodecId, packet);
-                }, reason => { _ = PlatformStoppedAsync(reason, generation); }).ConfigureAwait(false);
-                await _voiceHandler.ProbeScreenDecodersAsync(profile, options.TargetPeerId, CancellationToken.None).ConfigureAwait(false);
-                if (generation != Interlocked.Read(ref _platformGeneration)) throw new OperationCanceledException("Captura cancelada.");
-                await VoiceCallHandler.StartScreenShareAsync(profile.Width, profile.Height, profile.CodecId, (byte)profile.Fps, options.TargetPeerId, options.Source.StartsWith("camera:", StringComparison.Ordinal) ? "camera" : "screen").ConfigureAwait(false);
-                _hub.Broadcast("screen_share_started", new global::QuicNet.Serialization.VoiceApiModuleMessage2("local", "Tú · Pantalla", profile.Width, profile.Height, 1, profile.Fps));
-                BroadcastVoiceState(); capture.Resume();
-                await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage24(true, profile)).ConfigureAwait(false);
-            }
-            catch
-            {
-                if (generation == Interlocked.Read(ref _platformGeneration))
-                {
-                    await capture.StopAsync().ConfigureAwait(false);
-                    await PlatformStoppedAsync(null, generation).ConfigureAwait(false);
-                    Interlocked.CompareExchange(ref _platformGeneration, generation + 1, generation);
-                }
-                throw;
-            }
+            var profile = await StartPlatformCaptureAsync(capture, options).ConfigureAwait(false);
+            await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.VoiceApiModuleMessage24(true, profile)).ConfigureAwait(false);
             return true;
         }
 
@@ -487,6 +644,8 @@ internal sealed class VoiceApiModule
         if (path == "/api/voice/screen-share/start" && req.HttpMethod == "POST")
         {
             Interlocked.Increment(ref _platformGeneration);
+            _voiceHandler.PlatformScreenProfile = null;
+            _platformTarget = null;
             if (WebUiServer.Instance?.PlatformScreenCapture is { } platformCapture) await platformCapture.StopAsync().ConfigureAwait(false);
             await _voiceHandler.ScreenEncoder.StopAsync().ConfigureAwait(false);
             using JsonDocument doc = await WebUiContext.ReadJsonAsync(req, path, allowEmpty: true).ConfigureAwait(false);
@@ -533,6 +692,8 @@ internal sealed class VoiceApiModule
             string? requestId = stopBody.RootElement.ValueKind == JsonValueKind.Object && stopBody.RootElement.TryGetProperty("requestId", out var request) &&
                 request.ValueKind == JsonValueKind.String && Guid.TryParse(request.GetString(), out _) ? request.GetString() : null;
             Interlocked.Increment(ref _platformGeneration);
+            _voiceHandler.PlatformScreenProfile = null;
+            _platformTarget = null;
             if (WebUiServer.Instance?.PlatformScreenCapture is { } platformCapture) await platformCapture.StopAsync().ConfigureAwait(false);
             await _voiceHandler.ScreenEncoder.StopAsync().ConfigureAwait(false);
             await VoiceCallHandler.StopScreenShareAsync().ConfigureAwait(false);

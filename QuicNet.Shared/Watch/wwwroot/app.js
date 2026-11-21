@@ -42,7 +42,7 @@ function render(next){
   $('myToken').textContent=next.local.token||'El token estará disponible cuando la red esté lista.';
   $('liveDot').classList.add('live'); $('connectionText').textContent='Listo para compartir';
   $('retryConnection').hidden=true;
-  $('roomTitle').textContent=room?room.name:'Todo empieza con un buen plan';
+  $('roomTitle').textContent=room?room.name:'Sala de vídeo';
   $('roleBadge').textContent=room?(room.isOwner?'Anfitrión':room.myRole==='Controller'?'Puedes controlar':'Espectador'):'Sin sala';
   $('pickMedia').disabled=!room?.isOwner||mediaActionPending||next.canPickMedia===false;
   $('pickMedia').textContent=mediaActionPending?'Preparando vídeo…':room?.media?'Cambiar vídeo':'Elegir vídeo';
@@ -55,8 +55,8 @@ function render(next){
   $('setupTitle').textContent=room?'Tu sala está lista':'Prepara tu sala';
   $('mediaHelp').textContent=mediaActionPending?'Preparando una copia temporal del original. En Android, un vídeo grande puede tardar unos minutos.':!room?'Crea una sala para elegir un vídeo de tu dispositivo.':!room.isOwner?'El anfitrión elige el vídeo y decide quién puede controlar la reproducción.':next.canPickMedia===false?'Abre el vídeo por su ruta en este dispositivo.':'MP4 y WebM suelen ser compatibles. El vídeo se comparte sin recodificar.';
   $('peopleHelp').textContent=room?(room.isOwner?'Invita a tus contactos y elige quién controla el vídeo.':'Estas son las personas conectadas. El anfitrión gestiona los permisos.'):'Selecciona contactos para invitarlos al crear la sala.';
-  $('emptyTitle').textContent=!room?'Hoy, la última fila es vuestra.':room.isOwner?'La sala está lista. Falta la película.':'El plan está a punto de empezar.';
-  $('emptyDescription').textContent=!room?'Prepara una sala, invita a tu gente y comparte un vídeo en su calidad original.':room.isOwner?'Elige un vídeo de tu dispositivo. Después, invita a quien quieras y dale al play.':'El anfitrión está eligiendo el vídeo. Aparecerá aquí cuando esté preparado.';
+  $('emptyTitle').textContent=!room?'Crea una sala':room.isOwner?'Tu sala está lista':'Esperando el vídeo';
+  $('emptyDescription').textContent=!room?'Invita a tus contactos y mirad el mismo vídeo de forma sincronizada.':room.isOwner?'Elige un vídeo de tu dispositivo para compartirlo en la sala.':'El anfitrión está eligiendo el vídeo. Aparecerá aquí cuando esté preparado.';
   $('startWatching').hidden=!!room&&!room.isOwner;
   $('startWatching').disabled=roomActionPending||mediaActionPending;
   $('startWatching').textContent=mediaActionPending?'Preparando vídeo…':room?'Elegir un vídeo':'Preparar mi sala ↗';
@@ -107,7 +107,11 @@ function render(next){
   if(media){
     $('emptyPlayer').classList.add('hidden'); $('mediaName').textContent=media.name; $('mediaMeta').textContent=`${fmtBytes(media.size)} · original sin recodificar`;
     const wanted=`${location.origin}/watch/media/${media.mediaId}`;
-    if(player.src!==wanted){latestPlayback=null;clearTimeout(playbackTimer);$('resumePlayback').hidden=true;setCacheProgress(0);player.src=wanted; player.load();}
+    if(player.src!==wanted){latestPlayback=null;clearTimeout(playbackTimer);$('resumePlayback').hidden=true;player.src=wanted; player.load();}
+    const cache=next.cache;
+    const cached=cache?.mediaId===media.mediaId&&cache.total>0?Math.min(100,cache.cached/cache.total*100):null;
+    setCacheProgress(cached??0);
+    $('cacheText').textContent=cached===null?'Calidad original · Sin recodificar':`${cached.toFixed(0)}% en la caché local`;
   }else{
     $('emptyPlayer').classList.remove('hidden'); $('mediaName').textContent='Tu próximo momento compartido'; $('mediaMeta').textContent=room?'Esperando un vídeo.':'Elige un vídeo después de crear la sala.';
     if(player.src){player.removeAttribute('src');player.load();}
@@ -238,7 +242,10 @@ $('fullscreenBtn').onclick=async()=>{
 document.addEventListener('fullscreenchange',()=>{
   $('fullscreenBtn').textContent=document.fullscreenElement?'Salir de pantalla completa':'⛶ Pantalla completa';
 });
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){refresh();if(latestPlayback)schedulePlayback(latestPlayback);}});
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden)statusRevision++;
+  else refresh(true).then(()=>{if(!document.hidden&&latestPlayback)schedulePlayback(latestPlayback);});
+});
 function setCacheProgress(value){const p=Number.isFinite(value)?Math.max(0,Math.min(100,value)):0;$('cacheBar').style.width=`${p}%`;$('cacheProgress').setAttribute('aria-valuenow',String(Math.round(p)));}
 
 setInterval(()=>{
@@ -250,7 +257,7 @@ setInterval(()=>{
     if(player.playbackRate!==corrected){applying=true;player.playbackRate=corrected;setTimeout(()=>applying=false,100);}
   }
 },2000);
-setInterval(refresh,4000);
+setInterval(()=>{if(!document.hidden)refresh();},4000);
 
 function connectSocket(){
   const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/watch/ws?csrf=${encodeURIComponent(csrf)}`);
@@ -266,7 +273,6 @@ function connectSocket(){
         if(latestPlayback&&next.revision<latestPlayback.revision)return;
         latestPlayback=next;schedulePlayback(next);
       }else if(message.type==='media')refresh(true);
-      else if(message.type==='cache'&&message.data.mediaId===state?.room?.media?.mediaId){const p=message.data.total>0?Math.min(100,message.data.cached/message.data.total*100):0;setCacheProgress(p);$('cacheText').textContent=`${p.toFixed(0)}% en la caché local`;}
       else if(message.type==='error')toast(message.data.message,true);
     }catch(error){window.QuicNetDiagnostics?.report(error,'Actualización de la sala');}
   };

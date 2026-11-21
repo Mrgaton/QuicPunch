@@ -17,7 +17,56 @@ details{font-size:12px;color:var(--muted)}summary{min-height:44px;padding:12px 0
 @media(min-width:1600px){.player-shell{min-height:440px}}
 @media(max-width:1050px){.topbar{padding:26px 24px}.layout{padding-inline:24px;grid-template-columns:minmax(0,1fr) 290px;gap:18px}.panel{padding:18px}.steps{grid-template-columns:1fr;gap:12px}.steps li div{display:flex;flex-wrap:wrap;gap:6px 10px}.steps span{margin:0}.player-shell{min-height:390px}.empty-player small{max-width:240px}}
 @media(max-width:800px){.layout{grid-template-columns:minmax(0,1fr)}.sidebar{display:grid;grid-template-columns:1fr 1fr;align-items:start}.identity-panel{grid-column:1/-1}.player-shell{min-height:350px;max-height:none}.steps{grid-template-columns:repeat(3,minmax(0,1fr))}.steps li div{display:block}.steps span{margin-top:4px}}
-@media(max-width:540px){.topbar{padding:22px 18px;align-items:flex-start;flex-direction:column;gap:14px}.topbar>.status{font-size:11px}.topbar p{font-size:13px}.layout{padding:0 12px 24px;gap:18px}.stage{border-radius:16px}.stage-head{padding:16px;gap:10px}.stage-head h2{font-size:15px}.room-icon{display:none}.badge{font-size:10px;padding:4px 8px}.player-shell{min-height:365px;aspect-ratio:auto}.player-shell.has-media{aspect-ratio:16/9;min-height:0}.empty-player{padding:24px 18px}.empty-player .eyebrow{font-size:8px}.empty-player h3{font-size:25px;max-width:270px}.empty-player p{font-size:12px;max-width:290px;margin:12px 0 18px}.cinema-art{width:130px;height:85px;margin-bottom:16px}.cinema-screen{font-size:30px}.empty-player small{max-width:none;font-size:10px}.now-playing{padding:18px 16px;flex-wrap:wrap;gap:12px}.media-copy{flex:1 1 180px}.media-copy strong{font-size:13px}.media-copy small{font-size:11px}.now-playing>.icon-button{font-size:11px}.playback-status{padding:0 16px 16px}.steps{padding:18px 16px;grid-template-columns:1fr;gap:14px}.steps li div{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px}.steps span{margin-top:0}.sidebar{display:flex}.panel{padding:20px;border-radius:16px}.identity-panel{padding:4px 8px}input,select{font-size:16px}.watch-footer{text-align:center;padding-inline:14px;font-size:10px}.toast{bottom:16px}}
+@media (max-width:680px), (max-width:800px) and (max-height:420px) {
+  .topbar { flex-direction:row; align-items:center; justify-content:space-between; gap:8px; padding:12px 16px; }
+  .topbar h1 { font-size:23px; }
+  .topbar .eyebrow, .topbar p { display:none; }
+  .topbar .status { justify-content:flex-end; text-align:end; }
+  .layout { padding-inline:12px; gap:14px; }
+  .stage-head { padding:12px 14px; gap:8px; }
+  .room-heading .eyebrow { display:none; }
+  .room-heading h2 { font-size:15px; }
+  .player-shell:not(.has-media) { min-height:0; aspect-ratio:auto; }
+  .player-shell.has-media:not(:fullscreen) { min-height:0; aspect-ratio:16/9; }
+  .empty-player { position:relative; padding:16px; }
+  .empty-player > .eyebrow { display:none; }
+  .empty-player h3 { font-size:22px; }
+  .empty-player p { margin:8px 0 14px; }
+  .cinema-art { width:116px; height:70px; margin-bottom:12px; }
+  .stage:has(.player-shell:not(.has-media)) :is(.now-playing, .playback-status, .progress, .steps) { display:none; }
+}
+@media (max-width:540px) {
+  .topbar > .status { font-size:11px; }
+  .stage { border-radius:16px; }
+  .room-icon { display:none; }
+  .badge { font-size:10px; padding:4px 8px; }
+  .empty-player h3 { max-width:270px; }
+  .empty-player p { font-size:12px; max-width:290px; }
+  .empty-player small { max-width:none; font-size:10px; }
+  .cinema-screen { font-size:30px; }
+  .now-playing { padding:18px 16px; flex-wrap:wrap; gap:12px; }
+  .media-copy { flex:1 1 180px; }
+  .media-copy strong { font-size:13px; }
+  .media-copy small, .now-playing > .icon-button { font-size:11px; }
+  .playback-status { padding:0 16px 16px; }
+  .steps { padding:18px 16px; grid-template-columns:1fr; gap:14px; }
+  .steps li div { display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 8px; }
+  .steps span { margin-top:0; }
+  .sidebar { display:flex; }
+  .panel { padding:20px; }
+  .identity-panel { padding:4px 8px; }
+  input,select { font-size:16px; }
+  .watch-footer { text-align:center; padding-inline:14px; font-size:10px; }
+  .toast { bottom:16px; }
+}
+@media (max-width:800px) and (max-height:360px) {
+  .topbar { padding-block:6px; }
+  .stage-head { padding-block:8px; }
+  .empty-player { padding:12px; }
+  .room-icon, .empty-player .cinema-art, .empty-player small { display:none; }
+  .empty-player h3 { font-size:20px; }
+  .player-shell.has-media:not(:fullscreen) { max-height:max(80px,calc(100dvh - 86px)); }
+}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}
 .toast.show{display:flex;align-items:center;gap:16px}.toast>span{min-width:0;overflow-wrap:anywhere}.toast>button{flex-shrink:0}
-.room-dialog{width:min(460px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:24px;border:1px solid var(--line);border-radius:16px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px #0008}.room-dialog::backdrop{background:#0009}.room-dialog p{margin-top:12px}.dialog-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-top:24px}
+.room-dialog { --dialog-width:460px; }

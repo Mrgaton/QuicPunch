@@ -12,12 +12,27 @@ try {
   await page.goto(url+'chat.html?peer='+bob);
   const input=page.locator('#messageInput'),pending=page.locator('#messages .message.pending');
   await page.waitForFunction(()=>!document.getElementById('sendBtn').disabled);
+  async function saveDraft(text) {
+    const saved=page.waitForResponse(response=>response.url().includes('/api/chat/draft?') &&
+      response.request().method()==='POST' && response.request().postDataJSON().text===text);
+    await input.fill(text);
+    await saved;
+  }
+  await saveDraft('Borrador de Bob');
+  await page.locator('#chatPeers .dm-peer').filter({hasText:'Ana · Portátil'}).click();
+  assert.equal(await input.inputValue(),'');
+  await saveDraft('Borrador de Ana');
+  await page.reload();
+  await page.waitForFunction(()=>document.getElementById('messageInput').value==='Borrador de Ana');
+  await page.locator('#chatPeers .dm-peer').filter({hasText:'Mi ordenador'}).click();
+  await page.waitForFunction(()=>document.getElementById('messageInput').value==='Borrador de Bob');
   await input.fill('Mensaje para cuando vuelvas');await page.locator('#sendBtn').click();
   await pending.waitFor();assert.equal(await input.inputValue(),'');
   assert.match(await page.locator('#messages').textContent(),/◷ Pendiente/);
   assert.match(await page.locator('.pending-label').getAttribute('title'),/Esperando conexión/);
   const id=await page.locator('#messages .message-row').getAttribute('data-message-id');
   await page.reload();await pending.waitFor();
+  assert.equal(await input.inputValue(),'','Accepted message did not clear the persisted draft');
   assert.equal(await page.locator('#messages .message-row').getAttribute('data-message-id'),id,'Reload duplicated or lost pending content');
   await page.locator('#messages summary').click();
   await page.getByRole('button',{name:'Recuperar como borrador',exact:true}).click();
@@ -31,8 +46,12 @@ try {
   await page.setViewportSize({width:390,height:844});
   await page.screenshot({path:'.artifacts/chat-pending-mobile.png'});
   await page.locator('#messages summary').click();
-  const menu=await page.locator('.message-menu-actions:visible').boundingBox();
-  assert.ok(menu.x>=0&&menu.x+menu.width<=390&&menu.y>=0&&menu.y+menu.height<=844,'Menu escapes the mobile viewport');
+  await page.waitForFunction(()=>{
+    const menu=document.querySelector('.message-menu[open] .message-menu-actions');
+    if(!menu) return false;
+    const {left,top,right,bottom}=menu.getBoundingClientRect();
+    return left>=0&&top>=0&&right<=innerWidth&&bottom<=innerHeight;
+  });
   await page.screenshot({path:'.artifacts/chat-outbox-mobile.png'});
   let fail=true;
   await page.route('**/api/chat/message/delete',async route=>{if(fail){fail=false;await route.fulfill({status:500,json:{error:'No se ha podido eliminar'}});}else await route.continue();});

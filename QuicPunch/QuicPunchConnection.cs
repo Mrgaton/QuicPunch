@@ -27,19 +27,19 @@ namespace QuicPunch
         //TODO: also implement stun to retrieve external port?
         public static async Task<(bool Success, UdpClient? client, IPEndPoint? remoteEndpoint)> OpenPortCore(
             PeerInfo ownPeer, UdpClient nudp, PeerInfo remotePeer, IReadOnlyList<CandidateEndpoint>? remoteCandidates,
-            ushort peerPort, Guid connectionGuid, CancellationToken mainCt, ECDsa? ownPrivateKey = null, byte[]? passwordHash = null)
+            ushort peerPort, Guid connectionGuid, CancellationToken mainCt, ECDsa? ownPrivateKey = null, byte[]? passwordHash = null,
+            Func<IPEndPoint, IPEndPoint>? translate = null)
         {
             try
             {
                 QuicPunchLog.Info($"[HOLE PUNCH] Starting UDP connectivity checks with peer {remotePeer.Name ?? "Peer"} ({remotePeer.Id}) (Guid: {connectionGuid})");
                 using var punchCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt);
                 Task sender = SendLoopAsync(nudp, remotePeer, remoteCandidates, peerPort,
-                    connectionGuid, ownPeer, ownPrivateKey, passwordHash, punchCts.Token);
+                    connectionGuid, ownPeer, ownPrivateKey, passwordHash, punchCts.Token, translate);
                 Task<(UdpClient? Socket, IPEndPoint? Endpoint)> primary = ReceivePrimary();
                 IPEndPoint? birthdayTarget = BirthdayTarget(ownPeer, remotePeer, remoteCandidates, peerPort);
                 Task<(UdpClient? Socket, IPEndPoint? Endpoint)>? birthday = birthdayTarget != null && ownPrivateKey != null
-                    ? OpenBirthdaySocketsAsync(birthdayTarget, connectionGuid, ownPeer, remotePeer,
-                        ownPrivateKey, passwordHash, punchCts.Token) : null;
+                    ? TryBirthdayFallbackAsync(translate?.Invoke(birthdayTarget) ?? birthdayTarget, ownPrivateKey) : null;
                 (UdpClient? Socket, IPEndPoint? Endpoint) nominated = (null, null);
                 try
                 {
@@ -69,6 +69,16 @@ namespace QuicPunch
                 var remoteEndpoint = nominated.Endpoint;
                 async Task<(UdpClient? Socket, IPEndPoint? Endpoint)> ReceivePrimary() =>
                     (nudp, await ReceiveHoleLoopAsync(nudp, connectionGuid, ownPeer, remotePeer, ownPrivateKey, passwordHash, punchCts.Token).ConfigureAwait(false));
+                async Task<(UdpClient? Socket, IPEndPoint? Endpoint)> TryBirthdayFallbackAsync(IPEndPoint target, ECDsa key)
+                {
+                    try
+                    {
+                        await Task.Delay(750, punchCts.Token).ConfigureAwait(false);
+                        return await OpenBirthdaySocketsAsync(target, connectionGuid, ownPeer, remotePeer,
+                            key, passwordHash, punchCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (punchCts.IsCancellationRequested) { return (null, null); }
+                }
 
                 if (remoteEndpoint == null)
                 {
@@ -102,7 +112,8 @@ namespace QuicPunch
             using var openPortCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             using var openPortLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(mainCt, openPortCts.Token);
 
-            var udpResult = await OpenPortCore(ownPeer, nudp, remotePeer, remoteCandidates, peerPort, connectionGuid, openPortLinkedCts.Token, qc?.CertManager?.Curve, qc?.PasswordHash)
+            Func<IPEndPoint, IPEndPoint>? translate = qc == null ? null : qc.TranslateWanTarget;
+            var udpResult = await OpenPortCore(ownPeer, nudp, remotePeer, remoteCandidates, peerPort, connectionGuid, openPortLinkedCts.Token, qc?.CertManager?.Curve, qc?.PasswordHash, translate)
                 .WaitAsync(openPortLinkedCts.Token);
 
             if (!udpResult.Success || udpResult.remoteEndpoint == null)
@@ -306,7 +317,8 @@ namespace QuicPunch
         public static async Task SendLoopAsync(
             UdpClient udp, PeerInfo peer, IReadOnlyList<CandidateEndpoint>? remoteCandidates,
             ushort askedPort, Guid connectionGuid, PeerInfo ownPeer,
-            ECDsa? ownPrivateKey, byte[]? passwordHash, CancellationToken token)
+            ECDsa? ownPrivateKey, byte[]? passwordHash, CancellationToken token,
+            Func<IPEndPoint, IPEndPoint>? translate = null)
         {
             try
             {
@@ -320,7 +332,7 @@ namespace QuicPunch
                     tries++;
                     schedule.NextRound();
                     IReadOnlyList<IPEndPoint> targetEndPoints = BuildProbeTargets(peer, remoteCandidates, askedPort,
-                        maxEndpoints: 16, schedule: schedule);
+                        maxEndpoints: 16, schedule: schedule, exactDataFirst: tries <= 3);
                     if (tries == 1) QuicPunchLog.Info($"[HOLE PUNCH] Probing {targetEndPoints.Count} endpoint(s); dynamic public ports rotate per round.");
                     byte[] probe = ConnectivityProbe.Create(connectionGuid, Guid.NewGuid(), Guid.Empty,
                         ownPeer, peer, ownPrivateKey, passwordHash);
@@ -329,7 +341,7 @@ namespace QuicPunch
                         if (token.IsCancellationRequested) break;
                         try
                         {
-                            await udp.SendAsync(probe, ep, token).ConfigureAwait(false);
+                            await udp.SendAsync(probe, translate?.Invoke(ep) ?? ep, token).ConfigureAwait(false);
                         }
                         catch (SocketException) { }
                         catch (ObjectDisposedException) { }
@@ -353,7 +365,8 @@ namespace QuicPunch
             IReadOnlyList<CandidateEndpoint>? remoteCandidates,
             ushort askedPort,
             int maxEndpoints = PortAdvertisementCodec.MaxProbeEndpoints,
-            PortProbeSchedule? schedule = null)
+            PortProbeSchedule? schedule = null,
+            bool exactDataFirst = false)
         {
             ArgumentNullException.ThrowIfNull(peer);
             if (maxEndpoints <= 0)
@@ -374,11 +387,13 @@ namespace QuicPunch
 
             bool HasHostCandidate(IPAddress address) => remoteCandidates?.Any(candidate =>
                 candidate.Type == CandidateType.Host && candidate.EndPoint.Address.Equals(address)) == true;
+            bool exactData = exactDataFirst &&
+                remoteCandidates?.Any(candidate => candidate.Type == CandidateType.ServerReflexive) == true;
 
             if (peer.ActiveEndPoint is { } active)
             {
                 if (askedPort == 0) Add(active.Address, active.Port);
-                else if (!Utilities.IsPrivateLanAddress(active.Address) || !HasHostCandidate(active.Address))
+                else if (!exactData && (!Utilities.IsPrivateLanAddress(active.Address) || !HasHostCandidate(active.Address)))
                     Add(active.Address, askedPort);
             }
 
@@ -391,10 +406,12 @@ namespace QuicPunch
                 }
             }
 
+            bool advertisedExactControl = askedPort == 0 && remoteCandidates == null && peer.WanCandidates != null;
+
             // A mobile network or destination-dependent NAT may expose a different
             // public IP to the authenticated control peer than it does to STUN.
             // Try tunnel ports on that current address as well as the advertised one.
-            if (peer.ActiveEndPoint is { } observed && !Utilities.IsPrivateLanAddress(observed.Address) && !IPAddress.IsLoopback(observed.Address) &&
+            if (!exactData && peer.ActiveEndPoint is { } observed && !Utilities.IsPrivateLanAddress(observed.Address) && !IPAddress.IsLoopback(observed.Address) &&
                 remoteCandidates != null)
                 foreach (var candidate in remoteCandidates.Where(c => c.Type == CandidateType.ServerReflexive &&
                     c.EndPoint.Address.AddressFamily == observed.Address.AddressFamily &&
@@ -421,10 +438,24 @@ namespace QuicPunch
                     if (askedPort == 0 && peer.PreferredPort > 0) Add(address, peer.PreferredPort);
                     continue;
                 }
-                if (askedPort > 0) Add(address, askedPort);
+                if (advertisedExactControl && (Utilities.IsPrivateLanAddress(address) || IPAddress.IsLoopback(address)) &&
+                    peer.PortArray is [var singlePort])
+                    Add(address, singlePort);
+                if (askedPort > 0 && !exactData) Add(address, askedPort);
                 if (askedPort == 0 && peer.ActiveEndPoint is { Port: > 0 } activeEndpoint && activeEndpoint.Address.Equals(address))
                     Add(address, activeEndpoint.Port);
             }
+
+            if (advertisedExactControl)
+            {
+                foreach (IPEndPoint candidate in peer.WanCandidates!)
+                    Add(candidate.Address, candidate.Port);
+                if (schedule is not { Round: >= 4 } || peer.WanCandidates.Length == 0)
+                    return PrioritizeLocalSubnet(targets);
+            }
+
+            if (exactData)
+                return PrioritizeLocalSubnet(targets);
 
             IPAddress[] wanProbeAddresses = addresses.Where(address => !HasScopedHostPort(address)).ToArray();
             ushort[] advertisedPorts = PortAdvertisementCodec.Normalize(peer.PortArray);

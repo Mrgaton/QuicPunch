@@ -113,6 +113,7 @@ namespace QuicNet.Protocols
         public const byte FrameTypeScreenDecoderProbeResult = 0x28;
         public const byte FrameTypeScreenControlRequest = 0x29;
         public const byte FrameTypeScreenControlReply = 0x2A;
+        public const byte FrameTypeRemoteInput = 0x2C;
         private readonly ConcurrentDictionary<(Guid Peer, Guid Request), TaskCompletionSource<bool>> _decoderProbes = new();
         public event Action<PeerInfo, JsonElement>? OnScreenDecoderProbe;
         public event Action<PeerInfo, JsonElement>? OnScreenDecoderDiagnostic;
@@ -122,7 +123,7 @@ namespace QuicNet.Protocols
         public event Action<PeerInfo>? OnCallEnded;
         public event Action<PeerInfo, int, int, byte, byte>? OnScreenShareStarted;
         public event Action<PeerInfo>? OnScreenShareStopped;
-        public event Action<PeerInfo>? OnScreenShareRequested;
+        public event Action<PeerInfo, bool>? OnScreenShareRequested;
         public event Action<PeerInfo>? OnScreenShareRequestDenied;
         public event Action<PeerInfo, byte, byte[]>? OnScreenFrameReceived;
         public event Func<PeerInfo, byte, byte[], Task>? OnScreenFrameReceivedAsync;
@@ -270,6 +271,7 @@ namespace QuicNet.Protocols
             public void Dispose()
             {
                 if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+                _owner.EndRemoteInput(this);
                 _owner.RemoveAudioSession(this);
                 try { _sessionCts.Cancel(); } catch { }
                 DetachHandlers();
@@ -304,6 +306,8 @@ namespace QuicNet.Protocols
                 throw new InvalidOperationException("Inicia una llamada antes de activar el vídeo.");
             if (targetPeerId.HasValue && !ActiveCalls.ContainsKey(targetPeerId.Value))
                 throw new InvalidOperationException("The requested screen share peer is no longer in the call.");
+            Instance?.EndRemoteInput(incoming: true);
+            Instance?.SetPlatformRemoteInput(null, 0);
             IsLocalScreenSharing = true;
             LocalScreenTargetPeerId = targetPeerId;
             LocalScreenWidth = width;
@@ -339,12 +343,15 @@ namespace QuicNet.Protocols
 
         private static byte[] BuildScreenCapabilitiesPayload(uint encoderCodecMask, uint decoderCodecMask)
         {
-            byte[] payload = new byte[LocalScreenDecoderHardwarePreferenceMask.HasValue ? 13 : 9];
+            byte[] payload = new byte[LocalScreenDecoderHardwarePreferenceMask.HasValue ? 14 : 9];
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(0, 4), encoderCodecMask);
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(4, 4), decoderCodecMask);
-            payload[8] = 2;
+            payload[8] = RemoteInputVersion;
             if (LocalScreenDecoderHardwarePreferenceMask is uint hardware)
+            {
                 System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(9, 4), hardware & decoderCodecMask);
+                payload[13] = 1; // Optional media recovery control frame.
+            }
             return payload;
         }
 
@@ -378,6 +385,8 @@ namespace QuicNet.Protocols
 
         public static async Task StopScreenShareAsync()
         {
+            Instance?.EndRemoteInput(incoming: true);
+            Instance?.SetPlatformRemoteInput(null, 0);
             if (Instance is { } handler) await handler.StopSystemAudioAsync().ConfigureAwait(false);
             IsLocalScreenSharing = false;
             LocalScreenTargetPeerId = null;
@@ -429,6 +438,7 @@ namespace QuicNet.Protocols
             if (ActiveCalls.TryGetValue(peerId, out var session))
             {
                 session.IsScreenShareAllowed = allowed;
+                if (!allowed) Instance?.EndRemoteInput(session, incoming: true);
                 if (!allowed && IsLocalScreenSharing)
                 {
                     _ = session.SendFrameAsync(FrameTypeScreenShareStop);
@@ -496,6 +506,13 @@ namespace QuicNet.Protocols
             if (sessions.Length == 0) return false;
             return (await Task.WhenAll(sessions.Select(async session =>
             {
+                if (session.RemoteScreenCapabilitiesReceived && session.RemoteScreenDecoderCodecMask != 0)
+                {
+                    // The native receiver advertises its warmed codec inventory at call setup.
+                    // It validates the exact profile when it plays the first keyframe.
+                    return session.IsScreenDecoderApproved =
+                        (session.RemoteScreenDecoderCodecMask & (1u << profile.CodecId)) != 0;
+                }
                 Guid request = Guid.NewGuid();
                 var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _decoderProbes[(session.Peer.Id, request)] = completion;
@@ -549,7 +566,7 @@ namespace QuicNet.Protocols
             }
 
             ActiveCalls[peer.Id] = session;
-            var nativeProfile = ScreenEncoder.Profile ?? ScreenEncoder.PendingProfile;
+            var nativeProfile = ScreenEncoder.Profile ?? ScreenEncoder.PendingProfile ?? PlatformScreenProfile;
             if (nativeProfile != null)
             {
                 session.IsScreenDecoderApproved = false;
@@ -719,6 +736,7 @@ namespace QuicNet.Protocols
 
                         case FrameTypeScreenShareStop:
                             session.IsRemoteScreenSharing = false;
+                            EndRemoteInput(session, incoming: false);
                             QuicPunchLog.Info($"[VOICE CALL] Remote screen share stopped by {peer.Name}");
                             OnScreenShareStopped?.Invoke(peer);
                             break;
@@ -750,6 +768,7 @@ namespace QuicNet.Protocols
                                 session.RemoteScreenEncoderCodecMask = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(payload.AsSpan(0, 4));
                                 session.RemoteScreenDecoderCodecMask = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(payload.AsSpan(4, 4));
                                 session.RemoteScreenControlVersion = payload.Length >= 9 ? payload[8] : (byte)0;
+                                session.SupportsVideoRecovery = payload.Length >= 14 && (payload[13] & 1) != 0;
                                 // The initial legacy frame is all zeroes before a browser has measured anything.
                                 session.RemoteScreenCapabilitiesReceived = payload.Length >= 13 ||
                                     session.RemoteScreenEncoderCodecMask != 0 || session.RemoteScreenDecoderCodecMask != 0;
@@ -770,6 +789,12 @@ namespace QuicNet.Protocols
                             break;
                         case FrameTypeScreenControlReply:
                             if (payload != null) ReceiveScreenControlReply(peer, payload);
+                            break;
+                        case FrameTypeRemoteInput:
+                            if (payload != null) await ReceiveRemoteInputAsync(session, payload).ConfigureAwait(false);
+                            break;
+                        case FrameTypeVideoRecovery:
+                            if (payload != null) session.ReceiveVideoRecovery(payload);
                             break;
 
                         case FrameTypeScreenShareRequestDenied:
@@ -835,6 +860,7 @@ namespace QuicNet.Protocols
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            EndRemoteInput();
             DisposeScreenControl();
             foreach (var session in ActiveCalls.Values.ToArray()) session.Dispose();
             ActiveCalls.Clear();

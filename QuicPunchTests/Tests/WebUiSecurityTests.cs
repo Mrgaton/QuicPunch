@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using QuicPunch;
@@ -32,6 +33,7 @@ namespace QuicPunchTests.Tests;
             await TestProbeAndStaticResourceBoundariesAsync();
             await TestWatchSocketBackpressureAsync();
             await TestWebSocketAdmissionIsolationAsync();
+            await TestLiveUpdateBackpressureAsync();
             await TestWebUiOriginAndCsrfAsync();
             await TestChatNostrPausedAsync();
             await TestChatOutboxAsync();
@@ -311,6 +313,95 @@ namespace QuicPunchTests.Tests;
             {
                 foreach (var socket in sockets) { socket.Abort(); socket.Dispose(); }
                 server.Stop(); cts.Cancel();
+            }
+        }
+
+        private static async Task TestLiveUpdateBackpressureAsync()
+        {
+            Console.Write("[TEST] Paused live updates retain only the latest bounded state... ");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await using var hub = new WebUiWebSocketHub(deadline, shutdownWhenNoClients: false);
+            int state = 1;
+            hub.GetStatusSnapshot = () => Volatile.Read(ref state).ToString();
+
+            var reservation = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            reservation.Start();
+            int port = ((IPEndPoint)reservation.LocalEndpoint).Port;
+            reservation.Stop();
+            using var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            listener.Start();
+            using var socket = new ClientWebSocket();
+            var connected = socket.ConnectAsync(new Uri($"ws://127.0.0.1:{port}/"), deadline.Token);
+            var served = hub.AcceptSocketAsync(await listener.GetContextAsync().WaitAsync(deadline.Token));
+            await connected;
+
+            Task Send(string json) => socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)),
+                WebSocketMessageType.Text, true, deadline.Token);
+            async Task<JsonElement> Receive()
+            {
+                using var data = new MemoryStream();
+                byte[] buffer = new byte[4096];
+                WebSocketReceiveResult frame;
+                do
+                {
+                    frame = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), deadline.Token);
+                    if (frame.MessageType != WebSocketMessageType.Text) throw new Exception("Expected a text frame.");
+                    data.Write(buffer, 0, frame.Count);
+                } while (!frame.EndOfMessage);
+                using var json = JsonDocument.Parse(data.ToArray());
+                return json.RootElement.Clone();
+            }
+
+            try
+            {
+                await Receive(); // ws_connected
+                hub.BroadcastMetric("progress", "active", "first");
+                await Send("""{"type":"live_request","id":1,"refresh":true}""");
+                if ((await Receive()).GetProperty("id").GetInt32() != 1)
+                    throw new Exception("Initial live request did not return a batch.");
+
+                // Simulate a suspended renderer that has not requested the next batch.
+                for (int i = 0; i < 5000; i++)
+                {
+                    Volatile.Write(ref state, i);
+                    hub.NotifyStatusChanged();
+                    hub.BroadcastMetric("progress", "active", i.ToString());
+                }
+                await Task.Delay(250, deadline.Token);
+                await Send("""{"type":"ping"}""");
+                if ((await Receive()).GetProperty("type").GetString() != "pong")
+                    throw new Exception("Live batches accumulated without a client request.");
+
+                await Send("""{"type":"live_pause"}""");
+                for (int i = 0; i < 100; i++) hub.BroadcastMetric("other", i.ToString(), i.ToString());
+                hub.BroadcastMetric("progress", "active", "latest");
+                hub.BroadcastMetric("progress", "completed", "stale");
+                hub.DiscardMetrics("progress", "completed");
+                await hub.BroadcastAsync("completed", "saved");
+                if ((await Receive()).GetProperty("type").GetString() != "completed")
+                    throw new Exception("Pausing the live stream blocked discrete events.");
+
+                await Send("""{"type":"live_request","id":2,"refresh":true}""");
+                var batch = await Receive();
+                var events = batch.GetProperty("events").EnumerateArray().ToArray();
+                if (batch.GetProperty("id").GetInt32() != 2 || events.Length > 65 ||
+                    events.Single(e => e.GetProperty("type").GetString() == "status_updated").GetProperty("data").GetString() != "4999" ||
+                    events.Single(e => e.GetProperty("type").GetString() == "progress").GetProperty("data").GetString() != "latest")
+                    throw new Exception("Resume replayed stale metrics or exceeded the pending limit.");
+
+                // A batch can already have entered the socket when visibility changes.
+                // The new subscription must include the most recent value again.
+                await Send("""{"type":"live_request","id":3,"refresh":true}""");
+                var refreshed = (await Receive()).GetProperty("events").EnumerateArray();
+                if (!refreshed.Any(e => e.GetProperty("data").GetString() == "latest"))
+                    throw new Exception("A discarded in-flight batch lost its latest metric.");
+                Console.WriteLine("PASSED");
+            }
+            finally
+            {
+                socket.Abort();
+                await served.WaitAsync(deadline.Token);
             }
         }
 
@@ -649,11 +740,20 @@ namespace QuicPunchTests.Tests;
                 string path = Path.Combine(directory, "chat-history.db");
                 var first = new ChatHistoryStore(path);
                 first.SetDuration("peer-a", 60);
+                if (!first.SaveDraft("peer-a", "sin enviar", null, "first"))
+                    throw new Exception("The draft was not saved.");
                 var lasting = new WebUiServer.ChatMessage("peer-a", "lasting", "Me", "saved text", DateTime.Now, true, true);
                 var expiring = lasting with { MsgId = "expiring", ExpiresAtUtc = DateTime.UtcNow.AddSeconds(-1) };
                 first.Save(lasting);
                 first.Save(expiring);
                 var reopened = new ChatHistoryStore(path);
+                if (reopened.ReadDraft("peer-a") != ("sin enviar", "first") ||
+                    reopened.ReadDraft("peer-tor") != ("", null) ||
+                    !reopened.SaveDraft("peer-a", "", "first", "cleared") ||
+                    first.SaveDraft("peer-a", "stale", "first", "late") ||
+                    first.SaveDraft("peer-a", "stale", null, "late") ||
+                    reopened.ReadDraft("peer-a") != ("", "cleared"))
+                    throw new Exception("Draft persistence, isolation, or stale-write protection failed.");
                 if (reopened.GetDurations().GetValueOrDefault("peer-a") != 60 ||
                     reopened.LoadRecent(10).Count != 1 || reopened.LoadRecent(10)[0].Message != "saved text")
                     throw new Exception("Chat history or timer setting was not restored.");

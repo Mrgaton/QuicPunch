@@ -258,6 +258,14 @@ internal static class CriticalReliabilityTests
         await using var bHub = new WebUiWebSocketHub(deadline);
         using var aFiles = new ChatApiModule(a, sender, aHub, Path.Combine(root, "native-a-downloads"), Path.Combine(root, "native-a-outbox"));
         using var bFiles = new ChatApiModule(b, receiver, bHub, Path.Combine(root, "native-b-downloads"), Path.Combine(root, "native-b-outbox"));
+        var aAvatars = new ProfileAvatarStore(Path.Combine(root, "native-a-avatars"));
+        var bAvatars = new ProfileAvatarStore(Path.Combine(root, "native-b-avatars"));
+        using var aAvatarSync = new ProfileAvatarSync(a, aAvatars, deadline.Token);
+        using var bAvatarSync = new ProfileAvatarSync(b, bAvatars, deadline.Token);
+        byte[] photo = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "profile-avatar.avif"));
+        byte[] animatedPhoto = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "profile-avatar-animated.avif"));
+        aAvatars.Set(photo);
+        bAvatars.Set(animatedPhoto);
         Task? chatTask = null;
         try
         {
@@ -267,6 +275,28 @@ internal static class CriticalReliabilityTests
                 new IPEndPoint(IPAddress.Loopback, b.LocalBoundPort), QuicPunch.QuicPunch.TransportType.Wan);
             await b.ProcessIncomingPacketAsync(a.GenerateHelloPayload(QuicPunchStructures.MessageType.Interrogation, true),
                 new IPEndPoint(IPAddress.Loopback, a.LocalBoundPort), QuicPunch.QuicPunch.TransportType.Wan);
+            await a.EnsureMultiplexerConnectedAsync(a.AvailablePeers[b.CurrentPeer.Id], cancellationToken: deadline.Token);
+            using (var avatarDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token))
+            {
+                avatarDeadline.CancelAfter(TimeSpan.FromSeconds(12));
+                async Task WaitForPhoto(ProfileAvatarStore store, Guid peerId, byte[]? expected)
+                {
+                    while (true)
+                    {
+                        var received = store.Read(peerId);
+                        if (expected == null ? received == null : received?.AsSpan().SequenceEqual(expected) == true) return;
+                        await Task.Delay(50, avatarDeadline.Token);
+                    }
+                }
+                await Task.WhenAll(WaitForPhoto(aAvatars, b.CurrentPeer.Id, animatedPhoto),
+                    WaitForPhoto(bAvatars, a.CurrentPeer.Id, photo));
+                Check(ChatHandler.ActiveChats.IsEmpty, "trusted peers exchange AVIF profiles over native QUIC with no chat session");
+                aAvatars.Set(animatedPhoto);
+                await WaitForPhoto(bAvatars, a.CurrentPeer.Id, animatedPhoto);
+                aAvatars.Set([]);
+                await WaitForPhoto(bAvatars, a.CurrentPeer.Id, null);
+                Check(ChatHandler.ActiveChats.IsEmpty, "profile edits and deletions synchronize before opening messages");
+            }
             chatTask = a.InitQuicConnection(sender.ProtocolId, a.AvailablePeers[b.CurrentPeer.Id], cancellationToken: deadline.Token);
             while (!ChatHandler.ActiveChats.ContainsKey(a.CurrentPeer.Id) || !ChatHandler.ActiveChats.ContainsKey(b.CurrentPeer.Id))
                 await Task.Delay(10, deadline.Token);

@@ -35,8 +35,13 @@ namespace QuicPunch.Multiplexer
         private int _disposed;
         private int _closed;
         private int _remoteClosing;
+        private const int GracefulRemoteClose = 1;
+        private const int AbortedRemoteClose = 2;
         private readonly CancellationTokenSource _sessionLifetime = new();
+        private readonly TaskCompletionSource _incomingHandlerFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _initialInboundTaken;
         internal CancellationToken SessionToken => _sessionLifetime.Token;
+        internal bool IsIncoming { get; init; }
 
         public MultiplexedQuicConnectionTransport(
             QuicPeerMultiplexer multiplexer,
@@ -156,10 +161,12 @@ namespace QuicPunch.Multiplexer
 
         private void TrackStream(IQuicStreamTransport stream)
         {
-            _activeStreams[stream.Id] = stream;
+            long streamId = stream.Id;
+            _activeStreams[streamId] = stream;
             if (stream is MultiplexedStreamTransport multiplexed)
             {
-                multiplexed.Closed = () => _activeStreams.TryRemove(new System.Collections.Generic.KeyValuePair<long, IQuicStreamTransport>(stream.Id, stream));
+                // Native streams cannot read their ID after the underlying handle closes.
+                multiplexed.Closed = () => _activeStreams.TryRemove(new System.Collections.Generic.KeyValuePair<long, IQuicStreamTransport>(streamId, stream));
                 multiplexed.Faulted = ex =>
                 {
                     if (_multiplexer.PhysicalConnection.IsTransportClosed ||
@@ -185,7 +192,11 @@ namespace QuicPunch.Multiplexer
         public async ValueTask<IQuicStreamTransport> AcceptInboundStreamAsync(
             CancellationToken cancellationToken = default)
         {
-            ThrowIfDisposed();
+            int closing = Volatile.Read(ref _remoteClosing);
+            if (closing != GracefulRemoteClose || !IsIncoming || Volatile.Read(ref _initialInboundTaken) != 0)
+                ThrowIfDisposed();
+            else
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
             IQuicStreamTransport stream = await _inboundStreams.Reader
                 .ReadAsync(cancellationToken)
@@ -197,15 +208,19 @@ namespace QuicPunch.Multiplexer
             }
 
             TrackStream(stream);
+            Volatile.Write(ref _initialInboundTaken, 1);
             return stream;
         }
 
         public bool EnqueueInboundStream(IQuicStreamTransport stream)
         {
-            if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _remoteClosing) != 0)
+            int closing = Volatile.Read(ref _remoteClosing);
+            if (Volatile.Read(ref _disposed) != 0 || closing == AbortedRemoteClose)
                 return false;
 
             bool wasFirst = Interlocked.Exchange(ref _hasInboundStream, 1) == 0;
+            if (closing == GracefulRemoteClose && (!IsIncoming || !wasFirst))
+                return false;
             if (Volatile.Read(ref _closed) != 0 && !wasFirst)
                 return false;
 
@@ -256,14 +271,21 @@ namespace QuicPunch.Multiplexer
             await _multiplexer.NotifySessionClosedAsync(_sessionShortId, errorCode, cancellationToken).ConfigureAwait(false);
         }
 
+        internal bool TryBeginRemoteClose(long errorCode) =>
+            Interlocked.CompareExchange(ref _remoteClosing, errorCode == 0 ? GracefulRemoteClose : AbortedRemoteClose, 0) == 0;
+
+        internal void MarkIncomingHandlerFinished() => _incomingHandlerFinished.TrySetResult();
+
         internal async Task RemoteCloseAsync(long errorCode, CancellationToken ct)
         {
-            Interlocked.Exchange(ref _remoteClosing, 1);
             if (errorCode == 0)
             {
                 // Stream bytes and control frames have independent ordering. Let the
                 // application consume the peer's FIN and any buffered response first.
-                try { await Task.WhenAll(_activeStreams.Values.Select(x => x.ReadsClosed)).WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false); }
+                Task drain = IsIncoming && Volatile.Read(ref _initialInboundTaken) == 0
+                    ? _incomingHandlerFinished.Task
+                    : Task.WhenAll(_activeStreams.Values.Select(x => x.ReadsClosed));
+                try { await drain.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false); }
                 catch { }
             }
             await CloseAsync(errorCode, ct).ConfigureAwait(false);

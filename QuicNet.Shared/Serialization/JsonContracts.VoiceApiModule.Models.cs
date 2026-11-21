@@ -3,8 +3,15 @@
 namespace QuicNet.Serialization;
 
 internal sealed record VoiceApiModuleMessage1(global::System.Guid peerId, global::System.Guid requestId, global::QuicNet.Protocols.ScreenTransmissionSettings settings);
-internal sealed record VoiceApiModuleMessage2(string peerId, string peerName, int width, int height, byte codecId, int fps);
-internal sealed record VoiceApiModuleMessage3(string peerId, string? peerName) { public string? requestId { get; init; } }
+internal sealed record VoiceApiModuleMessage2(string peerId, string peerName, int width, int height, byte codecId, int fps)
+{
+    public string kind { get; init; } = "screen";
+}
+internal sealed record VoiceApiModuleMessage3(string peerId, string? peerName)
+{
+    public string? requestId { get; init; }
+    public bool? forControl { get; init; }
+}
 internal sealed record VoiceApiModuleMessage4(global::System.Guid peerId, global::System.Text.Json.JsonElement config);
 internal sealed record VoiceApiModuleMessage5(string peerId, string signal);
 internal sealed record VoiceApiModuleMessage6(bool isLocal, float level, bool speaking);

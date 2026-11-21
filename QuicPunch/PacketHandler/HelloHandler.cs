@@ -170,6 +170,9 @@ namespace QuicPunch.PacketHandler
                     }
 
                     using var pendingChallenge = qc.ConsumePendingChallenge(challengeNonce);
+                    string? routeProbeId = pendingChallenge?.RouteProbeId;
+                    if (routeProbeId != null && !qc.ActiveInterrogations.ContainsKey(routeProbeId))
+                        return;
                     bool isChallengeFresh = pendingChallenge != null;
                     // A signed answer to our unexpired one-use challenge proves freshness
                     // without requiring synchronized wall clocks.
@@ -206,14 +209,14 @@ namespace QuicPunch.PacketHandler
                             // exact local entropy that was sent in that challenge.
                             pendingChallenge?.ApplyLocalEntropy(peerInfo);
                             peerInfo.InitSession(qc, transport);
-                            peerInfo.MarkSeen();
+                            peerInfo.MarkAvailabilityConfirmed();
 
                             if (qc.TryAdmitAuthenticatedPeer(peerInfo))
                             {
                                 certTransferred = true;
                                 QuicPunchLog.Info($"[HELLO HANDLER] Node '{qc.GetCurrentPeer(transport).Name}' added peer {peerId} ({peerInfo.Name}) to AvailablePeers!");
                                 qc.RaisePeerAvailable(peerInfo);
-                                qc.CancelMatchingInterrogations(peerInfo);
+                                qc.CancelMatchingInterrogations(peerInfo, routeProbeId);
                                 qc.UpdateSavedPeerIfPresent(peerInfo);
                                 qc.RecordAuthenticatedPeerActivity(peerInfo);
 
@@ -255,6 +258,7 @@ namespace QuicPunch.PacketHandler
                         // challenge before deriving the replacement session keys.
                         pendingChallenge?.ApplyLocalEntropy(peer);
 
+                        IPEndPoint? previousControlEndPoint = peer.ActiveEndPoint;
                         peer.ActiveEndPoint = targetControlEndPoint;
                         peer.ActiveTransport = transport;
                         if (addresses != null && addresses.Length > 0)
@@ -304,14 +308,21 @@ namespace QuicPunch.PacketHandler
                             peer.InitSession(qc, transport);
                         }
 
+                        if (transport == TransportType.Wan && peer.IsSessionReady && !Equals(previousControlEndPoint, targetControlEndPoint))
+                            qc.OnWanControlRouteChanged(peer.Id, targetControlEndPoint);
+
                         if (messageType == (byte)MessageType.Interrogation || sessionChanged)
                         {
                             var responseHello = qc.GenerateHelloPayload(MessageType.Hello, true, challengeNonce, transport, targetPeer: peer);
                             _ = qc.SendResponseAsync(responseHello, targetControlEndPoint, transport, torChannel);
                         }
 
-                        peer.MarkSeen();
-                        qc.CancelMatchingInterrogations(peer);
+                        // Either side can initiate the periodic availability check.
+                        if (messageType == (byte)MessageType.Interrogation || pendingChallenge?.ExpectedCertHash is { Length: > 0 })
+                            peer.MarkAvailabilityConfirmed();
+                        else
+                            peer.MarkSeen();
+                        qc.CancelMatchingInterrogations(peer, routeProbeId);
                         qc.UpdateSavedPeerIfPresent(peer);
                         qc.RecordAuthenticatedPeerActivity(peer);
 

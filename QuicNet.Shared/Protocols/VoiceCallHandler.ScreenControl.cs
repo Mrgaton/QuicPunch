@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
 using QuicNet.Video;
 using QuicPunch;
@@ -36,9 +37,12 @@ internal sealed partial class VoiceCallHandler
     public event Action<Guid, Guid, ScreenTransmissionSettings>? OnBrowserScreenSettingsRequested;
     public event Action? OnLocalScreenControlChanged;
     public event Func<byte, byte[], Task>? OnLocalNativeScreenFrame;
+    internal Func<IPlatformScreenCapture?>? GetPlatformScreenCapture { get; set; }
+    internal Func<PeerInfo, bool, CancellationToken, Task>? StartRemotePlatformScreen { get; set; }
+    internal NativeScreenProfile? PlatformScreenProfile { get; set; }
     public ScreenEncoderOptions? NativeScreenSettings { get { lock (_screenSettingsLock) return _nativeScreenOptions; } }
 
-    private bool HasScreenPermission(PeerInfo peer, string permission) => _qcc.IsTrustedPeer(peer) &&
+    internal bool HasScreenPermission(PeerInfo peer, string permission) => _qcc.IsTrustedPeer(peer) &&
         peer.TryGetCertificateHash(out var hash) && _qcc.PeerStore?.HasAutomaticPermission(hash, permission) == true;
 
     public void ReportBrowserScreenSettings(ScreenTransmissionSettings settings, string[] codecs)
@@ -72,7 +76,7 @@ internal sealed partial class VoiceCallHandler
         long revision = 0, ScreenTransmissionSettings? settings = null, CancellationToken ct = default)
     {
         if (!ActiveCalls.TryGetValue(peerId, out var session)) throw new InvalidOperationException("No active call with this peer.");
-        if (action is not ("capabilities" or "start" or "configure")) throw new ArgumentException("Unknown screen action.");
+        if (action is not ("capabilities" or "start" or "start-control" or "configure")) throw new ArgumentException("Unknown screen action.");
         if (session.RemoteScreenControlVersion == 0)
         {
             if (action != "start") throw new InvalidOperationException("Actualiza la aplicación del emisor para modificar su transmisión.");
@@ -80,7 +84,7 @@ internal sealed partial class VoiceCallHandler
             return new(Guid.NewGuid(), true, "Requested");
         }
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, session.CancellationToken, _screenControlLifetime.Token);
-        linked.CancelAfter(action == "start" ? global::QuicPunch.QuicPunch.SessionConsentTimeout + TimeSpan.FromSeconds(10) : TimeSpan.FromSeconds(70));
+        linked.CancelAfter(IsScreenStartAction(action) ? global::QuicPunch.QuicPunch.SessionConsentTimeout + TimeSpan.FromSeconds(10) : TimeSpan.FromSeconds(70));
         var id = Guid.NewGuid();
         var completion = new TaskCompletionSource<ScreenControlReply>(TaskCreationOptions.RunContinuationsAsynchronously);
         _screenReplies[(peerId, id)] = completion;
@@ -117,7 +121,7 @@ internal sealed partial class VoiceCallHandler
             var request = JsonSerializer.Deserialize<ScreenControlRequest>(payload, QuicNet.Serialization.SharedJson.WithOptions(ScreenControlJson));
             if (request == null || request.RequestId == Guid.Empty) return;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(session.CancellationToken, _screenControlLifetime.Token);
-            timeout.CancelAfter(request.Action == "start" ? global::QuicPunch.QuicPunch.SessionConsentTimeout + TimeSpan.FromSeconds(5) : TimeSpan.FromSeconds(65));
+            timeout.CancelAfter(IsScreenStartAction(request.Action) ? global::QuicPunch.QuicPunch.SessionConsentTimeout + TimeSpan.FromSeconds(5) : TimeSpan.FromSeconds(65));
             var reply = await ProcessScreenControlRequestAsync(session.Peer, request, timeout.Token).ConfigureAwait(false);
             await session.SendFrameAsync(FrameTypeScreenControlReply, JsonSerializer.SerializeToUtf8Bytes(reply, QuicNet.Serialization.SharedJson.Options), timeout.Token).ConfigureAwait(false);
         }
@@ -136,6 +140,8 @@ internal sealed partial class VoiceCallHandler
         catch (Exception ex) { QuicPunchLog.Info($"[SCREEN CONTROL] {ex.Message}"); }
     }
 
+    private static bool IsScreenStartAction(string action) => action is "start" or "start-control";
+
     internal async Task<ScreenControlReply> ProcessScreenControlRequestAsync(PeerInfo peer, ScreenControlRequest request, CancellationToken ct)
     {
         ScreenControlReply Denied(string code, string message) => new(request.RequestId, false, code, message);
@@ -143,43 +149,63 @@ internal sealed partial class VoiceCallHandler
         if (!ActiveCalls.TryGetValue(peer.Id, out var session)) return Denied("Denied", "The call has ended.");
         if (request.Action == "capabilities")
             return new(request.RequestId, true, "Completed", Capabilities: await GetScreenControlCapabilitiesAsync(peer, ct).ConfigureAwait(false));
-        if (request.Action is not ("start" or "configure")) return Denied("Unsupported", "Unknown screen action.");
-        if (request.Action == "start" && !HasScreenPermission(peer, "screen-share-request"))
+        bool start = IsScreenStartAction(request.Action);
+        bool forControl = request.Action == "start-control";
+        if (!start && request.Action != "configure") return Denied("Unsupported", "Unknown screen action.");
+        if (start && !session.IsScreenShareAllowed)
+            return Denied("Denied", "El emisor ha desactivado el vídeo para esta llamada.");
+        if (start && !HasScreenPermission(peer, "screen-share-request"))
         {
             var now = DateTime.UtcNow;
             if (!_screenConsentRequests.TryGetValue(peer.Id, out var last) || now - last > TimeSpan.FromSeconds(10))
             {
                 _screenConsentRequests[peer.Id] = now;
-                OnScreenShareRequested?.Invoke(peer);
+                OnScreenShareRequested?.Invoke(peer, forControl);
             }
-            return Denied("ConsentRequired", "La otra persona debe aceptar compartir su pantalla.");
+            return Denied("ConsentRequired", forControl
+                ? "Cuando el contacto comparta una pantalla compatible, vuelve a solicitar el control desde el visor."
+                : "La otra persona debe aceptar compartir su pantalla.");
         }
         if (request.Action == "configure" && !HasScreenPermission(peer, "screen-settings"))
             return Denied("Denied", "No tienes permiso para cambiar esta transmisión.");
         if (!await _screenChangeGate.WaitAsync(0, ct).ConfigureAwait(false)) return Denied("Busy", "Hay otro cambio de transmisión en curso.");
         try
         {
-            if (request.Action == "start" && IsLocalScreenSharing)
+            if (start && IsLocalScreenSharing)
             {
+                if (LocalVideoKind != "screen") return Denied("Busy", "El otro dispositivo tiene la cámara activa.");
                 if (!CanReceiveLocalScreen(session)) return Denied("Denied", "La captura actual está dirigida a otro destinatario.");
                 await NotifySessionScreenShareStartAsync(session).ConfigureAwait(false);
             }
-            else if (request.Action == "start")
+            else if (start)
             {
-                var caps = await GetScreenControlCapabilitiesAsync(peer, ct).ConfigureAwait(false);
-                if (caps.Codecs.Length == 0 || caps.Backend != "native")
+                if (GetPlatformScreenCapture?.Invoke() != null && StartRemotePlatformScreen is { } startPlatform)
                 {
-                    OnScreenShareRequested?.Invoke(peer);
-                    return Denied("ConsentRequired", "La captura disponible necesita una acción local en el navegador.");
+                    await startPlatform(peer, forControl, ct).ConfigureAwait(false);
+                    return new(request.RequestId, true, "Completed");
+                }
+                if (!FfmpegScreenEncoder.CaptureAvailable)
+                {
+                    if (forControl)
+                        return Denied("Unsupported", "El contacto necesita una captura nativa compatible con el control remoto.");
+                    OnScreenShareRequested?.Invoke(peer, false);
+                    return Denied("ConsentRequired", "El otro dispositivo debe elegir la pantalla que quiere compartir.");
                 }
                 if (!HasScreenPermission(peer, "screen-share-request")) return Denied("Denied", "Permission revoked.");
-                await StartNativeScreenCoreAsync(new() { Codec = caps.Codecs.Contains("h264") ? "h264" : caps.Codecs[0],
+                if (forControl && WindowsRemoteInput.CaptureArea("desktop") == null && X11RemoteInput.CaptureArea("desktop") == null)
+                    return Denied("Unsupported", "El contacto necesita un escritorio compatible con el control remoto.");
+                string? codec = new[] { "h264", "hevc", "vp9", "av1" }.FirstOrDefault(c =>
+                    session.RemoteScreenDecoderCodecMask == 0 ||
+                    (session.RemoteScreenDecoderCodecMask & (1u << ScreenEncoderOptions.CodecIdFor(c))) != 0);
+                if (codec == null) return Denied("Unsupported", "No hay un códec de pantalla compatible con el receptor.");
+                await StartNativeScreenCoreAsync(new() { Codec = codec,
                     Source = "desktop", TargetPeerId = peer.Id }, peer, ct).ConfigureAwait(false);
             }
             else
             {
                 if (!IsLocalScreenSharing || !CanReceiveLocalScreen(session)) return Denied("Denied", "No accessible screen transmission is active.");
                 var caps = await GetScreenControlCapabilitiesAsync(peer, ct).ConfigureAwait(false);
+                if (caps.Backend == "platform") return Denied("Unsupported", "Los ajustes de esta captura se cambian en el dispositivo emisor.");
                 if (request.Revision != caps.Revision) return Denied("Conflict", "Los ajustes han cambiado. Vuelve a consultarlos.");
                 var settings = request.Settings ?? throw new ArgumentException("Missing settings.");
                 ValidateScreenSettings(settings);
@@ -191,19 +217,10 @@ internal sealed partial class VoiceCallHandler
                 if (ScreenEncoder.Profile != null && _nativeScreenOptions != null)
                 {
                     var previous = _nativeScreenOptions;
-                    try
-                    {
-                        await StartNativeScreenCoreAsync(previous with { Codec = settings.Codec, Width = settings.Width, Height = settings.Height,
+                    await ReplaceNativeScreenAsync(previous, previous with { Codec = settings.Codec, Width = settings.Width, Height = settings.Height,
                             Fps = settings.Fps, Bitrate = settings.Bitrate, Encoder = settings.Encoder, Preset = settings.Preset, EncoderPreset = null,
                             RateControl = settings.RateControl, Quality = settings.Quality, KeyFrameIntervalMs = settings.KeyFrameIntervalMs,
                             BufferMs = settings.BufferMs }, _remoteCaptureOwner, ct).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        try { await StartNativeScreenCoreAsync(previous, _remoteCaptureOwner, ct).ConfigureAwait(false); }
-                        catch { await StopScreenShareAsync().ConfigureAwait(false); }
-                        throw;
-                    }
                 }
                 else
                 {
@@ -219,16 +236,22 @@ internal sealed partial class VoiceCallHandler
                     finally { _browserUpdates.TryRemove(request.RequestId, out _); }
                 }
             }
-            return new(request.RequestId, true, "Completed", Capabilities: await GetScreenControlCapabilitiesAsync(peer, ct).ConfigureAwait(false));
+            return new(request.RequestId, true, "Completed", Capabilities: request.Action == "configure"
+                ? await GetScreenControlCapabilitiesAsync(peer, ct).ConfigureAwait(false) : null);
         }
+        catch (UnauthorizedAccessException ex) { return Denied("Denied", ex.Message); }
         catch (Exception ex) when (ex is not OperationCanceledException) { return Denied("Failed", ex.Message); }
         finally { _screenChangeGate.Release(); }
     }
 
     private async Task<ScreenControlCapabilities> GetScreenControlCapabilitiesAsync(PeerInfo peer, CancellationToken ct)
     {
-        bool native = ScreenEncoder.Profile != null || !IsLocalScreenSharing && FfmpegScreenEncoder.CaptureAvailable;
-        var encoders = native ? (await ScreenEncoder.CapabilitiesAsync(ct).ConfigureAwait(false)).Where(e => e.Available).ToArray() : [];
+        var platform = GetPlatformScreenCapture?.Invoke();
+        bool native = ScreenEncoder.Profile != null || platform == null && !IsLocalScreenSharing && FfmpegScreenEncoder.CaptureAvailable;
+        ActiveCalls.TryGetValue(peer.Id, out var session);
+        uint receiverMask = session?.RemoteScreenDecoderCodecMask ?? 0;
+        var encoders = native ? (await ScreenEncoder.CapabilitiesAsync(ct).ConfigureAwait(false)).Where(e => e.Available &&
+            (receiverMask == 0 || (receiverMask & (1u << ScreenEncoderOptions.CodecIdFor(e.Codec))) != 0)).ToArray() : [];
         lock (_screenSettingsLock)
         {
             var options = _nativeScreenOptions ?? new ScreenEncoderOptions();
@@ -237,11 +260,12 @@ internal sealed partial class VoiceCallHandler
             if (native && ScreenEncoder.Profile is { } profile) current = current with { Width = profile.Width, Height = profile.Height, Fps = profile.Fps, Encoder = profile.Encoder };
             if (!native && IsLocalScreenSharing)
                 current = current with { Width = LocalScreenWidth, Height = LocalScreenHeight, Fps = LocalScreenFps };
-            var codecs = native ? encoders.Select(e => e.Codec).Distinct().ToArray() :
+            var codecs = native ? encoders.Select(e => e.Codec).Distinct().ToArray() : platform != null ?
+                platform.Encoders().Where(e => e.Available).Select(e => e.Codec).ToArray() :
                 DateTime.UtcNow - _browserScreenReportedAt < TimeSpan.FromSeconds(30) ? _browserScreenCodecs : [];
-            bool accessible = !IsLocalScreenSharing || ActiveCalls.TryGetValue(peer.Id, out var session) && CanReceiveLocalScreen(session);
-            return new(1, _screenSettingsRevision, native ? "native" : "browser", IsLocalScreenSharing && accessible,
-                HasScreenPermission(peer, "screen-share-request"), accessible && HasScreenPermission(peer, "screen-settings"), codecs,
+            bool accessible = !IsLocalScreenSharing || session != null && CanReceiveLocalScreen(session);
+            return new(1, _screenSettingsRevision, native ? "native" : platform != null ? "platform" : "browser", IsLocalScreenSharing && accessible,
+                HasScreenPermission(peer, "screen-share-request"), platform == null && accessible && HasScreenPermission(peer, "screen-settings"), codecs,
                 native ? encoders.Select(e => e.Id).ToArray() : ["auto"],
                 [720, 1080, 1440, 2160], [15, 24, 30, 60, 120, 144], 500_000, native ? 100_000_000 : 30_000_000, current,
                 native ? ["speed", "balanced", "quality"] : [], native ? ["cbr", "vbr"] : [],
@@ -253,8 +277,33 @@ internal sealed partial class VoiceCallHandler
     {
         if (!await _screenChangeGate.WaitAsync(0, ct).ConfigureAwait(false))
             throw new InvalidOperationException("Hay otro cambio de transmisión en curso.");
-        try { return await StartNativeScreenCoreAsync(options, remoteOwner, ct).ConfigureAwait(false); }
+        try
+        {
+            options.Validate();
+            var previous = ScreenEncoder.Profile != null ? NativeScreenSettings : null;
+            if (previous != null && previous.Source == options.Source && previous.TargetPeerId == options.TargetPeerId)
+                return await ReplaceNativeScreenAsync(previous, options, remoteOwner ?? _remoteCaptureOwner, ct).ConfigureAwait(false);
+            return await StartNativeScreenCoreAsync(options, remoteOwner, ct).ConfigureAwait(false);
+        }
         finally { _screenChangeGate.Release(); }
+    }
+
+    private async Task<NativeScreenProfile> ReplaceNativeScreenAsync(ScreenEncoderOptions previous, ScreenEncoderOptions next,
+        PeerInfo? owner, CancellationToken ct)
+    {
+        try { return await StartNativeScreenCoreAsync(next, owner, ct).ConfigureAwait(false); }
+        catch
+        {
+            // A request can end while the encoder is being replaced. Restore
+            // with the handler lifetime so a live call keeps its last profile.
+            try { await StartNativeScreenCoreAsync(previous, owner, _screenControlLifetime.Token).ConfigureAwait(false); }
+            catch
+            {
+                await StopScreenShareAsync().ConfigureAwait(false);
+                OnLocalScreenControlChanged?.Invoke();
+            }
+            throw;
+        }
     }
 
     private async Task<NativeScreenProfile> StartNativeScreenCoreAsync(ScreenEncoderOptions options, PeerInfo? remoteOwner, CancellationToken ct)
@@ -263,6 +312,8 @@ internal sealed partial class VoiceCallHandler
         options.Validate();
         if (ActiveCalls.IsEmpty || options.TargetPeerId.HasValue && !ActiveCalls.ContainsKey(options.TargetPeerId.Value))
             throw new InvalidOperationException("The target call has ended.");
+        var bandwidth = new ScreenBandwidthController(options.Bitrate, options.Fps);
+        long lastFeedback = 0;
         var profile = await ScreenEncoder.StartAsync(options, async config =>
         {
             if (remoteOwner != null && !HasScreenPermission(remoteOwner, "screen-share-request")) return false;
@@ -298,6 +349,14 @@ internal sealed partial class VoiceCallHandler
                 return;
             }
             await SendScreenFrameAsync(packet).ConfigureAwait(false);
+            if (ScreenEncoder.CanAdaptRate && (lastFeedback == 0 || Stopwatch.GetElapsedTime(lastFeedback).TotalSeconds >= 2))
+            {
+                lastFeedback = Stopwatch.GetTimestamp();
+                var current = ActiveCalls.Values.Where(session => CanReceiveLocalScreen(session) && session.IsScreenDecoderApproved && session.Connection.IsNativeQuic)
+                    .Select(session => { var sample = session.VideoNetworkCounts; return (session.Peer.Id, sample.Sent, sample.Lost); });
+                var rate = bandwidth.Observe(current);
+                ScreenEncoder.SetRealtimeRate(rate.Bitrate, rate.Fps);
+            }
             if (OnLocalNativeScreenFrame != null) await OnLocalNativeScreenFrame.Invoke(codecId, packet).ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
         lock (_screenSettingsLock) { _nativeScreenOptions = options; _remoteCaptureOwner = remoteOwner; _screenSettingsRevision++; _remoteCaptureRevocationQueued = 0; }

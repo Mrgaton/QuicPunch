@@ -1,5 +1,9 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Text.Json;
 using QuicNet.Protocols;
 using QuicNet.Vpn;
 using QuicPunch;
@@ -21,13 +25,18 @@ internal static class VpnOrchestrationTests
         public string[] InboundDestinations = [];
         public bool Forwarding, Broadcast;
         public volatile bool FailCapture;
+        public long LastReceivedAt;
         public bool IsHealthy { get; private set; } = true;
         public void Capture(byte[] bytes) => _capture.Enqueue(bytes);
         public bool WaitForPacket(int timeoutMilliseconds, CancellationToken cancellationToken = default)
         { cancellationToken.ThrowIfCancellationRequested(); if (FailCapture) throw new IOException("Simulated adapter failure."); if (_capture.IsEmpty) Thread.Sleep(Math.Min(10, timeoutMilliseconds)); return !_capture.IsEmpty; }
         public int ReceivePacket(Span<byte> destination)
         { if (!_capture.TryDequeue(out var bytes)) return 0; bytes.CopyTo(destination); return bytes.Length; }
-        public void SendPacket(ReadOnlySpan<byte> packet) => Received.Enqueue(packet.ToArray());
+        public void SendPacket(ReadOnlySpan<byte> packet)
+        {
+            Volatile.Write(ref LastReceivedAt, Stopwatch.GetTimestamp());
+            Received.Enqueue(packet.ToArray());
+        }
         public void Close() => Dispose();
         public void Dispose() => IsHealthy = false;
         public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
@@ -77,6 +86,79 @@ internal static class VpnOrchestrationTests
         string root = Path.Combine(Path.GetTempPath(), "quicnet-vpn-orchestrator-" + Guid.NewGuid().ToString("N"));
         try { await ExerciseMixedModesAsync(Path.Combine(root, "mixed")); await ExerciseDeferredStartupAsync(Path.Combine(root, "deferred")); await ExerciseAsync(root); }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    public static async Task RunWintunAsync()
+    {
+        if (!OperatingSystem.IsWindows() || !QuicNet.WebUi.Modules.LanApiModule.IsRunningAsAdmin())
+            throw new InvalidOperationException("The Wintun smoke test requires an isolated, elevated Windows instance.");
+        const string adapterName = "QuicPunchAdapter";
+        if (NetworkInterface.GetAllNetworkInterfaces().Any(adapter => adapter.Name.Equals(adapterName, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("The Wintun smoke test needs its own adapter. A QuicPunchAdapter already exists.");
+
+        string root = Path.Combine(Path.GetTempPath(), "quicnet-wintun-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using var a = await Node(Path.Combine(root, "a"));
+            await using var b = await Node(Path.Combine(root, "b"));
+            a.TrustPeer(b.CurrentPeer.CertHash);
+            b.TrustPeer(a.CurrentPeer.CertHash);
+            using var aHandler = new VirtualLanHandler(() => VpnAdapterFactory.Create(adapterName, "QuicPunchTunnel"));
+            Session? bSession = null;
+            using var bHandler = new VirtualLanHandler(() => new Adapter(session => bSession = session));
+            a.RegisterProtocol(aHandler);
+            b.RegisterProtocol(bHandler);
+            var aIp = IPAddress.Parse("10.203.17.1");
+            var bIp = IPAddress.Parse("10.203.17.2");
+            using var aStore = new VpnConfigurationStore(Path.Combine(root, "a-vpn.json"), Configuration(aIp, bIp, b.CurrentPeer));
+            using var bStore = new VpnConfigurationStore(Path.Combine(root, "b-vpn.json"), Configuration(bIp, aIp, a.CurrentPeer));
+            using var stop = new CancellationTokenSource();
+            await using var aController = new VpnController(a, aHandler, aStore, stop.Token);
+            await using var bController = new VpnController(b, bHandler, bStore, stop.Token);
+            await a.ProcessIncomingPacketAsync(b.GenerateHelloPayload(MessageType.Interrogation, true), new IPEndPoint(IPAddress.Loopback, b.LocalBoundPort), QP.TransportType.Wan);
+            await b.ProcessIncomingPacketAsync(a.GenerateHelloPayload(MessageType.Interrogation, true), new IPEndPoint(IPAddress.Loopback, a.LocalBoundPort), QP.TransportType.Wan);
+            await Wait(() => aHandler.IsActive || aHandler.LastError != null, "Wintun finished adapter setup");
+            if (!aHandler.IsActive) throw new InvalidOperationException(aHandler.LastError ?? "Wintun adapter did not start.");
+            await Wait(() => aHandler.HasActivePeer(b.CurrentPeer.Id) && bHandler.HasActivePeer(a.CurrentPeer.Id), "Wintun tunnel and test peer are ready over native QUIC");
+            Check(NetworkInterface.GetAllNetworkInterfaces().Any(adapter => adapter.Name == adapterName &&
+                adapter.GetIPProperties().UnicastAddresses.Any(address => address.Address.Equals(aIp) &&
+                    address.DuplicateAddressDetectionState == DuplicateAddressDetectionState.Preferred)), "Windows can use the Wintun IPv4 address when the tunnel is ready");
+
+            using var udp = new UdpClient(new IPEndPoint(aIp, 0));
+            int clientPort = ((IPEndPoint)udp.Client.LocalEndPoint!).Port;
+            const ushort peerPort = 42017;
+            var peerEndpoint = new IPEndPoint(bIp, peerPort);
+            byte[] payload = Guid.NewGuid().ToByteArray();
+            var aTunnel = aHandler.ActivePeers.Values.Single();
+            var bTunnel = bHandler.ActivePeers.Values.Single();
+            await Wait(() => aTunnel.SupportsFragmentedDatagrams && aTunnel.Connection.DatagramChannel?.IsSendEnabled == true,
+                "Wintun and the peer negotiated native datagrams");
+            // The fake peer shares this Windows stack, so its policy correctly rejects
+            // the Wintun address as a local source. Observe the packet on its QUIC channel.
+            var channel = bTunnel.Connection.DatagramChannel ?? throw new InvalidOperationException("The peer has no datagram channel.");
+            var outbound = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            void Observe(byte[] packet) { if (packet.AsSpan().EndsWith(payload)) outbound.TrySetResult(); }
+            channel.OnDatagramReceived += Observe;
+            try
+            {
+                await udp.SendAsync(payload, peerEndpoint);
+                await outbound.Task.WaitAsync(TimeSpan.FromSeconds(8));
+            }
+            finally { channel.OnDatagramReceived -= Observe; }
+            Check(true, "OS UDP crosses Wintun and reaches the peer's QUIC channel");
+            bSession!.Capture(VpnPolicyTests.Packet(bIp.ToString(), aIp.ToString(), peerPort, (ushort)clientPort));
+            using var receiveDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var reply = await udp.ReceiveAsync(receiveDeadline.Token);
+            Check(reply.RemoteEndPoint.Equals(peerEndpoint) && reply.Buffer.Length == 0, "peer UDP returns through Wintun to the OS socket");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+
+        static VpnConfiguration Configuration(IPAddress local, IPAddress remote, PeerInfo peer) => new()
+        {
+            Enabled = true, AutoAssign = false, LocalAddress = local.ToString(), Mode = "advanced",
+            Peers = [new() { CertHash = Convert.ToHexString(peer.CertHash), VirtualAddress = remote.ToString(),
+                AutoConnect = true, AutoAccept = true, AccessibleDestinations = [local + "/32"] }]
+        };
     }
     private static async Task ExerciseMixedModesAsync(string root)
     {
@@ -168,11 +250,27 @@ internal static class VpnOrchestrationTests
         using var stop = new CancellationTokenSource();
         await using var aController = new VpnController(a, aHandler, aStore, stop.Token);
         await using var bController = new VpnController(b, bHandler, bStore, stop.Token);
+        long acceptedAt = 0;
+        bool? advertisedBeforeReady = null;
+        b.OnSessionStateChanged += change =>
+        {
+            if (change.PeerId != a.CurrentPeer.Id || change.ProtocolId != bHandler.ProtocolId || change.State != SessionState.Connected) return;
+            advertisedBeforeReady = bHandler.GetActivePeerSummaries().Any();
+            Volatile.Write(ref acceptedAt, Stopwatch.GetTimestamp());
+        };
         int petitions = 0;
         b.Manager.HandshakeRequested += (_, _) => { Interlocked.Increment(ref petitions); return Task.FromResult(new HandshakeDecision(false, null, CancellationToken.None)); };
         await a.ProcessIncomingPacketAsync(b.GenerateHelloPayload(MessageType.Interrogation, true), new IPEndPoint(IPAddress.Loopback, b.LocalBoundPort), QP.TransportType.Wan);
         await b.ProcessIncomingPacketAsync(a.GenerateHelloPayload(MessageType.Interrogation, true), new IPEndPoint(IPAddress.Loopback, a.LocalBoundPort), QP.TransportType.Wan);
         await Wait(() => aHandler.HasActivePeer(b.CurrentPeer.Id) && bHandler.HasActivePeer(a.CurrentPeer.Id), "VPN opens automatically over real QUIC without a local petition");
+        Check(advertisedBeforeReady == false, "accepted VPN is omitted from the active peers sent to the UI until ready");
+        var readyPeer = (JsonElement)bHandler.GetActivePeerSummaries().Single();
+        Check(readyPeer.GetProperty("status").GetString() == "Connected" &&
+            readyPeer.GetProperty("peerId").GetString() == a.CurrentPeer.Id.ToString(), "ready VPN appears as connected in the UI status");
+        byte[] packet = VpnPolicyTests.Packet(aHandler.LocalIp.ToString(), bHandler.LocalIp.ToString());
+        aSession!.Capture(packet);
+        await Wait(() => bSession!.Received.Any(p => p.SequenceEqual(packet)), "IPv4 crosses the automatic VPN as soon as both adapters are ready");
+        LogFirstIpv4("Initial connection");
         Check(petitions == 0, "explicit VPN permission bypasses the petition without granting other applications");
         b.PeerStore!.AddOrUpdate([IPAddress.Loopback], [(ushort)a.LocalBoundPort], a.CurrentPeer.CertHash, save: true);
         b.PeerStore.SetAutomaticPermission(a.CurrentPeer.CertHash, "vpn", true);
@@ -180,9 +278,6 @@ internal static class VpnOrchestrationTests
         bController.SaveConfiguration(consent, consent.Revision);
         Check(!b.HasAutomaticProtocolPermission(a.CurrentPeer, bHandler.ProtocolId), "explicit VPN consent overrides an older saved automatic grant");
         consent = bController.Configuration; consent.Peers[0].AutoAccept = true; bController.SaveConfiguration(consent, consent.Revision);
-        byte[] packet = VpnPolicyTests.Packet(aHandler.LocalIp.ToString(), bHandler.LocalIp.ToString());
-        aSession!.Capture(packet);
-        await Wait(() => bSession!.Received.Any(p => p.SequenceEqual(packet)), "IPv4 crosses the automatic VPN and reaches the receiving adapter");
         byte[] streamPacket = VpnPolicyTests.Packet(aHandler.LocalIp.ToString(), bHandler.LocalIp.ToString(), 1235);
         byte[] streamFrame = new byte[streamPacket.Length + 2];
         System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(streamFrame, (ushort)streamPacket.Length);
@@ -201,8 +296,13 @@ internal static class VpnOrchestrationTests
         await Task.Delay(4500);
         Check(!aHandler.HasActivePeer(b.CurrentPeer.Id), "paused VPN does not immediately reconnect");
         Check(aHandler.IncomingSessionPolicy(b.CurrentPeer) == false, "paused VPN rejects the other side's automatic attempts too");
+        Volatile.Write(ref acceptedAt, 0);
         aController.ResumePeer(b.CurrentPeer.Id);
         await Wait(() => aHandler.HasActivePeer(b.CurrentPeer.Id) && bHandler.HasActivePeer(a.CurrentPeer.Id), "resuming restores the VPN automatically");
+        byte[] resumedPacket = VpnPolicyTests.Packet(aHandler.LocalIp.ToString(), bHandler.LocalIp.ToString(), 1236);
+        aSession!.Capture(resumedPacket);
+        await Wait(() => bSession!.Received.Any(p => p.SequenceEqual(resumedPacket)), "the first IPv4 packet arrives after reconnecting");
+        LogFirstIpv4("Reconnect");
         var advanced = bController.Configuration; advanced.Mode = "advanced";
         advanced.AutoAssign = false; advanced.LocalAddress = bHandler.LocalIp.ToString(); advanced.SubnetMask = "255.255.255.255";
         advanced.Peers[0].AccessibleDestinations = [];
@@ -225,5 +325,13 @@ internal static class VpnOrchestrationTests
         var disabled = bController.Configuration; disabled.Enabled = false; bController.SaveConfiguration(disabled, disabled.Revision);
         await Wait(() => !bHandler.IsActive && !aHandler.HasActivePeer(b.CurrentPeer.Id), "disabling the receiver revokes the live VPN");
         Check(bHandler.IncomingSessionPolicy(a.CurrentPeer) == false, "disabled VPN cannot be resurrected by an incoming session");
+
+        void LogFirstIpv4(string phase)
+        {
+            long accepted = Volatile.Read(ref acceptedAt);
+            long receivedAt = Volatile.Read(ref bSession!.LastReceivedAt);
+            Check(accepted > 0 && receivedAt >= accepted, "receiving adapter observes IPv4 after VPN acceptance");
+            Console.WriteLine($"[VPN] {phase}, acceptance to first IPv4: {Stopwatch.GetElapsedTime(accepted, receivedAt).TotalMilliseconds:F1} ms.");
+        }
     }
 }

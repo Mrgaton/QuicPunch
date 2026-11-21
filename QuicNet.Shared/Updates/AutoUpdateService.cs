@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -22,6 +23,7 @@ public sealed class AutoUpdateService : IDisposable
     private UpdateArtifact? _available;
     private string? _readyPath;
     private readonly object _stateGate = new();
+    private readonly object _automaticGate = new();
     private UpdateStatus _status;
     public UpdateStatus Status { get { lock (_stateGate) return _status; } }
     public event Action? StatusChanged;
@@ -30,6 +32,7 @@ public sealed class AutoUpdateService : IDisposable
         lock (_stateGate)
         {
             var next = update(_status);
+            if (next.Stage != "downloading" && next.DownloadPhase != null) next = next with { DownloadPhase = null };
             if (next == _status) return;
             _status = next with { Revision = _status.Revision + 1 };
         }
@@ -69,10 +72,15 @@ public sealed class AutoUpdateService : IDisposable
 
     public void SetAutomatic(bool enabled)
     {
-        string temporary = _settings + ".tmp";
-        File.WriteAllText(temporary, enabled ? "true" : "false");
-        File.Move(temporary, _settings, true);
-        Set(s => s with { Automatic = enabled });
+        lock (_automaticGate)
+        {
+            string temporary = _settings + ".tmp";
+            File.WriteAllText(temporary, enabled ? "true" : "false");
+            File.Move(temporary, _settings, true);
+            Set(s => s with { Automatic = enabled, Message = !enabled && s.Stage == "available"
+                ? "Actualización disponible. Puedes instalarla cuando quieras."
+                : !enabled && s.Stage == "ready" ? "Actualización verificada. Puedes instalarla cuando quieras." : s.Message });
+        }
     }
 
     public async Task SetChannelAsync(string channel, CancellationToken token = default)
@@ -187,16 +195,18 @@ public sealed class AutoUpdateService : IDisposable
             if (_available.Build <= ReleaseIdentity.Build)
             {
                 _available = null;
-                Set(s => s with { Stage = "current", Message = s.CurrentChannel != s.Channel
-                    ? "No hay una compilación más reciente en este canal. Se conservará la versión instalada hasta que se publique una superior."
-                    : "Tienes la última versión.", Downloaded = 0, Total = 0 });
+                Set(s => s with { Stage = "current", Message = "No hay una actualización posterior.", Downloaded = 0, Total = 0 });
                 return;
             }
             Set(s => s with { Stage = "available", Message = "Hay una actualización disponible." });
             if (installAutomatically) await InstallAutomaticallyCoreAsync(linked.Token);
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
-        catch (Exception ex) { Set(s => s with { Stage = "error", Message = ex is OperationCanceledException ? "El CDN no respondió a tiempo. Se reintentará automáticamente." : ex.Message }); }
+        catch (Exception ex)
+        {
+            Diagnostics.CoreErrorReporter.Report("Búsqueda de actualizaciones", ex);
+            Set(s => s with { Stage = "error", Message = ex is OperationCanceledException ? "El CDN no respondió a tiempo. Se reintentará automáticamente." : ex.Message });
+        }
         finally { _gate.Release(); }
     }
 
@@ -206,7 +216,11 @@ public sealed class AutoUpdateService : IDisposable
         if (!await _gate.WaitAsync(0, linked.Token)) return;
         try { await InstallAutomaticallyCoreAsync(linked.Token); }
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
-        catch (Exception ex) { Set(s => s with { Stage = "error", Message = ex.Message }); }
+        catch (Exception ex)
+        {
+            Diagnostics.CoreErrorReporter.Report("Actualización automática", ex);
+            Set(s => s with { Stage = "error", Message = ex.Message });
+        }
         finally { _gate.Release(); }
     }
 
@@ -240,26 +254,46 @@ public sealed class AutoUpdateService : IDisposable
     internal bool CanApplyAutomatically() => Status.Automatic && QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty &&
         _getIdleTime?.Invoke() >= RequiredIdleTime;
 
+    internal bool TryCommitAutomaticInstallation(Action commit)
+    {
+        lock (_automaticGate)
+        {
+            if (!CanApplyAutomatically()) return false;
+            commit();
+            Set(s => s with { Stage = "installing", Message = "Android está aplicando la actualización…" });
+            return true;
+        }
+    }
+
     private void SetWaitingForIdle()
     {
-        if (!Status.Automatic) return;
-        Set(s => s with { Stage = _readyPath == null ? "available" : "ready", Message = _readyPath == null
+        Set(s => !s.Automatic
+            ? (_readyPath == null ? s : s with { Stage = "ready", Message = "Actualización verificada. Puedes instalarla cuando quieras." })
+            : s with { Stage = _readyPath == null ? "available" : "ready", Message = _readyPath == null
             ? "Actualización disponible. Se descargará tras 15 minutos de inactividad, sin llamadas en curso."
             : "Actualización verificada. Se instalará cuando el dispositivo vuelva a estar inactivo y no haya llamadas en curso." });
     }
 
-    public async Task InstallAsync(CancellationToken token = default)
+    public Task InstallAsync(CancellationToken token = default) => InstallManualAsync(null, token);
+
+    internal async Task InstallManualAsync(Action? endCalls, CancellationToken token = default)
     {
-        if (!await _gate.WaitAsync(0, token)) return;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token);
+        try { await _gate.WaitAsync(linked.Token); }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested) { return; }
         try
         {
+            if (Status.Stage == "installing") return;
             if (_available == null) throw new InvalidOperationException("Comprueba primero si hay una actualización disponible.");
             if (_readyPath == null) await DownloadCoreAsync(linked.Token);
-            await InstallCoreAsync(false, linked.Token);
+            await InstallCoreAsync(false, linked.Token, endCalls);
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
-        catch (Exception ex) { Set(s => s with { Stage = "error", Message = ex.Message }); }
+        catch (Exception ex)
+        {
+            Diagnostics.CoreErrorReporter.Report("Instalación de actualización", ex);
+            Set(s => s with { Stage = "error", Message = ex.Message });
+        }
         finally { _gate.Release(); }
     }
 
@@ -295,6 +329,7 @@ public sealed class AutoUpdateService : IDisposable
             using var input = await response.Content.ReadAsStreamAsync(token);
             await using (var output = new FileStream(wirePath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, true))
             {
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 byte[] buffer = new byte[65536];
                 long total = 0;
                 int count;
@@ -302,18 +337,21 @@ public sealed class AutoUpdateService : IDisposable
                 {
                     total += count;
                     if (total > wire.Size) throw new InvalidDataException("La descarga supera el tamaño firmado.");
+                    hash.AppendData(buffer.AsSpan(0, count));
                     await output.WriteAsync(buffer.AsMemory(0, count), token);
                     Set(s => s with { Downloaded = total });
                 }
+                if (total != wire.Size) throw new InvalidDataException("Tamaño de actualización incorrecto.");
+                UpdateManifest.VerifyHash(hash.GetHashAndReset(), wire.Sha256);
                 await output.FlushAsync(token);
             }
-            await UpdateManifest.VerifyFileAsync(wirePath, wire, token);
             if (artifact.Compressed != null)
             {
-                Set(s => s with { Message = "Descomprimiendo y verificando en este dispositivo…" });
-                await UpdateCompression.DecompressAsync(wirePath, temporary, artifact.Size, token);
+                Set(s => s with { DownloadPhase = "verifying", Message = "Descomprimiendo y verificando en este dispositivo…" });
+                await UpdateCompression.DecompressAsync(wirePath, temporary, artifact.Size,
+                    hash => UpdateManifest.VerifyHash(hash, artifact.Sha256), token);
             }
-            await UpdateManifest.VerifyFileAsync(temporary, artifact, token);
+            token.ThrowIfCancellationRequested();
             File.Move(temporary, destination, true);
             _readyPath = destination;
         }
@@ -321,7 +359,7 @@ public sealed class AutoUpdateService : IDisposable
         Set(s => s with { Stage = "ready", Message = "Actualización verificada y lista para instalar." });
     }
 
-    private async Task InstallCoreAsync(bool automatic, CancellationToken token)
+    private async Task InstallCoreAsync(bool automatic, CancellationToken token, Action? endCalls = null)
     {
         if (_readyPath == null || _available == null) return;
         if (automatic && !CanApplyAutomatically())
@@ -331,17 +369,46 @@ public sealed class AutoUpdateService : IDisposable
         }
         await UpdateManifest.VerifyFileAsync(_readyPath, _available, token);
         token.ThrowIfCancellationRequested();
-        if (automatic && !CanApplyAutomatically())
+        endCalls?.Invoke();
+        if (!automatic && !QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty)
+        {
+            SetWaitingForCalls();
+            return;
+        }
+        Set(s => s with { Stage = "ready", Message = "Actualización verificada. Preparando instalación…" });
+        Task<bool>? installation;
+        lock (_automaticGate)
+        {
+            token.ThrowIfCancellationRequested();
+            // A confirmed preference change and the installer handoff must be ordered.
+            installation = automatic && !CanApplyAutomatically() ? null : _installer(_readyPath, _available, automatic);
+        }
+        if (installation == null)
         {
             SetWaitingForIdle();
             return;
         }
-        Set(s => s with { Stage = "ready", Message = "Actualización verificada. Preparando instalación…" });
-        bool started = await _installer(_readyPath, _available, automatic);
+        bool started = await installation;
+        if (!automatic && !started && !QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty)
+        {
+            SetWaitingForCalls();
+            return;
+        }
+        if (automatic && !started && !CanApplyAutomatically())
+        {
+            SetWaitingForIdle();
+            return;
+        }
         Set(s => s with { Stage = started ? "installing" : "ready", Message = started
             ? (Status.Platform != "android-arm64" ? "Reiniciando para actualizar…" : automatic ? "Android está aplicando la actualización…" : "Completa la instalación en Android.")
             : "Actualización verificada. Puedes pulsar Instalar para reintentar." });
     }
+
+    internal void SetWaitingForCalls() => Set(s => s with
+    {
+        Stage = "ready",
+        Message = "Hay una llamada en curso. Pulsa Instalar actualización para elegir si quieres finalizarla."
+    });
 
     internal static async Task<byte[]> ReadLimitedAsync(Stream input, int limit, CancellationToken token)
     {

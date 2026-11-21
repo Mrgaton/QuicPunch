@@ -4,7 +4,7 @@ param(
     [string[]] $Tests = @(),
     [switch] $Web,
     [switch] $Browser,
-    [string] $BrowserFilter,
+    [string[]] $BrowserFilter,
     [switch] $NoBuild,
     [string] $Configuration = 'Test'
 )
@@ -53,9 +53,15 @@ try {
             }
         }
 
+        $target = & dotnet msbuild $project "-property:Configuration=$Configuration" -getProperty:TargetPath -nologo
+        if ($LASTEXITCODE -ne 0 -or !$target -or !(Test-Path -LiteralPath $target -PathType Leaf)) {
+            [Console]::Error.WriteLine("FAIL: test assembly for '$Configuration' is unavailable. Build it with ./scripts/test.ps1 -Tests output.")
+            exit 1
+        }
+
         foreach ($test in $Tests) {
             $flag = if ($test.StartsWith('--')) { $test } else { "--test-$test" }
-            $runArgs = @('run', '--project', $project, '--configuration', $Configuration, '--no-build', '--', $flag)
+            $runArgs = @($target, $flag)
             if ($showLog) { $runArgs += '--verbose' }
             & dotnet @runArgs
             if ($LASTEXITCODE -ne 0) { $failed = $true }
@@ -63,22 +69,18 @@ try {
     }
 
     if ($Web -or $Browser) {
-        $previousConfiguration = $env:QUICNET_TEST_CONFIGURATION
-        try {
-            $env:QUICNET_TEST_CONFIGURATION = $Configuration
-            $modes = @()
-            if ($Web) { $modes += '--web' }
-            if ($Browser) { $modes += '--browser' }
-            foreach ($mode in $modes) {
-                $nodeArgs = @((Join-Path $root 'scripts/test-web.mjs'), $mode)
-                if ($mode -eq '--browser' -and $BrowserFilter) { $nodeArgs += "--filter=$BrowserFilter" }
-                if ($NoBuild -or $Tests.Count -gt 0) { $nodeArgs += '--no-build' }
-                if ($showLog) { $nodeArgs += '--verbose' }
-                & node @nodeArgs
-                if ($LASTEXITCODE -ne 0) { $failed = $true }
+        $modes = @()
+        if ($Web) { $modes += '--web' }
+        if ($Browser) { $modes += '--browser' }
+        foreach ($mode in $modes) {
+            $nodeArgs = @((Join-Path $root 'scripts/test-web.mjs'), $mode)
+            if ($mode -eq '--browser') {
+                foreach ($filter in $BrowserFilter) { $nodeArgs += "--filter=$filter" }
             }
-        } finally {
-            $env:QUICNET_TEST_CONFIGURATION = $previousConfiguration
+            if ($NoBuild) { $nodeArgs += '--no-build' }
+            if ($showLog) { $nodeArgs += '--verbose' }
+            & node @nodeArgs
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
         }
     }
 

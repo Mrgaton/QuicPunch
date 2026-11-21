@@ -62,7 +62,7 @@ internal static class GeolocationTests
         {
             using var http = new HttpClient { BaseAddress = new Uri(server.Url) };
             foreach (string path in new[] { "geolocation/workbench.html", "geolocation/workbench.js", "geolocation/map.js",
-                "geolocation/map-data", "geolocation/localities", "api/geolocation/workbench/state" })
+                "geolocation/map-data", "geolocation/localities", "api/geolocation/workbench/state", "geolocation.js" })
             {
                 using var response = await http.GetAsync(path);
                 Check(response.StatusCode == HttpStatusCode.NotFound, "Archived endpoint still served: " + path);
@@ -72,8 +72,8 @@ internal static class GeolocationTests
             using var result = await http.SendAsync(start);
             Check(result.StatusCode == HttpStatusCode.NotFound, "Archived measurement API still accepts requests");
             var settings = await http.GetStringAsync("settings.html");
-            Check(settings.Contains("geolocationStatus") && !settings.Contains("geolocationWorkbench") && !settings.Contains("connectionGeolocationStatus"),
-                "Settings must show only offline catalogue status");
+            Check(!settings.Contains("geolocationStatus") && !settings.Contains("geolocationWorkbench") && !settings.Contains("connectionGeolocationStatus"),
+                "Settings must not display catalogue status or measurement controls");
         }
         finally { server.Stop(); shutdown.Cancel(); }
     }

@@ -10,6 +10,8 @@ add_executable(qp_network_probe qp_network_probe.c)
 target_link_libraries(qp_network_probe PRIVATE qp_transport)
 if(MSVC)
   target_compile_definitions(qp_network_probe PRIVATE _CRT_SECURE_NO_WARNINGS)
+  # The bridge is embedded in the Windows executable and must load on a clean system.
+  set_property(TARGET qp_transport PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 target_include_directories(qp_transport PRIVATE "${MSQUIC_ROOT}/src/inc" "${OPENSSL_ROOT}/include")
 if(WIN32)

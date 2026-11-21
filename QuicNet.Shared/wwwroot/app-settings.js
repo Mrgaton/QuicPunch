@@ -22,6 +22,11 @@
     if (!dialog.open) { testNoticeOpener = opener; dialog.showModal(); }
     $('notificationTestClose').focus();
   }
+  function restoreTestNoticeFocus() {
+    const opener = testNoticeOpener;
+    testNoticeOpener = null;
+    if (opener?.isConnected && !opener.disabled) opener.focus({preventScroll:true});
+  }
   function updatePanels() {
     $('noticeDndOptions').hidden = !$('noticeDnd').checked;
     $('noticeQuietOptions').hidden = !$('noticeQuietHours').checked;
@@ -46,6 +51,7 @@
     box.hidden = !value?.canOpenSettings;
     if (box.hidden) return;
     $('notificationSystemMessage').textContent = value.message;
+    $('requestNotificationPermission').hidden = !value.canRequestPermission;
     box.dataset.state = !value.enabled || !value.soundEnabled ? 'warning' : 'ready';
     $('notificationSystemSoundHelp').hidden = !value.systemControlsSound;
   }
@@ -252,15 +258,33 @@
       } catch (error) { status(error.message, 'error'); }
       finally { button.disabled = false; }
     });
-    $('notificationTestClose').addEventListener('click', () => $('notificationTestDialog').close());
+    const testDialog = $('notificationTestDialog');
+    function dismissTestNotice(event) {
+      event.preventDefault();
+      testDialog.close();
+      restoreTestNoticeFocus();
+    }
+    $('notificationTestClose').addEventListener('click', dismissTestNotice);
+    testDialog.addEventListener('cancel', dismissTestNotice);
+    testDialog.addEventListener('close', () => {
+      if (!testDialog.open) restoreTestNoticeFocus();
+    });
     $('openNotificationSettings').addEventListener('click', async () => {
       try { await QP.api('/api/notifications/system-settings', {method:'POST'}); }
       catch (error) { showTestNotice(error.message); }
     });
+    $('requestNotificationPermission').addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        renderSystemStatus(await QP.api('/api/notifications/request-permission', {method:'POST'}));
+        if (button.hidden) $('openNotificationSettings').focus();
+      } catch (error) { showTestNotice(error.message, 'Permiso de avisos', button); }
+      finally { button.disabled = false; }
+    });
     window.addEventListener('focus', refreshSystemStatus);
     document.addEventListener('visibilitychange', refreshSystemStatus);
     QP.on('settings_section_changed', ({section}) => { if (section === 'notifications') refreshSystemStatus(); });
-    $('notificationTestDialog').addEventListener('close', () => { if (testNoticeOpener?.isConnected && !testNoticeOpener.disabled) testNoticeOpener.focus({preventScroll:true}); });
     const ringtone = $('notificationRingtonePreview'), ringButton = $('testCallRingtone');
     const stopRingtone = () => {
       ringtone.pause(); ringtone.removeAttribute('src'); ringtone.load();
@@ -291,7 +315,12 @@
       $('noticeDnd').checked = true; $('noticeDndUntil').value = localDate(new Date(Date.now() + Number(button.dataset.noticeSnooze) * 3600000)); changed();
     }));
     $('quitAppBtn').addEventListener('click', async () => {
-      if (!confirm('¿Salir de QuicNet y desconectar las sesiones activas?')) return;
+      if (!await QP.confirmAction({
+        title: '¿Salir de QuicNet?',
+        message: 'Se desconectarán las sesiones activas de este dispositivo.',
+        confirmLabel: 'Salir de QuicNet',
+        danger: true
+      })) return;
       try { await QP.api('/api/shutdown', { method: 'POST' }); $('appBehaviorStatus').textContent = 'QuicNet se está cerrando.'; }
     catch (error) { $('appBehaviorStatus').textContent = error.message; }
     });

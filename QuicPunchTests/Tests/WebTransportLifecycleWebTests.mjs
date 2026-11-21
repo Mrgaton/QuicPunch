@@ -18,6 +18,7 @@ class Socket {
   send(value) { assert.equal(this.readyState, Socket.OPEN); this.sent.push(JSON.parse(value)); }
   close() { this.readyState = Socket.CLOSING; }
   message(type, data) { this.onmessage?.({data: JSON.stringify({type, data})}); }
+  live(id, events) { this.onmessage?.({data: JSON.stringify({type: 'live_updates', id, events})}); }
   closed() { this.readyState = Socket.CLOSED; this.onclose?.({code: 1006, wasClean: false}); }
 }
 const window = {...events(), __qp_csrf: 'test csrf', QuicNetDiagnostics: {report() {}, setTransport(value) { diagnostics.push(value); }}};
@@ -71,6 +72,39 @@ assert.equal(sockets.length, 3, 'A restored page never reconnected');
 sockets[2].open(); sockets[2].message('status_updated', {generation: 3});
 assert.equal(qp.state.status.generation, 3);
 assert.equal(qp.isWsConnected, true);
+
+// A parked tab releases its subscription but keeps command replies and discrete events.
+const third = sockets[2], rendered = [], progress = [], messages = [];
+qp.on('status_updated', status => rendered.push(status.generation));
+qp.on('speedtest_progress', data => progress.push(data.value));
+qp.on('chat_msg', data => messages.push(data));
+const initialLive = third.sent.at(-1);
+assert.equal(initialLive.type, 'live_request');
+document.hidden = true;
+document.dispatch('visibilitychange');
+assert.equal(third.sent.at(-1).type, 'live_pause');
+const hiddenRequest = qp.wsRequest('settings.get');
+const hiddenId = third.sent.at(-1).id;
+third.onmessage({data: JSON.stringify({type: 'response', id: hiddenId, success: true, data: {ok: true}})});
+assert.equal((await hiddenRequest).ok, true);
+third.message('chat_msg', 'Mensaje recibido');
+third.live(initialLive.id, [{type: 'status_updated', data: {generation: 4}}]);
+assert.deepEqual(rendered, []);
+assert.deepEqual(messages, ['Mensaje recibido']);
+assert.equal(third.sent.at(-1).type, 'request', 'A hidden page requested another live batch');
+
+document.hidden = false;
+document.dispatch('visibilitychange');
+const resumed = third.sent.at(-1);
+assert.equal(resumed.type, 'live_request');
+assert.equal(resumed.refresh, true);
+assert.notEqual(resumed.id, initialLive.id);
+third.live(initialLive.id, [{type: 'status_updated', data: {generation: 5}}]);
+assert.deepEqual(rendered, []);
+third.live(resumed.id, [{type: 'status_updated', data: {generation: 100}}, {type: 'speedtest_progress', data: {value: 90}}]);
+assert.deepEqual(rendered, [100]);
+assert.deepEqual(progress, [90]);
+assert.equal(third.sent.at(-1).refresh, false, 'The browser did not renew the stream after rendering');
 
 // Real departure sends one authenticated close request, including fallback if the beacon queue is full.
 window.dispatch('pagehide', {persisted: false});

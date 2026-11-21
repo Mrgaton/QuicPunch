@@ -45,7 +45,7 @@ internal static class NativeAssetBundle
         if (OperatingSystem.IsWindows() && !SetDllDirectory(directory)) throw new IOException("No se pudo configurar la carpeta de bibliotecas nativas.");
         // Explicit full paths prevent a library beside the downloaded EXE from shadowing embedded assets.
         string? mediaOverride = Environment.GetEnvironmentVariable("QUICNET_MEDIA_LIBRARY_DIRECTORY");
-        string[] mediaLibraries = ["avutil-60.dll", "swscale-9.dll", "avcodec-62.dll", "nettt_media.dll"];
+        string[] mediaLibraries = ["avutil-60.dll", "swscale-9.dll", "avcodec-62.dll", "avfilter-11.dll", "nettt_media.dll"];
         if (OperatingSystem.IsWindows() && !string.IsNullOrWhiteSpace(mediaOverride))
         {
             // Explicit user opt-in permits replacing LGPL libraries with ABI-compatible builds.
@@ -62,7 +62,9 @@ internal static class NativeAssetBundle
             if (string.IsNullOrWhiteSpace(mediaOverride) || !mediaLibraries.Contains(asset.Name))
                 NativeLibrary.Load(Path.Combine(directory, asset.Name));
         if (OperatingSystem.IsLinux())
-            foreach (var asset in assets.Where(a => a.Name.EndsWith(".so", StringComparison.Ordinal) && !a.Name.Contains("Photino", StringComparison.OrdinalIgnoreCase)))
+            // Optional GUI and FFmpeg dependencies are loaded on first use.
+            foreach (var asset in assets.Where(a => a.Name.EndsWith(".so", StringComparison.Ordinal) &&
+                a.Name is not ("Photino.Native.so" or "libnettt_media.so")))
                 NativeLibrary.Load(Path.Combine(directory, asset.Name));
         return _directory = directory;
     }

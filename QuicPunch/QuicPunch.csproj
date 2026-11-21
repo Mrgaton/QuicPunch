@@ -54,6 +54,8 @@
     <_NativeMsQuicFileName Condition="'$(_NativeMsQuicRid)' == 'win-x64'">msquic.dll</_NativeMsQuicFileName>
     <_NativeMsQuicFileName Condition="'$(_NativeMsQuicRid)' == 'linux-x64'">libmsquic.so</_NativeMsQuicFileName>
     <_NativeBridgeFileName Condition="'$(_NativeMsQuicRid)' == 'win-x64'">qp_transport.dll</_NativeBridgeFileName><_NativeBridgeFileName Condition="'$(_NativeMsQuicRid)' == 'linux-x64'">libqp_transport.so</_NativeBridgeFileName><_NativeMsQuicOutput>$(MSBuildProjectDirectory)\runtimes\$(_NativeMsQuicRid)\native\$(_NativeMsQuicFileName)</_NativeMsQuicOutput>
+    <_NativeBridgeOutput>$(MSBuildProjectDirectory)\runtimes\$(_NativeMsQuicRid)\native\$(_NativeBridgeFileName)</_NativeBridgeOutput>
+    <_NativeVerificationStamp>$(MSBuildProjectDirectory)\obj\native\$(_NativeMsQuicRid)\verified.txt</_NativeVerificationStamp>
     <_NativeBuilderAssembly>$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\bin\$(Configuration)\net11.0\QuicPunch.NativeBuilder.dll</_NativeBuilderAssembly>
   </PropertyGroup>
 
@@ -61,10 +63,16 @@
     <Error Condition="'$(_NativeMsQuicRid)' == ''" Text="QuicPunch's mandatory post-quantum MsQuic build currently requires a win-x64 or linux-x64 .NET SDK host." />
   </Target>
 
-  <Target Name="BuildNativeMsQuic" BeforeTargets="CoreCompile" DependsOnTargets="ResolveProjectReferences;ValidateNativeMsQuicHost" Condition="'$(DesignTimeBuild)' != 'true' and '$(_NativeMsQuicRid)' != ''" Inputs="$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\Program.cs;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\QuicPunch.NativeBuilder.csproj;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\native-build.lock.json;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-openssl-pqc.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-callback-query.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-msvc-fastfail.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-ack-frequency.patch;$(MSBuildProjectDirectory)\..\QuicPunch.AndroidProbe\native\qp_transport.c;$(MSBuildProjectDirectory)\..\QuicPunch.AndroidProbe\native\qp_platform.h;$(MSBuildProjectDirectory)\..\QuicPunch.AndroidProbe\native\qp_datagram_queue.h;$(MSBuildProjectDirectory)\..\QuicPunch.AndroidProbe\native\CMakeLists.txt" Outputs="$(_NativeMsQuicOutput);$(MSBuildProjectDirectory)\runtimes\$(_NativeMsQuicRid)\native\$(_NativeBridgeFileName)">
+  <Target Name="InvalidateMissingNativeAssets" Condition="'$(_NativeMsQuicRid)' != ''">
+    <Delete Files="$(_NativeVerificationStamp)"
+            Condition="Exists('$(_NativeVerificationStamp)') and (!Exists('$(_NativeMsQuicOutput)') or !Exists('$(_NativeBridgeOutput)'))" />
+  </Target>
+
+  <Target Name="BuildNativeMsQuic" BeforeTargets="CoreCompile" DependsOnTargets="ResolveProjectReferences;ValidateNativeMsQuicHost;InvalidateMissingNativeAssets" Condition="'$(DesignTimeBuild)' != 'true' and '$(_NativeMsQuicRid)' != ''" Inputs="$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\Program.cs;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\QuicPunch.NativeBuilder.csproj;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\native-build.lock.json;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-openssl-pqc.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-callback-query.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-msvc-fastfail.patch;$(MSBuildProjectDirectory)\..\QuicPunch.NativeBuilder\msquic-ack-frequency.patch;$(MSBuildProjectDirectory)\..\QuicPunch.AndroidProbe\native\qp_transport.c;$(MSBuildProjectDirectory)\..\QuicPunch.AndroidProbe\native\qp_platform.h;$(MSBuildProjectDirectory)\..\QuicPunch.AndroidProbe\native\qp_datagram_queue.h;$(MSBuildProjectDirectory)\..\QuicPunch.AndroidProbe\native\CMakeLists.txt" Outputs="$(_NativeVerificationStamp)">
     <Message Importance="high" Text="Building mandatory application-local MsQuic/OpenSSL PQC library for $(_NativeMsQuicRid)..." />
     <Exec Command="dotnet &quot;$(_NativeBuilderAssembly)&quot; --rid $(_NativeMsQuicRid)" />
     <Error Condition="!Exists('$(_NativeMsQuicOutput)')" Text="The native builder completed without producing '$(_NativeMsQuicOutput)'." />
+    <Error Condition="!Exists('$(_NativeBridgeOutput)') or !Exists('$(_NativeVerificationStamp)')" Text="The native builder did not verify the transport bridge for $(_NativeMsQuicRid)." />
   </Target>
 
 <ItemGroup Condition="'$(NativeBundleDirectory)' != ''"><EmbeddedResource Include="$(NativeBundleDirectory)/*.dll;$(NativeBundleDirectory)/*.so" LogicalName="QuicNet.Native.%(Filename)%(Extension)" /></ItemGroup></Project>

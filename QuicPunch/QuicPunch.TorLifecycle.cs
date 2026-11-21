@@ -26,17 +26,29 @@ namespace QuicPunch
         private CancellationTokenSource? _torLoopCts;
         private Task? _torAcceptLoopTask;
         private readonly ConcurrentDictionary<Guid, Task> _torReceiveLoopTasks = new();
-        public async Task StartTorAsync(int virtualPort = 0, TorRuntimeOptions? options = null, TorManager? existingTorManager = null, CancellationToken cancellationToken = default)
+        internal event Action? TorBootstrapChanged;
+
+        public Task StartTorAsync(int virtualPort = 0, TorRuntimeOptions? options = null, TorManager? existingTorManager = null, CancellationToken cancellationToken = default) =>
+            StartTorAsync(virtualPort, options, existingTorManager, cancellationToken, default);
+
+        internal async Task StartTorAsync(int virtualPort, TorRuntimeOptions? options, TorManager? existingTorManager,
+            CancellationToken cancellationToken, CancellationToken startupCancellation)
         {
             EnsureStarted();
-            await _torLifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            using var start = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, startupCancellation);
+            await _torLifecycleLock.WaitAsync(start.Token).ConfigureAwait(false);
             try
             {
                 EnsureStarted();
                 if (IsTorStarted)
                     return;
                 TorLastError = null;
-                await StartTorCoreAsync(virtualPort, options, existingTorManager, cancellationToken).ConfigureAwait(false);
+                await StartTorCoreAsync(virtualPort, options, existingTorManager, cancellationToken, startupCancellation).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (start.IsCancellationRequested || LifecycleToken.IsCancellationRequested)
+            {
+                await StopTorCoreAsync().ConfigureAwait(false);
+                throw;
             }
             catch (Exception ex)
             {
@@ -53,7 +65,8 @@ namespace QuicPunch
 
         public TorRuntimeOptions? DefaultTorRuntimeOptions { get; set; }
 
-        private async Task StartTorCoreAsync(int virtualPort, TorRuntimeOptions? options, TorManager? existingTorManager, CancellationToken cancellationToken)
+        private async Task StartTorCoreAsync(int virtualPort, TorRuntimeOptions? options, TorManager? existingTorManager,
+            CancellationToken cancellationToken, CancellationToken startupCancellation)
         {
             options ??= DefaultTorRuntimeOptions;
             QuicPunchLog.Info("[TOR SERVER] Initializing Tor runtime...");
@@ -61,6 +74,8 @@ namespace QuicPunch
             try { _torLoopCts?.Cancel(); _torLoopCts?.Dispose(); } catch { }
             _torLoopCts = CancellationTokenSource.CreateLinkedTokenSource(LifecycleToken, cancellationToken);
             CancellationToken torToken = _torLoopCts.Token;
+            await using var cancelStartup = startupCancellation.UnsafeRegister(static source => ((CancellationTokenSource)source!).Cancel(), _torLoopCts);
+            torToken.ThrowIfCancellationRequested();
 
             Directory.CreateDirectory(NodeAppDataPath);
             string identityPath = Path.Combine(NodeAppDataPath, "tor_identity.key");
@@ -72,17 +87,17 @@ namespace QuicPunch
                     string keyBase64 = await File.ReadAllTextAsync(identityPath, torToken).ConfigureAwait(false);
                     TorIdentity = TorIdentity.FromPrivateKeyBase64(keyBase64);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!torToken.IsCancellationRequested)
                 {
                     QuicPunchLog.Info($"[TOR SERVER] Warning: Failed to load saved identity: {ex.Message}. Generating new one.");
                     TorIdentity = TorIdentity.CreateRandom();
-                    await File.WriteAllTextAsync(identityPath, TorIdentity.PrivateKeyBase64, torToken).ConfigureAwait(false);
+                    await SaveTorIdentityAsync(identityPath, torToken).ConfigureAwait(false);
                 }
             }
             else
             {
                 TorIdentity = TorIdentity.CreateRandom();
-                await File.WriteAllTextAsync(identityPath, TorIdentity.PrivateKeyBase64, torToken).ConfigureAwait(false);
+                await SaveTorIdentityAsync(identityPath, torToken).ConfigureAwait(false);
             }
 
             int resolvedPort = virtualPort > 0
@@ -128,9 +143,10 @@ namespace QuicPunch
                         string progress = line[idx..];
                         TorBootstrapStatus = $"{trm.ActiveTransport}: {progress}";
                         var match = System.Text.RegularExpressions.Regex.Match(line, @"\b(\d{1,3})%");
-                        if (match.Success && int.TryParse(match.Groups[1].Value, out int pVal))
+                        if (match.Success && int.TryParse(match.Groups[1].Value, out int pVal) && pVal != TorBootstrapProgress)
                         {
                             TorBootstrapProgress = pVal;
+                            TorBootstrapChanged?.Invoke();
                         }
                         WriteLine($"[TOR SERVER] [{trm.ActiveTransport}] {progress}");
                     }
@@ -139,6 +155,7 @@ namespace QuicPunch
                     {
                         TorBootstrapStatus = line.Trim();
                         TorBootstrapProgress = 0;
+                        TorBootstrapChanged?.Invoke();
                         WriteLine($"[TOR SERVER] {line.Trim()}");
                     }
                 };
@@ -175,6 +192,21 @@ namespace QuicPunch
                     QuicPunchLog.Info($"[NOSTR-TOR] Discovery start warning: {ex.Message}");
                 }
             }
+            // Superseding an operation can interrupt bootstrap, but cannot stop an already-started service.
+            await cancelStartup.DisposeAsync().ConfigureAwait(false);
+            torToken.ThrowIfCancellationRequested();
+        }
+
+        private async Task SaveTorIdentityAsync(string path, CancellationToken token)
+        {
+            string temporary = path + ".tmp";
+            try
+            {
+                await File.WriteAllTextAsync(temporary, TorIdentity.PrivateKeyBase64, token).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                File.Move(temporary, path, overwrite: true);
+            }
+            finally { File.Delete(temporary); }
         }
 
         public async Task StopTorAsync()

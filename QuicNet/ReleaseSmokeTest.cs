@@ -19,7 +19,8 @@ internal static class ReleaseSmokeTest
         {
             _ = UpdateManifest.ReadPublicKey();
             PeerStore.VerifyAotJsonContract();
-            if (OperatingSystem.IsWindows())
+            if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux() &&
+                typeof(NativeAssetBundle).Assembly.GetManifestResourceNames().Contains("QuicNet.Native.libnettt_media.so"))
             {
                 using var probes=typeof(QuicNet.Video.NativeVideoRuntime).Assembly.GetManifestResourceStream("QuicNet.NativeVideo.Probes.json")!;
                 var fixtures=JsonSerializer.Deserialize(probes,QuicNet.Video.NativeVideoJsonContext.Default.NativeVideoFixtureArray)!;
@@ -138,13 +139,22 @@ internal static class ReleaseSmokeTest
                 Console.WriteLine("Verified AOT profile API and offline AVIF encoder assets.");
                 using var socket = new System.Net.WebSockets.ClientWebSocket();
                 await socket.ConnectAsync(new Uri(server.Url.Replace("http://", "ws://") + "ws?csrf=" + csrf), cts.Token);
-                for (int message = 0; message < 2; message++)
+                ReadOnlyMemory<byte> liveRequest = """{"type":"live_request","id":1,"refresh":true}"""u8.ToArray();
+                await socket.SendAsync(liveRequest, System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
+                foreach (string expectedType in new[] { "ws_connected", "live_updates" })
                 {
                     using var payload = new MemoryStream();
                     var buffer = new byte[65536];
                     System.Net.WebSockets.WebSocketReceiveResult frame;
                     do { frame = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token); payload.Write(buffer, 0, frame.Count); } while (!frame.EndOfMessage);
                     using var json = JsonDocument.Parse(payload.ToArray());
+                    var message = json.RootElement;
+                    if (message.GetProperty("type").GetString() != expectedType)
+                        throw new InvalidDataException("Unexpected WebSocket message while waiting for " + expectedType);
+                    if (expectedType == "live_updates" && (message.GetProperty("id").GetInt32() != 1 ||
+                        !message.GetProperty("events").EnumerateArray().Any(item =>
+                            item.GetProperty("type").GetString() == "status_updated" && item.GetProperty("data").TryGetProperty("node", out _))))
+                        throw new InvalidDataException("WebSocket live update did not include the requested status snapshot.");
                 }
                 await socket.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "release check", cts.Token);
             }

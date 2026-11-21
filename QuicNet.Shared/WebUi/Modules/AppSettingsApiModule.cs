@@ -50,6 +50,14 @@ internal sealed class AppSettingsApiModule(AppPreferencesStore preferences, AppN
                 throw new InvalidOperationException("Abre los ajustes de notificaciones del sistema desde este dispositivo.");
             response.StatusCode = 204; return true;
         }
+        if (path == "/api/notifications/request-permission" && request.HttpMethod == "POST")
+        {
+            var platform = notifications.Platform ?? throw new InvalidOperationException("Los avisos del sistema no están disponibles.");
+            await platform.RequestNotificationPermissionAsync();
+            await WebUiContext.WriteJsonAsync(response, JsonSerializer.SerializeToElement(platform.GetNotificationStatus(),
+                WebUiContext.JsonOptionsFor(new(JsonSerializerDefaults.Web))));
+            return true;
+        }
         if (path == "/api/notifications/status" && request.HttpMethod == "GET")
         {
             var state = notifications.Platform?.GetNotificationStatus() ??

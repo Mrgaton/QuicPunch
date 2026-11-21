@@ -2,6 +2,11 @@ import {readFileSync} from 'node:fs';
 import {Script} from 'node:vm';
 import assert from 'node:assert/strict';
 
+export function loadChatDrafts(context) {
+  const url = new URL('../../QuicNet.Shared/wwwroot/chat-drafts.js', import.meta.url);
+  new Script(readFileSync(url, 'utf8'), {filename: 'chat-drafts.js'}).runInContext(context);
+}
+
 export function loadApp(context) {
   for (const file of ['ui-values.js', 'app.js']) {
     const url = new URL('../../QuicNet.Shared/wwwroot/' + file, import.meta.url);

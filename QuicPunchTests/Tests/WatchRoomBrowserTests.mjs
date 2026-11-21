@@ -98,13 +98,15 @@ try {
   await frame.locator('#leaveRoom').click();
   await frame.locator('#createRoom').waitFor();
   await frame.locator('#toast').evaluate(el=>el.className='toast');
-  for(const [width,height] of [[1440,1050],[1920,1080],[768,1024],[390,844],[320,740]]){
+  for(const [width,height] of [[1440,1050],[1920,1080],[768,1024],[390,844],[320,740],[844,390],[932,430]]){
     await page.setViewportSize({width,height});
     const overflow=await frame.locator('body').evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);
     assert.equal(overflow,false,`Watch overflows at ${width}px`);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,`Shell overflows at ${width}px`);
+    if (height<=430) await frame.locator('body').evaluate(body=>body.ownerDocument.defaultView.scrollTo(0,0));
     const button=await frame.locator('#startWatching').boundingBox();
     assert.ok(button.height>=44,'Touch targets must be at least 44px high');
+    if (height<=430) assert.ok(button.y+button.height<=height,'Prepare room is below the fold in landscape');
     if(width===1440||width===390)await page.screenshot({path:`.artifacts/ui-review/watch-${width}.png`,fullPage:true});
   }
   await page.setViewportSize({width:1440,height:1050});

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using ZstdSharp;
 using ZstdSharp.Unsafe;
 
@@ -16,13 +17,17 @@ public static class UpdateCompression
         await source.CopyToAsync(compressor, ct);
     }
 
-    public static async Task DecompressAsync(string input, string output, long expectedSize, CancellationToken ct = default)
+    public static Task DecompressAsync(string input, string output, long expectedSize, CancellationToken ct = default)
+        => DecompressAsync(input, output, expectedSize, null, ct);
+
+    internal static async Task DecompressAsync(string input, string output, long expectedSize, Action<byte[]>? verifyHash, CancellationToken ct)
     {
         if (expectedSize <= 0 || expectedSize > 512L * 1024 * 1024) throw new InvalidDataException("Tamaño descomprimido inválido.");
         await using var source = File.OpenRead(input);
         await using var decoder = new DecompressionStream(source);
         decoder.SetParameter(ZSTD_dParameter.ZSTD_d_windowLogMax, WindowLog);
         await using var destination = File.Create(output);
+        using var hash = verifyHash == null ? null : IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         byte[] buffer = new byte[65536];
         long total = 0;
         int count;
@@ -30,8 +35,10 @@ public static class UpdateCompression
         {
             total += count;
             if (total > expectedSize) throw new InvalidDataException("Zstandard supera el tamaño firmado.");
+            hash?.AppendData(buffer.AsSpan(0, count));
             await destination.WriteAsync(buffer.AsMemory(0, count), ct);
         }
         if (total != expectedSize) throw new InvalidDataException("La actualización descomprimida está incompleta.");
+        if (hash != null) verifyHash!(hash.GetHashAndReset());
     }
 }

@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using QuicPunch;
 using QuicPunch.Multiplexer;
 using QuicNet.Protocols;
+using QuicNet.Video;
 using QuicConnection = QuicPunch.QuicConnection;
 using NativeQuicConnection = System.Net.Quic.QuicConnection;
 
@@ -25,6 +26,7 @@ public static class ScreenShareTests
     public static async Task RunAsync()
     {
         TestDecoderProbeContracts();
+        TestRemoteDesktopInputValidation();
         await ScreenPreviewTransportTests.RunAsync();
         if (!VoiceCallHandler.ActiveCalls.IsEmpty) throw new Exception("Screen test requires isolated call state.");
         try
@@ -60,6 +62,22 @@ public static class ScreenShareTests
             "{\"requestId\":\"" + request + "\",\"supported\":true}", QuicNet.Serialization.SharedJson.Options);
         if (legacy?.requestId != request || legacy.supported != true || legacy.diagnostic != null)
             throw new Exception("Legacy decoder replies must not require diagnostics.");
+    }
+
+    private static void TestRemoteDesktopInputValidation()
+    {
+        var click = new RemoteDesktopInput("down", .25, .75, 0);
+        var text = new RemoteDesktopInput("text", text: "móvil 🌍");
+        if (!WindowsRemoteInput.IsValid(click) || !WindowsRemoteInput.IsValid(text) ||
+            !WindowsRemoteInput.IsValid(new("keydown", key: "KeyA")) ||
+            !WindowsRemoteInput.IsValid(new("keyup", key: "ControlLeft")) ||
+            WindowsRemoteInput.IsValid(click with { x = double.NaN }) ||
+            WindowsRemoteInput.IsValid(click with { y = -0.1 }) ||
+            WindowsRemoteInput.IsValid(click with { button = 3 }) ||
+            WindowsRemoteInput.IsValid(new("text", text: "line\nbreak")) ||
+            WindowsRemoteInput.IsValid(new("key", key: "Ctrl+Alt+F12")) ||
+            WindowsRemoteInput.IsValid(new("keydown", key: "F25")))
+            throw new Exception("Remote input validation did not enforce the input shape.");
     }
 
     private static async Task Test_ScreenShare_FramingAndStreamingAsync()
@@ -128,7 +146,7 @@ public static class ScreenShareTests
         // The optional tail preserves the legacy masks/control byte and bounds GPU hints to supported codecs.
         await VoiceCallHandler.SetLocalScreenCodecCapabilitiesAsync(2, 2, 34);
         for (int i = 0; i < 50 && VoiceCallHandler.ActiveCalls.Values.Any(s => s.RemoteScreenDecoderHardwarePreferenceMask != 2); i++) await Task.Delay(20);
-        if (VoiceCallHandler.ActiveCalls.Values.Any(s => !s.RemoteScreenCapabilitiesReceived || s.RemoteScreenDecoderHardwarePreferenceMask != 2 || s.RemoteScreenControlVersion != 2))
+        if (VoiceCallHandler.ActiveCalls.Values.Any(s => !s.RemoteScreenCapabilitiesReceived || s.RemoteScreenDecoderHardwarePreferenceMask != 2 || s.RemoteScreenControlVersion != VoiceCallHandler.RemoteInputVersion))
             throw new Exception("Receiver GPU preferences did not survive the capability frame.");
         await VoiceCallHandler.SetLocalScreenCodecCapabilitiesAsync(2, 0);
         for (int i = 0; i < 50 && VoiceCallHandler.ActiveCalls.Values.Any(s => s.RemoteScreenDecoderHardwarePreferenceMask != null || s.RemoteScreenDecoderCodecMask != 0); i++) await Task.Delay(20);
@@ -234,6 +252,7 @@ public static class ScreenShareTests
         {
             var hash = viewerPeer.CertHash;
             store.AddOrUpdate([IPAddress.Loopback], [4333], hash, save: true);
+            store.AddOrUpdate([IPAddress.Loopback], [4334], emitterPeer.CertHash, save: true);
             emitter.ReportBrowserScreenSettings(new(), ["h264", "vp9"]);
             var caps = await viewer.RequestScreenControlAsync(emitterPeer.Id, "capabilities");
             if (!caps.Success || caps.Capabilities?.Backend != "browser" || !caps.Capabilities.Codecs.Contains("vp9") || caps.Capabilities.CanConfigure)
@@ -241,6 +260,27 @@ public static class ScreenShareTests
             var denied = await viewer.RequestScreenControlAsync(emitterPeer.Id, "configure", caps.Capabilities.Revision, new());
             if (denied.Code != "Denied") throw new Exception("Friend changed remote screen settings without permission.");
             store.SetProfile(hash, QuicPunch.Helpers.PeerProfile.Administrator);
+            var refusedInput = new TaskCompletionSource<RemoteInputStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+            viewer.RemoteInputChanged += status =>
+            {
+                if (status.message != null) refusedInput.TrySetResult(status);
+            };
+            await viewer.RequestRemoteInputAsync(emitterPeer.Id);
+            var refusal = await refusedInput.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (refusal.session != null || emitter.GetRemoteInputStatus().session != null)
+                throw new Exception("Administrator obtained a remote-input session for a browser capture.");
+            try
+            {
+                await viewer.ForwardRemoteInputAsync(Guid.NewGuid(), [new("text", text: "test")]);
+                throw new Exception("Input was forwarded without an active grant.");
+            }
+            catch (ArgumentException) { }
+            try
+            {
+                await viewer.SendRemoteClipboardAsync(Guid.NewGuid(), "text");
+                throw new Exception("Clipboard text was sent without an active grant and opt-in.");
+            }
+            catch (ArgumentException) { }
             caps = await viewer.RequestScreenControlAsync(emitterPeer.Id, "capabilities");
             if (!caps.Capabilities!.CanConfigure) throw new Exception("Administrator cannot configure remote transmission.");
             var settings = new ScreenTransmissionSettings("vp9", 1280, 720, 30, 4_000_000);
@@ -277,17 +317,126 @@ public static class ScreenShareTests
             if (denied.Code != "Denied") throw new Exception("Existing call retained revoked administrator rights.");
             await VoiceCallHandler.StopScreenShareAsync();
             var asked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            emitter.OnScreenShareRequested += _ => asked.TrySetResult();
+            emitter.OnScreenShareRequested += (_, _) => asked.TrySetResult();
+            emitter.GetPlatformScreenCapture = () => new TestPlatformCapture();
+            int platformRequests = 0;
+            emitter.StartRemotePlatformScreen = (peer, forControl, ct) =>
+            {
+                if (peer.Id != viewerPeer.Id || forControl || !ct.CanBeCanceled)
+                    throw new Exception("Platform request lost the caller identity or call lifetime.");
+                platformRequests++;
+                return Task.FromException(new UnauthorizedAccessException("Android rechazó la captura."));
+            };
+            store.SetAutomaticPermission(hash, "voice", true);
             var request = await viewer.RequestScreenControlAsync(emitterPeer.Id, "start");
-            if (request.Code != "ConsentRequired" || !asked.Task.IsCompleted)
-                throw new Exception("A friend's screen request did not require local consent.");
-            if (VoiceCallHandler.IsLocalScreenSharing) throw new Exception("Friend started capture without local approval.");
+            if (request.Code != "ConsentRequired" || !asked.Task.IsCompleted || platformRequests != 0)
+                throw new Exception("Automatic call approval granted automatic screen sharing.");
+            store.SetProfile(hash, QuicPunch.Helpers.PeerProfile.Administrator);
+            request = await viewer.RequestScreenControlAsync(emitterPeer.Id, "start");
+            if (request.Code != "Denied" || platformRequests != 1 || VoiceCallHandler.IsLocalScreenSharing)
+                throw new Exception("Administrator did not reach platform capture or platform denial was ignored.");
+            emitter.StartRemotePlatformScreen = (_, _, _) =>
+                VoiceCallHandler.StartScreenShareAsync(720, 1280, 1, 30, viewerPeer.Id);
+            request = await viewer.RequestScreenControlAsync(emitterPeer.Id, "start");
+            if (!request.Success || VoiceCallHandler.LocalScreenTargetPeerId != viewerPeer.Id)
+                throw new Exception("Authorized platform capture did not start a targeted transmission.");
+            var platformStopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            viewer.OnScreenShareStopped += peer =>
+            {
+                if (peer.Id == emitterPeer.Id) platformStopped.TrySetResult();
+            };
+            await VoiceCallHandler.StopScreenShareAsync();
+            await platformStopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await TestRemoteInputConsentAsync(emitter, viewer, emitterPeer, viewerPeer, store);
         }
         finally
         {
+            emitter.GetPlatformScreenCapture = null;
+            emitter.StartRemotePlatformScreen = null;
             typeof(QuicPunch.QuicPunch).GetProperty(nameof(qcc.PeerStore))!.SetValue(qcc, null);
             store.Dispose();
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static async Task TestRemoteInputConsentAsync(VoiceCallHandler emitter, VoiceCallHandler viewer,
+        PeerInfo emitterPeer, PeerInfo viewerPeer, QuicPunch.Helpers.PeerStore store)
+    {
+        var platform = new TestPlatformCapture();
+        emitter.StartRemotePlatformScreen = async (peer, forControl, _) =>
+        {
+            if (!forControl || peer.Id != viewerPeer.Id)
+                throw new Exception("A remote-control request did not request targeted full-screen capture.");
+            await VoiceCallHandler.StartScreenShareAsync(720, 1280, 1, 30, peer.Id);
+            emitter.SetPlatformRemoteInput(platform, 1);
+        };
+
+        var active = new TaskCompletionSource<RemoteInputView>(TaskCreationOptions.RunContinuationsAsynchronously);
+        viewer.RemoteInputChanged += status =>
+        {
+            if (status.session is { active: true } session) active.TrySetResult(session);
+        };
+        bool neededPrompt = false;
+        emitter.RemoteInputChanged += status => neededPrompt |= status.session is { incoming: true, active: false };
+        try
+        {
+            await viewer.RequestRemoteInputWithCaptureAsync(emitterPeer.Id);
+            var session = await active.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (neededPrompt || session.clipboardAllowed ||
+                emitter.GetRemoteInputStatus().session is not { active: true, administrator: true, clipboardAllowed: false })
+                throw new Exception("Administrator was not granted input automatically with clipboard disabled.");
+            await viewer.ForwardRemoteInputAsync(session.id, [new("key", key: "Enter")]);
+            await platform.Input.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            store.SetProfile(viewerPeer.CertHash, QuicPunch.Helpers.PeerProfile.Friend);
+            await platform.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (emitter.GetRemoteInputStatus().session != null)
+                throw new Exception("An administrator retained automatic control after demotion.");
+
+            // The host intentionally rate-limits new requests.
+            await Task.Delay(5000);
+            var pending = new TaskCompletionSource<RemoteInputView>(TaskCreationOptions.RunContinuationsAsynchronously);
+            emitter.RemoteInputChanged += status =>
+            {
+                if (status.session is { incoming: true, active: false } waiting) pending.TrySetResult(waiting);
+            };
+            await viewer.RequestRemoteInputAsync(emitterPeer.Id);
+            var manual = await pending.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            try
+            {
+                await emitter.RespondRemoteInputAsync(manual.id, true, confirmed: false);
+                throw new Exception("A friend received control without explicit confirmation.");
+            }
+            catch (ArgumentException) { }
+            await emitter.RespondRemoteInputAsync(manual.id, true, confirmed: true);
+            if (emitter.GetRemoteInputStatus().session is not { active: true, administrator: false })
+                throw new Exception("An explicitly confirmed friend was denied control.");
+            emitter.StopRemoteInput(manual.id);
+        }
+        finally
+        {
+            if (emitter.GetRemoteInputStatus().session is { } session) emitter.StopRemoteInput(session.id);
+            emitter.SetPlatformRemoteInput(null, 0);
+            await VoiceCallHandler.StopScreenShareAsync();
+        }
+    }
+
+    private sealed class TestPlatformCapture : IPlatformScreenCapture, IPlatformRemoteInput
+    {
+        public TaskCompletionSource Input { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public RemoteInputArea? RemoteInputArea => new(0, 0, 720, 1280);
+        public IRemoteInputDevice CreateRemoteInputDevice() => new TestInputDevice(this);
+        public Task<NativeScreenProfile> StartAsync(ScreenEncoderOptions options, Func<byte[], Task> output,
+            Action<string?> stopped, CancellationToken ct = default) => throw new NotSupportedException();
+        public void Resume() { }
+        public Task StopAsync() => Task.CompletedTask;
+
+        private sealed class TestInputDevice(TestPlatformCapture platform) : IRemoteInputDevice
+        {
+            public void Apply(RemoteInputArea area, RemoteDesktopInput input) => platform.Input.TrySetResult();
+            public void Release() { }
+            public void Dispose() => platform.Disposed.TrySetResult();
         }
     }
 }

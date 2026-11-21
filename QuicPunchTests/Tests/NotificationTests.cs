@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -50,6 +51,7 @@ internal static class NotificationTests
     }
     public static async Task RunAsync()
     {
+        TestContactReviewPresence();
         var presencePrefs = new AppPreferences();
         var presenceNow = DateTimeOffset.Now;
         var available = QuicNet.Presence.UserPresenceService.Evaluate(presencePrefs, TimeSpan.FromMinutes(4.99), presenceNow, "system");
@@ -317,6 +319,40 @@ internal static class NotificationTests
         }
         finally { try { Directory.Delete(directory, true); } catch { } }
         Console.WriteLine("PASS notification policy, privacy, persisted rules, CSRF, startup rollback and native dispatch");
+    }
+
+    private static void TestContactReviewPresence()
+    {
+        using var originalTransport = new CancellationTokenSource();
+        using var restartedTransport = new CancellationTokenSource();
+        var nonce = new byte[] { 1 };
+        var restartedNonce = new byte[] { 2 };
+        QuicPunch.PeerInfo.AvailabilityConfirmation Proof(int seconds, byte[]? sessionNonce = null) =>
+            new(seconds * Stopwatch.Frequency, QuicPunch.QuicPunch.TransportType.Wan, sessionNonce ?? nonce);
+
+        var brief = new ContactReviewNotifier.PresenceWindow();
+        Check(!brief.Confirm(Proof(0), originalTransport.Token), "Initial Hello was enough to notify");
+        Check(!brief.Confirm(Proof(20), originalTransport.Token), "A brief connection was enough to notify");
+        Check(!brief.Confirm(Proof(20), originalTransport.Token), "A cached confirmation advanced presence");
+        Check(!brief.Confirm(Proof(66), originalTransport.Token), "Silence longer than one missed probe did not reset presence");
+        Check(!brief.Confirm(Proof(119), originalTransport.Token), "Separate visits were counted as continuous presence");
+
+        var sustained = new ContactReviewNotifier.PresenceWindow();
+        Check(!sustained.Confirm(Proof(0), originalTransport.Token), "Presence began qualified");
+        Check(!sustained.Confirm(Proof(20), originalTransport.Token), "First probe qualified prematurely");
+        Check(!sustained.Confirm(Proof(59), originalTransport.Token), "One missed probe qualified prematurely");
+        Check(sustained.Confirm(Proof(60), originalTransport.Token), "At the threshold, a fresh reply did not qualify");
+        Check(!sustained.Confirm(Proof(60), originalTransport.Token), "Same proof qualified twice");
+        Check(!sustained.Confirm(Proof(58), originalTransport.Token), "An out-of-order proof qualified");
+
+        var reconnecting = new ContactReviewNotifier.PresenceWindow();
+        Check(!reconnecting.Confirm(Proof(40), originalTransport.Token), "Reconnect fixture began qualified");
+        Check(!reconnecting.Confirm(Proof(65, restartedNonce), originalTransport.Token), "Remote restart did not reset presence");
+        Check(!reconnecting.Confirm(Proof(95, restartedNonce), originalTransport.Token), "Remote restart inherited previous presence");
+        Check(!reconnecting.Confirm(Proof(126, restartedNonce), restartedTransport.Token), "Local transport restart did not reset presence");
+        Check(!reconnecting.Confirm(Proof(166, restartedNonce), restartedTransport.Token), "Local restart inherited previous presence");
+        Check(reconnecting.Confirm(Proof(186, restartedNonce), restartedTransport.Token), "Reconnected peer never qualified again");
+        Console.WriteLine("PASS contact review presence: minimum duration, fresh proof, missed probe, and reconnection");
     }
 
     private static async Task UntilAsync(Func<bool> condition, string message)

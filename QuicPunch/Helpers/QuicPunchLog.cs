@@ -14,6 +14,7 @@ namespace QuicPunch
 
         public static Action<string>? LogHandler { get; set; }
         public static Action<string>? ErrorHandler { get; set; }
+        internal static event Action<Exception?>? ErrorReported;
 
         private static RotatingFileLogger? _fileLogger;
         private static readonly object _fileLoggerLock = new();
@@ -71,6 +72,7 @@ namespace QuicPunch
 
         public static void Error(string message, Exception? ex = null)
         {
+            ErrorReported?.Invoke(ex);
             if (EnableErrorLogging || EnableLogging)
             {
                 string text = ex != null ? $"{message}: {ex}" : message;

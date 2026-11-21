@@ -28,13 +28,14 @@ namespace QuicPunchTests.Tests;
 
             try
             {
-                using var ctsA = new CancellationTokenSource();
-                using var ctsB = new CancellationTokenSource();
+                using var ctsA = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+                using var ctsB = CancellationTokenSource.CreateLinkedTokenSource(ctsA.Token);
 
                 byte[] poolId = Encoding.UTF8.GetBytes("TorTestPool123456789");
 
                 Console.WriteLine("\n[Node A] Initializing Node A...");
                 nodeA = new QuicPunch.QuicPunch(ctsA.Token, poolId, null, 0, dirA) {
+                    WanEnabled = false, EnableUpnp = false,
                     PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await nodeA.StartAsync(ctsA.Token);
 
@@ -44,8 +45,6 @@ namespace QuicPunchTests.Tests;
                 int portA = nodeA.TorHub!.VirtualPort;
                 Console.WriteLine($"[Node A] Active Onion Address: {onionA}:{portA}");
                 Console.WriteLine($"[Node A] WAN Cert Hash: {Convert.ToHexString(nodeA.CertManager.CertPublicHash)[..16]}... PeerId: {nodeA.CurrentPeer.Id}");
-                Console.WriteLine($"[Node A] Tor Cert Hash: {Convert.ToHexString(nodeA.TorCertManager.CertPublicHash)[..16]}... PeerId: {nodeA.TorCurrentPeer.Id}");
-
                 if (nodeA.TorCertManager == null || nodeA.TorCurrentPeer == null)
                 {
                     throw new InvalidOperationException("Node A Tor transport was not initialized properly.");
@@ -53,6 +52,7 @@ namespace QuicPunchTests.Tests;
 
                 Console.WriteLine("\n[Node B] Initializing Node B...");
                 nodeB = new QuicPunch.QuicPunch(ctsB.Token, poolId, null, 0, dirB) {
+                    WanEnabled = false, EnableUpnp = false,
                     PeerTransport = new() { AutoConnectDiscoveredPeers = false } };
                 await nodeB.StartAsync(ctsB.Token);
 
@@ -62,8 +62,6 @@ namespace QuicPunchTests.Tests;
                 int portB = nodeB.TorHub!.VirtualPort;
                 Console.WriteLine($"[Node B] Active Onion Address: {onionB}:{portB}");
                 Console.WriteLine($"[Node B] WAN Cert Hash: {Convert.ToHexString(nodeB.CertManager.CertPublicHash)[..16]}... PeerId: {nodeB.CurrentPeer.Id}");
-                Console.WriteLine($"[Node B] Tor Cert Hash: {Convert.ToHexString(nodeB.TorCertManager.CertPublicHash)[..16]}... PeerId: {nodeB.TorCurrentPeer.Id}");
-
                 if (nodeB.TorCertManager == null || nodeB.TorCurrentPeer == null)
                 {
                     throw new InvalidOperationException("Node B Tor transport was not initialized properly.");
@@ -71,6 +69,12 @@ namespace QuicPunchTests.Tests;
 
                 var receiverProtocol = new TorFileShareReceiverProtocol();
                 nodeA.RegisterProtocol(receiverProtocol);
+                var torA = nodeA.TorCurrentPeer;
+                var torB = nodeB.TorCurrentPeer;
+                nodeA.Manager.HandshakeRequested += (request, _) => Task.FromResult(new HandshakeDecision(
+                    request.ProtocolId == TestTorProtocolId && request.Transport == QuicPunch.QuicPunch.TransportType.Tor &&
+                    request.PeerId == torB.Id && request.CertHash is { } hash && hash.AsSpan().SequenceEqual(torB.CertHash),
+                    null, CancellationToken.None));
 
                 Console.WriteLine("\nWaiting 45s for Tor onion service descriptors to propagate across relays...");
                 await Task.Delay(45000, ctsB.Token);
@@ -85,7 +89,7 @@ namespace QuicPunchTests.Tests;
                         Console.WriteLine($"[Attempt {attempt}] Connected!");
                         break;
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (attempt < 15 && !ctsB.IsCancellationRequested)
                     {
                         Console.WriteLine($"[Attempt {attempt} failed] {ex.Message}");
                         await Task.Delay(6000, ctsB.Token);
@@ -93,7 +97,7 @@ namespace QuicPunchTests.Tests;
                 }
 
                 Console.WriteLine("Waiting for Tor peer handshake and session key exchange...");
-                PeerInfo? peerA_on_B = null;
+                PeerInfo? peerA_on_B = null, peerB_on_A = null;
                 for (int i = 0; i < 90; i++)
                 {
                     if (i % 5 == 0)
@@ -109,28 +113,20 @@ namespace QuicPunchTests.Tests;
                         }
                     }
 
-                    peerA_on_B = nodeB.AvailablePeers.Values.FirstOrDefault(p => p.PeerCipher != null);
-                    if (peerA_on_B != null && nodeA.AvailablePeers.Values.Any(p => p.PeerCipher != null))
+                    nodeB.AvailablePeers.TryGetValue(torA.Id, out peerA_on_B);
+                    nodeA.AvailablePeers.TryGetValue(torB.Id, out peerB_on_A);
+                    if (peerA_on_B?.PeerCipher != null && peerB_on_A?.PeerCipher != null)
                         break;
 
-                    await Task.Delay(1000);
+                    await Task.Delay(1000, ctsB.Token);
                 }
 
-                if (peerA_on_B == null || peerA_on_B.PeerCipher == null)
-                {
-                    Console.WriteLine("\n[ERROR] Peer discovery/handshake timed out over Tor.");
-                    return;
-                }
+                if (peerA_on_B?.PeerCipher == null || peerB_on_A?.PeerCipher == null ||
+                    !peerA_on_B.CertHash.AsSpan().SequenceEqual(torA.CertHash) || !peerB_on_A.CertHash.AsSpan().SequenceEqual(torB.CertHash))
+                    throw new InvalidOperationException("The expected Tor identities did not complete their authenticated handshake.");
 
                 Console.WriteLine($"\n[SUCCESS] Node B established session with Node A ({peerA_on_B.Name}) over Tor!");
                 Console.WriteLine($"[VERIFICATION] Peer A identified on Node B with Tor ID: {peerA_on_B.Id} (Matches Node A Tor ID: {peerA_on_B.Id == nodeA.TorCurrentPeer.Id})");
-
-                var peerB_on_A = nodeA.AvailablePeers.Values.FirstOrDefault(p => p.PeerCipher != null);
-                if (peerB_on_A == null)
-                {
-                    Console.WriteLine("\n[ERROR] Node A did not retain the authenticated Tor peer.");
-                    return;
-                }
 
                 nodeB.TrustPeer(peerA_on_B.CertHash);
                 nodeA.TrustPeer(peerB_on_A.CertHash);
@@ -161,21 +157,9 @@ namespace QuicPunchTests.Tests;
                 byte[] receivedHash = SHA256.HashData(receivedData);
                 Console.WriteLine($"[Node A] Successfully received {receivedData.Length} bytes over Tor QUIC stream!");
 
-                if (originalHash.SequenceEqual(receivedHash))
-                {
-                    Console.WriteLine("\n==================================================");
-                    Console.WriteLine("  [PASSED] FILE SHARE OVER TOR SUCCESSFUL!");
-                    Console.WriteLine("  SHA256 checksums match perfectly!");
-                    Console.WriteLine("==================================================");
-                }
-                else
-                {
-                    Console.WriteLine("\n[ERROR] File checksum mismatch!");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"\n[TEST ERROR] {ex}");
+                if (!originalHash.SequenceEqual(receivedHash))
+                    throw new InvalidOperationException("File checksum mismatch.");
+                Console.WriteLine("[PASSED] Tor file transfer verified by SHA-256 and virtual QUIC datagram received.");
             }
             finally
             {

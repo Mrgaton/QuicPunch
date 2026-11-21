@@ -13,6 +13,7 @@ using QuicPunch.Helpers;
 using QuicPunch.Datagrams;
 using System.Threading.Channels;
 using QuicNet.Protocols;
+using QuicPunchTests.Fixtures;
 using QuicConnection = QuicPunch.QuicConnection;
 using NativeQuicConnection = System.Net.Quic.QuicConnection;
 
@@ -281,6 +282,15 @@ public static class SpeedTestTests
 
         using var serverCert = GenerateTestCert();
         using var clientCert = GenerateTestCert();
+        using var connectDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        if (enableDatagrams)
+        {
+            await using var pair = await NativeBridgePair.CreateAsync(serverCert, clientCert, connectDeadline.Token);
+            if (pair.Client.DatagramChannel?.IsSendEnabled != true || pair.Server.DatagramChannel?.IsSendEnabled != true)
+                throw new Exception("The production bridge did not negotiate datagrams in both directions.");
+            await RunBenchmarkAsync(pair.Server, pair.Client, serverCert, clientCert, enableDatagrams);
+            return;
+        }
 
         var alpn = new SslApplicationProtocol("qpmux");
         var serverEndPoint = new IPEndPoint(IPAddress.Loopback, 0);
@@ -326,29 +336,25 @@ public static class SpeedTestTests
             }
         };
 
-        if (enableDatagrams)
-        {
-            var warmServerTask = listener.AcceptConnectionAsync();
-            await using var warmClient = await NativeQuicConnection.ConnectAsync(clientOptions);
-            await using var warmServer = await warmServerTask;
-            if (!MsQuicDatagramChannel.EnableDatagramsOnConfigurationCache())
-                throw new Exception("Failed to enable datagrams for quality-probe tests.");
-        }
-
-        var serverAcceptTask = listener.AcceptConnectionAsync();
-        var clientNative = await NativeQuicConnection.ConnectAsync(clientOptions);
+        var serverAcceptTask = listener.AcceptConnectionAsync(connectDeadline.Token);
+        var clientNative = await NativeQuicConnection.ConnectAsync(clientOptions, connectDeadline.Token);
         var serverNative = await serverAcceptTask;
 
-        var serverQuicConn = QuicConnection.Wrap(serverNative);
-        var clientQuicConn = QuicConnection.Wrap(clientNative);
+        await using var serverQuicConn = QuicConnection.Wrap(serverNative);
+        await using var clientQuicConn = QuicConnection.Wrap(clientNative);
+        await RunBenchmarkAsync(serverQuicConn, clientQuicConn, serverCert, clientCert, enableDatagrams);
+    }
 
+    private static async Task RunBenchmarkAsync(QuicConnection serverQuicConn, QuicConnection clientQuicConn,
+        X509Certificate2 serverCert, X509Certificate2 clientCert, bool enableDatagrams)
+    {
         using var serverHandler = new SpeedTestHandler();
         using var clientHandler = new SpeedTestHandler();
 
         var serverPeer = new PeerInfo(serverCert, null) { Name = "ServerNode" };
         var clientPeer = new PeerInfo(clientCert, null) { Name = "ClientNode" };
 
-        var serverMux = new QuicPeerMultiplexer(
+        await using var serverMux = new QuicPeerMultiplexer(
             serverQuicConn,
             clientPeer,
             isServer: true,
@@ -356,7 +362,7 @@ public static class SpeedTestTests
             accessCheck: _ => true
         );
 
-        var clientMux = new QuicPeerMultiplexer(
+        await using var clientMux = new QuicPeerMultiplexer(
             clientQuicConn,
             serverPeer,
             isServer: false,
@@ -458,15 +464,19 @@ public static class SpeedTestTests
                 throw new Exception("Phase results contain incorrect traffic directions.");
             if (result.TotalBytes != stages.Sum(stage => stage.TotalBytes))
                 throw new Exception("All did not sum the bytes of its phases.");
-            if (result.Baseline?.Received < 2 || result.Baseline?.RttAverageMs is not > 0)
+            if (result.Baseline is not { Received: >= 2, RttAverageMs: > 0, JitterMs: not null })
                 throw new Exception("No measured idle RTT samples.");
             foreach (var quality in stages.Select(stage => stage.Quality).Append(result.Baseline))
             {
-                if (quality?.Received < 2 || quality?.RttAverageMs is not > 0 || quality.JitterMs == null)
-                    throw new Exception("Missing loaded RTT/jitter probes.");
-                if (enableDatagrams && (quality.Method != "QUIC DATAGRAM" || quality.LossPercent == null))
+                Console.WriteLine($"[Quality] {quality}");
+                if (quality == null || quality.Sent + quality.SendFailures == 0 ||
+                    (quality.Received == 0) != (quality.RttAverageMs == null) ||
+                    (quality.Received < 2) != (quality.JitterMs == null))
+                    throw new Exception("Probes did not distinguish missing and measured RTT/jitter.");
+                if (enableDatagrams && (quality.Method != "QUIC DATAGRAM" ||
+                    quality.LossPercent != (quality.Sent == 0 ? null : Math.Round(100.0 * (quality.Sent - quality.Received) / quality.Sent, 2))))
                     throw new Exception("Native datagram packet-loss probes were not exercised.");
-                if (!enableDatagrams && quality.LossPercent != null)
+                if (!enableDatagrams && (quality.Method != "Stream fiable" || quality.LossPercent != null))
                     throw new Exception("Fallback reported an unreliable packet-loss measurement.");
             }
             Console.WriteLine($"[All OK: phases, quality, concurrency, {(enableDatagrams ? "native datagrams" : "stream fallback")}]");
@@ -527,7 +537,5 @@ public static class SpeedTestTests
         }
 
         clientHandlerCts.Cancel();
-        await clientMux.DisposeAsync();
-        await serverMux.DisposeAsync();
     }
 }

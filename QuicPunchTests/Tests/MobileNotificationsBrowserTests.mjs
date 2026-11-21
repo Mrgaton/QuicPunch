@@ -7,6 +7,7 @@ try {
   const url = await server.ready;
   browser = await launchBrowser();
   const page = await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+  await page.addInitScript(() => { window.__qp_is_android = true; });
   await page.goto(url + 'settings.html');
   await page.locator('#settings-profile').waitFor();
   for (const path of ['settings.html','chat.html','/']) {
@@ -45,5 +46,58 @@ try {
       await page.evaluate(() => document.querySelector('.toast-host').replaceChildren());
     }
   }
-  console.log('PASS mobile notifications: top anchoring, narrow/landscape/keyboard-sized viewports, dismissal, long errors and stable workspace');
+  const peerId = '00000000-0000-0000-0000-000000000001';
+  await page.waitForFunction(id => chatStatus?.peers.some(peer => peer.id === id), peerId);
+  const receive = (start, end) => page.evaluate(({peerId, start, end}) => {
+    for (let i = start; i < end; i++) {
+      QP.emit('chat_msg', {peerId, msgId: 'badge-' + i, message: 'Mensaje nuevo',
+        sender: 'Ana', isMe: false, timestampMs: Date.now()});
+    }
+  }, {peerId, start, end});
+  const badge = page.locator('#chatUnreadNavCount');
+  await receive(0, 1);
+  assert.equal(await badge.textContent(), '1');
+  const checkBadge = async () => {
+    const geometry = await badge.evaluate(node => {
+      const box = node.getBoundingClientRect(), link = node.closest('a');
+      const icon = link.querySelector('.icon').getBoundingClientRect();
+      const label = link.querySelector('.nav-label').getBoundingClientRect();
+      const nav = link.closest('.nav-wrap').getBoundingClientRect();
+      const tab = link.getBoundingClientRect();
+      const overlapX = (Math.max(box.left, icon.left) + Math.min(box.right, icon.right)) / 2;
+      const overlapY = (Math.max(box.top, icon.top) + Math.min(box.bottom, icon.bottom)) / 2;
+      const style = getComputedStyle(node);
+      const luminance = color => {
+        const [r,g,b] = color.match(/\d+/g).map(value => {
+          const channel = Number(value) / 255;
+          return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+        });
+        return .2126*r + .7152*g + .0722*b;
+      };
+      const tones = [luminance(style.color), luminance(style.backgroundColor)];
+      return {aboveIcon:box.top < icon.top && box.bottom > icon.top && box.left < icon.right && box.right > icon.right,
+        inBar:box.top >= nav.top && box.bottom <= label.top && box.left >= tab.left && box.right <= tab.right,
+        height:box.height, fontSize:parseFloat(style.fontSize),
+        contrast:(Math.max(...tones) + .05) / (Math.min(...tones) + .05),
+        onTop:document.elementFromPoint(overlapX, overlapY) === node};
+    });
+    assert.ok(geometry.aboveIcon && geometry.inBar && geometry.onTop, JSON.stringify(geometry));
+    assert.ok(geometry.height >= 22 && geometry.fontSize >= 12, JSON.stringify(geometry));
+    assert.ok(geometry.contrast >= 4.5, JSON.stringify(geometry));
+  };
+  await checkBadge();
+  await page.getByRole('link',{name:'Mensajes, 1 mensaje sin leer',exact:true}).waitFor();
+  await receive(1, 100);
+  assert.equal(await badge.textContent(), '99+');
+  await page.getByRole('link',{name:'Mensajes, 100 mensajes sin leer',exact:true}).waitFor();
+  for (const viewport of [{width:320,height:568},{width:390,height:844},{width:667,height:375}]) {
+    await page.setViewportSize(viewport);
+    await checkBadge();
+  }
+  await page.getByRole('link',{name:'Mensajes, 100 mensajes sin leer',exact:true}).click();
+  await page.locator(`#chatPeers [data-peer-id="${peerId}"]`).click();
+  await badge.waitFor({state:'detached'});
+  await page.locator('#chatMobileBackBtn').click();
+  await page.getByRole('link',{name:'Mensajes',exact:true}).waitFor();
+  console.log('PASS mobile notifications: top anchoring, dismissal, stable workspace and visible unread count on the Messages icon');
 } finally { await closeBrowserFixture(browser,server); }

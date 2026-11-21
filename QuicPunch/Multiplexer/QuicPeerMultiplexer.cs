@@ -26,6 +26,7 @@ namespace QuicPunch.Multiplexer
         private readonly QuicConnection _physicalConnection;
         private readonly PeerInfo _peer;
         private readonly bool _isServer;
+        private readonly object _sessionCollisionGate = new();
         private readonly Func<Guid, QuicPunch.IProtocolHandler?> _protocolLookup;
         private readonly Func<PeerInfo, bool> _accessCheck;
         private readonly Func<PeerInfo, Guid, CancellationToken, Task<bool>>? _sessionAccessCheck;
@@ -328,10 +329,11 @@ namespace QuicPunch.Multiplexer
                 transport.IsRecoveredSession = resume;
                 if (resume && !transport.Recoverable) throw new InvalidOperationException("This handler does not support session recovery.");
                 transport.Peer = _peer;
-                _activeSessions[sessionId] = transport;
                 var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _ = tcs.Task.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
                 _pendingSessionResponses[sessionId] = tcs;
+                if (!TryTrackSession(protocolId, sessionId, transport, incoming: false))
+                    throw new SessionRejectedException($"A {transport.Handler?.ProtocolName} session is already opening with {_peer.Name}.");
                 // Send binary SessionRequest on Control Stream
                 await SendControlMessageAsync(new ControlMessage
                 {
@@ -559,7 +561,7 @@ namespace QuicPunch.Multiplexer
                         {
                             _pendingPing = Guid.Empty;
                             _pingReply?.TrySetResult(true);
-                            _peer.MarkSeen();
+                            _peer.MarkAvailabilityConfirmed();
                             _peer.LastPingResponseUtc = DateTime.UtcNow;
                         }
                     }
@@ -588,7 +590,7 @@ namespace QuicPunch.Multiplexer
                 case ControlMessageType.SessionClose:
                     if (_pendingIncomingDecisions.TryGetValue(msg.SessionShortId, out var pendingDecision))
                         try { pendingDecision.Cancel(); } catch (ObjectDisposedException) { }
-                    if (_activeSessions.TryGetValue(msg.SessionShortId, out var closingTransport))
+                    if (_activeSessions.TryGetValue(msg.SessionShortId, out var closingTransport) && closingTransport.TryBeginRemoteClose(msg.ErrorCode))
                     {
                         _ = Task.Run(async () =>
                         {
@@ -623,7 +625,7 @@ namespace QuicPunch.Multiplexer
                 bool recoverable = (msg.Flags & 4) != 0;
                 bool resume = (msg.Flags & 8) != 0;
                 var transport = pendingTransport = new MultiplexedQuicConnectionTransport(this, msg.SessionGuid, msg.SessionShortId, msg.ProtocolId)
-                { Handler = handler, Peer = _peer, Recoverable = recoverable, IsRecoveredSession = resume };
+                { Handler = handler, Peer = _peer, Recoverable = recoverable, IsRecoveredSession = resume, IsIncoming = true };
                 authorized = authorized && (!resume || recoverable) &&
                     (!recoverable || (handler?.SupportsSessionRecovery == true && _recoveryAuthorization != null));
                 if (authorized && handler != null && (recoverable || _sessionAccessCheck != null))
@@ -654,7 +656,11 @@ namespace QuicPunch.Multiplexer
                 }
 
                 Interlocked.Exchange(ref _lastApplicationActivityTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
-                _activeSessions[msg.SessionShortId] = transport;
+                if (!TryTrackSession(msg.ProtocolId, msg.SessionShortId, transport, incoming: true))
+                {
+                    await SendSessionDeniedAsync(msg, ct).ConfigureAwait(false);
+                    return;
+                }
 
                 await SendControlMessageAsync(new ControlMessage
                 {
@@ -720,6 +726,7 @@ namespace QuicPunch.Multiplexer
                     {
                         _activeSessions.TryRemove(msg.SessionShortId, out _);
                         ReleaseSessionReservation(msg.SessionShortId);
+                        transport.MarkIncomingHandlerFinished();
                         try { await transport.DisposeAsync().ConfigureAwait(false); } catch { }
                         if (virtualConn != null)
                         {
@@ -745,6 +752,31 @@ namespace QuicPunch.Multiplexer
                     else if (pendingTransport != null)
                         try { await pendingTransport.DisposeAsync().ConfigureAwait(false); } catch { }
                 }
+            }
+        }
+
+        private bool TryTrackSession(Guid protocolId, ushort sessionId, MultiplexedQuicConnectionTransport transport, bool incoming)
+        {
+            if (transport.Handler?.SingleSessionPerPeer != true)
+            {
+                _activeSessions[sessionId] = transport;
+                return true;
+            }
+
+            lock (_sessionCollisionGate)
+            {
+                foreach (var existing in _activeSessions)
+                {
+                    if (existing.Value.ProtocolId != protocolId) continue;
+                    // In a crossed open, keep the physical client's request on
+                    // both ends. An already accepted session always takes precedence.
+                    if (!incoming || !_isServer ||
+                        !_pendingSessionResponses.TryGetValue(existing.Key, out var pending) ||
+                        (!pending.TrySetResult(false) && (!pending.Task.IsCompletedSuccessfully || pending.Task.Result)))
+                        return false;
+                }
+                _activeSessions[sessionId] = transport;
+                return true;
             }
         }
 

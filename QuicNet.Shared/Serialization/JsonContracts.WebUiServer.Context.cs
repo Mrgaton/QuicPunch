@@ -2,7 +2,6 @@
 using System.Text.Json.Serialization;
 namespace QuicNet.Serialization;
 
-[JsonSerializable(typeof(global::QuicNet.Serialization.WebUiServerMessage1))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.WebUiServerMessage10))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.WebUiServerMessage2))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.WebUiServerMessage3))]

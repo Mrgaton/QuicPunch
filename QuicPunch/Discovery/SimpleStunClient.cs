@@ -391,7 +391,8 @@ namespace QuicPunch
 
 
         public static async Task<List<CandidateEndpoint>> GatherCandidatesAsync(
-            UdpClient udp, ushort localPort, IReadOnlyList<IPEndPoint>? servers = null, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+            UdpClient udp, ushort localPort, IReadOnlyList<IPEndPoint>? servers = null, TimeSpan? timeout = null, CancellationToken cancellationToken = default,
+            Func<IPEndPoint, IPEndPoint>? translate = null)
         {
             var candidates = new List<CandidateEndpoint>();
             var seen = new HashSet<IPEndPoint>();
@@ -421,7 +422,9 @@ namespace QuicPunch
                         .SelectMany(h => Utilities.ResolveEndpoint(h) ?? Enumerable.Empty<IPEndPoint>())
                         .Distinct()
                         .ToList();
-                if (stunServers != null && stunServers.Count > 0)
+                if (translate != null)
+                    stunServers = stunServers.Select(translate).Distinct().ToArray();
+                if (stunServers.Count > 0)
                 {
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     cts.CancelAfter(timeout ?? TimeSpan.FromMilliseconds(1000));

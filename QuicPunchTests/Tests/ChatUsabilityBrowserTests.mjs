@@ -4,12 +4,13 @@ import {launchBrowser, startPreviewServer, closeBrowserFixture, findFfmpeg} from
 
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
+import {readFileSync} from 'node:fs';
 const server = startPreviewServer([]);
 let browser;
 try {
   const url = await server.ready;
   browser = await launchBrowser();
-  const page = await browser.newPage({viewport:{width:1600,height:1000}}), errors=[];
+  const page = await browser.newPage({viewport:{width:1600,height:1000},hasTouch:true}), errors=[];
   page.on('pageerror',error=>errors.push(error.message));
   const alice='00000000-0000-0000-0000-000000000001', bob='00000000-0000-0000-0000-000000000002';
   const now=Date.now(), yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);
@@ -28,7 +29,14 @@ try {
     durations.set(body.peerId,body.seconds);await route.fulfill({json:{success:true,...body}});
   });
   const voiceSource=readVoiceSource();
-  await page.route('**/voice.js',route=>route.fulfill({contentType:'text/javascript',body:voiceSource.replace(/\}\)\(\);\s*$/,`window.uxCall=()=>{voiceStatus={...QP.state.status,activeVoiceCalls:[{peerId:'${bob}',peerName:'Mi ordenador'}]};voiceState={...voiceState,isMuted:true,isDeafened:false,activeCalls:[{peerId:'${bob}',startedAtUnixMs:Date.now()-65000}]};renderVoice();};})();`)}));
+  const callFixture=`window.uxCall=(active=true)=>{
+    const calls=active?[{peerId:'${bob}',peerName:'Mi ordenador'},{peerId:'${alice}',peerName:'Ana · Portátil'}]:[];
+    voiceStatus={...QP.state.status,activeVoiceCalls:calls,avatars:{['${bob}']:'a'.repeat(64),['${alice}']:'b'.repeat(64)}};
+    voiceState={...voiceState,isMuted:true,isDeafened:false,activeCalls:calls,captureRunning:true};
+    renderVoice();
+  };})();`;
+  await page.route('**/voice.js',route=>route.fulfill({contentType:'text/javascript',body:voiceSource.replace(/\}\)\(\);\s*$/,callFixture)}));
+  await page.route('**/api/profile/avatar/**',route=>route.fulfill({contentType:'image/avif',body:readFileSync(new URL('../Fixtures/profile-avatar.avif',import.meta.url))}));
   await page.goto(url+'chat.html?peer='+alice);
   await page.waitForFunction(()=>document.getElementById('chatPeerMeta').textContent.includes('Conectado'));
   assert.match(await page.locator('#chatHistoryLabel').textContent(),/Historial/);
@@ -88,12 +96,6 @@ try {
   assert.match(await page.locator('#chatClearError').textContent(),/Fallo de escritura simulado/);
   assert.equal(await page.locator('#chatClearDialog').evaluate(node=>node.open),true);
   await page.locator('#chatClearCancelBtn').click();
-  // The active call is a separate context and has actual elapsed time and mute state.
-  await page.evaluate(()=>uxCall());
-  assert.match(await page.locator('#globalCallPeerName').textContent(),/En llamada con Mi ordenador/);
-  assert.match(await page.locator('#globalCallMeta').textContent(),/1m.*Micrófono silenciado/);
-  assert.equal(await page.locator('#globalCallMicBtn').getAttribute('aria-pressed'),'true');
-  assert.equal(await page.locator('#globalCallHangupBtn svg').count(),1);
   const geometry=()=>page.evaluate(()=>{
     const box=id=>document.getElementById(id).getBoundingClientRect();
     const input=box('messageInput'), history=box('messages');
@@ -101,10 +103,52 @@ try {
     const limit=innerWidth<=680&&nav.checkVisibility()?nav.getBoundingClientRect().top:innerHeight;
     return {inputTop:input.top,inputBottom:input.bottom,historyHeight:history.height,historyBottom:history.bottom,limit,overflow:document.documentElement.scrollWidth-innerWidth,rootHeight:document.scrollingElement.scrollHeight,height:innerHeight};
   });
+  const chatGeometry=await geometry();
+  await page.evaluate(()=>uxCall());
+  const floating=page.locator('#floatingCall'), callOpen=floating.locator('#floatingCallOpen'), avatar=floating.locator('#floatingCallAvatar');
+  await floating.waitFor();
+  assert.deepEqual(await geometry(),chatGeometry,'A floating call must leave chat geometry intact');
+  assert.ok((await floating.boundingBox()).width<=120);
+  assert.equal(await floating.locator('button').count(),3,'Only the open surface and two audio controls belong on the card');
+  assert.match(await avatar.locator('img').getAttribute('src'),new RegExp(bob));
+  const vad=(peerId,speaking)=>page.evaluate(({peerId,speaking})=>QP.emit('voice_vad',{peerId,isLocal:!peerId,speaking,level:speaking?.5:0}),{peerId,speaking});
+  await vad(alice,true);
+  assert.match(await avatar.locator('img').getAttribute('src'),new RegExp(alice));
+  assert.match(await avatar.getAttribute('class'),/is-speaking/);
+  await vad(bob,true);
+  assert.match(await avatar.locator('img').getAttribute('src'),new RegExp(alice),'Overlapping speech must keep the current speaker');
+  await vad(alice,false);
+  assert.match(await avatar.locator('img').getAttribute('src'),new RegExp(bob));
+  await vad(bob,false);
+  assert.doesNotMatch(await avatar.getAttribute('class'),/is-speaking/);
+  const mic=floating.locator('#globalCallMicBtn'), audio=floating.locator('#globalCallDeafenBtn');
+  assert.equal(await mic.getAttribute('aria-pressed'),'true');
+  assert.equal(await audio.getAttribute('aria-pressed'),'false');
+  const dangerColor=await mic.evaluate(button=>getComputedStyle(button).color);
+  await page.route('**/api/voice/mute',route=>route.fulfill({json:{isMuted:route.request().postDataJSON().muted}}));
+  await page.route('**/api/voice/deafen',route=>route.fulfill({json:{isDeafened:route.request().postDataJSON().deafened}}));
+  await mic.click();await page.waitForFunction(()=>document.getElementById('globalCallMicBtn').getAttribute('aria-pressed')==='false');
+  await audio.click();await page.waitForFunction(()=>document.getElementById('globalCallDeafenBtn').getAttribute('aria-pressed')==='true');
+  assert.equal(await audio.evaluate(button=>getComputedStyle(button).color),dangerColor);
+  assert.notEqual(await mic.evaluate(button=>getComputedStyle(button).color),dangerColor);
+  await vad(null,true);
+  assert.match(await callOpen.getAttribute('aria-label'),/Estás hablando/);
+  await vad(null,false);
+  const callBeforeDrag=await floating.boundingBox();
+  await page.mouse.move(callBeforeDrag.x+56,callBeforeDrag.y+30);
+  await page.mouse.down();await page.mouse.move(66,280,{steps:8});await page.mouse.up();
+  await page.waitForFunction(()=>Math.abs(document.getElementById('floatingCall').getBoundingClientRect().x-10)<1);
+  assert.match(page.url(),/chat\.html/,'Dragging from the avatar must not open the room');
+  await callOpen.press('ArrowRight');
+  await page.waitForFunction(()=>Math.abs(document.getElementById('floatingCall').getBoundingClientRect().x-34)<1);
+  await page.evaluate(()=>uxCall(false));await floating.waitFor({state:'hidden'});
+  await page.evaluate(()=>uxCall());
   for(const viewport of [{width:2560,height:1440},{width:1280,height:720},{width:920,height:844},{width:390,height:844},{width:320,height:568},{width:844,height:390},{width:640,height:450}]){
     await page.setViewportSize(viewport);
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     const before=await geometry();
+    const cardBounds=await floating.boundingBox();
+    assert.ok(cardBounds.x>=0&&cardBounds.y>=0&&cardBounds.x+cardBounds.width<=viewport.width&&cardBounds.y+cardBounds.height<=before.limit+1,`Floating call outside the usable interface at ${JSON.stringify(viewport)}`);
     assert.ok(before.inputTop>=0&&before.inputBottom<=before.limit+1&&before.historyHeight>0&&before.historyBottom<=before.inputTop,`Hidden editor/history at ${JSON.stringify(viewport)}: ${JSON.stringify(before)}`);
     assert.ok(before.overflow<=1&&before.rootHeight<=before.height+1,`Page overflow: ${JSON.stringify(before)}`);
     await page.evaluate(()=>{for(let i=0;i<5;i++)QP.toast('Aviso de prueba '+i);});
@@ -114,7 +158,8 @@ try {
     await page.evaluate(()=>document.querySelector('.toast-host').replaceChildren());
   }
   await page.setViewportSize({width:1600,height:1000});
-  await page.evaluate(()=>{document.documentElement.dataset.theme='dark';openChatPeer('00000000-0000-0000-0000-000000000001');uxCall();});
+  await page.evaluate(()=>{document.documentElement.dataset.theme='dark';openChatPeer('00000000-0000-0000-0000-000000000001');uxCall();document.getElementById('floatingCall').removeAttribute('style');});
+  await vad(alice,true);
   await page.locator('[data-message-id="today-3"]').waitFor();
   await page.screenshot({path:'.artifacts/interface-chat-dark.png',animations:'disabled'});
   await page.setViewportSize({width:390,height:844});
@@ -142,6 +187,21 @@ try {
   assert.ok(cleared.has(alice));
   await page.reload();await page.waitForFunction(()=>!document.getElementById('messageInput').disabled);
   assert.equal(await page.locator('#messages .message-row').count(),0);
+  await page.evaluate(()=>uxCall());
+  const mobileCard=await floating.boundingBox();
+  const touch=await page.context().newCDPSession(page);
+  const finger=(type,points=[])=>touch.send('Input.dispatchTouchEvent',{type,touchPoints:points});
+  await finger('touchStart',[{x:mobileCard.x+56,y:mobileCard.y+30}]);
+  await finger('touchMove',[{x:148,y:440}]);
+  await finger('touchEnd');
+  await page.waitForFunction(()=>Math.abs(document.getElementById('floatingCall').getBoundingClientRect().x-92)<2);
+  assert.match(page.url(),/chat\.html/,'Touch dragging must leave chat open and allow placement away from edges');
+  await mic.tap();
+  await page.waitForFunction(()=>document.getElementById('globalCallMicBtn').getAttribute('aria-pressed')==='false');
+  const positioned=await floating.boundingBox();
+  await page.touchscreen.tap(positioned.x+56,positioned.y+30);
+  await page.waitForURL('**/call.html');
+  await floating.waitFor({state:'hidden'});
   assert.deepEqual(errors,[]);
-  console.log('PASS chat usability: retention/save race, dates/groups, contact identities, new chat, persisted widths, clear protection/errors, call context/time, notifications and responsive editor');
+  console.log('PASS chat usability: retention/save race, dates/groups, contact identities, new chat, persisted widths, clear protection/errors, floating call, notifications and responsive editor');
 } finally {await closeBrowserFixture(browser, server);}

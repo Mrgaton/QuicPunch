@@ -88,6 +88,10 @@ For agents and repeated verification, use the PowerShell runner. It builds once,
 
 `-Tests` accepts short names or existing `--test-*` flags. `-Web` runs every `*WebTests.mjs` suite with Node.js and one result line per file. The default `Test` build configuration keeps test binaries separate from a running Debug/Release app. `-NoBuild` uses the existing binaries; omit it after changing C# source. `-Configuration Release` selects a different build configuration. `--test-output` verifies compact reporting, failure exit codes, skips, full diagnostic logs and verbose mode.
 
+Run `dotnet run --project QuicPunchTests -c Test -- --list` to list canonical C# flags and use `--help` for aliases and suite requirements. See the [development map](../architecture/development-map.md) for test selection by feature.
+
+[Evaluación del trabajo de agentes](agent-context-pilot.md)
+
 ### Maintaining web tests
 
 `QuicNet.Shared/wwwroot/ui-values.js` contains pure byte/duration formatting and port parsing/formatting. Test these functions in an empty VM context without DOM mocks. The application exposes them through `QP`; `index.html` loads this file before `app.js`.
@@ -110,7 +114,7 @@ npm run test:browser
 node scripts/test-web.mjs --browser --filter=Voice --list
 ```
 
-`-Browser` (or `npm run test:browser`) runs every `*BrowserTests.mjs` suite explicitly. `-BrowserFilter` selects browser names without filtering `-Web`. These tests use isolated HTTP fixtures and synthetic media, never the user's camera or screen. Camera tests generate their synthetic AVC fixture through `--test-platform-video`; camera and FFmpeg decode suites build the managed harness when needed. `-NoBuild` reuses that harness but still regenerates the video fixture. FFmpeg must be installed separately for the synthetic video cases; `QUICNET_FFMPEG_PATH` overrides its location. On Windows, the viewer fixture also finds WinGet installations when the shell's PATH is stale.
+`-Browser` (or `npm run test:browser`) runs every `*BrowserTests.mjs` suite explicitly. `-BrowserFilter ContactHome,ConnectionModes` selects browser suites without filtering `-Web`. In Node, repeat `--filter=Name` to select several suites. Use `node scripts/test-web.mjs --browser --list` to list them. The browser tests use isolated HTTP fixtures and synthetic media. The download page suite uses the Release build of `QuicNet.ReleaseTools`. Pass `--no-build` in Node or `-NoBuild` in PowerShell to reuse a previously compiled ReleaseTools build. FFmpeg must be installed separately for the synthetic video cases; `QUICNET_FFMPEG_PATH` overrides its location. On Windows, the viewer fixture also finds WinGet installations when the shell's PATH is stale.
 
 `BrowserFixture.mjs` owns preview startup, browser creation and shutdown. It defaults to the Chromium version installed for the locked Playwright dependency, with loopback permission for intercepted local test pages. `QUICNET_PLAYWRIGHT_MODULE`, `QUICNET_TEST_BROWSER` and `QUICNET_TEST_BROWSER_PATH` remain optional overrides. Neither microphone/camera permission nor application CSP is relaxed. The Node runner and PowerShell wrapper share discovery, output and failure logs in `.artifacts/test-output/`. No matching suites or invalid arguments return 2; a failing suite returns 1 and does not prevent the remaining selected suites from running.
 

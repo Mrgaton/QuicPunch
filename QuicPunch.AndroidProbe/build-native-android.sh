@@ -9,8 +9,19 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$script_dir/.." && pwd)"
 build_dir="${MSQUIC_ANDROID_BUILD_DIR:-/opt/qp-msquic-android-build}"
 output_dir="${MSQUIC_ANDROID_OUTPUT_DIR:-/opt/qp-msquic-android-out}"
+abi="${1:-arm64-v8a}"
+case "$abi" in
+    arm64-v8a) triple=aarch64; destination="$script_dir/native/$abi"; msquic_destination="$repo_dir/QuicPunch/runtimes/android-arm64/native" ;;
+    x86_64)
+        triple=x86_64
+        destination="$script_dir/bin/native/$abi"; msquic_destination="$destination"
+        build_dir="${MSQUIC_ANDROID_BUILD_DIR:-$HOME/.cache/qp-msquic-android-build}-x64"
+        output_dir="${MSQUIC_ANDROID_OUTPUT_DIR:-$HOME/.cache/qp-msquic-android-out}-x64"
+        ;;
+    *) echo "Unsupported Android ABI: $abi" >&2; exit 1 ;;
+esac
 toolchain="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
-clang="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+clang="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$triple-linux-android29-clang"
 
 if [[ ! -f "$toolchain" || ! -x "$clang" ]]; then
     echo "Android NDK r27c toolchain was not found at $ANDROID_NDK_HOME" >&2
@@ -33,14 +44,14 @@ fi
 
 cmake -S "$MSQUIC_SOURCE" -B "$build_dir" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
-    -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
+    -DANDROID_ABI="$abi" -DANDROID_PLATFORM=android-29 \
     -DCMAKE_BUILD_TYPE=Release -DQUIC_TLS_LIB=openssl \
     -DQUIC_BUILD_SHARED=ON -DQUIC_BUILD_TEST=OFF \
     -DQUIC_BUILD_TOOLS=OFF -DQUIC_BUILD_PERF=OFF \
     -DQUIC_OUTPUT_DIR="$output_dir" \
     '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384'
 
-PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" \
+ANDROID_NDK_ROOT="$ANDROID_NDK_HOME" PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" \
     cmake --build "$build_dir" --target msquic --parallel
 
 openssl_dir="$build_dir/_deps/opensslquic-build/openssl"
@@ -50,12 +61,12 @@ openssl_dir="$build_dir/_deps/opensslquic-build/openssl"
     -o "$build_dir/libqp_probe.so" "$script_dir/native/qp_probe.c" \
     -lmsquic -lcrypto -llog
 
-install -D "$output_dir/libmsquic.so" "$repo_dir/QuicPunch/runtimes/android-arm64/native/libmsquic.so"
-install -D "$build_dir/libqp_probe.so" "$script_dir/native/arm64-v8a/libqp_probe.so"
+install -D "$output_dir/libmsquic.so" "$msquic_destination/libmsquic.so"
+install -D "$build_dir/libqp_probe.so" "$destination/libqp_probe.so"
 "$clang" -shared -fPIC -O2 '-Wl,-z,max-page-size=16384' \
     -I"$MSQUIC_SOURCE/src/inc" -I"$openssl_dir/include" \
     -L"$output_dir" -L"$openssl_dir/lib" \
     -o "$build_dir/libqp_transport.so" "$script_dir/native/qp_transport.c" \
     -lmsquic -lcrypto -llog
-install -D "$build_dir/libqp_transport.so" "$script_dir/native/arm64-v8a/libqp_transport.so"
-echo "Android ARM64 MsQuic and certificate-pinned probe built."
+install -D "$build_dir/libqp_transport.so" "$destination/libqp_transport.so"
+echo "Android $abi MsQuic and certificate-pinned probe built."

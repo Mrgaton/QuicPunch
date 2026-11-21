@@ -196,14 +196,15 @@ namespace QuicPunch.Helpers
             BigSendAsync(udp, data, peerInfo, null, default);
 
         internal static async Task BigSendAsync(this UdpClient udp, ReadOnlyMemory<byte> data, PeerInfo peerInfo,
-            PortProbeSchedule? schedule = null, CancellationToken cancellationToken = default)
+            PortProbeSchedule? schedule = null, CancellationToken cancellationToken = default, bool tryAll = false,
+            Func<IPEndPoint, IPEndPoint>? translate = null, IPEndPoint? pinnedEndPoint = null)
         {
-            if (peerInfo.ActiveEndPoint is { } active &&
+            if (!tryAll && (pinnedEndPoint ?? peerInfo.ActiveEndPoint) is { } active &&
                 IsValidPeerAddress(active.Address) && active.Port is >= 1 and <= 65535)
             {
                 try
                 {
-                    await udp.SendAsync(data, active, cancellationToken).ConfigureAwait(false);
+                    await udp.SendAsync(data, translate?.Invoke(active) ?? active, cancellationToken).ConfigureAwait(false);
                 }
                 catch (SocketException) { }
                 catch (ObjectDisposedException) { }
@@ -214,13 +215,13 @@ namespace QuicPunch.Helpers
                 peerInfo,
                 remoteCandidates: null,
                 askedPort: 0,
-                maxEndpoints: schedule == null ? 32 : 16, schedule: schedule);
+                maxEndpoints: schedule == null || peerInfo.WanCandidates != null ? 32 : 16, schedule: schedule);
 
             foreach (IPEndPoint target in targets)
             {
                 try
                 {
-                    await udp.SendAsync(data, target, cancellationToken).ConfigureAwait(false);
+                    await udp.SendAsync(data, translate?.Invoke(target) ?? target, cancellationToken).ConfigureAwait(false);
                 }
                 catch (SocketException) { }
                 catch (ObjectDisposedException) { return; }

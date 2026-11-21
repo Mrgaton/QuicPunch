@@ -21,18 +21,18 @@
 .home-workspace .contact-card .btn{font-size:14px;min-height:40px}
 .home-workspace .contact-error{font-size:14px;overflow-wrap:anywhere;margin:0;color:var(--danger)}
 .home-workspace .contact-last-connected{font-size:13px}
-.add-contact-dialog{width:min(920px,calc(100vw - 32px));max-width:920px;padding:24px}
-.add-contact-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}
+.add-contact-dialog{--dialog-width:520px}
+.add-contact-dialog[open]{display:flex;flex-direction:column}
+.add-contact-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex:none}
 .add-contact-heading h2{margin:0}
-.add-contact-dialog .home-connect-grid{align-items:start;gap:20px}
+.invitation-content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:3px}
 .add-contact-dialog .section{margin:0;min-width:0}
 .add-contact-dialog .section-body{padding:20px}
 .add-contact-dialog .connect-card p,.add-contact-dialog .inline-help,.add-contact-dialog .input,.add-contact-dialog .btn{font-size:14px}
-.add-contact-dialog .eyebrow{font-size:12px}
 .invitation-label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}
 .add-contact-dialog .manual-connect{display:flex;gap:8px}
 .add-contact-dialog .manual-connect input{min-width:0;flex:1}
 .add-contact-dialog .connect-footer{flex-wrap:wrap}
 .add-contact-dialog .connect-footer .inline-help{flex-basis:100%;margin:0}
 .add-contact-dialog .input,.contact-order .select,.home-workspace .search-field{border-color:var(--line-strong)}
-@media(max-width:680px){.home-network-summary{align-items:flex-start;flex-direction:column;gap:6px}.contacts-toolbar{padding:0 16px 12px;justify-content:flex-start}.contact-order{flex-wrap:wrap}.add-contact-dialog{padding:16px}.add-contact-dialog .home-connect-grid{grid-template-columns:1fr}.home-workspace .contact-grid{padding:16px;grid-template-columns:1fr}.add-contact-dialog .section-body{padding:16px}}
+@media(max-width:680px){.home-network-summary{align-items:flex-start;flex-direction:column;gap:6px}.contacts-toolbar{padding:0 16px 12px;justify-content:flex-start}.contact-order{flex-wrap:wrap}.home-workspace .contact-grid{padding:16px;grid-template-columns:1fr}.add-contact-dialog .section-body{padding:12px}}

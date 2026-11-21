@@ -29,6 +29,10 @@ internal static class DiscoveryPresenceTests
             Url = "ws://127.0.0.1:" + ((IPEndPoint)_listener.LocalEndpoint).Port;
             _accept = AcceptAsync();
         }
+        internal void DropConnections()
+        {
+            foreach (var socket in _clients.Keys) socket.Abort();
+        }
         private async Task AcceptAsync()
         {
             try { while (!_stop.IsCancellationRequested) _workers.Add(ServeAsync(await _listener.AcceptTcpClientAsync(_stop.Token))); }
@@ -115,7 +119,7 @@ internal static class DiscoveryPresenceTests
             a.Discovery.NostrRelays = [relay.Url]; b.Discovery.NostrRelays = [relay.Url];
             await a.Discovery.SetWanPeerDiscoveryEnabledAsync(true);
             await b.Discovery.SetWanPeerDiscoveryEnabledAsync(true);
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(14));
             var elapsed = Stopwatch.StartNew();
             while (a.Discovery.DiscoveredPeers.IsEmpty || b.Discovery.DiscoveredPeers.IsEmpty) await Task.Delay(20, deadline.Token);
             if (elapsed.Elapsed > TimeSpan.FromSeconds(3)) throw new Exception("Reciprocal discovery waited for the periodic publish interval.");
@@ -143,6 +147,17 @@ internal static class DiscoveryPresenceTests
             if (a.Discovery.GetWanNostrDiscoveryPayload() == original) throw new Exception("Restart did not rotate the presence incarnation.");
             int beforeRestart = settled;
             while (relay.Events < beforeRestart + 2) await Task.Delay(20, deadline.Token);
+
+            relay.DropConnections();
+            a.CurrentPeer.PortArray = [45681];
+            a.InvalidateTokenCache();
+            a.Discovery.QueueWanAnnouncement();
+            var reconnect = Stopwatch.StartNew();
+            while (!b.PeerStore!.TryGet(a.CurrentPeer.CertHash, out var restored) || restored == null ||
+                !restored.PortArray.SequenceEqual(new ushort[] { 45681 }))
+                await Task.Delay(20, deadline.Token);
+            if (reconnect.Elapsed > TimeSpan.FromSeconds(5))
+                throw new Exception("The reconnected relay did not promptly publish the newest route.");
             Console.WriteLine($"PASS signed reciprocal discovery in {discoveryMs} ms: original timestamp and availability deadline, older announcements, unchanged endpoints, restart request, bounded replies, real loopback relay");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }

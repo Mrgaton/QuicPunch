@@ -1,5 +1,4 @@
 using Photino.NET;
-using System.Runtime.InteropServices;
 using QuicNet.Video;
 
 namespace QuicNet;
@@ -25,19 +24,17 @@ internal sealed class WindowsVideoHost(PhotinoWindow window) : INativeVideoHost
     {
         if(_surfaces.TryGetValue(layout.peerId,out var surface))
         {
-            NativeMedia.qpv_surface_layout(surface,(int)Math.Round(layout.x*layout.scale),(int)Math.Round(layout.y*layout.scale),
-                Math.Max(1,(int)Math.Round(layout.width*layout.scale)),Math.Max(1,(int)Math.Round(layout.height*layout.scale)),layout.visible&&!window.Minimized?1:0);
-            int x=(int)Math.Round(Math.Clamp(layout.clipX,0,layout.width)*layout.scale),y=(int)Math.Round(Math.Clamp(layout.clipY,0,layout.height)*layout.scale);
-            int w=(int)Math.Round((layout.clipWidth<0?layout.width:Math.Clamp(layout.clipWidth,0,layout.width))*layout.scale);
-            int h=(int)Math.Round((layout.clipHeight<0?layout.height:Math.Clamp(layout.clipHeight,0,layout.height))*layout.scale);
-            nint region=CreateRectRgn(x,y,x+w,y+h);
-            if(SetWindowRgn(surface,region,true)==0)DeleteObject(region);
+            if (!layout.visible || window.Minimized)
+                NativeMedia.qpv_surface_layout(surface, 0, 0, 1, 1, 0);
+            else
+            {
+                var area = layout.Viewport();
+                NativeMedia.qpv_desktop_surface_crop(surface, area.X, area.Y, area.Width, area.Height, 1,
+                    area.Left, area.Top, area.Right, area.Bottom);
+            }
         }
         return true;
     });
     public async Task ReleaseAsync(string peerId) => await Invoke(()=>{if(_surfaces.Remove(peerId,out var surface))NativeMedia.qpv_surface_destroy(surface);return true;});
-    [DllImport("gdi32.dll")] private static extern nint CreateRectRgn(int left,int top,int right,int bottom);
-    [DllImport("gdi32.dll")] private static extern bool DeleteObject(nint value);
-    [DllImport("user32.dll")] private static extern int SetWindowRgn(nint window,nint region,bool redraw);
     public string? HardwareComponent(int codecId,int width,int height) => "D3D11VA";
 }

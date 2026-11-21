@@ -96,6 +96,7 @@ namespace QuicPunch
                 PeerStore = new PeerStore(Path.Combine(NodeAppDataPath, "peers.db"));
                 _automaticContactsStartedUtc = DateTime.UtcNow;
                 _reactivatedAutomaticContacts.Clear();
+                _pendingContactRouteProbes.Clear();
 
                 if (MsQuicDatagramChannel.IsSupported)
                 {
@@ -219,15 +220,7 @@ namespace QuicPunch
             try { udp?.Close(); udp?.Dispose(); udp = null; } catch { }
             try { PeerStore?.Dispose(); PeerStore = null; } catch { }
 
-            lock (_availablePeerAdmissionLock)
-            {
-                foreach (var peer in AvailablePeers.Values)
-                {
-                    try { peer.Dispose(); } catch { }
-                }
-                AvailablePeers.Clear();
-                _peersByCertHash.Clear();
-            }
+            _availablePeerRegistry.ClearAndDispose();
 
             CertManager.RenewSessionEntropy();
             if (!ReferenceEquals(TorCertManager, CertManager))

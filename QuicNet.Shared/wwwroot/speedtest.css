@@ -102,6 +102,12 @@
   .speed-setup .toolbar .btn { width: auto; min-width: 180px; }
 }
 @media (max-width: 680px) {
+  .speed-workspace .page-head { margin-bottom:16px; }
+  .speed-workspace .page-head p { font-size:13px; }
+  .speed-workspace .eyebrow, .speed-setup .section-head p { display:none; }
+  .speed-setup .section-body { gap:10px; }
+  .speed-setup .speed-help { margin:0; font-size:13px; }
+  .speed-setup .field .speed-help { margin-top:6px; }
   .speed-workspace .section-head { padding: 20px 18px; }
   .speed-workspace .section-body { padding: 0 18px 20px; }
   .speed-workspace .select { font-size: 16px; }

@@ -39,12 +39,11 @@
   };
 
   let currentPage = 'dashboard';
-  const seenNotificationIds = new Set();
-  let notificationsBootstrapped = false;
   const eventListeners = new Map();
   let activeSocket = null;
   let isConnected = false;
-  let reconnectTimer = null, reconnectAttempt = 0, requestId = 0, statusRequest = null, syncPending = false, leaving = false;
+  let reconnectTimer = null, reconnectAttempt = 0, requestId = 0, statusRequest = null, leaving = false;
+  let liveRequest = null, liveRequestId = 0;
   const pendingRequests = new Map();
   let statusVersion = 0;
   const state = {
@@ -107,9 +106,8 @@
     if (workspaceLabel) workspaceLabel.textContent = (PAGE_TITLES[page] || 'Inicio').split(' · ')[0];
 
     // Update nav links active state
-    document.querySelectorAll('.nav-link').forEach(link => {
-      if (link.dataset.page === page) link.classList.add('active');
-      else link.classList.remove('active');
+    document.querySelectorAll('a.nav-link[data-page]').forEach(link => {
+      link.classList.toggle('active', link.dataset.page === page);
       if (link.dataset.page === page) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
@@ -305,17 +303,16 @@
     document.body.classList.toggle('platform-desktop', !isAndroid);
 
     const c = caps.capabilities;
-    // Puente LAN / VPN
-    if (c.vpn && !c.vpn.available) {
-      document.querySelectorAll('.nav-link[data-page="vpn"]').forEach(el => el.classList.add('hidden'));
-    }
+    document.querySelectorAll('[data-workspace-tool]').forEach(link => {
+      link.hidden = c[link.dataset.page]?.available === false;
+    });
     // QuicWatch unavailable guard
     if (c.watch && !c.watch.available) {
       const frame = document.getElementById('watchFrame');
       if (frame) frame.style.display = 'none';
     }
     // Render status banners on views with available === false
-    ['dashboard', 'chat', 'voice', 'vpn', 'speedtest', 'watch'].forEach(page => {
+    ['dashboard', 'chat', 'voice', 'vpn', 'speedtest', 'virtual-disk', 'watch'].forEach(page => {
       const capKey = page === 'dashboard' ? 'peers' : page;
       const cap = c[capKey];
       const view = document.getElementById(`view-${page}`);
@@ -345,7 +342,7 @@
     leaving = true;
     clearTimeout(reconnectTimer); reconnectTimer = null;
     const socket = activeSocket; activeSocket = null;
-    isConnected = false; syncPending = false;
+    isConnected = false; liveRequest = null;
     window.QuicNetDiagnostics?.setTransport(null);
     rejectPendingRequests();
     try { socket?.close(); } catch {}
@@ -381,51 +378,84 @@
 
   function receiveStatus(status) {
     statusVersion++;
-    state.status = status; syncPending = false;
-    processNotifications(status); emit('status_updated', status);
+    state.status = status;
+    if (!document.hidden) emit('status_updated', status);
   }
 
   function receiveUpdate(status) {
     if (!status || !Number.isFinite(status.CurrentBuild)) return;
     if (state.updates && (status.Revision ?? 0) < (state.updates.Revision ?? 0)) return;
-    state.updates = status; emit('update_status', status);
+    state.updates = status;
+    if (!document.hidden) emit('update_status', status);
   }
 
-  function requestSync() {
-    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
-      try {
-        if (!syncPending) { activeSocket.send(JSON.stringify({ type: 'sync' })); syncPending = true; }
-        return true;
-      } catch (error) { reportError(error, 'Sincronizar estado'); }
-    }
-    return false;
+  function requestLiveUpdates(refresh) {
+    if (document.hidden || activeSocket?.readyState !== WebSocket.OPEN) return false;
+    if (liveRequest && (!refresh || liveRequest.refresh)) return true;
+    const id = ++liveRequestId;
+    try {
+      activeSocket.send(JSON.stringify({ type: 'live_request', id, refresh }));
+      liveRequest = { id, refresh };
+      return true;
+    } catch (error) { reportError(error, 'Sincronizar estado'); return false; }
   }
+
+  function requestSync() { return requestLiveUpdates(true); }
 
   async function getStatus(force = false) {
     if (!force && state.status) return state.status;
-    const version = statusVersion;
-    if (!statusRequest) statusRequest = (isConnected ? wsRequest('status.get').then(status => {
-      if (version === statusVersion) receiveStatus(status);
-      return state.status;
-    })
+    const fetchStatus = () => {
+      const version = statusVersion;
+      return wsRequest('status.get').then(status => {
+        if (version === statusVersion) receiveStatus(status);
+        return state.status ?? status;
+      });
+    };
+    if (!statusRequest) statusRequest = (isConnected ? fetchStatus()
       : new Promise((resolve, reject) => {
-        const stop = on('status_updated', status => { clearTimeout(timer); stop(); resolve(status); });
-        const timer = setTimeout(() => { stop(); reject(new Error('No se pudo conectar con QuicNet.')); }, 15000);
+        const cleanup = () => { clearTimeout(timer); stopStatus(); stopSocket(); };
+        const stopStatus = on('status_updated', status => { cleanup(); resolve(status); });
+        const stopSocket = on('ws_status', ({connected}) => {
+          if (connected && document.hidden) { cleanup(); fetchStatus().then(resolve, reject); }
+        });
+        const timer = setTimeout(() => { cleanup(); reject(new Error('No se pudo conectar con QuicNet.')); }, 15000);
       })).finally(() => { statusRequest = null; });
     return statusRequest;
   }
 
+  const androidWebView = /; wv\)/.test(navigator.userAgent);
+
   function scheduleReconnect() {
-    if (leaving || reconnectTimer) return;
+    if (leaving || reconnectTimer || (androidWebView && document.hidden)) return;
     reconnectTimer = setTimeout(() => { reconnectTimer = null; initWebSocket(); }, Math.min(10000, 500 * 2 ** Math.min(reconnectAttempt++, 5)));
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      if (isConnected) requestSync();
-      else { clearTimeout(reconnectTimer); reconnectTimer = null; initWebSocket(); }
+    statusVersion++;
+    if (document.hidden) {
+      if (androidWebView) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      liveRequest = null;
+      if (activeSocket?.readyState === WebSocket.OPEN) {
+        try { activeSocket.send(JSON.stringify({ type: 'live_pause' })); }
+        catch (error) { reportError(error, 'Pausar actualizaciones en directo'); }
+      }
+    } else if (isConnected) {
+      requestSync();
+    } else {
+      clearTimeout(reconnectTimer); reconnectTimer = null; initWebSocket();
     }
   });
+
+  function receiveLiveUpdates(payload) {
+    if (document.hidden || payload.id !== liveRequest?.id) return;
+    liveRequest = null;
+    for (const {type, data} of payload.events) {
+      if (type === 'status_updated' && data) receiveStatus(data);
+      else if (type === 'update_status') receiveUpdate(data);
+      else emit(type, data);
+    }
+    requestLiveUpdates(false);
+  }
 
   function initWebSocket() {
     if (leaving || activeSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(activeSocket.readyState)) return;
@@ -440,12 +470,13 @@
       socket.onopen = () => {
         if (socket !== activeSocket || leaving) return;
         isConnected = true;
-        reconnectAttempt = 0; syncPending = false;
+        reconnectAttempt = 0; liveRequest = null;
         state.updates = null;
         window.QuicNetDiagnostics?.setTransport(entry => {
           if (activeSocket?.readyState !== WebSocket.OPEN || activeSocket.bufferedAmount > 256 * 1024) return false;
           activeSocket.send(JSON.stringify({ type: 'client_log', data: entry })); return true;
         });
+        requestSync();
         emit('ws_status', { connected: true });
       };
 
@@ -458,6 +489,7 @@
           }
           const payload = JSON.parse(evt.data);
           if (payload && payload.type) {
+            if (payload.type === 'live_updates') { receiveLiveUpdates(payload); return; }
             if (payload.type === 'response') {
               const pending = pendingRequests.get(payload.id);
               if (!pending) return;
@@ -471,18 +503,9 @@
               }
               return;
             }
-            if (payload.type === 'status_updated' && payload.data) {
-              receiveStatus(payload.data); return;
-            }
-            if (payload.type === 'update_status') { receiveUpdate(payload.data); return; }
+            if (payload.type === 'status_updated') { if (payload.data && !document.hidden) receiveStatus(payload.data); return; }
+            if (payload.type === 'update_status') { if (!document.hidden) receiveUpdate(payload.data); return; }
             emit(payload.type, payload.data);
-            if (payload.type === 'notification' && payload.data) {
-              const n = payload.data;
-              if (n.id && !seenNotificationIds.has(n.id)) {
-                seenNotificationIds.add(n.id);
-                // App notices are filtered by the shared notification policy.
-              }
-            }
           }
         } catch (error) { reportError(error, 'Procesar mensaje WebSocket'); }
       };
@@ -494,7 +517,7 @@
         if (!leaving && (event.code !== 1000 || pendingRequests.size))
           reportError(new Error(`Conexión cerrada (código ${event.code}, ${event.wasClean ? 'cierre normal' : 'interrumpida'}). ${event.reason || ''}`), 'WebSocket', 'warn');
         isConnected = false;
-        syncPending = false;
+        liveRequest = null;
         rejectPendingRequests();
         emit('ws_status', { connected: false });
         scheduleReconnect();
@@ -509,21 +532,6 @@
       reportError(e, 'Abrir WebSocket');
       scheduleReconnect();
     }
-  }
-
-  function processNotifications(status) {
-    if (!status || !Array.isArray(status.notifications)) return;
-    if (!notificationsBootstrapped) {
-      notificationsBootstrapped = true;
-      status.notifications.forEach(n => seenNotificationIds.add(n.id));
-      return;
-    }
-    status.notifications.forEach(n => {
-      if (!seenNotificationIds.has(n.id)) {
-        seenNotificationIds.add(n.id);
-        // Historical notifications are retained without replaying native alerts.
-      }
-    });
   }
 
   async function api(path, options = {}) {
@@ -543,7 +551,6 @@
       error.details = data;
       reportError(error, 'API ' + path.split('?')[0]); throw error;
     }
-    if (data && data.notifications) processNotifications(data);
     return data;
   }
 

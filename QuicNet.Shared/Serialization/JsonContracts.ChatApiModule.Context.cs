@@ -23,6 +23,7 @@ namespace QuicNet.Serialization;
 [JsonSerializable(typeof(global::QuicNet.Serialization.ChatApiModuleMessage23))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.ChatApiModuleMessage24))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.ChatApiModuleMessage25))]
+[JsonSerializable(typeof(global::QuicNet.Serialization.ChatDraftResponse))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.ChatOutboxResponse))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.ChatMessageDeleted))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.ChatApiModuleMessage3))]

@@ -5,11 +5,12 @@
 .dm-head span:last-child { font-size:13px; line-height:1.5; }
 /* The conversation-list shortcut is the fallback when the top bar is hidden. */
 .dm-head .mobile-tools-trigger { display:none; }
-@media(max-width:680px), (max-height:520px) {
+@media(min-width:681px) and (max-height:520px) {
   body[data-page=chat]:not(:has(> .topbar .update-notice:not([hidden]))) .dm-head .mobile-tools-trigger { display:inline-flex; }
 }
 .dm-new-chat { margin:0 20px 18px; min-height:44px; border-radius:10px; font-size:13px; }
 .dm-new-chat .icon { width:18px; height:18px; }
+.dm-pane > [hidden] { display:none; }
 .dm-search { position:relative; padding:0 20px 20px; }
 .dm-search > .icon { position:absolute; left:33px; top:13px; width:18px; height:18px; color:var(--muted); pointer-events:none; }
 .dm-search .input { padding-left:39px; min-height:44px; font-size:13px; border-radius:10px; }

@@ -1,9 +1,17 @@
 /* A full-size workspace, independent of the contacts drawer. */
 #view-voice .voice-drawer-tab[aria-pressed=true] { border-bottom-color:var(--accent); color:var(--accent); font-weight:600; }
 #screenShareSettingsModal .media-studio {
+  --media-studio-height:min(900px,calc(100dvh - 48px));
   width:min(1120px,calc(100vw - 48px)); max-width:1120px;
-  height:min(900px,calc(100dvh - 48px)); max-height:calc(100dvh - 48px);
+  height:var(--media-studio-height); max-height:var(--media-studio-height);
   display:flex; flex-direction:column; overflow:hidden; border-radius:18px;
+}
+@media(min-width:761px) {
+  body > #screenShareSettingsModal .media-studio:has(#mediaAudioTab[aria-selected=true]) {
+    height:auto;
+    align-self:start;
+    margin-top:calc((100dvh - 48px - var(--media-studio-height)) / 2);
+  }
 }
 .media-studio > .modal-head, .media-studio > .modal-foot { flex-shrink:0; background:var(--surface); }
 .media-studio > .modal-head { padding:24px 30px; }
@@ -27,6 +35,39 @@
 .media-studio .inline-help { font-size:12px; line-height:1.65; margin-top:10px; }
 .media-studio .split-2 { gap:18px; }
 .media-studio .space-top { margin-top:20px; }
+.audio-device-settings {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr));
+  gap:16px;
+}
+.audio-device-column {
+  display:grid;
+  align-content:start;
+  gap:14px;
+  min-width:0;
+  padding:14px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--surface-2);
+}
+.audio-device-column .field > span { font-size:13px; }
+.audio-volume-heading { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+.media-studio .audio-volume-heading label { margin-bottom:0; }
+.audio-device-column #masterVolumeSlider { display:block; margin:0; }
+.audio-device-feedback { display:flex; flex-wrap:wrap; justify-content:space-between; column-gap:16px; }
+.opus-settings {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:12px 24px;
+  padding:16px clamp(16px,3vw,24px);
+  margin-bottom:0;
+}
+.opus-settings-copy { flex:1 1 16rem; }
+.media-studio .opus-settings-copy .inline-help { margin-top:4px; }
+.opus-settings-controls { display:flex; flex:0 1 23rem; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.opus-settings-controls .select { flex:1 1 min(100%,13.5rem); }
+.opus-settings-controls .btn { flex:none; min-height:46px; }
 .media-studio details { border:1px solid var(--line); border-radius:12px; padding:18px 22px; background:var(--surface); }
 .media-studio details summary { font-size:14px; font-weight:600; cursor:pointer; color:var(--text-strong); }
 .media-studio details:not([open]) summary { margin-bottom:0; }

@@ -50,10 +50,10 @@ internal sealed class AndroidChatFileOpener : IChatFileOpener
 }
 
 // Each URI authorizes one already-resolved attachment; it never contains or accepts a filesystem path.
-[ContentProvider(new[] { Authority }, Exported = false, GrantUriPermissions = true)]
+[ContentProvider(new[] { "${quicNetApplicationId}.chatfiles" }, Exported = false, GrantUriPermissions = true)]
 public sealed class ChatAttachmentProvider : ContentProvider
 {
-    private const string Authority = "org.quicpunch.androidprobe.chatfiles";
+    private static string Authority => Android.App.Application.Context.PackageName + ".chatfiles";
     private sealed record GrantEntry(string Path, string Name, string Mime, DateTime Expires);
     private static readonly ConcurrentDictionary<string, GrantEntry> Grants = new(StringComparer.Ordinal);
     private static readonly object GrantGate = new();

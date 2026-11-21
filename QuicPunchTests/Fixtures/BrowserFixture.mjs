@@ -12,7 +12,17 @@ export async function launchBrowser(options = {}) {
   const browser = process.env.QUICNET_TEST_BROWSER_PATH
     ? {executablePath: process.env.QUICNET_TEST_BROWSER_PATH}
     : {channel: process.env.QUICNET_TEST_BROWSER || 'chromium'};
-  const instance = await chromium.launch({headless: true, ...browser, ...options});
+  const authArgs = [
+    '--auth-server-allowlist=_',
+    '--auth-schemes=basic,digest',
+    '--disable-features=AutofillServerCommunication,PasswordManager'
+  ];
+  const instance = await chromium.launch({
+    headless: true,
+    ...browser,
+    ...options,
+    args: [...authArgs, ...(options.args || [])]
+  });
   // Intercepted fixture pages still need Chromium's explicit loopback permission.
   // This does not grant camera/microphone access or relax the application CSP.
   for (const method of ['newPage', 'newContext']) {
@@ -58,6 +68,15 @@ export async function closeBrowserFixture(browser, server) {
       await stopped;
     }
   }
+}
+
+export function mapStatusMessage(message, map) {
+  if (typeof message !== 'string') return message;
+  const packet = JSON.parse(message);
+  for (const event of [packet, ...(packet.events || [])]) {
+    if (event.data?.peers) event.data = map(event.data);
+  }
+  return JSON.stringify(packet);
 }
 
 export function findFfmpeg() {

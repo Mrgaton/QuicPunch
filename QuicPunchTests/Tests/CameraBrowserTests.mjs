@@ -34,8 +34,8 @@ try{
   assert.equal(await page.evaluate(()=>browserCaptureRequests),0);
   assert.equal(await page.locator('.screen-tile video,.screen-tile canvas').count(),0,'No browser pixel surface');
   await page.waitForFunction(()=>nativeRequests.some(r=>r.path.endsWith('/layout')&&r.body.visible));
-  await page.evaluate(()=>QP.emit('native_video_state',{peerId:'local',mode:'hardware',width:640,height:360,decoded:8,presented:8,dropped:0,decodeMs:.5}));
-  assert.match(await page.locator('.is-local-stream .screen-tile-codec').textContent(),/hardware verificado/);
+  await page.evaluate(()=>QP.emit('native_video_state',{peerId:'local',mode:'hardware',width:640,height:360,presented:8,codecId:1,fps:29,bitrate:850000}));
+  assert.equal(await page.locator('.is-local-stream .screen-tile-codec').textContent(),'Envío · H.264 · 640×360 · 29 FPS · 850 kb/s');
   await page.evaluate(()=>nativeCameraTest.stop());assert.equal(await page.locator('.is-local-stream').count(),0);
   await page.evaluate(()=>{delayNativeStart=true;void nativeCameraTest.start();});await page.waitForFunction(()=>window.releaseNativeStart);
   await page.evaluate(()=>nativeCameraTest.stop());await page.evaluate(()=>releaseNativeStart());await page.waitForFunction(()=>!nativeCameraTest.state().pending);

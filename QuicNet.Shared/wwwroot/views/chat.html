@@ -10,12 +10,13 @@
               <span>Un espacio para estar en contacto.</span>
             </div>
           </div>
-          <button class="btn primary dm-new-chat" id="chatNewBtn" type="button" aria-haspopup="dialog" aria-controls="chatNewDialog"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Nueva conversación</button>
-          <div class="dm-search">
+          <button class="btn primary dm-new-chat" id="chatNewBtn" type="button" aria-haspopup="dialog" aria-controls="chatNewDialog" hidden><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Nueva conversación</button>
+          <button class="btn primary dm-new-chat" id="chatFirstContactBtn" type="button" aria-haspopup="dialog" aria-controls="addContactDialog" hidden>Añadir un contacto</button>
+          <div class="dm-search" hidden>
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
             <input class="input" type="search" aria-label="Buscar conversaciones" id="chatPeerSearch" placeholder="Buscar conversaciones…" autocomplete="off">
           </div>
-          <div class="dm-list-heading"><span>CONVERSACIONES</span><span id="chatConversationCount" aria-label="Número de conversaciones">0</span></div>
+          <div class="dm-list-heading" hidden><span>CONVERSACIONES</span><span id="chatConversationCount" aria-label="Número de conversaciones">0</span></div>
           <div id="chatPeers" class="dm-list" aria-label="Conversaciones"></div>
         </aside>
         <div class="chat-list-resizer" id="chatListResizer" role="separator" tabindex="0" aria-label="Anchura de la lista de conversaciones" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="420" aria-valuenow="360" aria-controls="chatPeers"></div>
@@ -111,7 +112,7 @@
           <div class="composer direct-composer">
             <button class="btn composer-btn" id="attachBtn" aria-label="Adjuntar archivo o imagen" title="Adjuntar archivo o imagen" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m21 11-9 9a6 6 0 0 1-8-8L14 2a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3L16 6"/></svg></button>
             <button class="btn composer-btn" id="emojiBtn" type="button" aria-label="Insertar emoji" aria-controls="emojiPopover" aria-expanded="false" aria-haspopup="dialog" title="Insertar emoji" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 14a4 4 0 0 0 8 0M8 9h1m6 0h1"/></svg></button>
-            <textarea rows="1" aria-label="Escribe un mensaje" aria-describedby="chatComposerHint" aria-autocomplete="list" aria-controls="chatMentionSuggestions" id="messageInput" class="textarea" placeholder="Escribe un mensaje…" disabled></textarea>
+            <textarea rows="1" aria-label="Escribe un mensaje" aria-describedby="chatComposerHint" aria-autocomplete="list" aria-controls="chatMentionSuggestions" id="messageInput" class="textarea" placeholder="Mensaje…" disabled></textarea>
             <button class="btn composer-btn" id="voiceRecordBtn" aria-label="Grabar mensaje de voz" title="Grabar mensaje de voz" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg></button>
             <button class="btn primary" id="sendBtn" disabled>Enviar</button>
             <input id="fileInput" type="file" hidden multiple>
@@ -137,13 +138,13 @@
       <label class="sr-only" for="chatNewSearch">Buscar entre tus contactos</label>
       <input class="input" id="chatNewSearch" placeholder="Buscar entre tus contactos…" autocomplete="off">
       <div id="chatNewPeers" class="chat-new-peers"></div>
-      <button class="btn" id="chatAddContactBtn" type="button">Añadir contacto con invitación</button>
+      <button class="btn" id="chatAddContactBtn" type="button" aria-haspopup="dialog" aria-controls="addContactDialog">Añadir contacto con invitación</button>
     </dialog>
-    <dialog id="chatClearDialog" class="chat-dialog" aria-labelledby="chatClearTitle" aria-describedby="chatClearDescription">
+    <dialog id="chatClearDialog" class="chat-dialog confirmation-dialog" aria-labelledby="chatClearTitle" aria-describedby="chatClearDescription">
       <h2 id="chatClearTitle">Borrar historial de este dispositivo</h2>
       <p id="chatClearDescription"></p>
       <p id="chatClearError" class="hidden" role="alert"></p>
-      <div class="toolbar"><button class="btn" id="chatClearCancelBtn" type="button" autofocus>Cancelar</button><button class="btn danger" id="chatClearConfirmBtn" type="button">Borrar historial local</button></div>
+      <div class="dialog-actions"><button class="btn" id="chatClearCancelBtn" type="button" autofocus>Cancelar</button><button class="btn danger" id="chatClearConfirmBtn" type="button">Borrar historial local</button></div>
     </dialog>
     <dialog id="chatAliasDialog" class="chat-dialog" aria-labelledby="chatAliasTitle" aria-describedby="chatAliasHint">
       <form id="chatAliasForm">
@@ -151,7 +152,7 @@
         <p id="chatAliasHint">Este nombre solo se muestra en tus conversaciones. No cambia el nombre que comparte el contacto.</p>
         <label class="field" for="chatAliasInput">Nombre local<input id="chatAliasInput" class="input" maxlength="80" autocomplete="off"></label>
         <p id="chatAliasError" role="alert" class="hidden"></p>
-        <div class="toolbar"><button id="chatAliasReset" class="btn ghost" type="button">Usar nombre original</button><button id="chatAliasCancel" class="btn" type="button">Cancelar</button><button class="btn primary" type="submit">Guardar nombre</button></div>
+        <div class="dialog-actions"><button id="chatAliasReset" class="btn ghost" type="button">Usar nombre original</button><button id="chatAliasCancel" class="btn" type="button">Cancelar</button><button class="btn primary" type="submit">Guardar nombre</button></div>
       </form>
     </dialog>
 

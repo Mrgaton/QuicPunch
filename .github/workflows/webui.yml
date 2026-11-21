@@ -1,0 +1,57 @@
+name: WebUI validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "QuicNet.Shared/**"
+      - "QuicNet.Geolocation/Map/**"
+      - "QuicPunchTests/Tests/**"
+      - "QuicPunchTests/Fixtures/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "AGENTS.md"
+      - "doc/architecture/development-map.md"
+      - ".github/workflows/webui.yml"
+  pull_request:
+    paths:
+      - "QuicNet.Shared/**"
+      - "QuicNet.Geolocation/Map/**"
+      - "QuicPunchTests/Tests/**"
+      - "QuicPunchTests/Fixtures/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "AGENTS.md"
+      - "doc/architecture/development-map.md"
+      - ".github/workflows/webui.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  webui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Verify development guide and run fast tests
+        run: |
+          node scripts/check-development-guide.mjs
+          npm run test:web
+      - run: npm run test:browser:install -- --with-deps
+      - name: Verify contacts, connection modes, chat and voice
+        run: npm run test:browser -- --filter=ContactHome --filter=ConnectionModes --filter=ChatOutbox --filter=VoiceRoom
+      - uses: actions/upload-artifact@v5
+        if: failure()
+        with:
+          name: webui-test-output
+          path: .artifacts/test-output/
+          include-hidden-files: true
+

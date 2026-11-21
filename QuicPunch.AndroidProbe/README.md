@@ -35,6 +35,25 @@ Install `QuicPunch.AndroidProbe/bin/Debug/net11.0-android37.0/org.quicpunch.andr
 
 For a manual WebRTC call, open **Llamada rápida** in the Android app and `/mobile.html` in the desktop app. One side creates an invitation and sends its text to the other side; the other side pastes it, creates a response and sends that back; the first side pastes the response and applies it. WebRTC currently uses local ICE candidates, so both devices should be on the same LAN. The WebRTC call is independent of the QuicPunch QUIC peer session.
 
+### x86-64 emulator
+
+Build a native x86-64 QA APK for a Google APIs x86-64 system image. The QA package uses `org.quicpunch.androidprobe.qa` and has no production updater. Build the x86-64 native libraries in WSL/Linux with the same toolchain environment as above.
+
+```bash
+./QuicPunch.AndroidProbe/build-native-android.sh x86_64
+./scripts/build-native-media.sh android-x64
+```
+
+Then build and install from Windows.
+
+```powershell
+./QuicPunch.AndroidProbe/prepare-tor-android.ps1 -Abi x86_64
+dotnet build QuicPunch.AndroidProbe/QuicPunch.AndroidProbe.csproj -c Debug -r android-x64 -p:AndroidPackageFormats=apk
+adb install QuicPunch.AndroidProbe/bin/Debug/net11.0-android37.0/android-x64/org.quicpunch.androidprobe.qa-Signed.apk
+```
+
+On a fresh install, open **Inicio** without permission prompts. Open **Ajustes → Notificaciones → Permitir avisos** to exercise notification permission and **Llamadas → Ajustes → Audio → Probar micrófono** to exercise microphone permission. Cold-start the app again after granting and after denying the permissions.
+
 ## Verification status
 
 Watch together now registers the shared control and media protocols on Android.

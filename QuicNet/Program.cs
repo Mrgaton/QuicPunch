@@ -9,9 +9,7 @@ using QuicPunch.Helpers;
 using QuicNet.Protocols;
 using QuicNet.Settings;
 using QuicNet.WebUi;
-using QuicNet.Watch.Protocols;
-using QuicNet.Watch.Services;
-using QuicNet.Watch.Web;
+using QuicNet.Watch;
 using QuicNet.Vpn;
 using QuicPunch.Vpn.Broker;
 
@@ -22,6 +20,8 @@ internal static class Program
     [STAThread]
     private static async Task Main(string[] args)
     {
+        Diagnostics.CoreErrorReporter.Start(QuicPunch.QuicPunch.AppDataPath);
+        QuicNet.Video.X11RemoteInput.InitializeThreads();
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
         {
             Console.WriteLine($"[FATAL UNHANDLED EXCEPTION] {e.ExceptionObject}");
@@ -69,10 +69,6 @@ internal static class Program
 
         TryRegisterProtocolHandler();
 
-        string preferencesPath = Path.Combine(QuicPunch.QuicPunch.AppDataPath, "ui-settings.json");
-        var preferencesStore = new AppPreferencesStore(preferencesPath);
-        AppPreferences preferences = preferencesStore.Snapshot();
-        if (startup && !preferences.StartWithSystem) return;
         Directory.CreateDirectory(QuicPunch.QuicPunch.AppDataPath);
         FileStream instance;
         string instanceUrl = Path.Combine(QuicPunch.QuicPunch.AppDataPath, "desktop-url.txt");
@@ -89,23 +85,30 @@ internal static class Program
         }
         using var instanceLock = instance;
 
+        var preferencesStore = AppPreferencesStore.OpenForApp(QuicPunch.QuicPunch.AppDataPath);
+        AppPreferences preferences = preferencesStore.Snapshot();
+        if (startup && (!preferences.OnboardingCompleted || !preferences.StartWithSystem)) return;
+
         using var cts = new CancellationTokenSource();
-        var qcc = new QuicPunch.QuicPunch(cts, null, null)
+        var qcc = new QuicPunch.QuicPunch(cts.Token, updateIpReputationOnlyWithWan: true)
         {
             SharePeers = true,
-            WanEnabled = preferences.WanEnabled
+            WanEnabled = preferences.OnboardingCompleted && preferences.WanEnabled
         };
-        LocalUserProfile.Apply(qcc, preferences);
-        qcc.Discovery.WanNostrDiscoveryEnabled = preferences.WanNostrDiscoveryEnabled;
-        qcc.Discovery.TorNostrDiscoveryEnabled = preferences.TorNostrDiscoveryEnabled;
 
         QuicPunch.QuicPunch.EnableLogging = true;
         QuicPunch.QuicPunch.LogHandler = msg => { Console.WriteLine(msg); WebUiServer.LogEvent(msg); };
         QuicPunch.QuicPunch.ErrorHandler = msg => { Console.Error.WriteLine(msg); WebUiServer.LogEvent(msg); };
 
-        await qcc.Discovery.SetWanPeerDiscoveryEnabledAsync(preferences.WanNostrDiscoveryEnabled, cts.Token);
-        await qcc.Discovery.SetTorPeerDiscoveryEnabledAsync(preferences.TorNostrDiscoveryEnabled, cts.Token);
-        await qcc.StartAsync(cts.Token);
+        Task StartNodeAsync(AppPreferences selected)
+        {
+            LocalUserProfile.Apply(qcc, selected);
+            qcc.WanEnabled = selected.WanEnabled;
+            qcc.Discovery.WanNostrDiscoveryEnabled = selected.WanNostrDiscoveryEnabled;
+            qcc.Discovery.TorNostrDiscoveryEnabled = selected.TorNostrDiscoveryEnabled;
+            return qcc.StartAsync(cts.Token);
+        }
+        if (preferences.OnboardingCompleted) await StartNodeAsync(preferences);
 
         var lanHandler = new VirtualLanHandler();
         if (preferences.LanAutoAssign)
@@ -116,70 +119,52 @@ internal static class Program
         using var vpnStore = new VpnConfigurationStore(Path.Combine(qcc.NodeAppDataPath, "vpn.json"), new VpnConfiguration {
             Enabled = preferences.LanEnabled, AutoAssign = preferences.LanAutoAssign,
             LocalAddress = lanHandler.LocalIp.ToString(), SubnetMask = lanHandler.SubnetMask, Mtu = lanHandler.Mtu });
-        await using var vpnController = new VpnController(qcc, lanHandler, vpnStore, cts.Token);
+        await using var vpnController = new VpnController(qcc, lanHandler, vpnStore, cts.Token, () => qcc.IsStarted);
 
         var chatHandler = new ChatHandler();
         using var voiceCallHandler = new VoiceCallHandler(qcc);
         using var speedTestHandler = new SpeedTestHandler();
-        using var watchControlHandler = new WatchControlHandler();
-        using var watchMediaHandler = new MediaTransferHandler();
 
         qcc.RegisterProtocol(chatHandler);
         qcc.RegisterProtocol(voiceCallHandler);
         qcc.RegisterProtocol(speedTestHandler);
         qcc.RegisterProtocol(lanHandler);
-        qcc.RegisterProtocol(watchControlHandler);
-        qcc.RegisterProtocol(watchMediaHandler);
 
-        using var watchLibrary = new MediaLibrary(watchMediaHandler, Path.Combine(qcc.NodeAppDataPath, "watch-media-cache"));
-        var watchRooms = new RoomCoordinator(watchControlHandler, watchLibrary, qcc.CurrentPeer?.Id
-            ?? throw new InvalidOperationException("The local peer identity is unavailable."));
-        var watchConnector = new PeerConnector(qcc, watchControlHandler, watchMediaHandler, cts.Token);
-        await using var watchWeb = new WatchWebServer(qcc, watchControlHandler, watchMediaHandler, watchLibrary, watchRooms, watchConnector, cts);
+        await using var watch = new WatchApplication(qcc, cts);
+        var watchWeb = watch.Web;
 
-        var webUi = new WebUiServer(qcc, chatHandler, lanHandler, voiceCallHandler, speedTestHandler, preferencesStore, cts, watchWeb);
+        var webUi = new WebUiServer(qcc, chatHandler, lanHandler, voiceCallHandler, speedTestHandler, preferencesStore, cts, watchWeb,
+            startAfterOnboarding: StartNodeAsync);
         using var updater = new QuicNet.Updates.AutoUpdateService(qcc.NodeAppDataPath, OperatingSystem.IsLinux() ? "linux-x64" : "win-x64",
             WindowsAutoUpdate.InstallAsync, getIdleTime: DesktopUpdateIdle.GetIdleTime);
         webUi.Updates = updater;
         webUi.Start();
-        File.WriteAllText(instanceUrl, webUi.Url);
         using var appPlatform = new DesktopAppPlatform(webUi.Url, qcc.NodeAppDataPath, cts);
         webUi.AppPlatform = appPlatform;
-        try { if (appPlatform.StartupSupported) appPlatform.SetStartWithSystem(preferencesStore.Snapshot().StartWithSystem); }
+        try { if (preferences.OnboardingCompleted && appPlatform.StartupSupported) appPlatform.SetStartWithSystem(preferences.StartWithSystem); }
         catch (Exception ex) { WebUiServer.LogEvent("No se pudo aplicar el inicio automático: " + ex.Message); }
+        File.WriteAllText(instanceUrl, webUi.Url);
         if (updateHealth != null) File.WriteAllText(updateHealth, "ready");
         updater.Start(cts.Token);
         DesktopWindowManager.ShowWindow(webUi.Url, qcc.NodeAppDataPath, cts, watchWeb,
             () => preferencesStore.Snapshot().RunInBackground, startup && preferences.RunInBackground,
             open => appPlatform.OpenWindow = open);
 
-        if (preferences.TorEnabled)
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    WebUiServer.LogEvent("[TOR] Restoring Tor from the previous session...");
-                    await qcc.StartTorAsync(preferences.TorVirtualPort, cancellationToken: cts.Token);
-                    WebUiServer.LogEvent($"[TOR] Hidden service ready at {qcc.TorOnionAddress}");
-                }
-                catch (Exception ex)
-                {
-                    WebUiServer.LogEvent($"[TOR] Automatic startup failed: {ex.Message}");
-                }
-            });
-        }
+        if (preferences.OnboardingCompleted) _ = webUi.RestoreTorAsync();
 
-        string myToken = qcc.GetToken();
-        Console.WriteLine($"Your public endpoints: {string.Join(", ", qcc.CurrentPeer?.Addresses ?? [])}\n");
-        if (string.IsNullOrEmpty(myToken))
+        if (preferences.OnboardingCompleted)
         {
-            Console.WriteLine("Your WAN token is not available yet. Start WAN or wait for endpoint discovery.\n");
-        }
-        else
-        {
-            Console.WriteLine($"Your token: {myToken}\n");
-            Console.WriteLine($"Share this URI for quick connection: qp://{myToken}\n");
+            string myToken = qcc.GetToken();
+            Console.WriteLine($"Your public endpoints: {string.Join(", ", qcc.CurrentPeer?.Addresses ?? [])}\n");
+            if (string.IsNullOrEmpty(myToken))
+            {
+                Console.WriteLine("Your WAN token is not available yet. Start WAN or wait for endpoint discovery.\n");
+            }
+            else
+            {
+                Console.WriteLine($"Your token: {myToken}\n");
+                Console.WriteLine($"Share this URI for quick connection: qp://{myToken}\n");
+            }
         }
 
         qcc.OnPeerAvailable += peer => Console.WriteLine($"Peer available: {peer.Name}");
@@ -188,6 +173,11 @@ internal static class Program
         {
             try
             {
+                if (!qcc.IsStarted)
+                {
+                    await Task.Delay(1000, cts.Token).ConfigureAwait(false);
+                    continue;
+                }
                 Console.WriteLine("\nSelect a trusted peer to open an application, or use the web console.");
                 Console.WriteLine("0: Enter token manually");
                 var trustedPeers = qcc.AvailablePeers.Values.Where(qcc.IsTrustedPeer).ToArray();
@@ -244,6 +234,7 @@ internal static class Program
             catch (OperationCanceledException) when (cts.Token.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
+                Diagnostics.CoreErrorReporter.Report("Consola de escritorio", ex);
                 Console.WriteLine($"Console loop error: {ex.Message}");
                 try { await Task.Delay(1000, cts.Token); } catch (OperationCanceledException) { break; }
             }
@@ -252,10 +243,7 @@ internal static class Program
         try { webUi.Stop(); } catch { }
         try { await vpnController.DisposeAsync(); } catch { }
         try { await qcc.DisposeAsync(); } catch { }
-        try { await watchWeb.DisposeAsync(); } catch { }
-        try { watchLibrary.Dispose(); } catch { }
-        try { watchControlHandler.Dispose(); } catch { }
-        try { watchMediaHandler.Dispose(); } catch { }
+        try { await watch.DisposeAsync(); } catch { }
         try { lanHandler.Dispose(); } catch { }
         Environment.Exit(0);
     }

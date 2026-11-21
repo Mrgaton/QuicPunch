@@ -1,10 +1,12 @@
 // Native media ABI. Compressed packets enter once; decoded pixels never enter JS/.NET.
-// FFmpeg owns decoding. D3D11 and Android Surface own presentation.
+// FFmpeg owns decoding. D3D11, Android Surface and X11 own presentation.
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <chrono>
 #include <algorithm>
+#include <cmath>
+#include <mutex>
 #include <vector>
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -26,7 +28,7 @@ extern "C" {
 }
 #define API extern "C" __declspec(dllexport)
 template<class T> static void release(T*& p) { if(p) p->Release(); p=nullptr; }
-#else
+#elif defined(__ANDROID__)
 #include <jni.h>
 #include <android/native_window_jni.h>
 #include <EGL/egl.h>
@@ -36,6 +38,12 @@ extern "C" {
 #include <libavcodec/mediacodec.h>
 #include <libavutil/hwcontext_mediacodec.h>
 }
+#define API extern "C" __attribute__((visibility("default")))
+#else
+#include <cstdlib>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/extensions/shape.h>
 #define API extern "C" __attribute__((visibility("default")))
 #endif
 
@@ -49,6 +57,35 @@ API const char* qpv_version() { return av_version_info(); }
 static AVCodecID codec_id(int id) { switch(id){case 1:return AV_CODEC_ID_H264;case 3:return AV_CODEC_ID_VP9;case 4:return AV_CODEC_ID_AV1;case 5:return AV_CODEC_ID_HEVC;default:return AV_CODEC_ID_NONE;} }
 static const char* codec_name(int id) { switch(id){case 1:return "h264";case 3:return "vp9";case 4:return "av1";case 5:return "hevc";default:return "";} }
 
+#ifndef __ANDROID__
+struct VideoCrop { double left=0,top=0,right=1,bottom=1; };
+
+// Keep the hardware surface or XImage the size of the visible viewport even
+// when the transformed video extends many screens beyond it.
+static int crop_start(double fraction,int size) {
+    return std::clamp((int)std::floor(fraction*size/2)*2,0,std::max(0,size-2));
+}
+static int crop_end(double fraction,int size,int start) {
+    return std::clamp((int)std::ceil(fraction*size/2)*2,start+2,size);
+}
+#endif
+
+#if defined(__linux__) && !defined(__ANDROID__)
+struct X11Surface {
+    Display* display=nullptr;
+    Window window=0;
+    GC gc=nullptr;
+    Visual* visual=nullptr;
+    int depth=0,width=1,height=1;
+    bool visible=false;
+    VideoCrop crop;
+    std::mutex gate;
+    ~X11Surface() {
+        if(display)XCloseDisplay(display);
+    }
+};
+#endif
+
 struct Video {
     AVCodecContext* codec=nullptr;
     AVBufferRef* device=nullptr;
@@ -60,6 +97,7 @@ struct Video {
     int hardware=0;
     int width=0,height=0;
     int64_t decoded=0,presented=0,discarded=0,hardware_frames=0,last_decode_us=0;
+    int64_t last_present_us=0;
     void* surface=nullptr;
 #ifdef _WIN32
     ID3D11Device* d3d=nullptr;
@@ -73,13 +111,15 @@ struct Video {
     HANDLE latency=nullptr;
     int render_width=0,render_height=0,output_width=0,output_height=0;
     std::vector<uint8_t> upload_bytes;
-#else
+#elif defined(__ANDROID__)
     ANativeWindow* window=nullptr;
     EGLDisplay display=EGL_NO_DISPLAY;
     EGLContext gl_context=EGL_NO_CONTEXT;
     EGLSurface gl_surface=EGL_NO_SURFACE;
     GLuint program=0,textures[3]={};
     int upload_width=0,upload_height=0;
+#else
+    XImage* x11_image=nullptr;
 #endif
     ~Video();
 };
@@ -97,6 +137,16 @@ static int convert(Video* v, AVFrame* input, AVPixelFormat format) {
 }
 
 #ifdef _WIN32
+struct WindowsSurfaceLayout { std::mutex gate; VideoCrop crop; };
+static constexpr wchar_t VideoClass[]=L"QuicNetNativeVideo";
+static constexpr wchar_t LayoutProperty[]=L"QuicNetVideoLayout";
+
+static LRESULT CALLBACK VideoWindowProcedure(HWND window,UINT message,WPARAM wparam,LPARAM lparam) {
+    if(message==WM_NCHITTEST)return HTTRANSPARENT;
+    if(message==WM_MOUSEACTIVATE)return MA_NOACTIVATE;
+    return DefWindowProcW(window,message,wparam,lparam);
+}
+
 static int init_d3d(Video* v) {
     HRESULT hr=D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,D3D11_CREATE_DEVICE_VIDEO_SUPPORT|D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&v->d3d,nullptr,&v->context);
     if(FAILED(hr))return AVERROR_EXTERNAL;
@@ -130,7 +180,7 @@ static int present(Video* v, AVFrame* f) {
         release(v->processor);release(v->enumerator);
     }
     // No busy waiting and no queue of presents behind a blocked compositor.
-    if(v->latency && WaitForSingleObject(v->latency,0)!=WAIT_OBJECT_0){++v->discarded;return 0;}
+    if(v->latency && WaitForSingleObject(v->latency,0)!=WAIT_OBJECT_0)return 1;
     if(!v->processor || v->render_width!=f->width || v->render_height!=f->height){
         release(v->processor);release(v->enumerator);release(v->upload);
         D3D11_VIDEO_PROCESSOR_CONTENT_DESC content={};content.InputFrameFormat=D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
@@ -157,8 +207,14 @@ static int present(Video* v, AVFrame* f) {
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ov={};ov.ViewDimension=D3D11_VPOV_DIMENSION_TEXTURE2D;
     if(SUCCEEDED(hr))hr=v->video_device->CreateVideoProcessorOutputView(back,v->enumerator,&ov,&out);
     if(SUCCEEDED(hr)){
-        RECT source={0,0,f->width,f->height};double scale=std::min((double)ow/f->width,(double)oh/f->height);
-        int dw=(int)(f->width*scale),dh=(int)(f->height*scale);RECT destination={(ow-dw)/2,(oh-dh)/2,(ow+dw)/2,(oh+dh)/2};
+        VideoCrop crop;
+        if(auto layout=(WindowsSurfaceLayout*)GetPropW(window,LayoutProperty)){
+            std::lock_guard<std::mutex> lock(layout->gate);
+            crop=layout->crop;
+        }
+        int left=crop_start(crop.left,f->width),top=crop_start(crop.top,f->height);
+        RECT source={left,top,crop_end(crop.right,f->width,left),crop_end(crop.bottom,f->height,top)};
+        RECT destination={0,0,ow,oh};
         v->video_context->VideoProcessorSetStreamSourceRect(v->processor,0,TRUE,&source);
         v->video_context->VideoProcessorSetStreamDestRect(v->processor,0,TRUE,&destination);
         v->video_context->VideoProcessorSetOutputTargetRect(v->processor,TRUE,&rect);
@@ -172,14 +228,41 @@ static int present(Video* v, AVFrame* f) {
     release(out);release(in);release(back);
     if(FAILED(hr))return AVERROR_EXTERNAL;
     hr=v->swap->Present(0,DXGI_PRESENT_DO_NOT_WAIT);
-    if(hr==DXGI_ERROR_WAS_STILL_DRAWING){++v->discarded;return 0;}
+    if(hr==DXGI_ERROR_WAS_STILL_DRAWING)return 1;
     if(FAILED(hr))return AVERROR_EXTERNAL;
     ++v->presented;return 0;
 }
-API void* qpv_surface_create(void* parent){return CreateWindowExW(0,L"STATIC",L"NetTT native video",WS_CHILD|WS_CLIPSIBLINGS,0,0,1,1,(HWND)parent,nullptr,GetModuleHandle(nullptr),nullptr);}
-API void qpv_surface_layout(void* surface,int x,int y,int w,int h,int visible){SetWindowPos((HWND)surface,HWND_TOP,x,y,w,h,SWP_NOACTIVATE|(visible?SWP_SHOWWINDOW:SWP_HIDEWINDOW));}
-API void qpv_surface_destroy(void* surface){DestroyWindow((HWND)surface);}
-#else
+API void* qpv_surface_create(void* parent){
+    auto instance=GetModuleHandleW(nullptr);
+    static ATOM window_class=[instance](){
+        WNDCLASSW info={};info.hInstance=instance;info.lpszClassName=VideoClass;info.lpfnWndProc=VideoWindowProcedure;
+        return RegisterClassW(&info);
+    }();
+    if(!window_class)return nullptr;
+    // WebView2 handles input on another thread, beyond the scope of HTTRANSPARENT.
+    auto window=CreateWindowExW(WS_EX_TRANSPARENT,VideoClass,L"",WS_CHILD|WS_CLIPSIBLINGS|WS_DISABLED,0,0,1,1,(HWND)parent,nullptr,instance,nullptr);
+    if(!window)return nullptr;
+    auto layout=new WindowsSurfaceLayout;
+    if(!SetPropW(window,LayoutProperty,layout)){delete layout;DestroyWindow(window);return nullptr;}
+    return window;
+}
+API void qpv_desktop_surface_crop(void* surface,int x,int y,int w,int h,int visible,double left,double top,double right,double bottom){
+    auto window=(HWND)surface;
+    if(auto layout=(WindowsSurfaceLayout*)GetPropW(window,LayoutProperty)){
+        std::lock_guard<std::mutex> lock(layout->gate);
+        layout->crop={left,top,right,bottom};
+    }
+    SetWindowPos(window,HWND_TOP,x,y,w,h,SWP_NOACTIVATE|(visible?SWP_SHOWWINDOW:SWP_HIDEWINDOW));
+}
+API void qpv_surface_layout(void* surface,int x,int y,int w,int h,int visible){
+    qpv_desktop_surface_crop(surface,x,y,w,h,visible,0,0,1,1);
+}
+API void qpv_surface_destroy(void* surface){
+    auto window=(HWND)surface;
+    delete (WindowsSurfaceLayout*)RemovePropW(window,LayoutProperty);
+    DestroyWindow(window);
+}
+#elif defined(__ANDROID__)
 API void qpv_android_init(void* env){JavaVM* vm=nullptr;((JNIEnv*)env)->GetJavaVM(&vm);av_jni_set_java_vm(vm,nullptr);}
 static GLuint shader(GLenum kind,const char* source){GLuint id=glCreateShader(kind);glShaderSource(id,1,&source,nullptr);glCompileShader(id);GLint success;glGetShaderiv(id,GL_COMPILE_STATUS,&success);if(!success){glDeleteShader(id);return 0;}return id;}
 static int init_gl(Video* v){
@@ -223,6 +306,113 @@ static int present(Video* v,AVFrame* frame){
     glUniformMatrix3fv(glGetUniformLocation(v->program,"matrix"),1,GL_FALSE,matrix);glUniform3f(glGetUniformLocation(v->program,"offset"),full?0:-16.0f/255,-128.0f/255,-128.0f/255);
     glDrawArrays(GL_TRIANGLES,0,3);if(!eglSwapBuffers(v->display,v->gl_surface))return AVERROR_EXTERNAL;++v->presented;return 0;
 }
+#else
+API void* qpv_surface_create(void* parent) {
+    if(!parent)return nullptr;
+    auto surface=new X11Surface;
+    surface->display=XOpenDisplay(nullptr);
+    if(!surface->display){delete surface;return nullptr;}
+    XWindowAttributes attributes{};
+    int shape_event,shape_error;
+    if(!XGetWindowAttributes(surface->display,(Window)(uintptr_t)parent,&attributes) ||
+       !XShapeQueryExtension(surface->display,&shape_event,&shape_error)) { delete surface;return nullptr; }
+    surface->visual=attributes.visual;
+    surface->depth=attributes.depth;
+    surface->window=XCreateSimpleWindow(surface->display,(Window)(uintptr_t)parent,0,0,1,1,0,0,0);
+    surface->gc=XCreateGC(surface->display,surface->window,0,nullptr);
+    // X11 routes pointer events through the native picture to WebKit.
+    XShapeCombineRectangles(surface->display,surface->window,ShapeInput,0,0,nullptr,0,ShapeSet,Unsorted);
+    XFlush(surface->display);
+    return surface;
+}
+
+API void qpv_x11_surface_layout(void* handle,int x,int y,int width,int height,int visible,int clip_x,int clip_y,int clip_width,int clip_height) {
+    auto surface=(X11Surface*)handle;
+    if(!surface)return;
+    std::lock_guard<std::mutex> lock(surface->gate);
+    if(visible && clip_width>0 && clip_height>0) {
+        surface->width=width;
+        surface->height=height;
+        surface->crop={};
+        XMoveResizeWindow(surface->display,surface->window,x,y,width,height);
+        XRectangle region{(short)clip_x,(short)clip_y,(unsigned short)clip_width,(unsigned short)clip_height};
+        XShapeCombineRectangles(surface->display,surface->window,ShapeBounding,0,0,&region,1,ShapeSet,Unsorted);
+        XMapRaised(surface->display,surface->window);
+        surface->visible=true;
+    } else if(surface->visible) {
+        XUnmapWindow(surface->display,surface->window);
+        surface->visible=false;
+    }
+    XFlush(surface->display);
+}
+
+API void qpv_desktop_surface_crop(void* handle,int x,int y,int width,int height,int visible,double left,double top,double right,double bottom) {
+    auto surface=(X11Surface*)handle;
+    if(!surface)return;
+    std::lock_guard<std::mutex> lock(surface->gate);
+    if(visible && width>0 && height>0) {
+        surface->width=width;
+        surface->height=height;
+        surface->crop={left,top,right,bottom};
+        XMoveResizeWindow(surface->display,surface->window,x,y,width,height);
+        XShapeCombineMask(surface->display,surface->window,ShapeBounding,0,0,None,ShapeSet);
+        XMapRaised(surface->display,surface->window);
+        surface->visible=true;
+    } else if(surface->visible) {
+        XUnmapWindow(surface->display,surface->window);
+        surface->visible=false;
+    }
+    XFlush(surface->display);
+}
+
+API void qpv_surface_destroy(void* handle){delete (X11Surface*)handle;}
+
+static int present(Video* v,AVFrame* frame) {
+    auto surface=(X11Surface*)v->surface;
+    if(!surface)return 0;
+    std::lock_guard<std::mutex> lock(surface->gate);
+    if(!surface->visible)return 0;
+    const int width=surface->width,height=surface->height;
+    if(!v->x11_image || v->x11_image->width!=width || v->x11_image->height!=height) {
+        if(v->x11_image)XDestroyImage(v->x11_image);
+        v->x11_image=nullptr;
+        if((int64_t)width*height>32'000'000)return AVERROR(EINVAL);
+        v->x11_image=XCreateImage(surface->display,surface->visual,surface->depth,ZPixmap,0,nullptr,width,height,32,0);
+        if(!v->x11_image)return AVERROR(ENOMEM);
+        auto image=v->x11_image;
+        if(image->bits_per_pixel!=32 || image->byte_order!=LSBFirst ||
+           image->red_mask!=0x00ff0000 || image->green_mask!=0x0000ff00 || image->blue_mask!=0x000000ff) {
+            XDestroyImage(image);v->x11_image=nullptr;return AVERROR(ENOSYS);
+        }
+        image->data=(char*)std::malloc((size_t)image->bytes_per_line*height);
+        if(!image->data){XDestroyImage(image);v->x11_image=nullptr;return AVERROR(ENOMEM);}
+    }
+    auto image=v->x11_image;
+    const auto crop=surface->crop;
+    AVFrame* cropped=nullptr;
+    if(crop.left>0||crop.top>0||crop.right<1||crop.bottom<1){
+        cropped=av_frame_clone(frame);
+        if(!cropped)return AVERROR(ENOMEM);
+        cropped->crop_left=crop_start(crop.left,frame->width);
+        cropped->crop_top=crop_start(crop.top,frame->height);
+        cropped->crop_right=frame->width-crop_end(crop.right,frame->width,(int)cropped->crop_left);
+        cropped->crop_bottom=frame->height-crop_end(crop.bottom,frame->height,(int)cropped->crop_top);
+        int result=av_frame_apply_cropping(cropped,AV_FRAME_CROP_UNALIGNED);
+        if(result<0){av_frame_free(&cropped);return result;}
+        frame=cropped;
+    }
+    v->scaler=sws_getCachedContext(v->scaler,frame->width,frame->height,(AVPixelFormat)frame->format,
+        width,height,AV_PIX_FMT_BGRA,SWS_FAST_BILINEAR,nullptr,nullptr,nullptr);
+    uint8_t* output[4]={(uint8_t*)image->data,nullptr,nullptr,nullptr};
+    int strides[4]={image->bytes_per_line,0,0,0};
+    int result=v->scaler?sws_scale(v->scaler,frame->data,frame->linesize,0,frame->height,output,strides):AVERROR(ENOMEM);
+    av_frame_free(&cropped);
+    if(result<0)return result;
+    XPutImage(surface->display,surface->window,surface->gc,image,0,0,0,0,width,height);
+    XFlush(surface->display);
+    ++v->presented;
+    return 0;
+}
 #endif
 
 Video::~Video(){
@@ -231,19 +421,23 @@ Video::~Video(){
 #ifdef _WIN32
     release(upload);release(processor);release(enumerator);release(swap);if(latency)CloseHandle(latency);
     release(video_context);release(video_device);release(context);release(d3d);
-#else
+#elif defined(__ANDROID__)
     if(gl_context!=EGL_NO_CONTEXT){eglMakeCurrent(display,gl_surface,gl_surface,gl_context);glDeleteTextures(3,textures);glDeleteProgram(program);eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);eglDestroyContext(display,gl_context);}
     if(gl_surface!=EGL_NO_SURFACE)eglDestroySurface(display,gl_surface);
     // EGL_DEFAULT_DISPLAY is shared across participants. Do not eglTerminate it here.
     if(window)ANativeWindow_release(window);
+#else
+    if(x11_image)XDestroyImage(x11_image);
 #endif
 }
 static AVPixelFormat choose_format(AVCodecContext* ctx,const AVPixelFormat* formats){
     Video* v=(Video*)ctx->opaque;
 #ifdef _WIN32
     AVPixelFormat desired=AV_PIX_FMT_D3D11;
-#else
+#elif defined(__ANDROID__)
     AVPixelFormat desired=AV_PIX_FMT_MEDIACODEC;
+#else
+    AVPixelFormat desired=AV_PIX_FMT_NONE;
 #endif
     if(v->hardware){for(auto p=formats;*p!=AV_PIX_FMT_NONE;p++)if(*p==desired)return desired;return AV_PIX_FMT_NONE;}
     for(auto p=formats;*p!=AV_PIX_FMT_NONE;p++){const AVPixFmtDescriptor* desc=av_pix_fmt_desc_get(*p);if(desc&&!(desc->flags&AV_PIX_FMT_FLAG_HWACCEL))return *p;}
@@ -256,11 +450,15 @@ API void* qpv_open(int id,int hardware,int width,int height,const uint8_t* extra
 #ifdef _WIN32
     decoder=id==4?avcodec_find_decoder_by_name(hardware?"av1":"libdav1d"):avcodec_find_decoder(codec_id(id));
     if((hardware||surface) && init_d3d(v)<0){failure(AVERROR_EXTERNAL,"D3D11 device");delete v;return nullptr;}
-#else
+#elif defined(__ANDROID__)
     std::string name=std::string(codec_name(id))+"_mediacodec";
     decoder=hardware?avcodec_find_decoder_by_name(name.c_str()):id==4?avcodec_find_decoder_by_name("libdav1d"):avcodec_find_decoder(codec_id(id));
     if(surface){JavaVM* vm=(JavaVM*)av_jni_get_java_vm(nullptr);JNIEnv* env=nullptr;if(vm){vm->AttachCurrentThread(&env,nullptr);v->window=ANativeWindow_fromSurface(env,(jobject)surface);}if(!v->window){failure(AVERROR_EXTERNAL,"Android surface");delete v;return nullptr;}}
     if(hardware && (!surface||!component||!*component)){failure(AVERROR(EINVAL),"hardware component/surface missing");delete v;return nullptr;}
+#else
+    if(hardware){failure(AVERROR(ENOSYS),"Linux software decoder");delete v;return nullptr;}
+    decoder=id==4?avcodec_find_decoder_by_name("libdav1d"):avcodec_find_decoder(codec_id(id));
+    if(!decoder)decoder=avcodec_find_decoder(codec_id(id));
 #endif
     if(!decoder){failure(AVERROR_DECODER_NOT_FOUND,"decoder");delete v;return nullptr;}
     v->codec=avcodec_alloc_context3(decoder);if(!v->codec){delete v;return nullptr;}
@@ -270,35 +468,44 @@ API void* qpv_open(int id,int hardware,int width,int height,const uint8_t* extra
 #ifdef _WIN32
         v->device=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
         if(v->device){auto hw=(AVD3D11VADeviceContext*)((AVHWDeviceContext*)v->device->data)->hwctx;hw->device=v->d3d;v->d3d->AddRef();}
-#else
+#elif defined(__ANDROID__)
         v->device=av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_MEDIACODEC);
         if(v->device){auto hw=(AVMediaCodecDeviceContext*)((AVHWDeviceContext*)v->device->data)->hwctx;hw->native_window=v->window;}
 #endif
         if(!v->device||av_hwdevice_ctx_init(v->device)<0){failure(AVERROR_EXTERNAL,"hardware device");delete v;return nullptr;}ctx->hw_device_ctx=av_buffer_ref(v->device);
     }
     AVDictionary* options=nullptr;
-#ifndef _WIN32
-    if(hardware){av_dict_set(&options,"ndk_codec","1",0);av_dict_set(&options,"codec_name",component,0);}
+#ifdef __ANDROID__
+    if(hardware){av_dict_set(&options,"ndk_codec","1",0);av_dict_set(&options,"codec_name",component,0);if(hardware>1)av_dict_set(&options,"low_latency","1",0);}
 #endif
     int ret=avcodec_open2(ctx,decoder,&options);av_dict_free(&options);
     if(ret<0){failure(ret,"open decoder");delete v;return nullptr;}return v;
 }
 API void qpv_close(void* handle){delete (Video*)handle;}
-static int receive(Video* v,bool render){
+static int present_pending(Video* v,bool render){
+    if(!v->newest->buf[0])return 0;
+    if(!render){av_frame_unref(v->newest);return 0;}
+    auto start=std::chrono::steady_clock::now();
+    int result=present(v,v->newest);
+    v->last_present_us=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count();
+    if(result!=1)av_frame_unref(v->newest);
+    return result<0?failure(result,"present frame"):result;
+}
+API int qpv_present_pending(void* handle,int render){auto v=(Video*)handle;return v?present_pending(v,render!=0):0;}
+static int receive(Video* v){
     int ret,count=0;
     while((ret=avcodec_receive_frame(v->codec,v->frame))>=0){
         if(v->frame->width>7680||v->frame->height>4320){av_frame_unref(v->frame);return failure(AVERROR(EINVAL),"frame bounds");}
         ++v->decoded;++count;v->width=v->frame->width;v->height=v->frame->height;
 #ifdef _WIN32
         if(v->frame->format==AV_PIX_FMT_D3D11)++v->hardware_frames;
-#else
+#elif defined(__ANDROID__)
         if(v->hardware&&v->frame->format==AV_PIX_FMT_MEDIACODEC)++v->hardware_frames;
 #endif
         if(v->newest->buf[0])++v->discarded;
         av_frame_unref(v->newest);av_frame_move_ref(v->newest,v->frame);
     }
     if(ret!=AVERROR(EAGAIN)&&ret!=AVERROR_EOF)return failure(ret,"receive frame");
-    if(v->newest->buf[0]){if(render){ret=present(v,v->newest);if(ret<0){av_frame_unref(v->newest);return failure(ret,"present frame");}}av_frame_unref(v->newest);}
     return count;
 }
 API int qpv_decode(void* handle,const uint8_t* data,int size,int64_t pts,int key,int render){
@@ -307,14 +514,19 @@ API int qpv_decode(void* handle,const uint8_t* data,int size,int64_t pts,int key
     int ret=0;
     if(size){av_packet_unref(v->packet);ret=av_new_packet(v->packet,size);if(ret<0)return ret;memcpy(v->packet->data,data,size);v->packet->pts=v->packet->dts=pts;if(key)v->packet->flags|=AV_PKT_FLAG_KEY;
         ret=avcodec_send_packet(v->codec,v->packet);
-        if(ret==AVERROR(EAGAIN)){ret=receive(v,render!=0);if(ret<0)return ret;ret=avcodec_send_packet(v->codec,v->packet);}
+        if(ret==AVERROR(EAGAIN)){ret=receive(v);if(ret<0)return ret;ret=avcodec_send_packet(v->codec,v->packet);}
         av_packet_unref(v->packet);if(ret<0)return failure(ret,"send packet");}
-    ret=receive(v,render!=0);v->last_decode_us=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count();return ret;
+    ret=receive(v);
+    v->last_decode_us=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count();
+    if(ret<0)return ret;
+    int shown=present_pending(v,render!=0);
+    return shown<0?shown:ret;
 }
 struct VideoStats {int width,height,hardware,reserved;int64_t decoded,presented,discarded,hardware_frames,decode_us;};
 API int qpv_stats(void* handle,VideoStats* stats){auto v=(Video*)handle;if(!v||!stats)return -1;*stats={v->width,v->height,v->hardware,0,v->decoded,v->presented,v->discarded,v->hardware_frames,v->last_decode_us};return 0;}
+API int qpv_present_stats(void* handle,int64_t* present_us){auto v=(Video*)handle;if(!v||!present_us)return 0;*present_us=v->last_present_us;return v->newest->buf[0]?1:0;}
 
-#ifndef _WIN32
+#ifdef __ANDROID__
 struct Encoder{AVCodecContext* codec=nullptr;AVPacket* packet=av_packet_alloc();AVBufferRef* device=nullptr;~Encoder(){av_packet_free(&packet);avcodec_free_context(&codec);av_buffer_unref(&device);}};
 API void* qpv_encoder_open(int id,int width,int height,int fps,int bitrate,int gop,void* surface,const char* component,int vbr,int buffer_ms){
     std::string name=std::string(codec_name(id))+"_mediacodec";const AVCodec* codec=avcodec_find_encoder_by_name(name.c_str());

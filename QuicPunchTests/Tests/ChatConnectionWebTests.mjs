@@ -2,7 +2,7 @@ import {readFileSync} from 'node:fs';
 import {Script, createContext} from 'node:vm';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {attachApp,assertConnectionModes} from '../Fixtures/WebAppRuntime.mjs';
+import {attachApp,loadChatDrafts,assertConnectionModes} from '../Fixtures/WebAppRuntime.mjs';
 
 const source=readFileSync(new URL('../../QuicNet.Shared/wwwroot/chat.js',import.meta.url),'utf8');
 let now=1000;
@@ -21,9 +21,14 @@ const context=createContext({
   setTimeout:fn=>{now+=500;queueMicrotask(fn);return 1;},clearTimeout(){},
   document:{addEventListener(){},getElementById:id=>id==='messageInput'?input:null},
   QP:{currentPage:'chat',trusted:s=>(s.peers||[]).filter(p=>p.isTrusted),toast(){},
-    async api(path,options){const body=options?.body?JSON.parse(options.body):null;requests.push({path,body});return implementation(path,body);}}
+    async api(path,options){
+      const body=options?.body?JSON.parse(options.body):null;
+      if(path.startsWith('/api/chat/draft?'))return body ? {text:body.text,revision:body.nextRevision} : {text:'',revision:null};
+      requests.push({path,body});return implementation(path,body);
+    }}
 });
 assertConnectionModes(attachApp(context));
+loadChatDrafts(context);
 new Script(source+`
 renderChat=()=>{};scrollToBottom=()=>{};
 globalThis.test={connectChat,maybeConnectSelectedChat,sendChatMessage,selectChatPeer,

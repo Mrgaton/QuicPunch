@@ -5,7 +5,9 @@ internal interface IPlatformScreenCapture
 {
     NativeCamera[] Cameras() => [];
     ScreenEncoderCapability[] Encoders() => [];
-    Task<NativeScreenProfile> StartAsync(ScreenEncoderOptions options, Func<byte[], Task> output, Action<string?> stopped);
+    ScreenCaptureStatistics? Statistics => null;
+    Task<NativeScreenProfile> StartAsync(ScreenEncoderOptions options, Func<byte[], Task> output, Action<string?> stopped,
+        CancellationToken ct = default);
     void Resume();
     Task StopAsync();
 }

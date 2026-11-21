@@ -35,6 +35,11 @@ internal sealed partial class ChatHistoryStore
                     peer_id TEXT PRIMARY KEY,
                     disappear_after_seconds INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS conversation_drafts (
+                    peer_id TEXT PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    revision TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS hidden_messages (
                     peer_id TEXT NOT NULL,
                     message_id TEXT NOT NULL,
@@ -66,6 +71,37 @@ internal sealed partial class ChatHistoryStore
         var db = new SqliteConnection(_connectionString);
         db.Open();
         return db;
+    }
+
+    internal (string Text, string? Revision) ReadDraft(string peerId)
+    {
+        lock (_sync)
+        {
+            using var db = Open();
+            using var command = db.CreateCommand();
+            command.CommandText = "SELECT content, revision FROM conversation_drafts WHERE peer_id = $peer";
+            command.Parameters.AddWithValue("$peer", peerId);
+            using var reader = command.ExecuteReader();
+            return reader.Read() ? (reader.GetString(0), reader.GetString(1)) : ("", null);
+        }
+    }
+
+    internal bool SaveDraft(string peerId, string text, string? expectedRevision, string revision)
+    {
+        lock (_sync)
+        {
+            using var db = Open();
+            using var command = db.CreateCommand();
+            // An empty row retains the revision so a delayed save cannot resurrect deleted text.
+            command.CommandText = expectedRevision == null
+                ? "INSERT INTO conversation_drafts VALUES ($peer, $text, $revision) ON CONFLICT DO NOTHING"
+                : "UPDATE conversation_drafts SET content = $text, revision = $revision WHERE peer_id = $peer AND revision = $expected";
+            command.Parameters.AddWithValue("$peer", peerId);
+            command.Parameters.AddWithValue("$text", text);
+            command.Parameters.AddWithValue("$revision", revision);
+            if (expectedRevision != null) command.Parameters.AddWithValue("$expected", expectedRevision);
+            return command.ExecuteNonQuery() != 0;
+        }
     }
 
     public IReadOnlyList<WebUiServer.ChatMessage> LoadRecent(int limit)

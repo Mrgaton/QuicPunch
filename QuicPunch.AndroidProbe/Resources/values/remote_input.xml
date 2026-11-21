@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="remote_input_service_description">Envía toques y teclado durante una sesión de control remoto aprobada por ti en QuicNet.</string>
+</resources>

@@ -105,12 +105,6 @@ document.addEventListener('DOMContentLoaded', () => {
       dashboardStatus = status;
       renderDashboard(dashboardStatus);
     });
-    QP.on('log_event', event => {
-      if (!event?.entry || !dashboardStatus) return;
-      if (dashboardStatus.logs?.at(-1) === event.entry) return;
-      dashboardStatus.logs = [...(dashboardStatus.logs || []), event.entry].slice(-80);
-      renderLogs(dashboardStatus.logs);
-    });
     QP.on('view_changed', data => {
       if (data && data.page === 'dashboard') {
         if (QP.state && QP.state.status) {
@@ -684,13 +678,11 @@ function syncSavedRow(target,source) {
 }
 
 function confirmAdministrator(name){
-  return new Promise(resolve=>{
-    const dialog=document.createElement('dialog');dialog.className='permission-dialog';dialog.setAttribute('aria-labelledby','permissionTitle');dialog.setAttribute('aria-describedby','permissionScope');
-    const title=QP.el('h2','','Conceder acceso de administrador');title.id='permissionTitle';
-    const scope=QP.el('p','',`${name} podrá iniciar aplicaciones, controlar tu pantalla y explorar y compartir los discos accesibles de este dispositivo sin nuevas peticiones. Puedes revocar este acceso cambiando su perfil a Amigo.`);scope.id='permissionScope';
-    const actions=QP.el('div','toolbar');const cancel=QP.button('Cancelar','',()=>dialog.close('cancel'));cancel.autofocus=true;
-    actions.append(cancel,QP.button('Conceder acceso','danger',()=>dialog.close('confirm')));dialog.append(title,scope,actions);document.body.append(dialog);
-    dialog.addEventListener('close',()=>{const accepted=dialog.returnValue==='confirm';dialog.remove();resolve(accepted);},{once:true});dialog.showModal();cancel.focus();
+  return QP.confirmAction({
+    title: 'Conceder acceso de administrador',
+    message: `${name} podrá iniciar aplicaciones, controlar tu pantalla y explorar y compartir los discos accesibles de este dispositivo sin nuevas peticiones. Puedes revocar este acceso cambiando su perfil a Amigo.`,
+    confirmLabel: 'Conceder acceso',
+    danger: true
   });
 }
 
@@ -846,8 +838,33 @@ function showSavedError(message) { const error = byId('savedPeerModalError'); er
 async function reconnectSavedPeer(certHash) { try { await QP.api('/api/connect-saved-peer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash})}); QP.toast('Reconexión solicitada'); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
 async function toggleSavedAutoConnect(certHash,autoConnect) { try { await QP.api('/api/toggle-saved-peer-autoconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash,autoConnect})}); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
 async function setSavedPeerPermission(certHash,permission,allowed) { try { await QP.api('/api/peer/automatic-permission',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash,permission,allowed})}); QP.toast(allowed?'Permiso automático concedido':'Permiso automático revocado'); } catch(e){ QP.toast(e.message,'error'); } refreshDashboard(); }
-async function deleteSavedPeer(item) { if (!confirm(`¿Eliminar el contacto guardado "${item.name || 'Contacto guardado'}"? Se eliminará de la libreta de este dispositivo.`)) return; try { await QP.api('/api/saved-peer-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({certHash:item.certHash})}); QP.toast('Contacto eliminado'); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
-async function clearOfflineSavedPeers() { if (!confirm('¿Eliminar de la libreta todos los contactos guardados que están desconectados?')) return; try { const r = await QP.api('/api/saved-peers-clear-offline',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); QP.toast(`Se han eliminado ${r.removedCount || 0} contactos desconectados`); } catch(e){ QP.toast(e.message); } refreshDashboard(); }
+async function deleteSavedPeer(item) {
+  if (!await QP.confirmAction({
+    title: '¿Eliminar el contacto guardado?',
+    message: `Se eliminará «${item.name || 'Contacto guardado'}» de la libreta de este dispositivo.`,
+    confirmLabel: 'Eliminar contacto',
+    danger: true
+  })) return;
+  try {
+    await QP.api('/api/saved-peer-delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({certHash:item.certHash})});
+    QP.toast('Contacto eliminado');
+  } catch (error) { QP.toast(error.message); }
+  refreshDashboard();
+}
+
+async function clearOfflineSavedPeers() {
+  if (!await QP.confirmAction({
+    title: '¿Eliminar los contactos desconectados?',
+    message: 'Se eliminarán de la libreta todos los contactos guardados que estén desconectados.',
+    confirmLabel: 'Eliminar contactos',
+    danger: true
+  })) return;
+  try {
+    const result = await QP.api('/api/saved-peers-clear-offline', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    QP.toast(`Se han eliminado ${result.removedCount || 0} contactos desconectados`);
+  } catch (error) { QP.toast(error.message); }
+  refreshDashboard();
+}
 
 async function setDiscovery(enabled, type = 'wan') {
   if (discoveryChanges.has(type)) return;
@@ -955,6 +972,7 @@ async function applyListenerPort() {
 }
 
 async function connectToken() {
+  const origin = QP.contactInvitationOrigin?.();
   const input = byId('tokenInput');
   const button = byId('connectTokenBtn');
   const paste = byId('pasteClipboardBtn');
@@ -979,8 +997,9 @@ async function connectToken() {
       body: JSON.stringify({ token })
     });
     input.value = '';
-    QP.setText('connectFeedback', 'Invitación aceptada. Buscando el dispositivo…');
-    QP.toast('Token aceptado. Conectando…');
+    QP.setText('connectFeedback', 'Invitación aceptada. Si el dispositivo aparece pendiente de revisión, comprueba su identidad en Inicio.');
+    QP.emit('contact_invitation_accepted', origin);
+    QP.toast('Invitación aceptada. Comprueba los contactos pendientes en Inicio.');
   } catch (e) {
     QP.setText('connectFeedback', e.message);
     const required = e.details?.requiredTransport;

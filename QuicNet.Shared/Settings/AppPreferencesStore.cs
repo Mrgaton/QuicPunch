@@ -17,6 +17,25 @@ internal sealed class AppPreferencesStore
         _current = Load(path);
     }
 
+    internal static AppPreferencesStore OpenForApp(string directory)
+    {
+        string path = Path.Combine(directory, "ui-settings.json");
+        var store = new AppPreferencesStore(path);
+        if (File.Exists(path) || File.Exists(Path.Combine(directory, "wan_identity.bin")) ||
+            File.Exists(Path.Combine(directory, "wan_peerCert.pfx")))
+            return store;
+
+        // Write the pending state before the node creates its local identities.
+        store.Update(p =>
+        {
+            p.OnboardingCompleted = false;
+            p.WanEnabled = false;
+            p.StartWithSystem = false;
+            p.RunInBackground = false;
+        });
+        return store;
+    }
+
     internal string StorageDirectory => Path.GetDirectoryName(Path.GetFullPath(_path))!;
 
     public AppPreferences Snapshot()
@@ -64,6 +83,7 @@ internal sealed class AppPreferencesStore
 
     private static AppPreferences Clone(AppPreferences value) => new()
     {
+        OnboardingCompleted = value.OnboardingCompleted,
         StartWithSystem = value.StartWithSystem,
         RunInBackground = value.RunInBackground,
         Notifications = value.Notifications.Clone(),
@@ -115,6 +135,8 @@ internal sealed class AppPreferencesStore
 
 internal sealed class AppPreferences
 {
+    // Preferences written before onboarding was introduced belong to an existing installation.
+    public bool OnboardingCompleted { get; set; } = true;
     public bool StartWithSystem { get; set; } = true;
     public bool RunInBackground { get; set; } = true;
     public NotificationPreferences Notifications { get; set; } = new();

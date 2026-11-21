@@ -13,6 +13,7 @@ const caps = { platform: 'desktop', capabilities: Object.fromEntries(['peers','c
 const people = ['Ana · Portátil', 'Mi ordenador', 'Dispositivo nuevo'].map((name,i) => ({id:`00000000-0000-0000-0000-00000000000${i+1}`,name,certHash:Buffer.alloc(32,i+1).toString('base64'),canonicalId:`aabbccdd0000000${i}`,isTrusted:i<2,isSaved:i<2,isQuicConnected:i===0,connectionState:i===0?'connected':'available',networkType:'Wan',addresses:['192.0.2.'+(i+1)],ports:[5000],endpoint:'192.0.2.1:5000',lastSeenSecondsAgo:1,unresponsiveSeconds:1,ping:i===0?24:null,hasCipher:true,automaticPermissions:[]}));
 let state={node:{name:'Mi portátil · Vista de prueba',wanToken:'PREVIEW-INVITATION-NOT-A-REAL-TOKEN',torToken:'',listenerPort:5000,networkType:'Cone'},wan:{isStarted:true,running:true,enabled:true,desiredEnabled:true},tor:{running:false,enabled:false},discovery:{running:true,enabled:true,desiredEnabled:true,connectedRelays:2,relayCount:2},preferences:{WanEnabled:true},lan:{enabled:false,isActive:false,localIp:'10.203.24.8',subnetMask:'255.255.255.0',mtu:1420,autoAssign:true,peers:[],canStartWithoutElevation:true},peers:process.argv.includes('--empty')?[]:people,savedPeers:process.argv.includes('--empty')?[]:people.slice(0,2),discoveredPeers:[],activeInterrogations:[],pendingPetitions:[],activeChats:[],activeVoiceCalls:[],notifications:[],logs:[],quicTelemetry:[],chatMessages:[],disappearingMessages:{},apps:{chat:{active:0},voice:{active:0},lan:{active:0}},stun:{publicAddresses:[],localAddresses:[],ports:[],exactMappings:[],serverCount:0}};
 let failFirstTorMode = process.argv.includes('--mode-fail-first-tor');
+const torModeDelay = Number(process.argv.find(arg => arg.startsWith('--mode-tor-delay='))?.split('=')[1] ?? 200);
 const vpnNoAdmin = process.argv.includes('--vpn-no-admin');
 let rejectVpnSave = process.argv.includes('--vpn-reject-first');
 let vpnConfiguration = {version:1,revision:1,mode:'simple',autoAssign:true,mtu:1420,enabled:false,autoConnect:true,peers:[],localAddress:'10.0.0.8',subnetMask:'255.255.255.0'};
@@ -24,7 +25,8 @@ function vpnResponse() {
   return {success:true,configuration:process.argv.includes('--vpn-legacy')?pascal(vpnConfiguration):vpnConfiguration,
     peerDefaults:people.slice(0,2).map(p=>({certHash:Buffer.from(p.certHash,'base64').toString('hex').toUpperCase(),autoAccept:false,accessibleDestinations:['10.0.0.8/32']})),path:'Configuración de prueba'};
 }
-const sockets=new Set();
+const sockets=new Set(), liveRequests=new Map();
+let statusRevision=0;
 let previewProfile={customName:'',displayName:state.node.name,deviceName:'Mi portátil'};
 let previewPreferences={startWithSystem:false,runInBackground:true,notifications:{enabled:true,desktop:true,inApp:true,sound:true,preview:true,whileFocused:false,doNotDisturb:false,quietHours:false,tone:'soft',volume:50,quietStart:1320,quietEnd:480,doNotDisturbUntil:null,features:{},contacts:{}}};
 if(interactive){
@@ -35,6 +37,7 @@ const watchState={local:{peerId:'preview-local',name:state.node.name,token:state
   peers:people.slice(0,2).map(p=>({peerId:p.id,name:p.name,connected:p.isQuicConnected,inRoom:false,role:'Viewer'})),
   room:null,canPickMedia:false,canSelectPath:true};
 const socialActions=[];
+const chatDrafts=new Map();
 function socialSnapshot(peerId){
   const messages=state.chatMessages.filter(m=>m.peerId===peerId&&(!m.deliveryState||m.deliveryState==='sent'));
   const states=socialActions.filter(a=>a.peerId===peerId&&messages.some(m=>m.msgId===a.msgId));
@@ -42,7 +45,13 @@ function socialSnapshot(peerId){
   return {success:true,peerId,states,pins};
 }
 function send(socket, data){const payload=Buffer.from(JSON.stringify(data));const header=Buffer.alloc(payload.length<126?2:4);header[0]=0x81;if(payload.length<126)header[1]=payload.length;else{header[1]=126;header.writeUInt16BE(payload.length,2);}if(!socket.destroyed)socket.write(Buffer.concat([header,payload]));}
-function broadcast(){for(const socket of sockets)send(socket,{type:'status_updated',data:state});}
+function sendLiveStatus(socket){
+ const request=liveRequests.get(socket);
+ if(request?.id==null||request.revision===statusRevision)return;
+ send(socket,{type:'live_updates',id:request.id,events:[{type:'status_updated',data:state}]});
+ request.id=null;request.revision=statusRevision;
+}
+function broadcast(){statusRevision++;for(const socket of sockets)sendLiveStatus(socket);}
 async function html(file,base){let content=await readFile(resolve(base,file),'utf8');const matches=[...content.matchAll(/<!--\s*@include\s+([^\s]+)\s*-->/g)];for(const match of matches)content=content.replace(match[0],await html(match[1],base));return content;}
 const server=http.createServer(async(req,res)=>{
  try{
@@ -100,13 +109,31 @@ const server=http.createServer(async(req,res)=>{
   if(path==='/api/connection-mode') {
     if(!['wan','tor','both'].includes(body.mode)) return json({success:false,error:'Modo no válido'},400);
     const wan=body.mode!=='tor',tor=body.mode!=='wan';
-    Object.assign(state.wan,{desiredEnabled:wan,enabled:wan});Object.assign(state.tor,{desiredEnabled:tor,enabled:tor,lastError:''});
-    if(!wan)state.wan.isStarted=false;if(!tor){state.tor.isStarted=false;state.tor.running=false;}
-    broadcast(); await new Promise(resolve=>setTimeout(resolve,200));
-    if(tor&&failFirstTorMode){failFirstTorMode=false;state.tor.lastError='Tor no disponible en esta prueba';broadcast();return json({success:false,error:state.tor.lastError},503);}
-    Object.assign(state.wan,{isStarted:wan,running:wan});Object.assign(state.tor,{isStarted:tor,running:tor,bootstrapProgress:tor?100:0});
-    state.node.wanToken=wan?'PREVIEW-INVITATION-NOT-A-REAL-TOKEN':'';state.node.torToken=tor?'PREVIEW-TOR-INVITATION-NOT-A-REAL-TOKEN':'';
-    broadcast();return json({success:true});
+    const previous=state.connectionMode;
+    const phase=!tor&&previous?.phase==='applying'&&previous.target!=='wan'?'canceling-tor':'applying';
+    const transition={id:(previous?.id ?? 0)+1,target:body.mode,phase};
+    state.connectionMode=transition;
+    Object.assign(state.wan,{desiredEnabled:wan,enabled:wan});
+    Object.assign(state.tor,{desiredEnabled:tor,enabled:tor,lastError:'',bootstrapProgress:tor?(state.tor.isStarted?100:30):0});
+    if(!wan)Object.assign(state.wan,{isStarted:false,running:false});
+    if(!tor)Object.assign(state.tor,{isStarted:false,running:false});
+    broadcast();
+    setTimeout(()=>{
+      if(state.connectionMode!==transition)return;
+      if(tor&&failFirstTorMode){
+        failFirstTorMode=false;
+        state.tor.lastError='Tor no disponible en esta prueba';
+        state.connectionMode={...transition,phase:'failed',error:state.tor.lastError};
+      } else {
+        Object.assign(state.wan,{isStarted:wan,running:wan});
+        Object.assign(state.tor,{isStarted:tor,running:tor,bootstrapProgress:tor?100:0});
+        state.node.wanToken=wan?'PREVIEW-INVITATION-NOT-A-REAL-TOKEN':'';
+        state.node.torToken=tor?'PREVIEW-TOR-INVITATION-NOT-A-REAL-TOKEN':'';
+        state.connectionMode={...transition,phase:'ready'};
+      }
+      broadcast();
+    },tor&&!state.tor.isStarted?torModeDelay:200);
+    return json(transition,202);
   }
   if(path==='/api/connect-token')return json({success:false,error:'Esta vista de prueba no conecta dispositivos reales.'},400);
   if(path==='/api/connect-peer'&&body.protocol==='chat'){
@@ -115,6 +142,14 @@ const server=http.createServer(async(req,res)=>{
     return json({success:true});
   }
   if(path==='/api/chat/messages')return json({messages:state.chatMessages.filter(m=>m.peerId===url.searchParams.get('peerId')),nextBefore:null});
+  if(path==='/api/chat/draft'){
+    const peerId=url.searchParams.get('peerId');
+    const current=chatDrafts.get(peerId)??{text:'',revision:null};
+    if(req.method!=='POST'||body.revision!==current.revision)return json(current);
+    const saved={text:body.text,revision:body.nextRevision};
+    chatDrafts.set(peerId,saved);
+    return json(saved);
+  }
   if(path==='/api/chat/message'){const message=state.chatMessages.find(m=>m.peerId===url.searchParams.get('peerId')&&m.msgId===url.searchParams.get('msgId'));return message?json({success:true,message}):json({success:false,error:'Mensaje no disponible'},404);}
   if(path==='/api/chat/interactions'){
     if(req.method==='GET')return json(socialSnapshot(url.searchParams.get('peerId')));
@@ -180,7 +215,7 @@ const server=http.createServer(async(req,res)=>{
   const absolute=resolve(base,file);if(!absolute.startsWith(resolve(base)+sep))return json({error:'Not found'},404);
   let data=extname(file)==='.html'?await html(file,base):await readFile(absolute);
   if(extname(file)==='.html'){data=data.replace('__QUICWATCH_CSRF__','preview').replace('</head>',`<script>window.__qp_csrf='preview';window.__qp_capabilities=${JSON.stringify(caps)};</script></head>`);}
-  res.writeHead(200,{'Content-Type':({'.html':'text/html; charset=utf-8','.css':'text/css','.js':'application/javascript','.json':'application/json','.svg':'image/svg+xml'})[extname(file)]||'application/octet-stream','Cache-Control':'no-store'});res.end(data);
+  res.writeHead(200,{'Content-Type':({'.html':'text/html; charset=utf-8','.css':'text/css','.js':'application/javascript','.json':'application/json','.svg':'image/svg+xml','.png':'image/png','.ico':'image/x-icon'})[extname(file)]||'application/octet-stream','Cache-Control':'no-store'});res.end(data);
  }catch(error){res.writeHead(500,{'Content-Type':'text/plain'});res.end(error.message);}
 });
 server.on('upgrade',(req,socket)=>{
@@ -188,7 +223,7 @@ server.on('upgrade',(req,socket)=>{
  const accept=createHash('sha1').update(key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n');
  if(req.url.startsWith('/watch/'))send(socket,{type:'status',data:interactive?watchState:{local:{name:state.node.name,token:state.node.wanToken},peers:[],room:null}});
- else{sockets.add(socket);send(socket,{type:'status_updated',data:state});}
+ else{sockets.add(socket);liveRequests.set(socket,{id:null,revision:-1});}
  let pending=Buffer.alloc(0);
  socket.on('data',chunk=>{
   pending=Buffer.concat([pending,chunk]);
@@ -204,11 +239,17 @@ server.on('upgrade',(req,socket)=>{
    if(opcode!==1)continue;
    try{const message=JSON.parse(payload.toString());
     if(message.type==='sync'||message.type==='get_status')send(socket,{type:'status_updated',data:state});
+    const live=liveRequests.get(socket);
+    if(live&&message.type==='live_request'){
+     live.id=message.id;if(message.refresh)live.revision=-1;sendLiveStatus(socket);
+    }
+    if(live&&message.type==='live_pause')live.id=null;
     if(message.type==='request')send(socket,{type:'response',id:message.id,success:message.command==='status.get',data:message.command==='status.get'?state:null,error:'Comando no disponible en esta vista de prueba.'});
    }catch{}
   }
  });
- socket.on('error',()=>sockets.delete(socket));socket.on('close',()=>sockets.delete(socket));
+ const remove=()=>{sockets.delete(socket);liveRequests.delete(socket);};
+ socket.on('error',remove);socket.on('close',remove);
 });
 server.listen(port,'127.0.0.1',()=>console.log(`QuicNet fixture preview: http://127.0.0.1:${server.address().port}/`));
 setInterval(broadcast,10000).unref();

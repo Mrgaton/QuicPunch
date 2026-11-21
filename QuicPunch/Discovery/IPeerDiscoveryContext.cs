@@ -70,6 +70,8 @@ namespace QuicPunch.Discovery
 
         /// <summary>Generates or retrieves the current WAN endpoint discovery token.</summary>
         string? GetWanToken();
+        (string? Token, IPEndPoint[] Candidates) GetWanAnnouncementSnapshot() => (GetWanToken(), []);
+        string? WanAnnouncementRevisionPath => null;
 
         /// <summary>Generates or retrieves the current Tor endpoint discovery token.</summary>
         string? GetTorToken();
@@ -94,6 +96,8 @@ namespace QuicPunch.Discovery
 
         /// <summary>Dispatches a background interrogation against the specified WAN peer.</summary>
         Task InterrogatePeerAsync(PeerInfo peer, CancellationToken cancellationToken);
+        Task VerifyWanRouteAsync(PeerInfo peer, CancellationToken cancellationToken) =>
+            InterrogatePeerAsync(peer, cancellationToken);
 
         /// <summary>Queues a verified saved contact for persistent probing. True means the contact's own policy handled it.</summary>
         bool QueueSavedPeerReconnect(PeerInfo peer, bool restartProbe) => false;

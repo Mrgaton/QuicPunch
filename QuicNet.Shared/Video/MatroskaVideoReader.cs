@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace QuicNet.Video;
 
-internal sealed record EncodedScreenFrame(byte[] Data, bool KeyFrame, long TimestampUs);
+internal sealed record EncodedScreenFrame(byte[] Data, bool KeyFrame, long TimestampUs, WindowsScreenReader.FrameTimings? Timings = null);
 
 // Streaming, video-only Matroska demuxer. FFmpeg supplies packet boundaries, key
 // flags, presentation timestamps and codec private data; pipe reads do not.

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Net.NetworkInformation;
 using QuicPunch.Helpers;
 
@@ -7,9 +8,25 @@ namespace QuicPunch;
 
 public partial class QuicPunch
 {
+    private sealed record WanNat64Network(IPNetwork Prefix);
+    private WanNat64Network? _wanNat64Network;
+
+    /// <summary>Sets the NAT64 prefix supplied by an IPv6-only default network.</summary>
+    public void SetWanNat64Prefix(string? prefix) =>
+        Volatile.Write(ref _wanNat64Network, IPNetwork.TryParse(prefix, out var parsed) && Nat64Prefix.IsSupported(parsed)
+            ? new WanNat64Network(parsed) : null);
+
+    internal IPEndPoint TranslateWanTarget(IPEndPoint target) =>
+        Volatile.Read(ref _wanNat64Network) is { } network &&
+        target.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+        !SimpleStunClient.IsBogonOrLocalhost(target.Address)
+            ? new IPEndPoint(Nat64Prefix.Embed(network.Prefix, target.Address), target.Port)
+            : target;
+
     private readonly SessionRecoveryRegistry _sessionRecovery = new();
     private readonly ConcurrentDictionary<(Guid Peer, Guid Protocol), SessionIntent> _sessionIntents = new();
     private readonly SemaphoreSlim _networkRefreshGate = new(1, 1);
+    private readonly object _networkPathGate = new();
     private long _networkGeneration;
     private TaskCompletionSource _networkChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public event Action<SessionStateChange>? OnSessionStateChanged;
@@ -223,38 +240,61 @@ public partial class QuicPunch
     /// <summary>Host/mobile network adapters can report a route change without restarting the node or identity.</summary>
     public async Task NotifyNetworkChangedAsync(CancellationToken cancellationToken = default)
     {
-        if (!IsStarted) return;
+        if (!IsStarted || cancellationToken.IsCancellationRequested) return;
         CancellationToken wanToken = _wanLoopCts?.Token ?? LifecycleToken;
-        Interlocked.Increment(ref _networkGeneration);
-        Interlocked.Exchange(ref _networkChanged, new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
-        foreach (var interrogation in ActiveInterrogations.Keys) CancelInterrogation(interrogation);
-        foreach (var flight in _activeOutboundNegotiations.Values) try { flight.Cts.Cancel(); } catch (ObjectDisposedException) { }
-        foreach (var mux in _peerMultiplexers.Values) mux.TrySendTransportPing();
-        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(LifecycleToken, cancellationToken);
-        if (!await _networkRefreshGate.WaitAsync(0, lifetime.Token).ConfigureAwait(false)) return;
-        try
+        long generation;
+        lock (_networkPathGate)
         {
-            if (!IsWanStarted) return;
-            // Advertise immediately on the new LAN, before refreshing WAN mappings and relays.
-            await Discovery.SendLocalLanDiscoveryAsync().ConfigureAwait(false);
-            // Never aggregate mappings from different interfaces into one NAT range.
-            long observed;
-            do
+            generation = Interlocked.Increment(ref _networkGeneration);
+            if (IsWanStarted)
             {
-                observed = Volatile.Read(ref _networkGeneration);
                 _advertisedMapping = null;
                 IsUpnpMapped = false;
                 ActivePortMappingProtocol = null;
-                await Task.WhenAll(NatCoordinator.RefreshForNetworkChangeAsync(lifetime.Token),
-                    RefreshPortMappingsForNetworkChangeAsync(lifetime.Token)).ConfigureAwait(false);
-            } while (observed != Volatile.Read(ref _networkGeneration) && !lifetime.IsCancellationRequested);
-            lifetime.Token.ThrowIfCancellationRequested();
-            // Recreate stale relay TCP sockets rather than waiting for TCP's old
-            // interface to time out. Discovery retains its node/WAN lifetime.
-            await Discovery.RestartWanNostrDiscoveryAsync(wanToken).ConfigureAwait(false);
-            await Discovery.PublishNostrDiscoveryAsync(lifetime.Token).ConfigureAwait(false);
+                NatCoordinator.InvalidateNetworkPath();
+                OnNatMappingChanged(this, NatCoordinator.CurrentMapping);
+            }
+        }
+        Interlocked.Exchange(ref _networkChanged, new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+        foreach (var interrogation in ActiveInterrogations.Keys) CancelInterrogation(interrogation);
+        foreach (var flight in _activeOutboundNegotiations.Values)
+            if (flight.WanControlEndPoint != null)
+            {
+                flight.ControlRouteChanged = true;
+                try { flight.Cts.Cancel(); } catch (ObjectDisposedException) { }
+            }
+        foreach (var mux in _peerMultiplexers.Values)
+            if (mux.Peer.ActiveTransport == TransportType.Wan) mux.TrySendTransportPing();
+        WakeAutomaticContacts();
+        if (!IsWanStarted) return;
+
+        QuicPunchLog.Info($"[WAN RECOVERY] Local network generation {generation} started.");
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(wanToken, cancellationToken);
+        await _networkRefreshGate.WaitAsync(lifetime.Token).ConfigureAwait(false);
+        try
+        {
+            if (generation != Volatile.Read(ref _networkGeneration) || !IsWanStarted) return;
+            // Start all paths before waiting: failed router discovery must never
+            // hold up refreshing STUN or replacing relay WebSockets.
+            await Task.WhenAll(
+                Discovery.SendLocalLanDiscoveryAsync(),
+                Discovery.RestartWanNostrDiscoveryAsync(lifetime.Token, wanToken),
+                NatCoordinator.ExecuteBurstAsync(lifetime.Token)).ConfigureAwait(false);
+            if (generation == Volatile.Read(ref _networkGeneration))
+            {
+                Discovery.QueueWanAnnouncement();
+                _ = ObserveNetworkPortMappingAsync(generation, wanToken);
+            }
         }
         finally { _networkRefreshGate.Release(); }
+    }
+
+    private async Task ObserveNetworkPortMappingAsync(long generation, CancellationToken lifetime)
+    {
+        if (generation != Volatile.Read(ref _networkGeneration)) return;
+        try { await RefreshPortMappingsForNetworkChangeAsync(lifetime).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (Exception ex) { QuicPunchLog.Info($"[WAN RECOVERY] Router mapping refresh deferred: {ex.Message}"); }
     }
 }
 

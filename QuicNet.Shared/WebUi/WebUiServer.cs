@@ -25,6 +25,7 @@ public sealed class WebUiServer
     private readonly VoiceCallHandler? _voiceHandler;
     private readonly SpeedTestHandler? _speedTestHandler;
     private readonly AppPreferencesStore? _preferences;
+    private readonly OnboardingApiModule? _onboarding;
     private readonly CancellationTokenSource _cts;
     private readonly SemaphoreSlim _requestSlots = new(WebUiContext.MaxConcurrentHttpRequests, WebUiContext.MaxConcurrentHttpRequests);
     private readonly SemaphoreSlim _webSocketSlots = new(WebUiContext.MaxConcurrentWebSocketRequests, WebUiContext.MaxConcurrentWebSocketRequests);
@@ -40,6 +41,7 @@ public sealed class WebUiServer
     private readonly QuicNet.Networking.LocalIpGeolocation? _geolocation;
     private readonly AppSettingsApiModule? _appSettingsModule;
     private readonly QuicNet.Presence.UserPresenceService? _presence;
+    private readonly QuicNet.Notifications.ContactReviewNotifier? _contactReviews;
     internal QuicNet.Notifications.AppNotificationService? Notifications { get; }
     public QuicNet.Notifications.IAppPlatform? AppPlatform { get => Notifications?.Platform; set { if (Notifications != null) Notifications.Platform = value; } }
     public IChatFileOpener? ChatFiles
@@ -78,7 +80,7 @@ public sealed class WebUiServer
     private void ConfigureUpdateSocket()
     {
         _hub.GetUpdateSnapshot = () => Updates?.Status;
-        _hub.ExecuteCommand = (command, data) => UpdatesApiModule.ExecuteAsync(Updates, command, data);
+        _hub.ExecuteCommand = (command, data) => UpdatesApiModule.ExecuteAsync(Updates, _voiceHandler, command, data);
     }
     public string Url => $"http://127.0.0.1:{_port}/";
 
@@ -120,7 +122,6 @@ public sealed class WebUiServer
         string entry = $"[{DateTime.Now:HH:mm:ss}] {message}";
         EventLogs.Enqueue(entry);
         while (EventLogs.Count > 150) EventLogs.TryDequeue(out _);
-        _instance?._hub.Broadcast("log_event", new global::QuicNet.Serialization.WebUiServerMessage1(entry));
     }
 
     public static void ClearPeerPetitions(Guid peerId, Guid? protocolId = null) => _instance?._peerModule?.ClearPeerPetitions(peerId, protocolId);
@@ -137,7 +138,8 @@ public sealed class WebUiServer
         CancellationTokenSource cts,
         WatchWebServer? watchWeb = null,
         int port = 5000,
-        NodeCapabilities? capabilities = null)
+        NodeCapabilities? capabilities = null,
+        Func<AppPreferences, Task>? startAfterOnboarding = null)
     {
         _qcc = qcc;
         _chatHandler = chatHandler;
@@ -156,6 +158,7 @@ public sealed class WebUiServer
         _hub = new WebUiWebSocketHub(_cts, shutdownWhenNoClients: Capabilities.Platform != "android");
         _hub.KeepRunning = () => _preferences.Snapshot().RunInBackground;
         Notifications = new(_preferences, notice => _hub.Broadcast("app_notice", notice));
+        _contactReviews = new(qcc, preferences, Notifications, cts.Token);
         _diskModule.Service.FileReceived += receipt => Notifications.Publish("files", "Archivo recibido",
             Path.GetFileName(receipt.Path), "/virtual-disk.html?share=" + receipt.ShareId,
             Convert.ToHexString(Convert.FromBase64String(receipt.Actor)));
@@ -173,18 +176,22 @@ public sealed class WebUiServer
         _lanModule = new LanApiModule(_qcc, _lanHandler, _preferences);
         _speedTestModule = new SpeedTestApiModule(_qcc, _speedTestHandler, _hub, _cts);
         _peerModule = new PeerApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _speedTestHandler, _preferences, _hub, _cts);
+        if (startAfterOnboarding != null)
+        {
+            _onboarding = new(preferences, () => Notifications.Platform, async selected =>
+            {
+                await startAfterOnboarding(selected).ConfigureAwait(false);
+                ObservePeerStore();
+                _ = RestoreTorAsync();
+            }, qcc.TorCurrentPeer.Name ?? "");
+        }
         _geolocation = new();
         _statusModule = new StatusApiModule(_qcc, _chatHandler, _lanHandler, _voiceHandler, _preferences, _peerModule, _chatModule, _profileModule.Avatars, _geolocation, _presence);
 
         _hub.GetStatusSnapshot = () => _statusModule.GetStatusObject();
         ConfigureUpdateSocket();
 
-        _qcc.OnPeerAvailable += peer =>
-        {
-            BroadcastStatusUpdate();
-            if (!_qcc.IsTrustedPeer(peer) && !_preferences.Snapshot().ReviewedUntrustedPeers.Contains(Convert.ToBase64String(peer.CertHash)))
-                Notifications.Publish("system", "Contacto por revisar", peer.Name ?? "Nuevo dispositivo", "/", Convert.ToHexString(peer.CertHash), "peer:" + peer.Id);
-        };
+        _qcc.OnPeerAvailable += _ => BroadcastStatusUpdate();
         _qcc.OnPeerDisconnected += _ => BroadcastStatusUpdate();
         _qcc.Discovery.PeerDiscovered += (_, _) => BroadcastStatusUpdate();
         _qcc.Discovery.PeerUpdated += (_, _) => BroadcastStatusUpdate();
@@ -192,16 +199,27 @@ public sealed class WebUiServer
         {
             _qcc.NatCoordinator.MappingChanged += (_, _) => { BroadcastStatusUpdate(); };
         }
-        if (_qcc.PeerStore != null)
-        {
-            _qcc.PeerStore.PeerAdded += (_, _) => BroadcastStatusUpdate();
-            _qcc.PeerStore.PeerModified += (_, _) => BroadcastStatusUpdate();
-            _qcc.PeerStore.PeerRemoved += (_, _) => BroadcastStatusUpdate();
-        }
+        ObservePeerStore();
         if (_lanHandler != null)
         {
             _lanHandler.StateChanged += () => BroadcastStatusUpdate();
         }
+    }
+
+    internal void ObservePeerStore()
+    {
+        if (_qcc?.PeerStore is not { } store) return;
+        store.PeerAdded += (_, _) => BroadcastStatusUpdate();
+        store.PeerModified += (_, _) => BroadcastStatusUpdate();
+        store.PeerRemoved += (_, _) => BroadcastStatusUpdate();
+    }
+
+    internal async Task RestoreTorAsync()
+    {
+        if (_peerModule == null || _preferences?.Snapshot().TorEnabled != true) return;
+        try { await _peerModule.RestoreTorAsync().ConfigureAwait(false); }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
+        catch (Exception ex) { LogEvent($"[TOR] Automatic startup failed: {ex.Message}"); }
     }
 
     // Standalone Web UI constructor (Mobile / Probe)
@@ -269,13 +287,17 @@ public sealed class WebUiServer
     {
         try { _listener?.Stop(); } catch { }
         try { _listener?.Close(); } catch { }
+        _profileModule?.Dispose();
         _chatModule?.Dispose();
+        _voiceModule?.Dispose();
         _diskModule?.Dispose();
         _geolocation?.Dispose();
+        _contactReviews?.Dispose();
         Notifications?.Dispose();
         _presence?.Dispose();
         Updates = null;
         _ = _hub.DisposeAsync();
+        Interlocked.CompareExchange(ref _instance, null, this);
     }
 
     private async Task ListenLoopAsync(CancellationToken stopToken)
@@ -310,7 +332,11 @@ public sealed class WebUiServer
             }
             catch (ObjectDisposedException) { break; }
             catch (OperationCanceledException) when (stopToken.IsCancellationRequested) { break; }
-            catch (Exception ex) { LogEvent($"[HTTP] {ex.Message}"); }
+            catch (Exception ex)
+            {
+                Diagnostics.CoreErrorReporter.Report("Servidor HTTP local", ex);
+                LogEvent($"[HTTP] {ex.Message}");
+            }
         }
     }
 
@@ -328,6 +354,24 @@ public sealed class WebUiServer
             if (!IsAllowedOrigin(req))
             {
                 await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.WebUiServerMessage2(false, "Cross-origin requests are not allowed."), 403).ConfigureAwait(false);
+                return;
+            }
+
+            bool onboardingRequired = _onboarding?.Required == true;
+            bool onboardingPage = path == "/onboarding.html";
+            bool peerRoute = path == "/watch" || path.StartsWith("/watch/", StringComparison.Ordinal) ||
+                path.StartsWith("/virtual-disk-dav/", StringComparison.Ordinal);
+            if (req.HttpMethod == "GET" && ((onboardingPage && !onboardingRequired) ||
+                (onboardingRequired && !onboardingPage && (path == "/" || path.EndsWith(".html") || peerRoute) && !req.IsWebSocketRequest)))
+            {
+                resp.Redirect(onboardingRequired ? "/onboarding.html" : "/");
+                return;
+            }
+            if (onboardingRequired && (peerRoute || req.IsWebSocketRequest ||
+                (path.StartsWith("/api/", StringComparison.Ordinal) && path is not ("/api/onboarding" or "/api/client-closing" or "/api/shutdown"))))
+            {
+                await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.WebUiServerMessage2(false,
+                    "Completa la configuración inicial de QuicNet."), 409).ConfigureAwait(false);
                 return;
             }
 
@@ -422,6 +466,12 @@ public sealed class WebUiServer
                 }
             }
 
+            if (path == "/api/onboarding" && _onboarding != null)
+            {
+                await _onboarding.HandleAsync(req, resp).ConfigureAwait(false);
+                return;
+            }
+
             // Probe handlers can initiate network activity, so they must run only
             // after the same CSRF and body-size checks as the other API writes.
             if ((path == "/api/probe/ping" || path == "/api/mobile/ping") && req.HttpMethod == "POST")
@@ -469,6 +519,7 @@ public sealed class WebUiServer
         }
         catch (Exception ex)
         {
+            Diagnostics.CoreErrorReporter.Report("Petición HTTP local", ex);
             LogEvent($"[HTTP] {ex.Message}");
             if (resp.OutputStream.CanWrite) await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.WebUiServerMessage2(false, ex.Message), 500).ConfigureAwait(false);
         }

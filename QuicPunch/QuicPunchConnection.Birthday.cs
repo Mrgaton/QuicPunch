@@ -52,11 +52,11 @@ internal partial class QuicPunchConnection
             await Task.Delay(250, token).ConfigureAwait(false);
             for (int i = 0; i < MaxBirthdaySockets; i++)
             {
-                var socket = new UdpClient();
+                var socket = new UdpClient(target.AddressFamily);
                 try
                 {
                     QuicPunch.ConfigureUdpSocket(socket);
-                    socket.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+                    socket.Client.Bind(new IPEndPoint(EndpointAddressCodec.BindAddress(socket), 0));
                     sockets.Add(socket);
                     receivers.Add(Receive(socket));
                 }

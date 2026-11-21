@@ -3,8 +3,18 @@
 namespace QuicNet.Serialization;
 
 internal sealed record StatusApiModuleMessage1(string peerId, string peerName, string protocolId, string protocolName, string transportType, object? telemetry, string sampleTime);
-internal sealed record StatusApiModuleMessage2(string id, string canonicalId, string name, string? savedName, string? peerName, global::System.Nullable<double> ping, bool hasPing, string? pingSource, bool isQuicConnected, global::System.Nullable<bool> vpnCanStart, string? lastConnectionError, global::System.Nullable<global::System.DateTime> lastConnectionAttemptUtc, string connectionState, string quicEndpoint, int unresponsiveSeconds, string endpoint, string[] addresses, ushort[] ports, string portMode, string networkType, bool isTor, string onionAddress, string certHash, string nostrPubKey, bool canSendOffline, bool isTrusted, bool isSaved, bool autoConnectOnStartup, string[] automaticPermissions, string profile, int lastSeenSecondsAgo, object? telemetry) { public global::QuicNet.Networking.PeerLocation? location { get; init; } public global::System.DateTime? discoveryAvailableUntilUtc { get; init; } public global::System.DateTime? lastConnectedUtc { get; init; } public global::System.DateTime? lastUsedUtc { get; init; } public string? lastKnownIp { get; init; } public long usageCount { get; init; } public bool locationIsHistorical { get; init; } }
-internal sealed record StatusApiModuleMessage3(string id, string canonicalId, string name, string certHash, string nostrPubKey, bool canSendOffline, bool autoConnect, string[] automaticPermissions, string profile, string onionAddress, string[] addresses, ushort[] ports, string portMode, string networkType) { public bool isTrusted { get; init; } public global::QuicNet.Networking.PeerLocation? location { get; init; } public global::System.DateTime? discoveryAvailableUntilUtc { get; init; } public global::System.DateTime? lastConnectedUtc { get; init; } public global::System.DateTime? lastUsedUtc { get; init; } public string? lastKnownIp { get; init; } public long usageCount { get; init; } public bool locationIsHistorical { get; init; } }
+internal sealed record AvailablePeerStatus(string id, string canonicalId, string name, string? savedName, string? peerName, global::System.Nullable<double> ping, bool hasPing, string? pingSource, bool isQuicConnected, global::System.Nullable<bool> vpnCanStart, string? lastConnectionError, global::System.Nullable<global::System.DateTime> lastConnectionAttemptUtc, string connectionState, string quicEndpoint, int unresponsiveSeconds, string endpoint, string[] addresses, ushort[] ports, string portMode, string networkType, bool isTor, string onionAddress, string certHash, string nostrPubKey, bool canSendOffline, bool isTrusted, bool isSaved, bool autoConnectOnStartup, string[] automaticPermissions, string profile, int lastSeenSecondsAgo, object? telemetry)
+{
+    public string? activeTransport { get; init; }
+    public global::QuicNet.Networking.PeerLocation? location { get; init; }
+    public global::System.DateTime? discoveryAvailableUntilUtc { get; init; }
+    public global::System.DateTime? lastConnectedUtc { get; init; }
+    public global::System.DateTime? lastUsedUtc { get; init; }
+    public string? lastKnownIp { get; init; }
+    public long usageCount { get; init; }
+    public bool locationIsHistorical { get; init; }
+}
+internal sealed record SavedPeerStatus(string id, string canonicalId, string name, string certHash, string nostrPubKey, bool canSendOffline, bool autoConnect, string[] automaticPermissions, string profile, string onionAddress, string[] addresses, ushort[] ports, string portMode, string networkType) { public bool isTrusted { get; init; } public global::QuicNet.Networking.PeerLocation? location { get; init; } public global::System.DateTime? discoveryAvailableUntilUtc { get; init; } public global::System.DateTime? lastConnectedUtc { get; init; } public global::System.DateTime? lastUsedUtc { get; init; } public string? lastKnownIp { get; init; } public long usageCount { get; init; } public bool locationIsHistorical { get; init; } }
 internal sealed record StatusApiModuleMessage4(string peerId, string msgId, string sender, string message, string time, bool isMe, bool isConfirmed, global::System.Nullable<long> expiresAtUnixMs) { public long timestampMs { get; init; } public string deliveryState { get; init; } = "sent"; }
 internal sealed record StatusApiModuleMessage5(string peerId, string peerName, string text, string time, bool isMe);
 internal sealed record StatusApiModuleMessage6(string requestId, string peerId, string peerName, string protocolId, string protocolName);
@@ -19,8 +29,56 @@ internal sealed record StatusApiModuleMessage14(global::QuicNet.Serialization.St
 internal sealed record StatusApiModuleMessage15(int active, string protocolId);
 internal sealed record StatusApiModuleMessage16(string address, int port, string endpoint, int hits);
 internal sealed record StatusApiModuleMessage17(string[] publicAddresses, object[] exactMappings, ushort[] ports, string portMode, string[] localAddresses, int serverCount, string networkType);
-internal sealed record StatusApiModuleMessage18(string id, string canonicalId, string name, string discoveredName, string? savedName, bool isSaved, bool endpointChanged, bool autoConnect, string token, string certHash, string nostrPubKey, string[]? addresses, string onionAddress, ushort[] ports, string portMode, string networkType, bool isTor, string source, bool isCertVerified, string? certPublicKey, string discoveredAt, int lastSeenSecondsAgo) { public global::QuicNet.Networking.PeerLocation? location { get; init; } public global::System.DateTime? discoveryAvailableUntilUtc { get; init; } }
-internal sealed record StatusApiModuleMessage19(global::QuicNet.Serialization.StatusApiModuleMessage20 node, global::QuicNet.Serialization.StatusApiModuleMessage17 stun, global::QuicNet.Settings.AppPreferences preferences, global::QuicNet.Serialization.StatusApiModuleMessage8 discovery, global::QuicNet.Serialization.StatusApiModuleMessage21 mailbox, global::QuicNet.Serialization.StatusApiModuleMessage10 wan, global::QuicNet.Serialization.StatusApiModuleMessage11 tor, object lan, global::QuicNet.Serialization.StatusApiModuleMessage14 apps, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage2> peers, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage2> connectedPeers, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage18> discoveredPeers, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage3> savedPeers, object[] chatMessages, global::QuicNet.Serialization.StatusApiModuleMessage22 chatTransport, global::System.Collections.Generic.IReadOnlyDictionary<string, int> disappearingMessages, object[] clipboardItems, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage6> pendingPetitions, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage7> activeInterrogations, global::QuicNet.Serialization.StatusApiModuleMessage23[] notifications, global::System.Collections.Generic.List<string> logs, int trustedPeerCount, int untrustedPeerCount, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage1> quicTelemetry, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage1> quicSessions, string nodeName, string nodeId, string token, string wanToken, string torToken, string quickUri, int listenerPort, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage2> availablePeers, global::QuicNet.Serialization.StatusApiModuleMessage8 peerDiscovery, global::QuicNet.Serialization.StatusApiModuleMessage10 wanStatus, object lanStatus, global::QuicNet.Serialization.StatusApiModuleMessage11 torStatus, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage24> activeChats, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage24> activeVoiceCalls, global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage25> registeredProtocols) { public global::QuicNet.Presence.UserPresence? presence { get; init; } public global::System.Collections.Generic.Dictionary<string, global::QuicPunch.Multiplexer.QuicPeerMultiplexer.UserPresence> peerPresence { get; init; } = new(); public global::QuicNet.Networking.GeolocationStatus? geolocation { get; init; } public global::System.Collections.Generic.Dictionary<string, string> avatars { get; init; } = new(); public global::System.Collections.Generic.IReadOnlyDictionary<string, long> chatActivity { get; init; } = new global::System.Collections.Generic.Dictionary<string, long>(); }
+internal sealed record DiscoveredPeerStatus(string id, string canonicalId, string name, string discoveredName, string? savedName, bool isSaved, bool endpointChanged, bool autoConnect, string token, string certHash, string nostrPubKey, string[]? addresses, string onionAddress, ushort[] ports, string portMode, string networkType, bool isTor, string source, bool isCertVerified, string? certPublicKey, string discoveredAt, int lastSeenSecondsAgo) { public global::QuicNet.Networking.PeerLocation? location { get; init; } public global::System.DateTime? discoveryAvailableUntilUtc { get; init; } }
+internal sealed record WebUiStatusSnapshot(
+    global::QuicNet.Serialization.StatusApiModuleMessage20 node,
+    global::QuicNet.Serialization.StatusApiModuleMessage17 stun,
+    global::QuicNet.Settings.AppPreferences preferences,
+    global::QuicNet.Serialization.StatusApiModuleMessage8 discovery,
+    global::QuicNet.Serialization.StatusApiModuleMessage21 mailbox,
+    global::QuicNet.Serialization.StatusApiModuleMessage10 wan,
+    global::QuicNet.Serialization.StatusApiModuleMessage11 tor,
+    object lan,
+    global::QuicNet.Serialization.StatusApiModuleMessage14 apps,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.AvailablePeerStatus> peers,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.AvailablePeerStatus> connectedPeers,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.DiscoveredPeerStatus> discoveredPeers,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.SavedPeerStatus> savedPeers,
+    object[] chatMessages,
+    global::QuicNet.Serialization.StatusApiModuleMessage22 chatTransport,
+    global::System.Collections.Generic.IReadOnlyDictionary<string, int> disappearingMessages,
+    object[] clipboardItems,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage6> pendingPetitions,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage7> activeInterrogations,
+    global::QuicNet.Serialization.StatusApiModuleMessage23[] notifications,
+    global::System.Collections.Generic.List<string> logs,
+    int trustedPeerCount,
+    int untrustedPeerCount,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage1> quicTelemetry,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage1> quicSessions,
+    string nodeName,
+    string nodeId,
+    string token,
+    string wanToken,
+    string torToken,
+    string quickUri,
+    int listenerPort,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.AvailablePeerStatus> availablePeers,
+    global::QuicNet.Serialization.StatusApiModuleMessage8 peerDiscovery,
+    global::QuicNet.Serialization.StatusApiModuleMessage10 wanStatus,
+    object lanStatus,
+    global::QuicNet.Serialization.StatusApiModuleMessage11 torStatus,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage24> activeChats,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage24> activeVoiceCalls,
+    global::System.Collections.Generic.List<global::QuicNet.Serialization.StatusApiModuleMessage25> registeredProtocols)
+{
+    public global::QuicNet.Networking.ConnectionModeTransition? connectionMode { get; init; }
+    public global::QuicNet.Presence.UserPresence? presence { get; init; }
+    public global::System.Collections.Generic.Dictionary<string, global::QuicPunch.Multiplexer.QuicPeerMultiplexer.UserPresence> peerPresence { get; init; } = new();
+    public global::QuicNet.Networking.GeolocationStatus? geolocation { get; init; }
+    public global::System.Collections.Generic.Dictionary<string, string> avatars { get; init; } = new();
+    public global::System.Collections.Generic.IReadOnlyDictionary<string, long> chatActivity { get; init; } = new global::System.Collections.Generic.Dictionary<string, long>();
+}
 internal sealed record StatusApiModuleMessage20(string name, string id, string canonicalId, int listenerPort, ushort[] ports, string portMode, string networkType, string wanToken, string torToken, string quickUri, string[] endpoints);
 internal sealed record StatusApiModuleMessage21(bool running, int connectedRelays, string publicKey);
 internal sealed record StatusApiModuleMessage22(bool nostrEnabled);

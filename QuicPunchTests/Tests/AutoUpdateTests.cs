@@ -64,16 +64,22 @@ internal static class AutoUpdateTests
             binary[8] ^= 1;
             var handler = new FakeHandler(Envelope(ReleaseIdentity.Build + 1), binary);
             int installs = 0;
+            bool callsEnded = false;
             using (var updater = new AutoUpdateService(directory, "win-x64", async (path, release, automatic) =>
             {
                 await UpdateManifest.VerifyFileAsync(path, release);
                 Require(!File.Exists(path + ".partial"), "Partial download exposed to installer");
+                Require(callsEnded, "The approved call termination must precede the installer");
                 installs++; return true;
             }, handler, publicKey))
             {
                 await updater.CheckAsync();
                 Require(updater.Status.Stage == "available" && installs == 0, "Manual check installed automatically");
-                await updater.InstallAsync();
+                await updater.InstallManualAsync(() =>
+                {
+                    Require(updater.ReadyPath != null, "Call termination ran before the package was ready");
+                    callsEnded = true;
+                });
                 Require(updater.Status.Stage == "installing" && installs == 1 && handler.Downloads == 1, "Verified update did not install");
                 try { await updater.SetChannelAsync("beta"); throw new Exception("Channel changed during installation"); }
                 catch (InvalidOperationException) { }
@@ -108,6 +114,9 @@ internal static class AutoUpdateTests
                 await updater.CheckAsync(true);
                 Require(updater.Status.Stage == "error" && updater.ReadyPath == null, "Corrupt update was staged");
                 Require(!Directory.EnumerateFiles(Path.Combine(directory, "corrupt"), "*.partial", SearchOption.AllDirectories).Any(), "Partial file leaked");
+                bool callEnded = false;
+                await updater.InstallManualAsync(() => callEnded = true);
+                Require(!callEnded, "A bad download must leave calls running even after confirmation");
             }
             using (var updater = new AutoUpdateService(Path.Combine(directory, "offline"), "win-x64",
                 (_, _, _) => throw new Exception("Offline installer invoked"), new FakeHandler([], binary) { Offline = true }, publicKey))
@@ -237,6 +246,26 @@ internal static class AutoUpdateTests
                 Require(updater.Status.Stage == "installing" && idleInstalls == 1 && idleFeed.Downloads == 1 && idleFeed.Feeds.Count == feedChecks,
                     "Idle retry did not install exactly once from the existing download and feed check");
             }
+            int preventedInstalls = 0;
+            using (var updater = new AutoUpdateService(Path.Combine(directory, "automatic-preference"), "win-x64",
+                (_, _, _) => { preventedInstalls++; return Task.FromResult(true); },
+                new FakeHandler(Envelope(ReleaseIdentity.Build + 1), binary), publicKey, () => TimeSpan.FromMinutes(15)))
+            {
+                bool verifiedAfterDownload = false;
+                updater.StatusChanged += () =>
+                {
+                    if (updater.Status.DownloadPhase == "verifying") verifiedAfterDownload = true;
+                    if (updater.Status.Automatic && updater.Status.Message?.Contains("Preparando instalación", StringComparison.Ordinal) == true)
+                        updater.SetAutomatic(false);
+                };
+                await updater.CheckAsync(true);
+                Require(!verifiedAfterDownload && updater.Status.DownloadPhase == null && updater.Status.Stage == "ready" &&
+                    updater.Status.Downloaded == binary.Length &&
+                    !updater.Status.Automatic && preventedInstalls == 0 && File.Exists(updater.ReadyPath),
+                    "A confirmed disable at installer handoff lost the verified package or started installation");
+                await updater.InstallAsync();
+                Require(preventedInstalls == 1, "Manual installation from the prepared package failed");
+            }
             await TestChannelApiAsync(Path.Combine(directory, "api"), publicKey, channels);
         }
         finally { Directory.Delete(directory, true); }
@@ -276,7 +305,7 @@ internal static class AutoUpdateTests
         using var socket = new System.Net.WebSockets.ClientWebSocket();
         var uri = new Uri(server.Url.Replace("http:", "ws:") + "ws?csrf=" + server.CsrfToken);
         await socket.ConnectAsync(uri, CancellationToken.None);
-        async Task<JsonElement> Receive(Func<JsonElement, bool> predicate)
+        async Task<JsonElement> Receive(System.Net.WebSockets.ClientWebSocket connection, Func<JsonElement, bool> predicate)
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(4));
             byte[] buffer = new byte[8192];
@@ -286,7 +315,7 @@ internal static class AutoUpdateTests
                 System.Net.WebSockets.WebSocketReceiveResult result;
                 do
                 {
-                    result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), timeout.Token);
+                    result = await connection.ReceiveAsync(new ArraySegment<byte>(buffer), timeout.Token);
                     Require(result.MessageType == System.Net.WebSockets.WebSocketMessageType.Text, "Unexpected socket frame");
                     message.Write(buffer, 0, result.Count);
                 } while (!result.EndOfMessage);
@@ -294,15 +323,29 @@ internal static class AutoUpdateTests
                 if (predicate(json.RootElement)) return json.RootElement.Clone();
             }
         }
+        static Task Send(System.Net.WebSockets.ClientWebSocket connection, object message)
+        {
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(message);
+            return connection.SendAsync(new ArraySegment<byte>(bytes), System.Net.WebSockets.WebSocketMessageType.Text, true, CancellationToken.None);
+        }
         async Task<JsonElement> Command(string id, string command, object data)
         {
-            byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { type = "request", id, command, data }));
-            await socket.SendAsync(new ArraySegment<byte>(bytes), System.Net.WebSockets.WebSocketMessageType.Text, true, CancellationToken.None);
-            return await Receive(root => root.GetProperty("type").GetString() == "response" && root.GetProperty("id").GetString() == id);
+            await Send(socket, new { type = "request", id, command, data });
+            return await Receive(socket, root => root.GetProperty("type").GetString() == "response" && root.GetProperty("id").GetString() == id);
         }
-        await Receive(root => root.GetProperty("type").GetString() == "status_updated");
-        var initial = await Receive(root => root.GetProperty("type").GetString() == "update_status");
-        Require(initial.GetProperty("data").GetProperty("Channel").GetString() == "beta", "Socket did not replay updater state");
+        async Task<JsonElement[]> LiveBatch(System.Net.WebSockets.ClientWebSocket connection, int id, bool refresh)
+        {
+            await Send(connection, new { type = "live_request", id, refresh });
+            var batch = await Receive(connection, root => root.GetProperty("type").GetString() == "live_updates");
+            Require(batch.GetProperty("id").GetInt32() == id, "Socket sent a batch without a matching request");
+            return batch.GetProperty("events").EnumerateArray().ToArray();
+        }
+        static JsonElement UpdateState(JsonElement[] events) =>
+            events.Single(message => message.GetProperty("type").GetString() == "update_status").GetProperty("data");
+
+        var initial = await LiveBatch(socket, 1, refresh: true);
+        Require(initial.Any(message => message.GetProperty("type").GetString() == "status_updated") &&
+            UpdateState(initial).GetProperty("Channel").GetString() == "beta", "Socket did not send both initial snapshots");
         var general = await Command("status", "status.get", new { });
         Require(general.GetProperty("success").GetBoolean() && general.GetProperty("data").TryGetProperty("peers", out _), "Socket status request failed");
         var invalid = await Command("bad", "updates.channel", new { channel = "nightly" });
@@ -313,26 +356,16 @@ internal static class AutoUpdateTests
         Require(changed.GetProperty("success").GetBoolean() && !updater.Status.Automatic, "Socket automatic preference failed");
         for (int i = 0; i < 20; i++) updater.SetAutomatic(i % 2 == 0);
         long revision = updater.Status.Revision;
-        int frames = 0;
-        var pushed = await Receive(root => { frames++; return root.GetProperty("type").GetString() == "update_status" && root.GetProperty("data").GetProperty("Revision").GetInt64() >= revision; });
-        Require(!pushed.GetProperty("data").GetProperty("Automatic").GetBoolean() && frames < 10, "Update push lost the latest state or queued every progress change");
+        var pushed = UpdateState(await LiveBatch(socket, 2, refresh: false));
+        Require(!pushed.GetProperty("Automatic").GetBoolean() && pushed.GetProperty("Revision").GetInt64() >= revision,
+            "Update batch lost the latest state or replayed historical progress");
         await socket.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "reconnect", CancellationToken.None);
         using var reconnect = new System.Net.WebSockets.ClientWebSocket();
         await reconnect.ConnectAsync(uri, CancellationToken.None);
-        // The complete snapshot is sent automatically; no sync/HTTP request is needed.
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(4));
-        var receiveBuffer = new byte[128 * 1024];
-        bool replayed = false;
-        while (!replayed)
-        {
-            var received = await reconnect.ReceiveAsync(new ArraySegment<byte>(receiveBuffer), deadline.Token);
-            Require(received.EndOfMessage, "Replay unexpectedly exceeded test buffer");
-            using var json = JsonDocument.Parse(receiveBuffer.AsMemory(0, received.Count));
-            replayed = json.RootElement.GetProperty("type").GetString() == "update_status" &&
-                json.RootElement.GetProperty("data").GetProperty("Revision").GetInt64() >= revision;
-        }
+        var resumed = UpdateState(await LiveBatch(reconnect, 1, refresh: true));
+        Require(resumed.GetProperty("Revision").GetInt64() >= revision, "Reconnect did not retrieve the latest updater state");
         await reconnect.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
-        Console.WriteLine("PASS update/status WebSocket: initial snapshot, commands, validation, coalesced live push and reconnect replay");
+        Console.WriteLine("PASS update/status WebSocket: initial snapshot, commands, validation, coalesced live updates and reconnect");
     }
 
     private sealed class FakeHandler(byte[] manifest, byte[] binary) : HttpMessageHandler

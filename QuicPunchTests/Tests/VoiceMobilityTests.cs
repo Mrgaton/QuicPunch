@@ -39,7 +39,8 @@ internal static class VoiceMobilityTests
                     !session.AcceptMediaSequence(video, 5, new byte[] { 1 }))
                     throw new Exception("Missing/out-of-order media did not wait for a fresh keyframe.");
                 session.BeginRemoteMediaEpoch(2);
-                if (!session.AcceptMediaSequence(video, 1, new byte[] { 1 }))
+                if (session.AcceptMediaSequence(video, 1, new byte[] { 1 }, epoch: 1) ||
+                    !session.AcceptMediaSequence(video, 1, new byte[] { 1 }, epoch: 2))
                     throw new Exception("A new screen encoder retained the previous sequence window.");
                 Console.WriteLine("PASS: media loss skips stale/dependent frames and recovers on a new keyframe or encoder epoch");
                 transport.Datagrams.Migrate(migrated);

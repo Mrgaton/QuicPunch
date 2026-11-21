@@ -150,13 +150,26 @@ namespace QuicPunch
         public DateTime LastSeen;
         public long LastActivityTimestampMonotonic { get; private set; } = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        public void MarkSeen()
+        internal sealed record AvailabilityConfirmation(long Timestamp, TransportType Transport, byte[]? SessionNonce);
+        private AvailabilityConfirmation? _lastAvailabilityConfirmation;
+        internal AvailabilityConfirmation? LastAvailabilityConfirmation => Volatile.Read(ref _lastAvailabilityConfirmation);
+
+        public void MarkSeen() => MarkSeen(confirmsAvailability: false);
+
+        internal void MarkAvailabilityConfirmed() => MarkSeen(confirmsAvailability: true);
+
+        private void MarkSeen(bool confirmsAvailability)
         {
             LastSeen = PreciseTime.GetCorrectTime();
-            LastActivityTimestampMonotonic = System.Diagnostics.Stopwatch.GetTimestamp();
+            long timestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            LastActivityTimestampMonotonic = timestamp;
+            if (confirmsAvailability)
+                Volatile.Write(ref _lastAvailabilityConfirmation, new(timestamp, ActiveTransport, SessionNonce));
         }
 
         public TransportType ActiveTransport { get; set; } = TransportType.Wan;
+        internal long WanRouteRevision { get; set; }
+        internal IPEndPoint[]? WanCandidates { get; set; }
         public TorQuicConnectionManager? TorChannel { get; set; }
 
         public TimeSpan? Ping { get; set; }

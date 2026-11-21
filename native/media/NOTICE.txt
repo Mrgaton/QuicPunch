@@ -6,6 +6,9 @@ Public License, version 2.1 or later. GPL and nonfree components are disabled.
 FFmpeg contains dav1d 1.5.1 (42b2b24fb8819f1ed3643aa9cf2a62f03868e3aa),
 Copyright VideoLAN and dav1d authors, under the BSD 2-Clause license.
 Windows also redistributes MinGW-w64 winpthreads under its MIT/BSD notices.
+The Windows FFmpeg build uses nv-codec-headers n12.2.72.0
+(c69278340ab1d5559c7d7bf0edf615dc33ddbba7). The header license text is
+included in the pinned source archive.
 The native C++ bridge is linked with GCC/libstdc++ or Android libc++; their
 runtime redistribution notices are included in licenses/.
 
@@ -15,7 +18,7 @@ native-media-source.tar.gz. This archive can be regenerated using
 scripts/package-native-media-source.sh. FFmpeg is dynamically linked.
 
 Windows: set QUICNET_MEDIA_LIBRARY_DIRECTORY to an absolute directory containing
-ABI-compatible avutil-60.dll, swscale-9.dll, avcodec-62.dll and nettt_media.dll
+ABI-compatible avutil-60.dll, swscale-9.dll, avcodec-62.dll, avfilter-11.dll and nettt_media.dll
 (and their dependencies) to use modified libraries. The application does not
 replace these explicitly selected libraries with its embedded originals.
 

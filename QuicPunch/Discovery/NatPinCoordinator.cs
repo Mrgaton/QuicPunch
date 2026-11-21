@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -17,6 +16,10 @@ namespace QuicPunch.Discovery
         public const int HistoryCapacity = 3;
         public static readonly TimeSpan DefaultBurstInterval = TimeSpan.FromMilliseconds(1500);
         public static readonly TimeSpan DefaultResponseCollectionDelay = TimeSpan.FromMilliseconds(700);
+        internal static readonly TimeSpan FastSamplingInterval = TimeSpan.FromMilliseconds(750);
+        internal static readonly TimeSpan IdleSamplingInterval = TimeSpan.FromSeconds(8);
+        internal static readonly TimeSpan ObservationLifetime = TimeSpan.FromSeconds(90);
+        private const int MaxObservations = 128;
 
         private readonly object _lock = new();
         private readonly object _historyLock = new();
@@ -26,16 +29,23 @@ namespace QuicPunch.Discovery
         private int _serverCursor = 0;
 
         private readonly LinkedList<StunBurstSample> _burstHistory = new();
-        private readonly ConcurrentDictionary<IPEndPoint, int> _currentBurstHits = new();
+        private readonly Dictionary<(IPEndPoint Server, IPEndPoint Mapped), long> _observations = new();
+        private readonly Dictionary<IPEndPoint, IPEndPoint> _lastMappingByServer = new();
+        private readonly SemaphoreSlim _firstObservation = new(0, 1);
+        private readonly SemaphoreSlim _samplingWake = new(0, 1);
+        private IPEndPoint? _referenceServer;
+        private bool _checkReferenceNext;
+        private bool _rescanRequested;
+        private long _lastBurst;
+        private long _lastSampleStarted;
+        private long _fastSamplingUntil;
+        private long _responseCount;
 
         private UdpClient? _udp;
-        private SimpleStunClient? _stunClient;
+        private volatile SimpleStunClient? _stunClient;
         private Task? _burstLoopTask;
         private CancellationTokenSource? _loopCts;
         private int _consecutiveFailures = 0;
-        private int _stableBursts;
-        internal TimeSpan EffectiveBurstInterval => TimeSpan.FromMilliseconds(Math.Min(30000, BurstInterval.TotalMilliseconds *
-            Math.Pow(2, Math.Min(5, Math.Max(Volatile.Read(ref _stableBursts) / 3, Volatile.Read(ref _consecutiveFailures) / 2)))));
         private readonly SemaphoreSlim _burstGate = new(1, 1);
 
         public int BurstBatchSize { get; set; } = DefaultBurstBatchSize;
@@ -55,6 +65,7 @@ namespace QuicPunch.Discovery
 
         public event EventHandler<NatMappingResult>? MappingChanged;
         public Func<bool, CancellationToken, Task<bool>>? OnStunRefreshRequested;
+        internal Func<IPEndPoint, IPEndPoint>? TranslateTarget { get; set; }
 
         public NatPinCoordinator(IEnumerable<IPEndPoint>? initialServers = null)
         {
@@ -138,10 +149,30 @@ namespace QuicPunch.Discovery
 
         private void OnStunMappedAddressResolved(object? sender, StunResultEventArgs e)
         {
-            if (SimpleStunClient.IsBogonOrLocalhost(e.MappedEndPoint.Address))
+            if (e.ServerEndpoint is not IPEndPoint server || SimpleStunClient.IsBogonOrLocalhost(e.MappedEndPoint.Address))
                 return;
 
-            _currentBurstHits.AddOrUpdate(e.MappedEndPoint, 1, (_, count) => count + 1);
+            lock (_historyLock)
+            {
+                if (!ReferenceEquals(sender, _stunClient)) return;
+                long now = Environment.TickCount64;
+                var key = (server, e.MappedEndPoint);
+                bool newCandidate = !_observations.Keys.Any(x => x.Mapped.Equals(e.MappedEndPoint));
+                if (_observations.Count >= MaxObservations && !_observations.ContainsKey(key))
+                    _observations.Remove(_observations.MinBy(entry => entry.Value).Key);
+                _observations[key] = now;
+                _referenceServer ??= server;
+                if (newCandidate && _lastMappingByServer.TryGetValue(server, out var previous) && !previous.Equals(e.MappedEndPoint))
+                {
+                    _rescanRequested = true;
+                    _fastSamplingUntil = now + 8000;
+                }
+                _lastMappingByServer[server] = e.MappedEndPoint;
+                if (_lastMappingByServer.Count > MaxObservations)
+                    _lastMappingByServer.Remove(_lastMappingByServer.Keys.First());
+                _responseCount++;
+                if (_firstObservation.CurrentCount == 0) _firstObservation.Release();
+            }
         }
 
         public bool TryProcessIncoming(ReadOnlySpan<byte> buffer, IPEndPoint remoteEndPoint)
@@ -189,6 +220,7 @@ namespace QuicPunch.Discovery
                 _loopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var token = _loopCts.Token;
 
+                Interlocked.Exchange(ref _lastSampleStarted, Environment.TickCount64);
                 _burstLoopTask = Task.Run(() => BurstLoopAsync(token), token);
             }
         }
@@ -222,16 +254,20 @@ namespace QuicPunch.Discovery
             {
                 try
                 {
-                    await Task.Delay(EffectiveBurstInterval, token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
+                    long now = Environment.TickCount64;
+                    bool fast;
+                    lock (_historyLock)
+                        fast = now < _fastSamplingUntil || _rescanRequested;
+                    var interval = fast ? FastSamplingInterval : IdleSamplingInterval;
+                    var pause = interval - TimeSpan.FromMilliseconds(now - Interlocked.Read(ref _lastSampleStarted));
+                    if (pause > TimeSpan.Zero && await _samplingWake.WaitAsync(pause, token).ConfigureAwait(false))
+                        continue;
 
-                try
-                {
-                    await ExecuteBurstAsync(token).ConfigureAwait(false);
+                    bool burst;
+                    lock (_historyLock)
+                        burst = (_rescanRequested || !CurrentMapping.HasMapping) &&
+                            Environment.TickCount64 - _lastBurst >= Math.Max(5000, BurstInterval.TotalMilliseconds);
+                    await SampleAsync(burst, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
@@ -239,111 +275,141 @@ namespace QuicPunch.Discovery
                 }
                 catch (Exception ex)
                 {
-                    if (!token.IsCancellationRequested)
-                    {
-                        QuicPunchLog.Error("[NAT PIN] Error in NAT discovery burst cycle", ex);
-                    }
+                    QuicPunchLog.Error("[NAT PIN] STUN sampling failed", ex);
                 }
             }
         }
 
-        public async Task<NatMappingResult> ExecuteBurstAsync(CancellationToken token = default)
+        public Task<NatMappingResult> ExecuteBurstAsync(CancellationToken token = default) =>
+            SampleAsync(burst: true, token);
+
+        internal void RequestFastSampling()
         {
-            if (!await _burstGate.WaitAsync(0, token).ConfigureAwait(false))
+            lock (_historyLock)
             {
-                return CurrentMapping;
+                long now = Environment.TickCount64;
+                if (now < _fastSamplingUntil) return;
+                _fastSamplingUntil = now + 8000;
+                if (_samplingWake.CurrentCount == 0) _samplingWake.Release();
             }
+        }
 
-            try
+        private IReadOnlyList<IPEndPoint> SelectTargets(bool burst)
+        {
+            if (burst)
             {
-                var stunClient = _stunClient;
-                if (stunClient == null || _allServers.Length == 0)
-                {
-                    if (OnStunRefreshRequested != null)
-                    {
-                        try
-                        {
-                            await OnStunRefreshRequested(false, token).ConfigureAwait(false);
-                            stunClient = _stunClient;
-                        }
-                        catch { }
-                    }
-
-                    if (stunClient == null || _allServers.Length == 0)
-                    {
-                        return CurrentMapping;
-                    }
-                }
-
-                // 1. Select 16 rotating servers from the shuffled catalog
-                var targetBatch = GetNextBurstBatch(BurstBatchSize);
-                if (targetBatch.Count == 0)
-                    return CurrentMapping;
-
-                // 2. Clear current burst transient buffer and fire simultaneous requests
-                _currentBurstHits.Clear();
-                await stunClient.SendRequest(token, targets: targetBatch).ConfigureAwait(false);
-
-                // 3. Wait collection window to gather UDP responses
-                try
-                {
-                    await Task.Delay(ResponseCollectionDelay, token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
-                {
-                    return CurrentMapping;
-                }
-
-                // 4. Record sample into 3-burst history buffer
-                var sampleHits = new Dictionary<IPEndPoint, int>(_currentBurstHits);
-                var sample = new StunBurstSample(sampleHits, targetBatch.Count);
-
                 lock (_historyLock)
                 {
-                    if (token.IsCancellationRequested || !ReferenceEquals(stunClient, _stunClient)) return CurrentMapping;
-                    if (_burstHistory.Count >= HistoryCapacity)
-                    {
-                        _burstHistory.RemoveFirst();
-                    }
-                    _burstHistory.AddLast(sample);
+                    _rescanRequested = false;
+                    _lastBurst = Environment.TickCount64;
+                }
+                // A catalog can contain hundreds of unreliable servers. Spread coverage
+                // across rounds, starting with the server that last answered us.
+                var candidates = GetNextBurstBatch(BurstBatchSize);
+                if (_referenceServer is { } reference)
+                    return candidates.Prepend(reference).Distinct().Take(BurstBatchSize).ToArray();
+                return candidates;
+            }
+            _checkReferenceNext = !_checkReferenceNext;
+            if (_checkReferenceNext && _referenceServer is { } stable)
+                return [stable];
+            return GetNextBurstBatch(1);
+        }
+
+        private Task? _catalogRefreshTask;
+
+        private async Task RequestCatalogRefreshAsync(bool force, CancellationToken token)
+        {
+            try
+            {
+                if (OnStunRefreshRequested is { } refresh)
+                    await refresh(force, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch (Exception ex) { QuicPunchLog.Info($"[NAT PIN] STUN catalog refresh failed: {ex.Message}"); }
+        }
+
+        private async Task<NatMappingResult> SampleAsync(bool burst, CancellationToken token)
+        {
+            await _burstGate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                long started = Environment.TickCount64;
+                Interlocked.Exchange(ref _lastSampleStarted, started);
+                var stunClient = _stunClient;
+                if (stunClient == null)
+                {
+                    if (_catalogRefreshTask is not { IsCompleted: false })
+                        _catalogRefreshTask = RequestCatalogRefreshAsync(false, token);
+                    return CurrentMapping;
                 }
 
-                // 5. Handle failure detection and auto-recovery
-                if (sample.ResponsesReceived == 0)
+                long before;
+                bool hadMapping;
+                lock (_historyLock)
                 {
-                    _consecutiveFailures++;
-                    if (_consecutiveFailures % 3 == 0 && OnStunRefreshRequested != null)
+                    before = _responseCount;
+                    hadMapping = CurrentMapping.HasMapping;
+                    _firstObservation.Wait(0);
+                }
+
+                var targets = SelectTargets(burst);
+                if (TranslateTarget is { } translate)
+                    targets = targets.Select(translate).Distinct().ToArray();
+                if (targets.Count == 0) return CurrentMapping;
+                await stunClient.SendRequest(token, targets: targets).ConfigureAwait(false);
+
+                if (!hadMapping || !burst)
+                {
+                    await _firstObservation.WaitAsync(ResponseCollectionDelay, token).ConfigureAwait(false);
+                    ApplyObservedMapping(stunClient, token);
+                }
+
+                if (burst)
+                {
+                    var remaining = ResponseCollectionDelay - TimeSpan.FromMilliseconds(Environment.TickCount64 - started);
+                    if (remaining > TimeSpan.Zero) await Task.Delay(remaining, token).ConfigureAwait(false);
+                }
+
+                if (!ReferenceEquals(stunClient, _stunClient)) return CurrentMapping;
+                if (Interlocked.Read(ref _responseCount) == before)
+                {
+                    if (++_consecutiveFailures >= 3)
                     {
-                        QuicPunchLog.Info($"[NAT PIN RESILIENCE] {_consecutiveFailures} consecutive STUN bursts received 0 responses. Requesting endpoint refresh...");
-                        try
-                        {
-                            await OnStunRefreshRequested(true, token).ConfigureAwait(false);
-                        }
-                        catch { }
+                        _consecutiveFailures = 0;
+                        lock (_historyLock) { _referenceServer = null; _rescanRequested = true; }
+                        if (_catalogRefreshTask is not { IsCompleted: false })
+                            _catalogRefreshTask = RequestCatalogRefreshAsync(true, token);
                     }
                 }
                 else
-                {
                     _consecutiveFailures = 0;
-                }
 
-                // 6. Aggregate 3-burst history and compute consolidated mapping
-                if (token.IsCancellationRequested || !ReferenceEquals(stunClient, _stunClient)) return CurrentMapping;
-                var newMapping = ComputeAggregatedMapping();
-                bool changed = HasMappingChanged(CurrentMapping, newMapping);
-                _stableBursts = changed || !newMapping.HasMapping || sample.ResponsesReceived == 0 ? 0 : Math.Min(15, _stableBursts + 1);
-                CurrentMapping = newMapping;
-
-                if (changed)
-                {
-                    MappingChanged?.Invoke(this, newMapping);
-                }
-
-                return newMapping;
+                return ApplyObservedMapping(stunClient, token);
             }
             finally
             {
                 _burstGate.Release();
+            }
+        }
+
+        private NatMappingResult ApplyObservedMapping(SimpleStunClient client, CancellationToken token)
+        {
+            lock (_historyLock)
+            {
+                if (token.IsCancellationRequested || !ReferenceEquals(client, _stunClient)) return CurrentMapping;
+                long now = Environment.TickCount64;
+                foreach (var stale in _observations.Where(x => now - x.Value >= ObservationLifetime.TotalMilliseconds).Select(x => x.Key).ToArray())
+                    _observations.Remove(stale);
+
+                var hits = _observations.Keys.GroupBy(x => x.Mapped).ToDictionary(x => x.Key, x => x.Count());
+                var mapping = ComputeMapping(hits, hits.Count == 0 ? 0 : 1);
+                bool changed = HasMappingChanged(CurrentMapping, mapping);
+                CurrentMapping = mapping;
+                if (changed)
+                    MappingChanged?.Invoke(this, mapping);
+                return mapping;
             }
         }
 
@@ -364,6 +430,11 @@ namespace QuicPunch.Discovery
                 }
             }
 
+            return ComputeMapping(aggregatedHits, samplesCount);
+        }
+
+        private NatMappingResult ComputeMapping(Dictionary<IPEndPoint, int> aggregatedHits, int samplesCount)
+        {
             if (aggregatedHits.Count == 0)
             {
                 return new NatMappingResult
@@ -402,7 +473,8 @@ namespace QuicPunch.Discovery
 
             var discoveredAddresses = addressHits
                 .GroupBy(entry => entry.Address.AddressFamily)
-                .SelectMany(group => connectionFlags.MultipleIps ? group : group.Take(1))
+                .SelectMany(group => group)
+                .Take(32)
                 .Select(entry => entry.Address)
                 .OrderBy(static address => address.ToString(), StringComparer.Ordinal)
                 .ToArray();
@@ -432,7 +504,13 @@ namespace QuicPunch.Discovery
             lock (_historyLock)
             {
                 _burstHistory.Clear();
-                _currentBurstHits.Clear();
+                _observations.Clear();
+                _lastMappingByServer.Clear();
+                _referenceServer = null;
+                _checkReferenceNext = false;
+                _rescanRequested = false;
+                _lastBurst = 0;
+                _fastSamplingUntil = Environment.TickCount64 + 8000;
             }
 
             var client = _stunClient;
@@ -453,18 +531,20 @@ namespace QuicPunch.Discovery
             }
         }
 
-        public async Task RefreshForNetworkChangeAsync(CancellationToken token = default)
+        internal void InvalidateNetworkPath()
         {
-            await _burstGate.WaitAsync(token).ConfigureAwait(false);
-            try
+            lock (_lock)
+            lock (_historyLock)
             {
+                if (_udp != null) RebuildStunClient(_udp);
                 ResetMapping();
-                _stableBursts = 0;
-                _consecutiveFailures = 0;
-                lock (_lock) { if (_udp != null && _allServers.Length > 0) RebuildStunClient(_udp); }
             }
-            finally { _burstGate.Release(); }
-            await ExecuteBurstAsync(token).ConfigureAwait(false);
+        }
+
+        public Task RefreshForNetworkChangeAsync(CancellationToken token = default)
+        {
+            InvalidateNetworkPath();
+            return ExecuteBurstAsync(token);
         }
 
         public Dictionary<IPEndPoint, int> GetStunHitsSnapshot()
@@ -480,11 +560,7 @@ namespace QuicPunch.Discovery
                     }
                 }
             }
-            if (result.Count == 0 && _stunClient != null)
-            {
-                return _stunClient.GetActiveHitsSnapshot();
-            }
-            return result;
+            return result.Count != 0 ? result : new Dictionary<IPEndPoint, int>(CurrentMapping.AggregatedHits);
         }
 
         public void AddManualSample(IPEndPoint mappedEndpoint, int count = 1)
@@ -509,6 +585,8 @@ namespace QuicPunch.Discovery
             if (oldMap.ConnectionFlags.RawValue != newMap.ConnectionFlags.RawValue) return true;
             if (oldMap.MostUsedPort != newMap.MostUsedPort) return true;
             if (!oldMap.PortArray.SequenceEqual(newMap.PortArray)) return true;
+            if (oldMap.AggregatedHits.Count != newMap.AggregatedHits.Count ||
+                oldMap.AggregatedHits.Keys.Any(endpoint => !newMap.AggregatedHits.ContainsKey(endpoint))) return true;
 
             if (oldMap.DiscoveredAddresses.Length != newMap.DiscoveredAddresses.Length) return true;
             for (int i = 0; i < oldMap.DiscoveredAddresses.Length; i++)

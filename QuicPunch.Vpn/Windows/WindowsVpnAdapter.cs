@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Threading.Tasks;
 
 namespace QuicPunch.Vpn.Windows;
@@ -173,7 +174,30 @@ public sealed class WindowsVpnAdapter : IVpnAdapter
             throw new InvalidOperationException("Adapter is not open.");
 
         var wintunSession = _adapter.StartSession(bufferCapacity);
-        return new WindowsVpnSession(wintunSession);
+        try
+        {
+            if (OperatingSystem.IsWindows() && LocalIp is { } address)
+            {
+                // netsh can return before IPv4 duplicate address detection finishes.
+                // Advertise the tunnel only once Windows can use its configured address.
+                long started = Stopwatch.GetTimestamp();
+                while (!NetworkInterface.GetAllNetworkInterfaces().Any(adapter =>
+                    adapter.Name.Equals(Name, StringComparison.OrdinalIgnoreCase) &&
+                    adapter.GetIPProperties().UnicastAddresses.Any(ip => ip.Address.Equals(address) &&
+                        ip.DuplicateAddressDetectionState == DuplicateAddressDetectionState.Preferred)))
+                {
+                    if (Stopwatch.GetElapsedTime(started) >= TimeSpan.FromSeconds(8))
+                        throw new InvalidOperationException($"Windows did not make IPv4 address {address} usable on {Name}.");
+                    System.Threading.Thread.Sleep(100);
+                }
+            }
+            return new WindowsVpnSession(wintunSession);
+        }
+        catch
+        {
+            wintunSession.Dispose();
+            throw;
+        }
     }
 
     public void Close() => Dispose();

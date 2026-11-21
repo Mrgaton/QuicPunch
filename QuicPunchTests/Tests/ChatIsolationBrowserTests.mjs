@@ -1,4 +1,4 @@
-import {launchBrowser, startPreviewServer, closeBrowserFixture} from '../Fixtures/BrowserFixture.mjs';
+import {launchBrowser, startPreviewServer, closeBrowserFixture, mapStatusMessage} from '../Fixtures/BrowserFixture.mjs';
 // Fixture-only regression for mode isolation and closing/reopening local conversations.
 
 import assert from 'node:assert/strict';
@@ -21,13 +21,7 @@ try {
   // Mode changes also deliver live snapshots; use the same mixed-mode fixture there.
   await page.routeWebSocket('**/ws?*',socket => {
     const backend = socket.connectToServer();
-    backend.onMessage(message => {
-      if (typeof message === 'string') {
-        const event = JSON.parse(message);
-        if (event.type === 'status_updated' || event.type === 'response' && event.data?.peers) {event.data = augment(event.data); message = JSON.stringify(event);}
-      }
-      socket.send(message);
-    });
+    backend.onMessage(message => socket.send(mapStatusMessage(message, augment)));
     socket.onMessage(message => backend.send(message));
   });
   const oldMessage = {peerId:alice,msgId:'preserved',message:'Este historial se conserva',isMe:false,timestampMs:Date.now()-60000,sender:'Ana'};
@@ -58,8 +52,8 @@ try {
   await page.locator(`#chatPeers [data-peer-id="${alice}"]`).waitFor();
   await page.locator(`#chatPeers [data-peer-id="${alice}"]`).click();
   await page.locator('.nav-link[data-page=dashboard]').click();
-  await page.locator('.contact-options > summary').click();
-  await page.locator('button[data-connection-mode=tor]').click();
+  await page.locator('#headerNetworkSwitch button[data-connection-mode=tor]').click();
+  await page.getByRole('dialog', {name:'¿Cambiar a Tor?'}).getByRole('button', {name:'Cambiar a Tor'}).click();
   await page.waitForFunction(() => document.documentElement.dataset.connectionMode === 'tor');
   await page.locator('.nav-link[data-page=chat]').click();
   assert.equal(await page.locator('#messageInput').isDisabled(),true,'WAN selection survived Tor mode');
@@ -72,11 +66,13 @@ try {
   assert.doesNotMatch(await page.locator('#homeContacts').textContent(),/Ana|Mi ordenador|Dispositivo nuevo/);
   assert.match(await page.locator('#homeContacts').textContent(),/Descubierto Tor/);
   assert.doesNotMatch(await page.locator('#savedPeersBody').textContent(),/Ana|Mi ordenador/);
-  await page.locator('button[data-connection-mode=both]').click();
+  await page.evaluate(() => QP.navigate('/settings.html?section=connection'));
+  await page.locator('#view-settings button[data-connection-mode=both]').click();
   await page.waitForFunction(() => document.documentElement.dataset.connectionMode === 'both');
+  await page.locator('.nav-link[data-page=dashboard]').click();
   assert.match(await page.locator('#homeContacts').textContent(),/Ana/);
   assert.match(await page.locator('#homeContacts').textContent(),/Contacto Tor/);
-  await page.locator('button[data-connection-mode=wan]').click();
+  await page.locator('#headerNetworkSwitch button[data-connection-mode=wan]').click();
   await page.waitForFunction(() => document.documentElement.dataset.connectionMode === 'wan');
   assert.doesNotMatch(await page.locator('#homeContacts').textContent(),/Contacto Tor|Guardado Tor|Descubierto Tor/);
   assert.match(await page.locator('#homeContacts').textContent(),/Ana/);

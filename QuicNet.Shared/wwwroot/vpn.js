@@ -5,6 +5,7 @@ let vpnConfiguration = null;
 let refreshingConfiguration = false;
 let togglingLan = false;
 let savingSettings = false;
+let confirmingSettings = false;
 const connectingPeers = new Set();
 const peerPingResults = new Map();
 
@@ -591,7 +592,7 @@ async function connectAll() {
 }
 
 async function applyLan() {
-  if (savingSettings || togglingLan) return;
+  if (savingSettings || confirmingSettings || togglingLan) return;
   const lanEnabled = document.getElementById('lanEnabled');
   const lanAutoAssign = document.getElementById('lanAutoAssign');
   const lanIp = document.getElementById('lanIp');
@@ -625,13 +626,19 @@ async function applyLan() {
     return;
   }
 
-  let activePeers = vpnStatus?.lan?.activePeers || [];
+  const activePeers = vpnStatus?.lan?.activePeers || [];
   if (activePeers.length > 0) {
     const peerNames = activePeers.map(p => p.peerName || 'Peer').join(', ');
-    const msg = `Actualmente hay ${activePeers.length} peer(s) conectado(s) (${peerNames}).\n\nAl aplicar los cambios, el adaptador se reiniciará.\n\n¿Deseas continuar?`;
-    if (!window.confirm(msg)) {
-      return;
-    }
+    confirmingSettings = true;
+    let confirmed;
+    try {
+      confirmed = await QP.confirmAction({
+        title: '¿Reiniciar el adaptador de red?',
+        message: `Al aplicar los cambios, el adaptador se reiniciará y se interrumpirá temporalmente la conexión con ${peerNames}.`,
+        confirmLabel: 'Aplicar cambios'
+      });
+    } finally { confirmingSettings = false; }
+    if (!confirmed) return;
   }
 
   const payload = {
@@ -759,7 +766,7 @@ function editVpnPeer(peer) {
     };
     mode.addEventListener('change', updateMode); updateMode();
     const error = QP.el('p', 'inline-help'); error.setAttribute('role', 'alert'); form.appendChild(error);
-    const toolbar = QP.el('div', 'toolbar space-top');
+    const toolbar = QP.el('div', 'dialog-actions');
     let saving = false;
     const save = QP.button('Guardar', 'primary'); save.type = 'submit';
     const cancel = QP.button('Cancelar', 'ghost', () => dialog.close()); cancel.type = 'button';
@@ -787,7 +794,7 @@ function editVpnPeer(peer) {
       } catch (e) { error.textContent = e.message || 'No se pudo guardar la configuración.'; }
       finally { saving = false; save.disabled = false; cancel.disabled = false; }
     });
-    toolbar.append(save, cancel); form.appendChild(toolbar); dialog.appendChild(form); document.body.appendChild(dialog);
+    toolbar.append(cancel, save); form.appendChild(toolbar); dialog.appendChild(form); document.body.appendChild(dialog);
     const previous = document.activeElement;
     dialog.addEventListener('cancel', e => { if (saving) e.preventDefault(); });
     dialog.addEventListener('close', () => { dialog.remove(); if (previous?.isConnected) previous.focus(); }, { once: true });

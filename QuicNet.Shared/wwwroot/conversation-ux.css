@@ -119,7 +119,7 @@
 dialog.chat-lightbox { width:100vw; max-width:none; height:100dvh; max-height:none; margin:0; padding:0; border:0; border-radius:0; background:transparent; }
 dialog.chat-lightbox:not([open]) { display:none; }
 #chatConnectBtn .chat-retry-icon { display:none; }
-.chat-dialog { width:min(520px,calc(100vw - 24px)); }
+.chat-dialog { --dialog-width:520px; }
 .chat-dialog-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
 .chat-dialog-heading h2 { margin:0; }
 .chat-dialog-heading .btn { min-width:44px; font-size:24px; }
@@ -129,18 +129,7 @@ dialog.chat-lightbox:not([open]) { display:none; }
 .chat-new-peer strong { font-size:14px; }
 .chat-new-peer small { font-size:12px; }
 #chatClearError { color:var(--danger); }
-.chat-dialog .toolbar { justify-content:flex-end; }
 
-.global-call-bar { padding:10px 16px; gap:12px; }
-.global-call-bar .call-bar-left { min-width:0; cursor:default; }
-.global-call-bar .call-bar-left>div:last-child { min-width:0; }
-.global-call-bar .call-bar-left strong { display:block; overflow-wrap:anywhere; font-size:14px; }
-.global-call-bar .call-bar-left span { font-size:12px; }
-.global-call-bar .call-bar-controls { flex-shrink:0; gap:6px; }
-.global-call-bar .call-bar-controls .btn { min-width:44px; min-height:44px; }
-.call-bar-controls svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-.call-bar-controls .call-state-label { font-size:12px; }
-.call-bar-controls .call-hangup { color:var(--danger); background:var(--danger-soft); border-color:var(--danger-border); }
 
 /* Feedback floats above the workspace; it never shrinks the history or editor. */
 .toast-host, body[data-page=chat] .toast-host { position:fixed; inset:auto 16px 120px auto; display:flex; flex-direction:column; width:min(380px,calc(100vw - 32px)); max-height:40dvh; min-height:0; margin:0; gap:8px; overflow:auto; z-index:500; pointer-events:none; }
@@ -169,7 +158,6 @@ dialog.chat-lightbox:not([open]) { display:none; }
 @media(min-width:681px) and (max-width:1100px) {
  .direct-chat { grid-template-columns:min(var(--chat-list-width,360px),280px) minmax(0,1fr); }
  .chat-list-resizer { display:none; }
- .call-state-label { display:none; }
 }
 /* A split view can leave less writing space than a phone. Give the editor its
    own row when the conversation itself is narrow, not when the viewport is. */
@@ -190,10 +178,15 @@ dialog.chat-lightbox:not([open]) { display:none; }
  .chat-list-resizer { display:none; }
  .dm-head { padding:18px 16px 12px; }
  .dm-head strong { font-size:23px; }
- .conversation-head { padding:8px 10px; gap:6px; min-height:64px; }
+ .conversation-head { padding:8px 10px; gap:8px; min-height:64px; flex-wrap:nowrap; }
+ .conversation-identity { flex:1 1 0; }
  .conversation-identity strong { font-size:15px; }
  .conversation-identity span { font-size:12px; }
- .chat-header-actions { gap:2px; }
+ #chatIdentity .ci { --ci-gap:6px; }
+ #chatIdentity .ci-body { padding-inline:5px; }
+ #chatIdentity .ci-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ #chatPeerMeta { margin-top:2px; }
+ .chat-header-actions { flex-shrink:0; gap:2px; }
  .chat-header-actions .btn { padding:6px; }
  #chatConnectBtn .chat-retry-label { display:none; }
  #chatConnectBtn .chat-retry-icon { display:inline; font-size:22px; }
@@ -202,35 +195,34 @@ dialog.chat-lightbox:not([open]) { display:none; }
  .chat-privacy-copy span { font-size:12px; }
  .chat-expiry-control { flex:1; justify-content:space-between; }
  .direct-messages { padding:12px; }
+ /* Leave space for the message bubble and timeline padding around the preview. */
+ .message img.chat-media-img {
+  max-height:min(260px,33dvh,max(64px,calc(var(--chat-history-height,100dvh) - 48px)));
+ }
  .message-body { max-width:92%; min-width:0; }
  .message { max-width:100%; padding:8px 44px 8px 10px; }
  .message-row { gap:6px; }
  .message-row .message-meta { font-size:11px; }
  .message-menu>summary { width:36px; height:30px; }
  .message>.message-menu>summary { opacity:1; }
- .chat-history-settings>summary { padding:8px 12px; }
+ .chat-history-settings>summary { min-height:44px; padding:8px 12px; }
  .chat-history-settings-panel { left:12px; }
  .chat-jump-latest { right:12px; font-size:12px; }
  .direct-composer { padding:8px 8px 4px; gap:4px; }
+ .direct-composer .composer-btn { min-width:44px; }
  .direct-composer .textarea { font-size:16px; }
  .direct-composer #sendBtn { font-size:12px; padding:8px; min-width:0; }
  .chat-composer-hint { padding:0 12px 6px; font-size:11px; line-height:1.4; }
  .chat-composer-hint:not(.is-offline) { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); }
  .chat-voice-card { width:280px; }
- .global-call-bar { margin:0; border-radius:0; flex-wrap:wrap; padding:8px 12px; }
- .global-call-bar .call-bar-left { flex:1 1 100%; gap:8px; }
- .global-call-bar .call-bar-left .avatar { display:none; }
- .global-call-bar .call-bar-controls { width:100%; justify-content:flex-end; }
- .call-state-label { display:none; }
  .toast-host, body[data-page=chat] .toast-host { inset:calc(12px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) auto max(8px, env(safe-area-inset-left)); width:auto; max-height:30dvh; pointer-events:none; z-index:10000; }
+}
+@media (min-width:480px) and (max-width:680px) and (max-height:400px) {
+ .conversation-identity > div { display:flex; align-items:center; gap:8px; }
+ #chatPeerMeta { max-width:45%; margin-top:0; }
 }
 @media(max-height:520px) {
  .chat-privacy-copy { display:none; }
- .global-call-bar .call-bar-left { flex-basis:auto; }
- .global-call-bar { flex-wrap:nowrap; padding:4px 8px; }
- .global-call-bar .call-bar-controls { width:auto; }
- .global-call-bar #globalCallGoToVoiceBtn { display:none; }
- .global-call-bar .call-bar-left span { display:none; }
  .chat-composer-hint.is-offline { max-height:3em; overflow:auto; }
 }
 @media(prefers-reduced-motion:reduce) { .messages { scroll-behavior:auto; } }

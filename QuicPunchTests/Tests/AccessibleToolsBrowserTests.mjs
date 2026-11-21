@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {launchBrowser, startPreviewServer, closeBrowserFixture} from '../Fixtures/BrowserFixture.mjs';
 
-const server = startPreviewServer();
+const server = startPreviewServer(['--interactive']);
 let browser;
 try {
   const url = await server.ready;
@@ -56,21 +56,54 @@ try {
 
   await page.setViewportSize({width:390,height:844});
   await page.evaluate(() => { window.toolsSessionMarker = 'same-document'; });
-  const tools = page.getByRole('dialog', {name:'Herramientas',exact:true});
-  await page.locator('#openMobileTools').focus();
+  const tools = page.getByRole('dialog', {name:'Más',exact:true});
+  const more = page.getByRole('button', {name:'Más',exact:true});
+  const navIconSize = await page.locator('.nav [data-page=dashboard] .icon').evaluate(icon => {
+    const {width, height} = icon.getBoundingClientRect();
+    return {width, height};
+  });
+  assert.ok(await more.locator('.icon').evaluate((icon, size) => {
+    const {width, height} = icon.getBoundingClientRect();
+    const glyph = icon.getBBox();
+    return width === size.width && height === size.height && glyph.width >= 20 && glyph.height >= 5;
+  }, navIconSize), 'The ellipsis fills its navigation icon at the same scale as its neighbors');
+  await more.focus();
   await page.keyboard.press('Enter');
   assert.ok(await tools.isVisible());
   assert.equal(await page.evaluate(() => document.activeElement.id), 'closeMobileTools');
-  assert.equal(await tools.locator('[aria-current=page]').getAttribute('data-page'), 'settings');
+  assert.equal(await tools.locator('[aria-current=page]').count(), 0);
+  assert.deepEqual(await tools.locator('a strong, #mobilePresenceButton strong').allTextContents(),
+    ['Ver juntos','Disco virtual','Red privada','Prueba de velocidad','Tu estado']);
+  const toolIcons = await tools.locator('.mobile-tools-list > :is(a,button)').evaluateAll(rows => rows.map(row => {
+    const icon = row.querySelector('svg[aria-hidden="true"]');
+    if (!icon) return null;
+    const {width, height} = icon.getBoundingClientRect();
+    const glyph = icon.getBBox();
+    return {width, height, drawn: glyph.width > 0 && glyph.height > 0, shape: icon.innerHTML};
+  }));
+  assert.ok(toolIcons.every(icon => icon?.drawn && icon.width === navIconSize.width && icon.height === navIconSize.height),
+    'Each tool displays a decorative icon sized like the bottom navigation icons');
+  assert.equal(new Set(toolIcons.map(icon => icon.shape)).size, toolIcons.length, 'Each tool has a distinct icon');
+  assert.equal(await page.evaluate(() => {
+    document.querySelector('.nav a[data-page="dashboard"]').focus();
+    return document.activeElement.id;
+  }), 'closeMobileTools', 'Background navigation is inert while the panel is open');
+  await tools.getByRole('button', {name:/Tu estado/}).click();
+  await page.locator('#userPresenceDialog[open]').waitFor();
+  await page.locator('#presenceDnd').click();
+  await page.waitForFunction(() => document.getElementById('mobilePresenceText').textContent === 'No molestar');
   await page.keyboard.press('Escape');
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'openMobileTools');
+  await page.waitForFunction(() => document.activeElement.id === 'navMore');
 
   // Both portrait and short landscape dialogs keep every destination reachable.
-  for (const viewport of [{width:320,height:568},{width:667,height:375}]) {
+  for (const viewport of [{width:320,height:568},{width:667,height:375},{width:320,height:300}]) {
     await page.setViewportSize(viewport);
-    await page.locator('#openMobileTools').click();
+    await more.click();
     assert.equal(await tools.getByRole('navigation', {name:'Herramientas de QuicNet'}).count(), 1);
-    for (const link of await tools.getByRole('link').all()) {
+    const panel = await tools.boundingBox();
+    if (viewport.height > viewport.width) assert.ok(Math.abs(panel.y + panel.height - viewport.height) <= 1, 'Portrait panel is anchored at the bottom');
+    else assert.ok(Math.abs(panel.y * 2 + panel.height - viewport.height) <= 2, 'Landscape dialog is centered');
+    for (const link of await tools.locator('a, #mobilePresenceButton').all()) {
       await link.scrollIntoViewIfNeeded();
       const geometry = await link.evaluate(element => {
         const bounds = element.getBoundingClientRect();
@@ -83,18 +116,80 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.keyboard.press('Escape');
   }
-  await page.locator('#openMobileTools').click();
-  const disk = tools.getByRole('link', {name:/Disco virtual/});
-  await disk.focus();
+  await page.setViewportSize({width:390,height:844});
+  const previousState = () => page.evaluate(() => ({url:location.href,length:history.length,scroll:scrollY}));
+  await page.evaluate(() => window.scrollTo(0, 160));
+  const beforeBack = await previousState();
+  await more.click();
+  assert.equal(await page.evaluate(() => QP.dismissMobileTools()), true, 'Android Back hook consumes an open panel');
+  assert.equal(await page.evaluate(() => QP.dismissMobileTools()), false, 'The next Back falls through to navigation');
+  assert.deepEqual(await previousState(), beforeBack, 'Opening and dismissing the panel preserves the current URL and scroll');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'navMore');
+
+  await more.click();
+  await page.setViewportSize({width:844,height:390});
+  const desktopPanel = await tools.boundingBox();
+  assert.ok(desktopPanel.x>=0 && desktopPanel.x+desktopPanel.width<=844 && desktopPanel.y+desktopPanel.height<=390);
+  assert.equal(await more.isVisible(),false);
+  await tools.getByRole('button',{name:'Cerrar',exact:true}).click();
+  assert.ok(await page.locator('.nav a[data-page=settings]').evaluate(node=>node===document.activeElement),
+    'After a rotation, focus returns to the active sidebar link');
+  await page.locator('.nav a[data-page=virtual-disk]').click();
+  assert.equal(new URL(page.url()).pathname,'/virtual-disk.html');
+  await page.setViewportSize({width:390,height:844});
+  assert.equal(await more.getAttribute('aria-description'),'Pantalla actual: Disco virtual');
+
+  await more.click();
+  const vpn = tools.getByRole('link', {name:/Red privada/});
+  await vpn.focus();
   await page.keyboard.press('Enter');
-  await page.waitForFunction(() => document.body.dataset.page === 'virtual-disk');
+  await page.waitForFunction(() => document.body.dataset.page === 'vpn');
   assert.equal(await page.evaluate(() => window.toolsSessionMarker), 'same-document', 'Tool navigation preserves the running SPA');
   assert.equal(await tools.isVisible(), false);
-  assert.ok(await page.locator('#view-virtual-disk h1').evaluate(element => element === document.activeElement),
+  assert.ok(await page.locator('#view-vpn h1').evaluate(element => element === document.activeElement),
     'Keyboard navigation moves focus into the destination');
-  await page.locator('#openMobileTools').click();
-  assert.equal(await tools.locator('[aria-current=page]').getAttribute('data-page'), 'virtual-disk');
+  await more.click();
+  assert.equal(await tools.locator('[aria-current=page]').getAttribute('data-page'), 'vpn');
+  const before = await page.evaluate(() => history.length);
+  await vpn.click();
+  assert.equal(await page.evaluate(() => history.length), before, 'Current tool does not navigate again');
+  await page.goBack();
+  assert.equal(await more.getAttribute('aria-description'),'Pantalla actual: Disco virtual');
+  await page.goForward();
+  assert.equal(await more.getAttribute('aria-description'),'Pantalla actual: Red privada');
+
+  await page.goto(url + 'virtual-disk.html?share=preview-documents');
+  await page.locator('#diskShares [data-selected=true]').waitFor();
+  await more.click();
+  assert.equal(await tools.locator('[aria-current=page]').getAttribute('data-page'),'virtual-disk');
+  const deepLink = await previousState();
+  await tools.getByRole('link',{name:/Disco virtual/}).click();
+  assert.deepEqual(await previousState(),deepLink,'Selecting the current tool preserves a deep link');
+
+  await more.click();
+  await tools.getByRole('link', {name:/Ver juntos/}).click();
+  assert.equal(new URL(page.url()).pathname, '/watch.html');
+  assert.equal(await more.getAttribute('aria-description'), 'Pantalla actual: Ver juntos');
+  await more.click();
+  assert.equal(await tools.locator('[aria-current=page]').getAttribute('data-page'), 'watch');
   await page.keyboard.press('Escape');
+  await page.goBack();
+  assert.equal(await more.getAttribute('aria-description'), 'Pantalla actual: Disco virtual');
+
+  const restricted = await browser.newPage({viewport:{width:390,height:844}});
+  await restricted.addInitScript(() => {
+    const capabilities = {platform:'android',capabilities:{vpn:{available:false},speedtest:{available:true}}};
+    Object.defineProperty(window,'__qp_capabilities', {get:()=>capabilities,set() {}});
+  });
+  await restricted.goto(url);
+  await restricted.locator('#navMore').click();
+  assert.equal(await restricted.locator('#mobileToolsDialog a[data-page=vpn]').isVisible(),false);
+  assert.equal(await restricted.locator('#mobileToolsDialog a[data-page=speedtest]').isVisible(),true);
+  await restricted.keyboard.press('Escape');
+  await restricted.setViewportSize({width:844,height:390});
+  assert.equal(await restricted.locator('.nav a[data-page=vpn]').isVisible(),false);
+  assert.equal(await restricted.locator('.nav a[data-page=speedtest]').isVisible(),true);
+  await restricted.close();
   assert.deepEqual(errors, []);
   console.log('PASS accessible contact labels/errors and save retry, skip link, mobile tools keyboard/focus, portrait/landscape and SPA continuity');
 } finally {

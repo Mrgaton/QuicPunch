@@ -27,6 +27,20 @@
         </div>
       </div>
 
+      <section class="section vpn-activation" aria-label="Activación de la red privada">
+        <div class="service">
+          <div>
+            <strong>Activar red privada</strong>
+            <span id="lanSwitchHint">Habilitar ahora y al abrir la aplicación</span>
+          </div>
+          <label class="switch">
+            <input id="lanEnabled" type="checkbox" role="switch" aria-label="Activar red privada" aria-describedby="lanSwitchHint">
+            <span class="switch-track"></span>
+          </label>
+        </div>
+        <div class="inline-help" id="lanError" role="status"></div>
+      </section>
+
       <!-- LAN Summary KPI Cards -->
       <section class="summary-line">
         <div class="summary-item">
@@ -77,22 +91,8 @@
           </div>
           <div class="section-body">
             <p id="vpnConfigError" class="inline-help" role="status"></p>
-            <!-- Direct Activation Switch -->
-            <div class="service-row">
-              <div class="service">
-                <div>
-                  <strong>Activar red privada</strong>
-                  <span id="lanSwitchHint">Habilitar ahora y al abrir la aplicación</span>
-                </div>
-                <label class="switch" aria-label="Activar red privada">
-                  <input id="lanEnabled" type="checkbox" aria-label="Activar red privada">
-                  <span class="switch-track"></span>
-                </label>
-              </div>
-            </div>
-
             <!-- Auto Assign Toggle -->
-            <div class="field space-top vpn-auto-row">
+            <div class="field vpn-auto-row">
               <div>
                 <strong>IP automática</strong>
                 <small class="muted">Una dirección estable para este equipo.</small>
@@ -127,7 +127,6 @@
               <button class="btn primary" id="applyLanBtn">Guardar configuración</button>
               <span class="muted" id="lanApplyStatus" role="status"></span>
             </div>
-            <div class="inline-help space-top" id="lanError"></div>
             <details class="vpn-details"><summary>Detalles de configuración</summary><p id="vpnConfigLocation" class="muted"></p></details>
           </div>
         </section>

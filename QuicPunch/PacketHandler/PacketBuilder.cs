@@ -111,7 +111,7 @@ namespace QuicPunch.PacketHandler
             return payload;
         }
 
-        public static byte[] GenerateHelloPayload(QuicPunch qp, MessageType type, bool passwordProof, byte[]? challengeNonce = null, TransportType transport = TransportType.Wan, PeerInfo? targetPeer = null, bool lanBeacon = false)
+        public static byte[] GenerateHelloPayload(QuicPunch qp, MessageType type, bool passwordProof, byte[]? challengeNonce = null, TransportType transport = TransportType.Wan, PeerInfo? targetPeer = null, bool lanBeacon = false, string? routeProbeId = null)
         {
             byte[] payload;
             var currentPeer = qp.GetCurrentPeer(transport);
@@ -139,7 +139,8 @@ namespace QuicPunch.PacketHandler
                     targetPeer?.ActiveEndPoint,
                     sessionNonce,
                     localEphemeralEcdh,
-                    targetPeer != null && targetPeer.TryGetCertificateHash(out var expectedCertHash) ? expectedCertHash : null);
+                    targetPeer != null && targetPeer.TryGetCertificateHash(out var expectedCertHash) ? expectedCertHash : null,
+                    routeProbeId);
             }
             else
             {

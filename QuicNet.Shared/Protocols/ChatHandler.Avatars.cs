@@ -6,9 +6,10 @@ namespace QuicNet.Protocols;
 public sealed partial class ChatHandler
 {
     internal ProfileAvatarStore? Avatars { get; set; }
+    internal Func<Guid, bool>? UsesProfileAvatarStream { get; set; }
     internal async Task SendAvatarAsync(ChatSession session, CancellationToken cancellationToken = default)
     {
-        if (session.IsTor || Avatars == null) return;
+        if (session.IsTor || Avatars == null || UsesProfileAvatarStream?.Invoke(session.Peer.Id) == true) return;
         try
         {
             byte[] bytes = Avatars.Read() ?? [];
@@ -19,7 +20,7 @@ public sealed partial class ChatHandler
     }
     internal async Task SynchronizeAvatarAsync(ChatSession session, CancellationToken cancellationToken = default)
     {
-        if (session.IsTor || Avatars == null) return;
+        if (session.IsTor || Avatars == null || UsesProfileAvatarStream?.Invoke(session.Peer.Id) == true) return;
         await SendAvatarAsync(session, cancellationToken).ConfigureAwait(false);
         try { await session.SendJsonAsync(new PeerAvatarMessage("peer_avatar_req", ""), cancellationToken).ConfigureAwait(false); }
         catch { /* A disconnected session synchronizes again on reconnect. */ }
@@ -32,7 +33,8 @@ public sealed partial class ChatHandler
 
     internal void ReceiveAvatar(ChatSession session, JsonElement root)
     {
-        if (session.IsTor || Avatars == null || !root.TryGetProperty("data", out var value) || value.ValueKind != JsonValueKind.String) return;
+        if (session.IsTor || Avatars == null || UsesProfileAvatarStream?.Invoke(session.Peer.Id) == true ||
+            !root.TryGetProperty("data", out var value) || value.ValueKind != JsonValueKind.String) return;
         string encoded = value.GetString()!;
         if (encoded.Length > ((ProfileAvatarStore.MaxBytes + 2) / 3) * 4) return;
         try { Avatars.Set(Convert.FromBase64String(encoded), session.Peer.Id); }

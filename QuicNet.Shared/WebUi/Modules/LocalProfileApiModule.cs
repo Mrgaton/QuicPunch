@@ -5,19 +5,22 @@ using QuicNet.Protocols;
 
 namespace QuicNet.WebUi.Modules;
 
-internal sealed class LocalProfileApiModule
+internal sealed class LocalProfileApiModule : IDisposable
 {
     private readonly QuicPunch.QuicPunch node;
     private readonly AppPreferencesStore preferences;
     private readonly CancellationToken cancellationToken;
     private readonly ChatHandler chat;
+    private readonly ProfileAvatarSync avatarSync;
     internal ProfileAvatarStore Avatars { get; }
     public LocalProfileApiModule(QuicPunch.QuicPunch node, AppPreferencesStore preferences, ChatHandler chat, CancellationToken cancellationToken)
     {
         this.node = node; this.preferences = preferences; this.chat = chat; this.cancellationToken = cancellationToken;
         Avatars = new ProfileAvatarStore(Path.Combine(preferences.StorageDirectory, "avatars"));
         Avatars.Changed += () => WebUiServer.BroadcastStatusUpdate();
+        avatarSync = new ProfileAvatarSync(node, Avatars, cancellationToken);
         chat.Avatars = Avatars;
+        chat.UsesProfileAvatarStream = avatarSync.UsesProfileStream;
         _ = chat.RequestAvatarsAsync(cancellationToken);
     }
     private LocalProfile Snapshot()
@@ -50,7 +53,7 @@ internal sealed class LocalProfileApiModule
             byte[] bytes = path.EndsWith("/remove", StringComparison.Ordinal) ? [] : await WebUiContext.ReadRequestBytesAsync(request, ProfileAvatarStore.MaxBytes).ConfigureAwait(false);
             if (path == "/api/profile/avatar" && !ProfileAvatarStore.IsValid(bytes))
             {
-                await WebUiContext.WriteJsonAsync(response, new ProfileError(false, "El avatar debe ser un AVIF cuadrado de hasta 512 × 512 píxeles y 320 KB; las animaciones pueden durar hasta 10 segundos."), 400).ConfigureAwait(false);
+                await WebUiContext.WriteJsonAsync(response, new ProfileError(false, "El avatar debe ser un AVIF cuadrado de hasta 512 × 512 píxeles y 512 KiB. Las animaciones pueden durar hasta 10 segundos."), 400).ConfigureAwait(false);
                 return true;
             }
             Avatars.Set(bytes);
@@ -108,6 +111,8 @@ internal sealed class LocalProfileApiModule
         await WebUiContext.WriteJsonAsync(response, Snapshot()).ConfigureAwait(false);
         return true;
     }
+
+    public void Dispose() => avatarSync.Dispose();
 }
 
 internal sealed record LocalProfile(bool success, string displayName, string customName, string deviceName, string avatarUrl);

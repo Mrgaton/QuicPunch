@@ -18,6 +18,8 @@ public sealed partial class PeerStore : IDisposable
         public IPAddress[] Addresses { get; init; }
         public ushort[] PortArray { get; init; } = [];
         public ushort PreferredPort { get; init; }
+        internal IPEndPoint[]? WanCandidates { get; init; }
+        internal long WanRouteRevision { get; init; }
         public byte[] CertHash { get; init; }
         public byte[]? EcdhPublicKey { get; init; }
         public string? Name { get; init; }
@@ -71,7 +73,7 @@ public sealed partial class PeerStore : IDisposable
         {
         }
 
-        internal SavedPeer Copy() => new SavedPeer(Addresses.Select(CloneAddress).ToArray(), (ushort[])PortArray.Clone(), CertHash.ToArray(), EcdhPublicKey?.ToArray(), Name, OnionAddress, AutoConnect, NetworkType, NostrPubKey, ResumptionTicket?.ToArray(), new ConnectionFlags(ConnectionFlags.RawValue)) { PreferredPort = PreferredPort, AutomaticPermissions = (string[])AutomaticPermissions.Clone(), Profile = Profile, Trusted = Trusted, LastConnectedUtc = LastConnectedUtc, LastAuthenticatedActivityUtc = LastAuthenticatedActivityUtc, LastKnownIp = LastKnownIp, LastUsedUtc = LastUsedUtc, UsageCount = UsageCount };
+        internal SavedPeer Copy() => new SavedPeer(Addresses.Select(CloneAddress).ToArray(), (ushort[])PortArray.Clone(), CertHash.ToArray(), EcdhPublicKey?.ToArray(), Name, OnionAddress, AutoConnect, NetworkType, NostrPubKey, ResumptionTicket?.ToArray(), new ConnectionFlags(ConnectionFlags.RawValue)) { PreferredPort = PreferredPort, WanCandidates = WanCandidates?.Select(EndpointAddressCodec.Normalize).ToArray(), WanRouteRevision = WanRouteRevision, AutomaticPermissions = (string[])AutomaticPermissions.Clone(), Profile = Profile, Trusted = Trusted, LastConnectedUtc = LastConnectedUtc, LastAuthenticatedActivityUtc = LastAuthenticatedActivityUtc, LastKnownIp = LastKnownIp, LastUsedUtc = LastUsedUtc, UsageCount = UsageCount };
 
         internal bool SameCertificate(SavedPeer other) =>
             CertHash.AsSpan().SequenceEqual(other.CertHash);
@@ -79,6 +81,7 @@ public sealed partial class PeerStore : IDisposable
         internal bool SameValue(SavedPeer other) =>
             SameCertificate(other) && LastConnectedUtc == other.LastConnectedUtc && LastAuthenticatedActivityUtc == other.LastAuthenticatedActivityUtc && LastKnownIp == other.LastKnownIp && LastUsedUtc == other.LastUsedUtc && UsageCount == other.UsageCount &&
             PortArray.SequenceEqual(other.PortArray) && PreferredPort == other.PreferredPort &&
+            WanRouteRevision == other.WanRouteRevision && (WanCandidates ?? []).SequenceEqual(other.WanCandidates ?? []) &&
             Name == other.Name &&
             OnionAddress == other.OnionAddress &&
             AutoConnect == other.AutoConnect &&
@@ -108,6 +111,12 @@ public sealed partial class PeerStore : IDisposable
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public ushort PreferredPort { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string[]? WanCandidates { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public long WanRouteRevision { get; set; }
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public int? MinPort { get; set; }
@@ -360,55 +369,8 @@ public sealed partial class PeerStore : IDisposable
         return AddOrUpdate(decodedPeer, autoConnect, save);
     }
 
-    public bool AddOrUpdate(PeerInfo peer, bool autoConnect = true, bool save = true)
-    {
-        if (peer.CertHash == null || peer.CertHash.Length == 0)
-            return false;
-
-        var addrsList = new List<IPAddress>();
-        if (peer.Addresses != null && peer.Addresses.Length > 0)
-        {
-            foreach (var a in peer.Addresses)
-            {
-                if (Utilities.IsValidPeerAddress(a) && !addrsList.Contains(a))
-                    addrsList.Add(a);
-            }
-        }
-
-        // CRITICAL: Ensure ActiveEndPoint is merged so public IP is NEVER lost when peer.Addresses only had local IP!
-        if (peer.ActiveEndPoint != null && Utilities.IsValidPeerAddress(peer.ActiveEndPoint.Address) && !addrsList.Contains(peer.ActiveEndPoint.Address))
-        {
-            addrsList.Insert(0, peer.ActiveEndPoint.Address);
-        }
-
-        if (addrsList.Count == 0 && !string.IsNullOrEmpty(peer.OnionAddress))
-        {
-            addrsList.Add(IPAddress.Loopback);
-        }
-
-        if (addrsList.Count == 0)
-            return false;
-
-        var ports = new List<ushort>(peer.PortArray ?? []);
-        if (peer.ActiveEndPoint != null && peer.ActiveEndPoint.Port > 0 &&
-            !(peer.PreferredPort > 0 && Utilities.IsPrivateLanAddress(peer.ActiveEndPoint.Address)))
-        {
-            ushort activePort = (ushort)peer.ActiveEndPoint.Port;
-            if (!ports.Contains(activePort))
-            {
-                ports.Add(activePort);
-            }
-        }
-        var portArray = PortAdvertisementCodec.Normalize(ports);
-        PortMode portMode = PortAdvertisementCodec.ResolveMode(portArray, peer.ConnectionFlags.PortMode);
-        portArray = PortAdvertisementCodec.NormalizeForMode(portArray, portMode);
-
-        peer.PortArray = portArray;
-        peer.ConnectionFlags.MultipleIps = addrsList.Count > 1;
-        peer.ConnectionFlags.PortMode = portMode;
-        
-        return AddOrUpdate(addrsList, portArray, peer.CertHash, peer.EcdhPublicKey, peer.Name, peer.OnionAddress, autoConnect, save, peer.NetworkType, peer.NostrPubKey, peer.ResumptionTicket, peer.ConnectionFlags, peer.PreferredPort);
-    }
+    public bool AddOrUpdate(PeerInfo peer, bool autoConnect = true, bool save = true) =>
+        AddOrUpdate(peer, autoConnect, save, nostrPubKey: null);
 
     public bool AddOrUpdate(PeerInfo peer, bool autoConnect, bool save, string? nostrPubKey)
     {
@@ -456,7 +418,7 @@ public sealed partial class PeerStore : IDisposable
         peer.ConnectionFlags.MultipleIps = addrsList.Count > 1;
         peer.ConnectionFlags.PortMode = portMode;
 
-        return AddOrUpdate(addrsList, portArray, peer.CertHash, peer.EcdhPublicKey, peer.Name, peer.OnionAddress, autoConnect, save, peer.NetworkType, peer.NostrPubKey ?? nostrPubKey, peer.ResumptionTicket, peer.ConnectionFlags, peer.PreferredPort);
+        return AddOrUpdate(addrsList, portArray, peer.CertHash, peer.EcdhPublicKey, peer.Name, peer.OnionAddress, autoConnect, save, peer.NetworkType, peer.NostrPubKey ?? nostrPubKey, peer.ResumptionTicket, peer.ConnectionFlags, peer.PreferredPort, peer.WanCandidates, peer.WanRouteRevision);
     }
 
     public bool AddOrUpdate(IPAddress[] addresses, ushort[] portArray, byte[] certificate, bool save) =>
@@ -471,7 +433,14 @@ public sealed partial class PeerStore : IDisposable
     public bool AddOrUpdate(IEnumerable<IPAddress> addresses, ushort[] portArray, byte[] certificate, byte[]? ecdhPublicKey = null, bool save = true) =>
         AddOrUpdate(addresses, portArray, certificate, ecdhPublicKey, null, null, true, save);
 
-    public bool AddOrUpdate(IEnumerable<IPAddress> addresses, ushort[] portArray, byte[] certificate, byte[]? ecdhPublicKey = null, string? name = null, string? onionAddress = null, bool autoConnect = true, bool save = true, QuicPunch.NetworkType networkType = QuicPunch.NetworkType.Static, string? nostrPubKey = null, byte[]? resumptionTicket = null, ConnectionFlags? connectionFlags = null, ushort preferredPort = 0)
+    public bool AddOrUpdate(IEnumerable<IPAddress> addresses, ushort[] portArray, byte[] certificate, byte[]? ecdhPublicKey = null, string? name = null, string? onionAddress = null, bool autoConnect = true, bool save = true, QuicPunch.NetworkType networkType = QuicPunch.NetworkType.Static, string? nostrPubKey = null, byte[]? resumptionTicket = null, ConnectionFlags? connectionFlags = null, ushort preferredPort = 0) =>
+        AddOrUpdate(addresses, portArray, certificate, ecdhPublicKey, name, onionAddress, autoConnect, save,
+            networkType, nostrPubKey, resumptionTicket, connectionFlags, preferredPort, null, 0);
+
+    private bool AddOrUpdate(IEnumerable<IPAddress> addresses, ushort[] portArray, byte[] certificate,
+        byte[]? ecdhPublicKey, string? name, string? onionAddress, bool autoConnect, bool save,
+        QuicPunch.NetworkType networkType, string? nostrPubKey, byte[]? resumptionTicket,
+        ConnectionFlags? connectionFlags, ushort preferredPort, IPEndPoint[]? wanCandidates, long wanRouteRevision)
     {
         ThrowIfDisposed();
 
@@ -483,7 +452,7 @@ public sealed partial class PeerStore : IDisposable
         {
             if (!_peers.TryGetValue(Key(certificate), out var old))
             {
-                var peer = new SavedPeer(addresses, portArray, certificate, ecdhPublicKey, name, onionAddress, autoConnect, networkType, nostrPubKey, resumptionTicket, connectionFlags) { PreferredPort = preferredPort };
+                var peer = new SavedPeer(addresses, portArray, certificate, ecdhPublicKey, name, onionAddress, autoConnect, networkType, nostrPubKey, resumptionTicket, connectionFlags) { PreferredPort = preferredPort, WanCandidates = wanCandidates, WanRouteRevision = wanRouteRevision };
                 _peers[peer.Key] = peer;
                 savedPeerToNotify = peer;
                 added = true;
@@ -492,6 +461,7 @@ public sealed partial class PeerStore : IDisposable
             }
             else
             {
+                if (wanRouteRevision > 0 && wanRouteRevision < old.WanRouteRevision) return false;
                 string? mergedNostrPubKey = !string.IsNullOrWhiteSpace(nostrPubKey) ? nostrPubKey : old.NostrPubKey;
                 byte[]? mergedEcdh = (ecdhPublicKey != null && ecdhPublicKey.Length > 0) ? ecdhPublicKey : old.EcdhPublicKey;
                 string? mergedName = !string.IsNullOrWhiteSpace(name) ? name : old.Name;
@@ -500,7 +470,7 @@ public sealed partial class PeerStore : IDisposable
                 var mergedFlags = connectionFlags ?? old.ConnectionFlags;
 
                 // A full port advertisement can also withdraw the previous preferred port.
-                var mergedPeer = new SavedPeer(addresses, portArray, certificate, mergedEcdh, mergedName, mergedOnion, autoConnect, networkType, mergedNostrPubKey, mergedTicket, mergedFlags) { PreferredPort = connectionFlags != null || preferredPort > 0 ? preferredPort : old.PreferredPort, AutomaticPermissions = (string[])old.AutomaticPermissions.Clone(), Profile = old.Profile, Trusted = old.Trusted, LastConnectedUtc = old.LastConnectedUtc, LastAuthenticatedActivityUtc = old.LastAuthenticatedActivityUtc, LastKnownIp = old.LastKnownIp, LastUsedUtc = old.LastUsedUtc, UsageCount = old.UsageCount };
+                var mergedPeer = new SavedPeer(addresses, portArray, certificate, mergedEcdh, mergedName, mergedOnion, autoConnect, networkType, mergedNostrPubKey, mergedTicket, mergedFlags) { PreferredPort = connectionFlags != null || preferredPort > 0 ? preferredPort : old.PreferredPort, WanCandidates = wanCandidates ?? old.WanCandidates, WanRouteRevision = Math.Max(wanRouteRevision, old.WanRouteRevision), AutomaticPermissions = (string[])old.AutomaticPermissions.Clone(), Profile = old.Profile, Trusted = old.Trusted, LastConnectedUtc = old.LastConnectedUtc, LastAuthenticatedActivityUtc = old.LastAuthenticatedActivityUtc, LastKnownIp = old.LastKnownIp, LastUsedUtc = old.LastUsedUtc, UsageCount = old.UsageCount };
                 if (!old.SameValue(mergedPeer))
                 {
                     _peers[mergedPeer.Key] = mergedPeer;
@@ -745,6 +715,8 @@ public sealed partial class PeerStore : IDisposable
             var p = new SavedPeer(addresses, portArray, certHash, ecdhPublicKey, r.Name, r.OnionAddress, r.AutoConnect, netType, r.NostrPubKey, resumptionTicket, flags)
             {
                 PreferredPort = r.PreferredPort,
+                WanCandidates = r.WanCandidates == null ? null : EndpointAddressCodec.ParseWanCandidates(r.WanCandidates),
+                WanRouteRevision = Math.Max(0, r.WanRouteRevision),
                 LastConnectedUtc = r.LastConnectedUtc,
                 LastAuthenticatedActivityUtc = r.LastAuthenticatedActivityUtc,
                 LastKnownIp = IPAddress.TryParse(r.LastKnownIp, out var lastIp) ? lastIp.ToString() : null,
@@ -776,6 +748,8 @@ public sealed partial class PeerStore : IDisposable
                     Ips = p.Addresses.Select(a => a.ToString()).ToArray(),
                     Ports = p.PortArray,
                     PreferredPort = p.PreferredPort,
+                    WanCandidates = p.WanCandidates?.Select(ep => ep.ToString()).ToArray(),
+                    WanRouteRevision = p.WanRouteRevision,
                     LastConnectedUtc = p.LastConnectedUtc,
                     LastAuthenticatedActivityUtc = p.LastAuthenticatedActivityUtc,
                     LastKnownIp = p.LastKnownIp,

@@ -8,7 +8,9 @@
   <meta name="quicwatch-csrf" content="__QUICWATCH_CSRF__">
   <script src="/watch/diagnostics.js"></script>
   <title>Ver juntos · QuicNet</title>
+  <link rel="icon" href="/favicon.ico">
   <link rel="stylesheet" href="/watch/app.css">
+  <link rel="stylesheet" href="/dialogs.css">
 </head>
 <body>
   <a class="skip-link" href="#roomTitle">Saltar a la sala</a>
@@ -19,7 +21,7 @@
   <main class="layout">
     <section class="stage" aria-labelledby="roomTitle">
       <header class="stage-head">
-        <div class="room-heading"><span class="room-icon" aria-hidden="true">▷</span><div><span class="eyebrow">TU SALA DE CINE</span><h2 id="roomTitle" tabindex="-1">Todo empieza con un buen plan</h2></div></div>
+        <div class="room-heading"><span class="room-icon" aria-hidden="true">▷</span><div><span class="eyebrow">TU SALA DE CINE</span><h2 id="roomTitle" tabindex="-1">Sala de vídeo</h2></div></div>
         <span id="roleBadge" class="badge">Sin sala</span>
       </header>
       <div class="player-shell" id="playerShell">
@@ -27,8 +29,8 @@
         <div id="emptyPlayer" class="empty-player">
           <div class="cinema-art" aria-hidden="true"><div class="cinema-orbit"></div><div class="cinema-screen"><span>▷</span><i></i></div><span class="cinema-spark spark-one">✦</span><span class="cinema-spark spark-two">✦</span></div>
           <span class="eyebrow">CERCA, AUNQUE ESTÉIS LEJOS</span>
-          <h3 id="emptyTitle">Hoy, la última fila es vuestra.</h3>
-          <p id="emptyDescription">Prepara una sala, invita a tu gente y comparte un vídeo en su calidad original.</p>
+          <h3 id="emptyTitle">Crea una sala</h3>
+          <p id="emptyDescription">Invita a tus contactos y mirad el mismo vídeo de forma sincronizada.</p>
           <button id="startWatching" class="primary" type="button">Preparar mi sala <span aria-hidden="true">↗</span></button>
           <small id="emptyHint">Tú eliges quién entra y quién controla el vídeo.</small>
         </div>
@@ -44,7 +46,7 @@
     </section>
     <aside class="sidebar" aria-label="Preparar y gestionar la sala">
       <section class="panel actions" aria-labelledby="setupTitle">
-        <div class="section-title"><div><span class="eyebrow">EL PLAN DE HOY</span><h2 id="setupTitle">Prepara tu sala</h2></div><span class="panel-number" aria-hidden="true">01</span></div>
+        <div class="section-title"><h2 id="setupTitle">Prepara tu sala</h2></div>
         <form id="roomForm"><label for="roomName">Nombre de la sala</label><input id="roomName" value="Noche de cine" maxlength="60" required autocomplete="off"><button id="createRoom" type="submit" class="primary wide">Crear sala</button></form>
         <div class="media-action"><button id="pickMedia" class="secondary wide" type="button" disabled>Elegir vídeo</button><p id="mediaHelp">Primero crea una sala. Después podrás elegir un vídeo de tu dispositivo.</p></div>
         <details id="pathDetails"><summary>Abrir un archivo por su ruta</summary><form id="pathForm" class="path-form"><label class="sr-only" for="pathInput">Ruta del archivo de vídeo</label><input id="pathInput" placeholder="Ruta completa del vídeo" required><button class="secondary" type="submit">Abrir</button></form></details>
@@ -63,7 +65,7 @@
     </aside>
     <footer class="watch-footer"><span aria-hidden="true">◇</span> De tu dispositivo a los suyos. Un espacio para compartir.</footer>
   </main>
-  <dialog id="closeRoomDialog" class="room-dialog" aria-labelledby="closeRoomTitle" aria-describedby="closeRoomDescription">
+  <dialog id="closeRoomDialog" class="room-dialog confirmation-dialog" aria-labelledby="closeRoomTitle" aria-describedby="closeRoomDescription">
     <h2 id="closeRoomTitle">¿Cerrar la sala para todos?</h2>
     <p id="closeRoomDescription">Las demás personas saldrán de la sala y la reproducción compartida terminará. Para seguir viendo el vídeo juntos, conserva la sala abierta.</p>
     <div class="dialog-actions"><button id="cancelCloseRoom" type="button" autofocus>Seguir en la sala</button><button id="confirmCloseRoom" type="button" class="danger">Cerrar para todos</button></div>

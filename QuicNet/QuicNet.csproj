@@ -12,11 +12,16 @@
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
     <RootNamespace>QuicNet</RootNamespace>
+    <ApplicationIcon>Assets/quicnet.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Photino.NET" Version="4.0.16" />
     <PackageReference Include="System.Drawing.Common" Version="11.0.0-rc.2.26504.105" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/quicnet.ico" LogicalName="QuicNet.Assets.quicnet.ico" />
   </ItemGroup>
 
   <ItemGroup>

@@ -20,7 +20,7 @@ internal static class AndroidAutoUpdate
         context.PackageManager?.CanRequestPackageInstalls() == true;
 
     internal static Task<bool> InstallAsync(Context context, string path, UpdateArtifact artifact, bool automatic,
-        Func<bool> canApplyAutomatically, CancellationToken token)
+        Func<Action, bool> tryCommitAutomatically, CancellationToken token)
     {
         if (!QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty) return Task.FromResult(false);
         var info = context.PackageManager!.GetPackageArchiveInfo(path, PackageInfoFlags.SigningCertificates)
@@ -30,7 +30,7 @@ internal static class AndroidAutoUpdate
 
         if (automatic)
             return OperatingSystem.IsAndroidVersionAtLeast(31) && CanInstallAutomatically(context, artifact)
-                ? InstallInBackgroundAsync(context, path, artifact, canApplyAutomatically, token) : Task.FromResult(false);
+                ? InstallInBackgroundAsync(context, path, artifact, tryCommitAutomatically, token) : Task.FromResult(false);
 
         var activity = ForegroundActivity?.TryGetTarget(out var current) == true ? current : null;
         if (activity == null || activity.IsFinishing || activity.IsDestroyed) return Task.FromResult(false);
@@ -59,7 +59,7 @@ internal static class AndroidAutoUpdate
 
     [System.Runtime.Versioning.SupportedOSPlatform("android31.0")]
     private static async Task<bool> InstallInBackgroundAsync(Context context, string path, UpdateArtifact artifact,
-        Func<bool> canApplyAutomatically, CancellationToken token)
+        Func<Action, bool> tryCommitAutomatically, CancellationToken token)
     {
         using var installer = context.PackageManager!.PackageInstaller!;
         using var parameters = new PackageInstaller.SessionParams(PackageInstallMode.FullInstall);
@@ -81,11 +81,10 @@ internal static class AndroidAutoUpdate
             }
 
             token.ThrowIfCancellationRequested();
-            if (!canApplyAutomatically()) return false;
             using var intent = new Intent(context, typeof(AndroidUpdateResultReceiver));
             // PackageInstaller supplies the result extras through an explicit, app-private callback.
             using var callback = PendingIntent.GetBroadcast(context, sessionId, intent, PendingIntentFlags.Mutable | PendingIntentFlags.OneShot)!;
-            session.Commit(callback.IntentSender!);
+            if (!tryCommitAutomatically(() => session.Commit(callback.IntentSender!))) return false;
             var outcome = await result.Task.WaitAsync(TimeSpan.FromMinutes(2), token);
             if (outcome.Status is PackageInstallStatus.PendingUserAction or PackageInstallStatus.FailureBlocked)
             {
@@ -120,7 +119,12 @@ internal static class AndroidAutoUpdate
         ForegroundActivity = new(activity);
         string? path = _pendingPermissionPackage;
         _pendingPermissionPackage = null;
-        if (path == null || !QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty || !activity.PackageManager!.CanRequestPackageInstalls()) return;
+        if (path == null || !activity.PackageManager!.CanRequestPackageInstalls()) return;
+        if (!QuicNet.Protocols.VoiceCallHandler.ActiveCalls.IsEmpty)
+        {
+            QuicNet.WebUi.WebUiServer.Instance?.Updates?.SetWaitingForCalls();
+            return;
+        }
         try { OpenInstaller(activity, path); }
         catch (Exception ex) { QuicNet.WebUi.WebUiServer.AddNotification("error", "No se pudo abrir el instalador: " + ex.Message); }
     }
@@ -176,7 +180,7 @@ internal sealed class AndroidUpdateIdle(PowerManager power) : BroadcastReceiver
 }
 
 // Only the verified update APK is exposed; no arbitrary file path supplied by the caller.
-[ContentProvider(new[] { "org.quicpunch.androidprobe.updates" }, Exported = false, GrantUriPermissions = true)]
+[ContentProvider(new[] { "${quicNetApplicationId}.updates" }, Exported = false, GrantUriPermissions = true)]
 public sealed class UpdatePackageProvider : ContentProvider
 {
     internal static string? ReadyPackage { get; set; }

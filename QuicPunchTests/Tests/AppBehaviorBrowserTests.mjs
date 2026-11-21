@@ -80,7 +80,9 @@ try {
   await page.screenshot({path:'.artifacts/notification-test-dnd.png'});
   await page.locator('#notificationTestClose').click();
   assert.equal(await page.locator('#testAppNotification').evaluate(node=>node===document.activeElement),true);
+  const ringtoneResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/notifications/ringtone');
   await page.locator('#testCallRingtone').click();
+  await ringtoneResponse;
   await page.waitForFunction(()=>!document.getElementById('notificationRingtonePreview').paused);
   assert.equal(await page.locator('#testCallRingtone').getAttribute('aria-pressed'),'true');
   assert.equal(ringtoneRequests.at(-1),'70');

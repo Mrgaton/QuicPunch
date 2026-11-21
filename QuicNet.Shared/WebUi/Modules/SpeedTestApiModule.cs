@@ -53,18 +53,30 @@ internal sealed class SpeedTestApiModule
         _hub = hub;
         _cts = cts;
         _speedTestHandler.OnPhaseStarted += (peer, phase) =>
+        {
+            _hub.DiscardMetrics("speedtest_progress", peer.Id.ToString());
             _hub.Broadcast("speedtest_phase", new global::QuicNet.Serialization.SpeedTestApiModuleMessage2(peer.Id.ToString(), phase, JsonSerializer.SerializeToElement(_speedTestHandler.FindPlan(peer.Id)?.Baseline, WebUiContext.JsonOptionsFor(WebJson))));
+        };
         _speedTestHandler.OnPhaseCompleted += (peer, summary) =>
+        {
+            _hub.DiscardMetrics("speedtest_progress", peer.Id.ToString());
             _hub.Broadcast("speedtest_phase_completed", ResultView(peer, summary, _speedTestHandler.FindPlan(peer.Id)));
+        };
         _speedTestHandler.OnProgress += (peer, prog) =>
-            _hub.Broadcast("speedtest_progress", new global::QuicNet.Serialization.SpeedTestApiModuleMessage3(peer.Id.ToString(), peer.Name ?? "Peer", prog.Direction, prog.BytesTransferred, Math.Round(prog.CurrentMbps, 2), Math.Round(prog.AverageMbps, 2), prog.ElapsedSeconds, prog.TotalSeconds, prog.RttMs, prog.SampleWindowMs));
+            _hub.BroadcastMetric("speedtest_progress", peer.Id.ToString(),
+                new global::QuicNet.Serialization.SpeedTestApiModuleMessage3(peer.Id.ToString(), peer.Name ?? "Peer", prog.Direction, prog.BytesTransferred, Math.Round(prog.CurrentMbps, 2), Math.Round(prog.AverageMbps, 2), prog.ElapsedSeconds, prog.TotalSeconds, prog.RttMs, prog.SampleWindowMs),
+                series: prog.Direction);
         _speedTestHandler.OnCompleted += (peer, summary) =>
         {
+            _hub.DiscardMetrics("speedtest_progress", peer.Id.ToString());
             _hub.Broadcast("speedtest_completed", ResultView(peer, summary, _speedTestHandler.FindPlan(peer.Id)));
             WebUiServer.LogEvent($"[SPEEDTEST] {summary.Mode} completed with {peer.Name}: Up {summary.UploadMbps}, Down {summary.DownloadMbps} Mbps");
         };
         _speedTestHandler.OnError += (peer, err) =>
+        {
+            _hub.DiscardMetrics("speedtest_progress", peer.Id.ToString());
             _hub.Broadcast("speedtest_error", new global::QuicNet.Serialization.SpeedTestApiModuleMessage4(peer.Id.ToString(), err, _speedTestHandler.FindPlan(peer.Id) is { } failed ? PlanView(failed) : null));
+        };
     }
 
     public async Task<bool> HandleRequestAsync(string path, HttpListenerRequest req, HttpListenerResponse resp)

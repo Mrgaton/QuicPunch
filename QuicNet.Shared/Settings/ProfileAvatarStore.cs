@@ -24,7 +24,8 @@ internal sealed class ProfileAvatarStore
         }
     }
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-    public string LocalVersion => _versions.GetValueOrDefault("local", "");
+    public string LocalVersion => Version();
+    internal string Version(Guid? peerId = null) => _versions.GetValueOrDefault(peerId?.ToString("N") ?? "local", "");
     public Dictionary<string, string> Versions(Guid localId)
     {
         var versions = _versions.Where(p => p.Key != "local").ToDictionary(p => Guid.ParseExact(p.Key, "N").ToString(), p => p.Value);
@@ -40,6 +41,16 @@ internal sealed class ProfileAvatarStore
             try { return File.ReadAllBytes(Path.Combine(_directory, key + ".avif")); } catch { return null; }
         }
     }
+
+    internal byte[] ReadLocalVersion(string version)
+    {
+        lock (_gate)
+        {
+            if (LocalVersion != version) throw new IOException("The local avatar changed during synchronization.");
+            return version.Length == 0 ? [] : Read() ?? throw new IOException("The local avatar could not be read.");
+        }
+    }
+
     public void Set(byte[] bytes, Guid? peerId = null)
     {
         if (bytes.Length != 0 && !IsValid(bytes)) throw new InvalidDataException("La foto debe ser un AVIF cuadrado de hasta 512 × 512 píxeles y 512 KB.");

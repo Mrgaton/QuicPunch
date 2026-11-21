@@ -2,6 +2,7 @@
 using System.Text.Json.Serialization;
 namespace QuicNet.Serialization;
 
+[JsonSerializable(typeof(global::QuicNet.Networking.ConnectionModeTransition))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage1))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage10))]
 [JsonSerializable(typeof(global::QuicNet.Serialization.PeerApiModuleMessage11))]

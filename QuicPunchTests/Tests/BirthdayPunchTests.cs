@@ -80,7 +80,9 @@ internal static class BirthdayPunchTests
                 "two hard NATs do not trigger an ineffective socket explosion");
             await TestMappingFastPath(hard);
             await TestRestartHandshake(hard, easy);
-            await TestLastSocketAndHandoff(hard, easy);
+            await TestLastSocketAndHandoff(hard, easy, IPAddress.Loopback);
+            if (Socket.OSSupportsIPv6)
+                await TestLastSocketAndHandoff(hard, easy, IPAddress.IPv6Loopback);
             await TestCancellation(hard, easy);
         }
         finally { try { Directory.Delete(root, true); } catch { } }
@@ -262,9 +264,9 @@ internal static class BirthdayPunchTests
         router.SetValue(node, null);
     }
 
-    private static async Task TestLastSocketAndHandoff(QP hard, QP easy)
+    private static async Task TestLastSocketAndHandoff(QP hard, QP easy, IPAddress address)
     {
-        using var remote = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        using var remote = new UdpClient(new IPEndPoint(address, 0));
         var endpoint = (IPEndPoint)remote.Client.LocalEndPoint!;
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         Guid connection = Guid.NewGuid(), challenge = Guid.NewGuid();
@@ -301,8 +303,8 @@ internal static class BirthdayPunchTests
             "the verified winning SOCKET, not the original port, is retained for QUIC handoff");
         foreach (int port in ports.Where(p => p != selected.Port).Take(3))
         {
-            using var reusable = new UdpClient { ExclusiveAddressUse = true };
-            reusable.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+            using var reusable = new UdpClient(address.AddressFamily) { ExclusiveAddressUse = true };
+            reusable.Client.Bind(new IPEndPoint(EndpointAddressCodec.BindAddress(reusable), port));
         }
         Check(true, "losing sockets are closed before the successful attempt returns");
         int localPort = ((IPEndPoint)winning.Client.LocalEndPoint!).Port;
@@ -314,7 +316,7 @@ internal static class BirthdayPunchTests
         int bindRetries = 0;
         QuicPunchLog.LogHandler = line => { if (line.Contains("[QUIC CLIENT ATTEMPT]")) Interlocked.Increment(ref bindRetries); originalLogger?.Invoke(line); };
         (QuicConnection? Connection, QuicStream? Stream) client;
-        try { client = await QuicPunchConnection.TryRunClient(new IPEndPoint(IPAddress.Loopback, localPort),
+        try { client = await QuicPunchConnection.TryRunClient(new IPEndPoint(address, localPort),
             easy.CertManager.PeerCertificate, hard.CurrentPeer.CertHash, endpoint.Port, remote, deadline.Token); }
         finally { QuicPunchLog.LogHandler = originalLogger; }
         var accepted = await accepting;

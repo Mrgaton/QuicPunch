@@ -144,12 +144,15 @@ internal sealed class WindowsNotificationIcon : IDisposable
     {
         try
         {
+            using Stream? iconAsset = typeof(WindowsNotificationIcon).Assembly
+                .GetManifestResourceStream(DesktopWindowManager.WindowsIconResource);
+            using var icon = iconAsset == null ? null : new System.Drawing.Icon(iconAsset, 16, 16);
             var cls = new WindowClass { Size = (uint)Marshal.SizeOf<WindowClass>(), Procedure = Marshal.GetFunctionPointerForDelegate(_procedure), Name = "QuicNet.Notifications", Instance = GetModuleHandle(null) };
             RegisterClassEx(ref cls);
             _window = CreateWindowEx(0, cls.Name, "QuicNet", 0, 0, 0, 0, 0, 0, 0, cls.Instance, 0);
             lock (_gate)
             {
-                _data = new() { Size = (uint)Marshal.SizeOf<IconData>(), Window = _window, Id = 1, Flags = 7, Callback = Callback, Icon = LoadIcon(0, 32512), Tip = "QuicNet · doble clic para abrir · clic derecho para salir", Info = "", Title = "" };
+                _data = new() { Size = (uint)Marshal.SizeOf<IconData>(), Window = _window, Id = 1, Flags = 7, Callback = Callback, Icon = icon?.Handle ?? LoadIcon(0, 32512), Tip = "QuicNet · doble clic para abrir · clic derecho para salir", Info = "", Title = "" };
                 IsReady = _window != 0 && ShellNotify(0, ref _data);
             }
             _ready.Set();

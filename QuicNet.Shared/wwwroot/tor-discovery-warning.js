@@ -16,7 +16,7 @@
       const label = QP.el('label', 'tor-discovery-acknowledgement');
       const checkbox = QP.el('input'); checkbox.type = 'checkbox';
       label.append(checkbox, QP.el('span', '', 'He leído el aviso y acepto el riesgo de perder el anonimato.'));
-      const actions = QP.el('div', 'tor-discovery-warning-actions');
+      const actions = QP.el('div', 'dialog-actions');
       const cancel = QP.button('Mantener desactivado', '', () => dialog.close());
       const enable = QP.button('Activar descubrimiento Tor', 'danger', () => {
         if (!checkbox.checked) return;

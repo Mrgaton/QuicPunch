@@ -27,6 +27,7 @@ public static class WebUiContext
     {
         "/api/profile/avatar" => QuicNet.Settings.ProfileAvatarStore.MaxBytes,
         "/api/voice-send" => MaxVoiceBodyBytes,
+        "/api/voice/remote-input" => 64 * 1024,
         "/api/chat-send" => MaxChatBodyBytes,
         "/api/chat/share-file" => 1024L * 1024 * 1024 * 1024,
         "/api/virtual-disk/operation" => 256 * 1024,

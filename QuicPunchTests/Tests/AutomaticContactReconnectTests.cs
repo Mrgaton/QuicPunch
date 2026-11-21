@@ -141,6 +141,27 @@ internal static class AutomaticContactReconnectTests
         Check(node.ActiveInterrogations.Values.Count(x => x.IsAutomaticContact && x.Peer.CertHash.AsSpan().SequenceEqual(recentHash)) == 1,
             "the supervisor never duplicates a contact's probe worker");
 
+        var backgroundProbe = node.ActiveInterrogations.Values.Single(x => x.IsAutomaticContact && x.Peer.CertHash.AsSpan().SequenceEqual(recentHash));
+        using (var connectDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token))
+        {
+            connectDeadline.CancelAfter(TimeSpan.FromSeconds(4));
+            int beforeConnect = recent.Received.Count;
+            Task connect = node.EnsureMultiplexerConnectedAsync(backgroundProbe.Peer, cancellationToken: connectDeadline.Token);
+            try
+            {
+                await Wait(() => recent.Received.Count >= beforeConnect + 2, connectDeadline.Token);
+                Check(node.ActiveInterrogations.ContainsKey(backgroundProbe.Id),
+                    "an explicit connection wakes and speeds up the existing UDP probe during backoff");
+                Check(!connect.IsCompleted, "an unanswered probe does not authenticate the peer");
+            }
+            finally
+            {
+                connectDeadline.Cancel();
+                try { await connect; }
+                catch (OperationCanceledException) when (connectDeadline.IsCancellationRequested) { }
+            }
+        }
+
         // The formerly stale device now opens a real UDP/QUIC endpoint. A new
         // signed advertisement must replace the old black-hole target promptly.
         signer.WanEnabled = true;

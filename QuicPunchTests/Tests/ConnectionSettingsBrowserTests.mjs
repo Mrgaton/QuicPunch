@@ -1,4 +1,4 @@
-import {launchBrowser, startPreviewServer, closeBrowserFixture} from '../Fixtures/BrowserFixture.mjs';
+import {launchBrowser, startPreviewServer, closeBrowserFixture, mapStatusMessage} from '../Fixtures/BrowserFixture.mjs';
 import {mkdirSync} from 'node:fs';
 import assert from 'node:assert/strict';
 const server = startPreviewServer([]);
@@ -14,12 +14,7 @@ try {
     wanToken:'QP://'+('INVITACION-DE-PRUEBA-'.repeat(15)),torToken:tor.isStarted?'QP://TOR-PRUEBA':''},wan,tor});
   await page.routeWebSocket('**/ws?*', socket => {
     const backend = socket.connectToServer(); socket.onMessage(message=>backend.send(message));
-    backend.onMessage(message=>{
-      if(typeof message!=='string') return socket.send(message);
-      const payload=JSON.parse(message);
-      if(payload.data?.node) payload.data=patch(payload.data);
-      socket.send(JSON.stringify(payload));
-    });
+    backend.onMessage(message => socket.send(mapStatusMessage(message, patch)));
   });
   await page.route('**/api/wan-stop', route=>{calls.push('wan-stop');return route.fulfill({status:503,json:{error:'Prueba: no se pudo detener'}});});
   await page.route('**/api/tor-start', async route=>{
@@ -34,6 +29,7 @@ try {
   });
   await page.goto(url+'settings.html?section=connection');
   await page.waitForFunction(()=>QP.state.status&&QP.isWsConnected);
+  await page.locator('#torConnectionCard .connection-icon img').evaluate(icon => icon.decode());
   assert.equal(await page.locator('#wanToggle,#torToggle').count(),0,'Duplicated service controls remain');
   assert.equal(await page.locator('#wanConnectionDetails').getAttribute('open'),null);
   assert.equal(await page.locator('#copyTorInline').isDisabled(),true);
@@ -75,9 +71,26 @@ try {
   assert.equal(await page.locator('#listenerPortInput').inputValue(),'60000');
   await page.locator('#wanConnectionDetails summary').click();
   await page.locator('.toast').evaluateAll(nodes=>nodes.forEach(node=>node.remove()));
-  for(const width of [1920,1280,844,390,320]) {
+  for(const width of [1920,1536,1280,1201,844,390,320]) {
     await page.setViewportSize({width,height:1080});await page.evaluate(()=>scrollTo(0,0));
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Overflow at '+width);
+    if (width >= 1201) {
+      for (const [wanAction, torAction] of [
+        ['#homeWanToggleBtn', '#homeTorToggleBtn'],
+        ['#copyWanInline', '#copyTorInline'],
+        ['#discoveryToggle', '#torDiscoveryToggle']
+      ]) {
+        const direct = await page.locator(wanAction).boundingBox();
+        const tor = await page.locator(torAction).boundingBox();
+        assert.equal(direct.y, tor.y, 'Matching actions should be on the same row at '+width);
+        assert.equal(direct.height, tor.height, 'Matching actions should be the same height at '+width);
+        assert.equal(direct.width, tor.width, 'Matching actions should be the same width at '+width);
+      }
+    } else {
+      const direct = await page.locator('#wanConnectionCard').boundingBox();
+      const tor = await page.locator('#torConnectionCard').boundingBox();
+      assert.ok(tor.y >= direct.y + direct.height, 'Connection cards should stack at '+width);
+    }
     await page.screenshot({path:`.artifacts/connection-settings/connection-${width}.png`,fullPage:true});
     await page.locator('#wanConnectionCard .connection-token summary').click();
     await page.locator('#wanConnectionDetails summary').click();

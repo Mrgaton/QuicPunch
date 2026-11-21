@@ -117,7 +117,8 @@ internal sealed partial class ChatApiModule : IDisposable
 
         _chatHandler.OnTypingReceived += (peer, isTyping) =>
         {
-            _hub.Broadcast("chat_typing", new global::QuicNet.Serialization.ChatApiModuleMessage4(peer.Id.ToString(), peer.Name ?? "Peer", isTyping));
+            _hub.BroadcastMetric("chat_typing", peer.Id.ToString(),
+                new global::QuicNet.Serialization.ChatApiModuleMessage4(peer.Id.ToString(), peer.Name ?? "Peer", isTyping));
         };
         _chatHandler.OnActionsReceived += ReceiveActions;
         _chatHandler.OnGetActionsForPeer += GetActionsForPeer;
@@ -310,7 +311,7 @@ internal sealed partial class ChatApiModule : IDisposable
                 if (DateTime.UtcNow - lastProgress > TimeSpan.FromMilliseconds(150))
                 {
                     lastProgress = DateTime.UtcNow;
-                    _hub.Broadcast("chat_file_progress", new global::QuicNet.Serialization.ChatApiModuleMessage10(peer.Id.ToString(), item.FileId.ToString(), true, currentOffset, item.Size, item.Size > 0 ? (int)(100.0 * currentOffset / item.Size) : 100));
+                    BroadcastFileProgress(peer.Id, item.FileId, true, currentOffset, item.Size, emptyPercent: 100);
                 }
             }
             // An explicit empty terminal frame also completes zero-byte files and fully resumed ranges.
@@ -321,12 +322,14 @@ internal sealed partial class ChatApiModule : IDisposable
             try { _transferStore.UpdateUpload(peer.Id, item.FileId, record => record with { Completed = true, Received = record.Size }); }
             catch { WebUiServer.LogEvent("[CHAT] El contacto verificó el archivo, pero no se pudo guardar el recibo local."); }
             WebUiServer.LogEvent($"[CHAT] File received and verified by {peer.Name}: {item.Name}");
-            _hub.Broadcast("chat_file_sent", new global::QuicNet.Serialization.ChatApiModuleMessage11(peer.Id.ToString(), item.FileId.ToString(), item.Size));
+            BroadcastFileState("chat_file_sent", peer.Id, item.FileId,
+                new global::QuicNet.Serialization.ChatApiModuleMessage11(peer.Id.ToString(), item.FileId.ToString(), item.Size));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             if (!_fileLifetime.IsCancellationRequested)
-                _hub.Broadcast("chat_file_cancelled", new global::QuicNet.Serialization.ChatApiModuleMessage12(peer.Id.ToString(), item.FileId.ToString()));
+                BroadcastFileState("chat_file_cancelled", peer.Id, item.FileId,
+                    new global::QuicNet.Serialization.ChatApiModuleMessage12(peer.Id.ToString(), item.FileId.ToString()));
         }
         catch (Exception ex)
         {
@@ -356,16 +359,17 @@ internal sealed partial class ChatApiModule : IDisposable
         {
             if (!_qcc.IsTrustedPeer(peer)) throw new UnauthorizedAccessException("Peer trust was revoked.");
             bool completed = await download.WriteChunkAsync(peer.Id, offset, data, isEnd, ct).ConfigureAwait(false);
-            if (DateTime.UtcNow - download.LastProgressBroadcastUtc > TimeSpan.FromMilliseconds(120) || completed)
+            if (!completed && DateTime.UtcNow - download.LastProgressBroadcastUtc > TimeSpan.FromMilliseconds(120))
             {
                 download.LastProgressBroadcastUtc = DateTime.UtcNow;
-                _hub.Broadcast("chat_file_progress", new global::QuicNet.Serialization.ChatApiModuleMessage10(peer.Id.ToString(), fileId.ToString(), false, download.ReceivedBytes, download.TotalSize, download.TotalSize > 0 ? (int)(100.0 * download.ReceivedBytes / download.TotalSize) : 100));
+                BroadcastFileProgress(peer.Id, fileId, false, download.ReceivedBytes, download.TotalSize, emptyPercent: 100);
             }
             if (!completed) return;
             _completedDownloads[key] = download.FinalPath;
             _activeDownloads.TryRemove(new KeyValuePair<(Guid, Guid), ChatFileDownload>(key, download));
             await download.DisposeAsync().ConfigureAwait(false);
-            _hub.Broadcast("chat_file_complete", new global::QuicNet.Serialization.ChatApiModuleMessage13(peer.Id.ToString(), fileId.ToString(), download.FileName, download.FinalPath));
+            BroadcastFileState("chat_file_complete", peer.Id, fileId,
+                new global::QuicNet.Serialization.ChatApiModuleMessage13(peer.Id.ToString(), fileId.ToString(), download.FileName, download.FinalPath, download.TotalSize));
             WebUiServer.Instance?.Notifications?.Publish("files", peer.Name ?? "Archivo recibido", download.FileName, "/chat.html?peer=" + peer.Id, Convert.ToHexString(peer.CertHash));
             await ChatHandler.SendFileCompletionAsync(peer.Id, fileId, download.Sha256, ct).ConfigureAwait(false);
         }
@@ -384,10 +388,24 @@ internal sealed partial class ChatApiModule : IDisposable
         }
     }
 
+    private void BroadcastFileProgress(Guid peerId, Guid fileId, bool isUpload, long received, long total, int emptyPercent)
+    {
+        int percent = total > 0 ? (int)(100.0 * received / total) : emptyPercent;
+        _hub.BroadcastMetric("chat_file_progress", $"{peerId}:{fileId}",
+            new global::QuicNet.Serialization.ChatApiModuleMessage10(peerId.ToString(), fileId.ToString(), isUpload, received, total, percent));
+    }
+
+    private void BroadcastFileState(string type, Guid peerId, Guid fileId, object data)
+    {
+        _hub.DiscardMetrics("chat_file_progress", $"{peerId}:{fileId}");
+        _hub.Broadcast(type, data);
+    }
+
     private void BroadcastFileError(Guid peerId, Guid fileId, string error)
     {
         WebUiServer.LogEvent($"[CHAT] File transfer failed: {error}");
-        _hub.Broadcast("chat_file_error", new global::QuicNet.Serialization.ChatApiModuleMessage14(peerId.ToString(), fileId.ToString(), error));
+        BroadcastFileState("chat_file_error", peerId, fileId,
+            new global::QuicNet.Serialization.ChatApiModuleMessage14(peerId.ToString(), fileId.ToString(), error));
     }
 
     private async Task MaintainTransfersAsync()
@@ -526,10 +544,9 @@ internal sealed partial class ChatApiModule : IDisposable
             }
             using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, _fileLifetime.Token);
             if (state.IsRestoring)
-                _hub.Broadcast("chat_file_verifying", GetDownloadStatuses(peerId).First(r => r.fileId == fileId.ToString()));
+                BroadcastFileState("chat_file_verifying", peerId, fileId, GetDownloadStatuses(peerId).First(r => r.fileId == fileId.ToString()));
             await state.RestoreAsync(lifetime.Token).ConfigureAwait(false);
-            _hub.Broadcast("chat_file_progress", new global::QuicNet.Serialization.ChatApiModuleMessage10(peerId.ToString(), fileId.ToString(), false,
-                state.ReceivedBytes, state.TotalSize, state.TotalSize > 0 ? (int)(100.0 * state.ReceivedBytes / state.TotalSize) : 0));
+            BroadcastFileProgress(peerId, fileId, false, state.ReceivedBytes, state.TotalSize, emptyPercent: 0);
             if (!await ChatHandler.RequestFileAsync(peerId, fileId, state.ReceivedBytes, lifetime.Token).ConfigureAwait(false))
                 throw new IOException("Could not request the file from its sender.");
             return (false, false, null);
@@ -616,6 +633,37 @@ internal sealed partial class ChatApiModule : IDisposable
         if (await HandleDownloadRequestAsync(path, req, resp).ConfigureAwait(false)) return true;
         if (await HandleSocialRequestAsync(path, req, resp).ConfigureAwait(false)) return true;
         if (await HandleOutboxRequestAsync(path, req, resp).ConfigureAwait(false)) return true;
+        if (path == "/api/chat/draft" && req.HttpMethod is "GET" or "POST")
+        {
+            string peerId = req.QueryString["peerId"] ?? "";
+            if (peerId != "global")
+            {
+                if (!Guid.TryParse(peerId, out var peer) || !IsTrustedConversation(peer))
+                    throw new InvalidDataException("Elige una conversación de confianza.");
+                peerId = peer.ToString();
+            }
+            if (req.HttpMethod == "GET")
+            {
+                var draft = _history.ReadDraft(peerId);
+                await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.ChatDraftResponse(draft.Text, draft.Revision)).ConfigureAwait(false);
+                return true;
+            }
+            using var doc = await WebUiContext.ReadJsonAsync(req, path).ConfigureAwait(false);
+            string text = doc.RootElement.GetProperty("text").GetString() ?? "";
+            string? expected = doc.RootElement.GetProperty("revision").GetString();
+            string revision = doc.RootElement.GetProperty("nextRevision").GetString() ?? "";
+            if (Encoding.UTF8.GetByteCount(text) > 64 * 1024 || !Guid.TryParseExact(revision, "D", out _) ||
+                (expected != null && !Guid.TryParseExact(expected, "D", out _)))
+                throw new InvalidDataException("Borrador inválido o superior a 64 KB.");
+            if (_history.SaveDraft(peerId, text, expected, revision))
+                await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.ChatDraftResponse(text, revision)).ConfigureAwait(false);
+            else
+            {
+                var current = _history.ReadDraft(peerId);
+                await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.ChatDraftResponse(current.Text, current.Revision)).ConfigureAwait(false);
+            }
+            return true;
+        }
         if (path == "/api/chat/messages" && req.HttpMethod == "GET")
         {
             string peerId = req.QueryString["peerId"] ?? "";
@@ -854,7 +902,8 @@ internal sealed partial class ChatApiModule : IDisposable
             if (_activeDownloads.TryRemove(key, out var download)) await download.DisposeAsync().ConfigureAwait(false);
             DiscardSavedDownload(peerId, fileId, preserveCompleted: true);
             await ChatHandler.CancelFileAsync(peerId, fileId, _fileLifetime.Token).ConfigureAwait(false);
-            _hub.Broadcast("chat_file_cancelled", new global::QuicNet.Serialization.ChatApiModuleMessage12(peerId.ToString(), fileId.ToString()));
+            BroadcastFileState("chat_file_cancelled", peerId, fileId,
+                new global::QuicNet.Serialization.ChatApiModuleMessage12(peerId.ToString(), fileId.ToString()));
             await WebUiContext.WriteJsonAsync(resp, new global::QuicNet.Serialization.ChatApiModuleMessage25(true)).ConfigureAwait(false);
             return true;
         }
